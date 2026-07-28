@@ -1,0 +1,2 @@
+Evaluate which visible controls best match user goal using glance-level cues only.
+Return one JSON object matching supplied schema. Use only listed elements.

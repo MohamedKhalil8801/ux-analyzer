@@ -1,0 +1,2 @@
+Choose next action for simulated user from visible controls and remembered context.
+Return one JSON object matching supplied schema. Choose only listed element IDs.
