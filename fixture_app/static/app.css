@@ -1,0 +1,398 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #1f2933;
+  background: #f4f6f8;
+  --ink: #1f2933;
+  --muted: #66727d;
+  --line: #d8dee4;
+  --surface: #ffffff;
+  --accent: #176b87;
+  --accent-dark: #0f5168;
+  --success: #176b4d;
+  --danger: #a43d3d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f4f6f8;
+}
+
+a {
+  color: inherit;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  min-height: 64px;
+  padding: 0 5vw;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  color: var(--ink);
+  font-size: 1.05rem;
+  font-weight: 750;
+  text-decoration: none;
+  letter-spacing: 0;
+}
+
+.topnav {
+  display: flex;
+  gap: 20px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.topnav a,
+.text-link {
+  text-decoration: none;
+}
+
+.topnav a:hover,
+.text-link:hover {
+  color: var(--accent-dark);
+}
+
+.account {
+  position: relative;
+  margin-left: auto;
+}
+
+.icon-button {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent-dark);
+  background: #eef4f6;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.account-menu {
+  position: absolute;
+  right: 0;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 20px rgba(31, 41, 51, 0.12);
+}
+
+.account-menu a {
+  padding: 9px 10px;
+  border-radius: 4px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.account-menu a:hover {
+  color: var(--ink);
+  background: #f0f5f7;
+}
+
+.page-shell {
+  width: min(100% - 40px, 1080px);
+  margin: 0 auto;
+  padding: 48px 0 72px;
+}
+
+.page-heading,
+.section-heading,
+.security-region {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.page-heading {
+  margin-bottom: 28px;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 8px;
+  font-size: 2.25rem;
+  line-height: 1.1;
+}
+
+h2 {
+  margin-bottom: 8px;
+  font-size: 1.2rem;
+}
+
+.eyebrow {
+  margin-bottom: 8px;
+  color: var(--accent-dark);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.muted {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.version-tag {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  background: #ffffff;
+  font-size: 0.76rem;
+  text-transform: capitalize;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.summary-card,
+.team-region,
+.security-region,
+.low-prominence,
+.narrow-surface,
+.settings-panel {
+  padding: 24px;
+}
+
+.team-region,
+.security-region,
+.low-prominence {
+  margin-bottom: 20px;
+}
+
+.metric {
+  margin-bottom: 4px;
+  color: var(--ink);
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 650;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button.primary {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+.button.primary:hover {
+  background: var(--accent-dark);
+}
+
+.button.secondary {
+  color: var(--ink);
+  background: #ffffff;
+  border-color: var(--line);
+}
+
+.button.secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.notice,
+.inline-result {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.notice {
+  margin-bottom: 20px;
+}
+
+.notice.success,
+.inline-result {
+  color: var(--success);
+  border-color: #a7d2bd;
+  background: #eff9f3;
+}
+
+.notice.error {
+  color: var(--danger);
+  border-color: #e1b5b5;
+  background: #fff4f4;
+}
+
+.inline-result {
+  margin: 16px 0 0;
+  font-size: 0.9rem;
+}
+
+.narrow-surface {
+  max-width: 680px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 10px;
+  max-width: 520px;
+}
+
+label {
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid #bcc7cf;
+  border-radius: 4px;
+  color: var(--ink);
+  background: #ffffff;
+  font: inherit;
+}
+
+input:focus,
+select:focus,
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid rgba(23, 107, 135, 0.24);
+  outline-offset: 2px;
+}
+
+.form-grid .button {
+  justify-self: start;
+  margin-top: 8px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.settings-nav {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-nav a {
+  padding: 10px 12px;
+  border-radius: 4px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.settings-nav a:hover,
+.settings-nav a.selected {
+  color: var(--ink);
+  background: #e7eff2;
+}
+
+.settings-panel {
+  min-height: 300px;
+}
+
+.dialog {
+  width: min(440px, calc(100% - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 16px 40px rgba(31, 41, 51, 0.2);
+}
+
+.dialog::backdrop {
+  background: rgba(31, 41, 51, 0.35);
+}
+
+.dialog-body {
+  padding: 24px;
+}
+
+@media (max-width: 680px) {
+  .topbar {
+    gap: 16px;
+    padding: 0 20px;
+  }
+
+  .topnav {
+    gap: 12px;
+    font-size: 0.82rem;
+  }
+
+  .page-shell {
+    width: min(100% - 32px, 1080px);
+    padding-top: 32px;
+  }
+
+  h1 {
+    font-size: 1.8rem;
+  }
+
+  .summary-grid,
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .page-heading,
+  .section-heading,
+  .security-region {
+    flex-direction: column;
+  }
+
+  .button {
+    width: 100%;
+  }
+}

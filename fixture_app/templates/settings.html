@@ -1,0 +1,60 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Settings</p>
+    {% if version == "improved" %}
+    <h1>Security</h1>
+    <p class="muted">Keep account access protected.</p>
+    {% else %}
+    <h1>Account settings</h1>
+    <p class="muted">Update workspace preferences.</p>
+    {% endif %}
+  </div>
+  <span class="version-tag">{{ version }} fixture</span>
+</div>
+
+{% if notice == "two-factor-enabled" %}
+<p class="notice success" role="status">
+  {% if version == "improved" %}Two-factor authentication enabled{% else %}Protection enabled{% endif %}.
+</p>
+{% elif error == "invalid-code" %}
+<p class="notice error" role="alert">Code was not accepted.</p>
+{% endif %}
+
+<div class="settings-layout">
+  <aside class="settings-nav" aria-label="Settings navigation">
+    {% if version == "improved" %}
+    <a class="selected" href="/app/{{ session_id }}/{{ version }}/settings">Security</a>
+    <a href="/app/{{ session_id }}/{{ version }}/settings">Notifications</a>
+    {% else %}
+    <a class="selected" href="/app/{{ session_id }}/{{ version }}/settings">General</a>
+    <a href="/app/{{ session_id }}/{{ version }}/settings/security">Protection</a>
+    {% endif %}
+  </aside>
+
+  <section class="surface settings-panel" aria-labelledby="two-factor-heading">
+    {% if version == "improved" %}
+    <p class="eyebrow">Security</p>
+    <h2 id="two-factor-heading">Two-factor authentication</h2>
+    <p class="muted">Add a second step when you sign in.</p>
+    {% else %}
+    <p class="eyebrow">Protection</p>
+    <h2 id="two-factor-heading">Authenticator setup</h2>
+    <p class="muted">Use your authenticator code to update protection.</p>
+    {% endif %}
+    {% if state.security.two_factor_enabled %}
+    <p class="inline-result" role="status">
+      {% if version == "improved" %}Two-factor authentication enabled.{% else %}Protection enabled.{% endif %}
+    </p>
+    {% else %}
+    <form class="form-grid" method="post" action="/app/{{ session_id }}/{{ version }}/settings/security/2fa">
+      <label for="totp-code">{% if version == "improved" %}Setup code{% else %}Verification code{% endif %}</label>
+      <input id="totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" required>
+      <button class="button primary" type="submit">{% if version == "improved" %}Enable two-factor authentication{% else %}Enable protection{% endif %}</button>
+    </form>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

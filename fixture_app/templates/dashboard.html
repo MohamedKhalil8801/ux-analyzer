@@ -1,0 +1,105 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Workspace</p>
+    {% if screen == "team" %}
+    <h1>Members</h1>
+    <p class="muted">Invite people to work with your team.</p>
+    {% else %}
+    <h1>Good morning, Nia</h1>
+    <p class="muted">Keep workspace work moving.</p>
+    {% endif %}
+  </div>
+  <span class="version-tag">{{ version }} fixture</span>
+</div>
+
+{% if notice == "invite-sent" %}
+<p class="notice success" role="status">Invitation sent to {{ state.workspace.invited_email }}.</p>
+{% elif notice == "invalid-invite" %}
+<p class="notice error" role="alert">Enter valid teammate details.</p>
+{% endif %}
+
+{% if screen == "team" %}
+<section class="surface narrow-surface" aria-labelledby="invite-heading">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Team access</p>
+      <h2 id="invite-heading">Invite teammate</h2>
+    </div>
+    <span class="status-dot" aria-label="Workspace ready"></span>
+  </div>
+  <form class="form-grid" method="post" action="/app/{{ session_id }}/{{ version }}/team/invite">
+    <label for="invite-email">Email address</label>
+    <input id="invite-email" name="invite_email" type="email" value="{{ fixture_inputs.invite_email }}" required>
+    <label for="invite-role">Role</label>
+    <select id="invite-role" name="invite_role">
+      <option value="member" {% if fixture_inputs.invite_role == "member" %}selected{% endif %}>Member</option>
+      <option value="admin">Admin</option>
+    </select>
+    <button class="button primary" type="submit">Send invitation</button>
+  </form>
+  {% if state.workspace.invite_status == "sent" %}
+  <p class="inline-result" role="status">Invitation sent to {{ state.workspace.invited_email }}.</p>
+  {% endif %}
+</section>
+{% else %}
+<section class="summary-grid" aria-label="Workspace summary">
+  <article class="surface summary-card">
+    <p class="eyebrow">Open work</p>
+    <p class="metric">12</p>
+    <p class="muted">Items need attention this week.</p>
+  </article>
+  <article class="surface summary-card">
+    <p class="eyebrow">Workspace members</p>
+    <p class="metric">8</p>
+    <p class="muted">Your team has room to grow.</p>
+  </article>
+</section>
+
+<section class="surface team-region" aria-labelledby="team-heading">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Team</p>
+      <h2 id="team-heading">Invite teammate</h2>
+      {% if state.workspace.invite_status == "sent" %}
+      <p class="inline-result" role="status">Invitation sent to {{ state.workspace.invited_email }}.</p>
+      {% else %}
+      <p class="muted">Bring another person into this workspace.</p>
+      {% endif %}
+    </div>
+    {% if version == "improved" %}
+    <a class="button primary" aria-label="Invite teammate" href="/app/{{ session_id }}/{{ version }}/team">Invite teammate</a>
+    {% else %}
+    <button class="button secondary" type="button" data-dialog-target="share-dialog">Share</button>
+    {% endif %}
+  </div>
+</section>
+
+{% if version == "defective" %}
+<section class="surface low-prominence">
+  <p class="eyebrow">Workspace tools</p>
+  <p class="muted">Manage people from the account menu.</p>
+</section>
+{% else %}
+<section class="surface security-region" aria-labelledby="security-heading">
+  <div>
+    <p class="eyebrow">Security</p>
+    <h2 id="security-heading">Protect workspace access</h2>
+    <p class="muted">Review sign-in protections and recovery options.</p>
+  </div>
+  <a class="text-link" href="/app/{{ session_id }}/{{ version }}/settings">Review security</a>
+</section>
+{% endif %}
+
+<dialog id="share-dialog" class="dialog" data-dialog>
+  <div class="dialog-body">
+    <p class="eyebrow">Share workspace</p>
+    <h2>Public link sharing is unavailable</h2>
+    <p class="muted">This controlled fixture does not send invitations or share data outside session state.</p>
+    <button class="button secondary" type="button" data-dialog-close>Close</button>
+  </div>
+</dialog>
+{% endif %}
+{% endblock %}
