@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>{{ css | safe }}</style>
+</head>
+<body>
+  <header class="page-header">
+    <p class="eyebrow">UX Analyzer</p>
+    <h1>{{ title }}</h1>
+    <p class="lede">Static replay of recorded experiment evidence.</p>
+  </header>
+
+  <main>
+    <section class="section" aria-labelledby="overview-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Experiment</p>
+          <h2 id="overview-title">Comparison overview</h2>
+        </div>
+        <span class="evidence-note">Deterministic facts and model estimates stay separate.</span>
+      </div>
+      <div class="table-wrap">
+        <table id="comparison-table">
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>Persona</th>
+              <th>Policy</th>
+              <th>Version</th>
+              <th>Runs</th>
+              <th>Verified</th>
+              <th>Discovery cost</th>
+              <th>Wrong actions</th>
+              <th>Backtracks</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for row in comparison_rows %}
+            <tr>
+              <td>{{ row.scenario_label }}</td>
+              <td>{{ row.persona_label }}</td>
+              <td>{{ row.policy }}</td>
+              <td>{{ row.version_label }}</td>
+              <td>{{ row.run_count }}</td>
+              <td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td>
+              <td>{{ row.discovery_cost if row.discovery_cost is not none else "n/a" }}</td>
+              <td>{{ row.wrong_actions if row.wrong_actions is not none else "n/a" }}</td>
+              <td>{{ row.backtracks if row.backtracks is not none else "n/a" }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="9">No comparison rows recorded.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="evidence-summary" aria-label="Evidence classes">
+        {% for item in evidence_summary %}
+        <span class="evidence-chip evidence-{{ item.evidence_class }}">
+          {{ item.evidence_class }} <strong>{{ item.count }}</strong>
+        </span>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="section replay-shell" aria-labelledby="replay-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Replay</p>
+          <h2 id="replay-title">Run filters</h2>
+        </div>
+        <div class="filter-row">
+          <label>Search <input id="run-filter" type="search" autocomplete="off"></label>
+          <label>Version <select id="version-filter"><option value="">All versions</option></select></label>
+          <label>Policy <select id="policy-filter"><option value="">All policies</option></select></label>
+          <label>Run <select id="run-select"></select></label>
+        </div>
+      </div>
+
+      <div class="replay-grid">
+        <aside class="timeline-panel" aria-labelledby="timeline-title">
+          <div class="panel-heading">
+            <h3 id="timeline-title">Timeline</h3>
+            <span id="timeline-position">0 / 0</span>
+          </div>
+          <div class="timeline-controls">
+            <button id="timeline-prev" type="button" title="Previous timeline event">&#8592;</button>
+            <button id="timeline-next" type="button" title="Next timeline event">&#8594;</button>
+          </div>
+          <ol id="timeline-list" class="timeline-list"></ol>
+          <p id="timeline-detail" class="muted">Select run to inspect recorded events.</p>
+        </aside>
+        <article id="run-detail" class="run-detail" data-viewport-width="{{ initial_viewport_width }}">
+          <p class="muted">Select run to inspect evidence.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section limitations" aria-labelledby="limitations-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Trust boundary</p>
+          <h2 id="limitations-title">Limitations</h2>
+        </div>
+      </div>
+      <ul>
+      {% for limitation in limitations %}
+        <li>{{ limitation }}</li>
+      {% endfor %}
+      </ul>
+      <p class="muted">Unsupported human claims appear only here. They never enter scorecards or findings.</p>
+    </section>
+  </main>
+
+  <script type="application/json" id="report-data">{{ report_json | safe }}</script>
+  <script>{{ javascript | safe }}</script>
+</body>
+</html>
