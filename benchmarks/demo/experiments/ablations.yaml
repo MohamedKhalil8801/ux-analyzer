@@ -1,0 +1,15 @@
+id: ablations
+name: Attention policy ablations
+scenario_ids:
+  - invite-teammate
+  - enable-2fa
+application_version_ids:
+  - fixture-app-defective
+  - fixture-app-improved
+persona_ids:
+  - first-time-nontechnical
+  - impatient
+policies:
+  - prominence-ranked-list
+  - progressive-prominence
+run_count: 10

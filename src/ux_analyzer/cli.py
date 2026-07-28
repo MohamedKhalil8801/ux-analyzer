@@ -1,10 +1,86 @@
-"""Command-line interface for the UX analyzer."""
+"""Operator command surface for benchmark validation and execution."""
 
+from __future__ import annotations
+
+import asyncio
+import json
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Literal, NoReturn, cast
+from urllib.parse import quote, urlsplit
+
+import httpx
 import typer
 
 from ux_analyzer import __version__
+from ux_analyzer.adapters.openai import (
+    ModelConfigurationError,
+    OpenAICompatibleSettings,
+    OpenAICompatibleStructuredClient,
+)
+from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
+from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
+from ux_analyzer.adapters.web.session import PlaywrightSessionAdapter
+from ux_analyzer.adapters.web.verifier import WebVerifier
+from ux_analyzer.application.experiment import (
+    ExperimentContext,
+    ExperimentResult,
+    ExperimentRunner,
+    attention_policy_for,
+    expand_experiment,
+)
+from ux_analyzer.application.report import render_experiment_report
+from ux_analyzer.application.run_agent import CognitiveAgent as RunCognitiveAgent
+from ux_analyzer.application.run_agent import RunAgent
+from ux_analyzer.config.loader import LoadedProject, ProjectConfigError, load_project
+from ux_analyzer.domain.attention import ProgressiveObservation
+from ux_analyzer.domain.benchmark import ExperimentDefinition, ExperimentPolicy
+from ux_analyzer.domain.interface import ViewportSnapshot
+from ux_analyzer.domain.run import RunSpec
+from ux_analyzer.ports.artifacts import (
+    BundleManifest,
+    RedactionPolicy,
+    RunBundleWriter,
+)
+from ux_analyzer.ports.models import StructuredModelClient
+from ux_analyzer.ports.observation import (
+    ObservationCapture,
+    ObservationProvider,
+    ObservationSessionConfig,
+    PlatformAction,
+    PlatformActionResult,
+    SessionHandle,
+    TestAccountId,
+    ViewportSize,
+)
+from ux_analyzer.providers.attention_policy import ObservationSelection
+from ux_analyzer.providers.cognitive import StructuredCognitiveAgent
+from ux_analyzer.providers.prominence import HeuristicProminenceProvider
+from ux_analyzer.providers.scent import (
+    StructuredCoarseScentEvaluator,
+    StructuredFullScentEvaluator,
+)
+from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
 app = typer.Typer(add_completion=False)
+fixture_app = typer.Typer(add_completion=False)
+app.add_typer(fixture_app, name="fixture")
+
+_MODEL_CALLS_BY_POLICY = {
+    ExperimentPolicy.FULL_LIST.value: 1,
+    ExperimentPolicy.PROMINENCE_RANKED_LIST.value: 1,
+    ExperimentPolicy.PROGRESSIVE_PROMINENCE.value: 1,
+    ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT.value: 3,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedMatrix:
+    loaded: LoadedProject
+    definition: ExperimentDefinition
+    specs: tuple[RunSpec, ...]
 
 
 @app.callback()
@@ -16,3 +92,602 @@ def main() -> None:
 def version() -> None:
     """Print package version."""
     typer.echo(f"uxa {__version__}")
+
+
+@app.command()
+def validate(
+    project: Path,
+    check_env: bool = typer.Option(
+        False,
+        "--check-env",
+        help="Check required model environment names without printing values.",
+    ),
+) -> None:
+    """Validate one benchmark project configuration."""
+    loaded = _load_project_or_exit(project)
+    typer.echo(
+        f"valid project: {loaded.project.id} "
+        f"({len(loaded.project.scenarios)} scenarios, "
+        f"{len(loaded.project.personas)} personas, "
+        f"{len(loaded.project.experiments)} experiments)"
+    )
+    typer.echo(f"config digest: {loaded.config_digest}")
+    if check_env:
+        _model_settings_or_exit()
+
+
+@fixture_app.command("serve")
+def fixture_serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+) -> None:
+    """Serve bundled controlled fixture application."""
+    import uvicorn
+
+    uvicorn.run("fixture_app.app:app", host=host, port=port)
+
+
+@app.command()
+def run(
+    project: Path,
+    experiment: str = typer.Option("core-pair", "--experiment"),
+    output: Path = typer.Option(Path(".uxa-output"), "--output"),
+    workers: int = typer.Option(1, "--workers"),
+    run_count: int | None = typer.Option(None, "--run-count"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    check_env: bool = typer.Option(False, "--check-env"),
+    fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
+) -> None:
+    """Expand and execute one benchmark experiment."""
+    _run_experiment_command(
+        project=project,
+        experiment_id=experiment,
+        output=output,
+        workers=workers,
+        run_count=run_count,
+        policies=(),
+        dry_run=dry_run,
+        check_env=check_env,
+        fixture_origin=fixture_origin,
+    )
+
+
+@app.command()
+def ablate(
+    project: Path,
+    experiment: str = typer.Option("ablations", "--experiment"),
+    output: Path = typer.Option(Path(".uxa-output"), "--output"),
+    workers: int = typer.Option(1, "--workers"),
+    run_count: int | None = typer.Option(None, "--run-count"),
+    policy: list[str] = typer.Option([], "--policy"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    check_env: bool = typer.Option(False, "--check-env"),
+    fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
+) -> None:
+    """Execute selected attention policy ablations."""
+    _run_experiment_command(
+        project=project,
+        experiment_id=experiment,
+        output=output,
+        workers=workers,
+        run_count=run_count,
+        policies=tuple(policy),
+        dry_run=dry_run,
+        check_env=check_env,
+        fixture_origin=fixture_origin,
+    )
+
+
+@app.command()
+def report(
+    bundle_root: Path,
+    output: Path = typer.Option(Path("report.html"), "--output"),
+) -> None:
+    """Regenerate static report from finalized run bundles."""
+    try:
+        rendered = render_experiment_report(bundle_root, output)
+    except (FileNotFoundError, OSError, ValueError) as error:
+        _exit_with_error(f"report failed: {error}")
+    typer.echo(f"report generated: {rendered}")
+
+
+@app.command("inspect-run")
+def inspect_run(run_path: Path) -> None:
+    """Print terminal outcome and artifact paths for one run bundle."""
+    if not run_path.is_dir():
+        _exit_with_error(f"run bundle does not exist: {run_path}")
+    manifest = _read_json_or_exit(run_path / "manifest.json")
+    result = _read_json_or_exit(run_path / "result.json", required=False)
+    events = _read_events(run_path / "timeline.jsonl")
+    run_id = _text(manifest.get("run_id"), run_path.name)
+    outcome = _outcome(result, events)
+    verification = _mapping(result.get("verification"))
+    if not verification:
+        verification = _last_mapping(events, "verification-recorded", "result")
+    artifacts = _artifact_paths(run_path)
+    typer.echo(f"run: {run_id}")
+    typer.echo(f"outcome: {outcome}")
+    typer.echo(f"verified: {bool(verification.get('verified', False))}")
+    typer.echo(f"claimed: {bool(result.get('agent_claimed_success', False))}")
+    typer.echo("artifacts:")
+    for artifact in artifacts:
+        typer.echo(f"- {artifact}")
+
+
+def _run_experiment_command(
+    *,
+    project: Path,
+    experiment_id: str,
+    output: Path,
+    workers: int,
+    run_count: int | None,
+    policies: Sequence[str],
+    dry_run: bool,
+    check_env: bool,
+    fixture_origin: str,
+) -> None:
+    if workers <= 0:
+        _exit_with_error("workers must be greater than zero")
+    matrix = _resolve_matrix_or_exit(
+        project,
+        experiment_id,
+        run_count=run_count,
+        policies=policies,
+    )
+    settings: OpenAICompatibleSettings | None = None
+    if check_env or not dry_run:
+        settings = _model_settings_or_exit()
+    _print_matrix(matrix, workers=workers)
+    if dry_run:
+        return
+    if settings is None:
+        _exit_with_error("model settings are required for execution")
+    try:
+        result = asyncio.run(
+            _execute_matrix(
+                matrix,
+                output=output,
+                workers=workers,
+                fixture_origin=fixture_origin,
+                settings=_settings_with_fixture_redaction(settings, matrix.loaded),
+            )
+        )
+    except Exception as error:
+        _exit_with_error(f"run failed: {error}")
+    typer.echo(
+        f"completed runs: {len(result.results)}; failures: {len(result.failures)}"
+    )
+    if result.failures:
+        raise typer.Exit(1)
+
+
+def _resolve_matrix_or_exit(
+    project_path: Path,
+    experiment_id: str,
+    *,
+    run_count: int | None,
+    policies: Sequence[str],
+) -> _ResolvedMatrix:
+    loaded = _load_project_or_exit(project_path)
+    definition = next(
+        (item for item in loaded.project.experiments if item.id == experiment_id),
+        None,
+    )
+    if definition is None:
+        available = ", ".join(item.id for item in loaded.project.experiments)
+        _exit_with_error(
+            f"unknown experiment {experiment_id!r}; available experiments: {available}"
+        )
+    if run_count is not None:
+        if run_count <= 0:
+            _exit_with_error("run-count must be greater than zero")
+        definition = replace(definition, run_count=run_count, seeds=())
+    if policies:
+        selected: list[ExperimentPolicy] = []
+        for policy in policies:
+            try:
+                selected.append(ExperimentPolicy(policy))
+            except ValueError:
+                _exit_with_error(
+                    f"unsupported policy {policy!r}; choose one of: "
+                    + ", ".join(item.value for item in ExperimentPolicy)
+                )
+        definition = replace(definition, policies=tuple(selected))
+    try:
+        specs = expand_experiment(
+            ExperimentContext(
+                definition=definition,
+                project=loaded.project,
+                config_digest=loaded.config_digest,
+            )
+        )
+    except ValueError as error:
+        _exit_with_error(f"cannot expand experiment {experiment_id!r}: {error}")
+    return _ResolvedMatrix(loaded=loaded, definition=definition, specs=specs)
+
+
+def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
+    policy_names = tuple(policy.value for policy in matrix.definition.policies)
+    seeds = tuple(sorted({spec.seed for spec in matrix.specs}))
+    calls = sum(_MODEL_CALLS_BY_POLICY[spec.policy.value] for spec in matrix.specs)
+    cells = Counter(
+        (
+            spec.scenario.id,
+            spec.application_version.id,
+            spec.persona.id,
+            spec.policy.value,
+        )
+        for spec in matrix.specs
+    )
+    typer.echo(f"project: {matrix.loaded.project.id}")
+    typer.echo(f"experiment: {matrix.definition.id}")
+    typer.echo(f"policies: {', '.join(policy_names)}")
+    typer.echo(f"workers: {workers}")
+    typer.echo(f"seeds per cell: {len(seeds)}")
+    typer.echo(f"run specs: {len(matrix.specs)}")
+    typer.echo(f"estimated model calls: {calls}")
+    typer.echo("matrix:")
+    for (scenario, version, persona, policy), count in sorted(cells.items()):
+        typer.echo(f"- {scenario}/{version}/{persona}/{policy}: {count} runs")
+
+
+def _model_settings_or_exit() -> OpenAICompatibleSettings:
+    try:
+        settings = OpenAICompatibleSettings.from_env()
+    except ModelConfigurationError as error:
+        typer.echo(f"model environment error: {error}")
+        raise typer.Exit(1) from error
+    typer.echo(
+        "model environment: configured "
+        f"(endpoint origin: {settings.endpoint_origin}; "
+        "API key present; scent and cognitive models configured)"
+    )
+    return settings
+
+
+def _settings_with_fixture_redaction(
+    settings: OpenAICompatibleSettings, loaded: LoadedProject
+) -> OpenAICompatibleSettings:
+    values = tuple(
+        scenario.fixture_inputs.values[key]
+        for scenario in loaded.project.scenarios
+        for key in sorted(scenario.fixture_inputs.sensitive_keys)
+    )
+    return replace(settings, redaction_values=values)
+
+
+def _load_project_or_exit(path: Path) -> LoadedProject:
+    try:
+        return load_project(path)
+    except (ProjectConfigError, OSError) as error:
+        _exit_with_error(f"validation error: {error}")
+
+
+def _exit_with_error(message: str) -> NoReturn:
+    typer.echo(message)
+    raise typer.Exit(1)
+
+
+def _read_json_or_exit(path: Path, *, required: bool = True) -> dict[str, Any]:
+    if not path.is_file():
+        if required:
+            _exit_with_error(f"required run artifact missing: {path}")
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        _exit_with_error(f"invalid JSON artifact {path}: {error}")
+    if not isinstance(value, dict):
+        _exit_with_error(f"JSON artifact must contain object: {path}")
+    return cast(dict[str, Any], value)
+
+
+def _read_events(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    events: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(cast(dict[str, Any], value))
+    return events
+
+
+def _outcome(result: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> str:
+    result_outcome = _mapping(result.get("outcome"))
+    if result_outcome.get("kind"):
+        return _text(result_outcome["kind"])
+    for event in reversed(events):
+        if event.get("kind") == "run-terminated":
+            outcome = _mapping(event.get("outcome"))
+            if outcome.get("kind"):
+                return _text(outcome["kind"])
+    return "unknown"
+
+
+def _last_mapping(
+    events: Sequence[Mapping[str, Any]], event_kind: str, field: str
+) -> dict[str, Any]:
+    for event in reversed(events):
+        if event.get("kind") == event_kind:
+            return _mapping(event.get(field))
+    return {}
+
+
+def _artifact_paths(run_path: Path) -> tuple[str, ...]:
+    checksums = run_path / "checksums.sha256"
+    if checksums.is_file():
+        paths: list[str] = []
+        for line in checksums.read_text(encoding="utf-8").splitlines():
+            if "  " in line:
+                _, path = line.split("  ", maxsplit=1)
+                if path.startswith("artifacts/"):
+                    paths.append(path)
+        return tuple(paths)
+    artifacts = run_path / "artifacts"
+    if not artifacts.is_dir():
+        return ()
+    return tuple(
+        path.relative_to(run_path).as_posix()
+        for path in sorted(artifacts.rglob("*"))
+        if path.is_file()
+    )
+
+
+class _FixtureObservationProvider:
+    """Add deterministic extraction and fixture reset around web sessions."""
+
+    id = "playwright-web"
+    platform: Literal["web"] = "web"
+    version = "fixture-web-v1"
+
+    def __init__(
+        self,
+        adapter: PlaywrightSessionAdapter,
+        fixture_origin: str,
+        fixture_inputs: Mapping[str, str],
+    ) -> None:
+        self._adapter = adapter
+        self._fixture_origin = fixture_origin.rstrip("/")
+        self._fixture_inputs = dict(fixture_inputs)
+
+    async def start_session(self, config: ObservationSessionConfig) -> SessionHandle:
+        return await self._adapter.start_session(config)
+
+    async def capture(self, session: SessionHandle) -> ObservationCapture:
+        capture = await self._adapter.capture(session)
+        snapshot = await capture_snapshot(
+            self._adapter.page_for_testing(session), capture.viewport_id
+        )
+        return replace(capture, snapshot=snapshot)
+
+    async def execute(
+        self, session: SessionHandle, action: PlatformAction
+    ) -> PlatformActionResult:
+        return await self._adapter.execute(session, action)
+
+    async def reset(self, session: SessionHandle) -> None:
+        await self._adapter.reset(session)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{self._fixture_origin}/__control/reset",
+                json={"session_id": session.session_id, "inputs": self._fixture_inputs},
+            )
+            response.raise_for_status()
+
+    async def end_session(self, session: SessionHandle) -> None:
+        await self._adapter.end_session(session)
+
+
+class _AttentionPolicyAdapter:
+    """Normalize unrestricted list policy output to bounded domain observations."""
+
+    def __init__(self, policy: object) -> None:
+        self._policy = policy
+
+    def next_observation(
+        self,
+        state: object,
+        snapshot: ViewportSnapshot,
+        scores: Sequence[object],
+        coarse_scent: object,
+        rng: Any,
+    ) -> ObservationSelection:
+        method = getattr(self._policy, "next_observation")
+        selected = method(state, snapshot, scores, coarse_scent, rng)
+        observation = getattr(selected, "observation", None)
+        if isinstance(observation, ProgressiveObservation):
+            return cast(ObservationSelection, selected)
+        selected_ids = tuple(
+            element_id
+            for element_id in getattr(selected, "selected_ids", ())
+            if element_id not in getattr(state, "noticed_ids", ())
+        )[:3]
+        if not selected_ids:
+            raise ValueError("no unobserved visible elements remain")
+        progressive = ProgressiveObservation.from_snapshot(
+            snapshot, newly_revealed_ids=selected_ids
+        )
+        return ObservationSelection(
+            observation=progressive,
+            region_id=None,
+            element_probabilities={},
+            region_probabilities={None: 1.0},
+            selection_mode=str(getattr(selected, "selection_mode", "list")),
+        )
+
+
+class _BundleFactory:
+    def __init__(
+        self,
+        output: Path,
+        settings: OpenAICompatibleSettings,
+    ) -> None:
+        self._output = output
+        self._settings = settings
+
+    def start(self, spec: RunSpec) -> RunBundleWriter:
+        manifest = BundleManifest.from_run_spec(
+            spec,
+            endpoint_origin=self._settings.endpoint_origin,
+            model_ids={
+                "scent": self._settings.scent_model,
+                "cognitive": self._settings.cognitive_model,
+            },
+            prompt_versions={
+                "coarse-scent": "scent-coarse-v1",
+                "full-scent": "scent-full-v1",
+                "cognitive": "cognitive-v1",
+            },
+            provider_versions={
+                "observation": "fixture-web-v1",
+                "models": "openai-compatible-v1",
+            },
+        )
+        return FilesystemRunBundleWriter.start(
+            self._output,
+            manifest,
+            redaction=RedactionPolicy.from_fixture_inputs(spec.scenario.fixture_inputs),
+        )
+
+
+async def _execute_matrix(
+    matrix: _ResolvedMatrix,
+    *,
+    output: Path,
+    workers: int,
+    fixture_origin: str,
+    settings: OpenAICompatibleSettings,
+) -> ExperimentResult:
+    from playwright.async_api import async_playwright
+
+    origin = _fixture_origin(fixture_origin)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        client_http = httpx.AsyncClient(timeout=settings.timeout_seconds)
+        client = OpenAICompatibleStructuredClient(settings, http_client=client_http)
+        adapter = PlaywrightSessionAdapter(
+            browser=browser,
+            allowed_origins=BrowserAllowedOrigins.fixture_only([origin]),
+            trace_directory=output / "traces",
+        )
+        try:
+
+            def factory(spec: RunSpec) -> RunAgent:
+                return _build_agent(
+                    spec,
+                    adapter=adapter,
+                    client=client,
+                    output=output,
+                    fixture_origin=origin,
+                    settings=settings,
+                )
+
+            return await ExperimentRunner(factory).run(matrix.specs, workers=workers)
+        finally:
+            await adapter.close()
+            await client_http.aclose()
+            await browser.close()
+
+
+def _build_agent(
+    spec: RunSpec,
+    *,
+    adapter: PlaywrightSessionAdapter,
+    client: OpenAICompatibleStructuredClient,
+    output: Path,
+    fixture_origin: str,
+    settings: OpenAICompatibleSettings,
+) -> RunAgent:
+    provider = _FixtureObservationProvider(
+        adapter, fixture_origin, spec.scenario.fixture_inputs.values
+    )
+    policy = _AttentionPolicyAdapter(attention_policy_for(spec.policy))
+    scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
+    coarse = (
+        StructuredCoarseScentEvaluator(
+            cast(StructuredModelClient, client), model=settings.scent_model
+        )
+        if scent_enabled
+        else None
+    )
+    full = (
+        StructuredFullScentEvaluator(
+            cast(StructuredModelClient, client), model=settings.scent_model
+        )
+        if scent_enabled
+        else None
+    )
+    cognitive = StructuredCognitiveAgent(
+        cast(StructuredModelClient, client), model=settings.cognitive_model
+    )
+    verifier = WebVerifier(
+        spec.scenario.verifier,
+        fixture_inputs=spec.scenario.fixture_inputs,
+        fixture_control_origin=fixture_origin,
+        observation_provider=cast(ObservationProvider, provider),
+        snapshot_extractor=_snapshot_from_capture,
+    )
+    return RunAgent(
+        observation_provider=cast(ObservationProvider, provider),
+        prominence_provider=HeuristicProminenceProvider(),
+        attention_policy=policy,
+        cognitive_agent=cast(RunCognitiveAgent, cognitive),
+        verifier=verifier,
+        bundle_factory=_BundleFactory(output, settings),
+        session_config_factory=lambda current_spec: _session_config(
+            current_spec, output=output, fixture_origin=fixture_origin
+        ),
+        coarse_scent_evaluator=coarse,
+        full_scent_evaluator=full,
+    )
+
+
+def _session_config(
+    spec: RunSpec, *, output: Path, fixture_origin: str
+) -> ObservationSessionConfig:
+    page = (
+        ""
+        if spec.scenario.start_state == "dashboard"
+        else f"/{quote(spec.scenario.start_state)}"
+    )
+    version = spec.application_version.kind.value
+    return ObservationSessionConfig(
+        session_id=spec.run_id,
+        start_url=f"{fixture_origin}/app/{quote(spec.run_id)}/{version}{page}",
+        test_account_id=TestAccountId(f"test-{spec.run_id.removeprefix('run-')}"),
+        viewport=ViewportSize(width=1280, height=800),
+        trace_path=output / "traces" / f"{spec.run_id}.zip",
+    )
+
+
+def _snapshot_from_capture(capture: ObservationCapture) -> ViewportSnapshot:
+    if capture.snapshot is None:
+        raise RuntimeError("fixture capture has no normalized snapshot")
+    return capture.snapshot
+
+
+def _fixture_origin(value: str) -> str:
+    parsed = urlsplit(value.rstrip("/"))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("fixture origin must be an HTTP(S) origin")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("fixture origin must not contain credentials")
+    if parsed.path or parsed.query or parsed.fragment:
+        raise ValueError("fixture origin must not contain path or query")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return cast(dict[str, Any], value)
+
+
+def _text(value: object, default: str = "") -> str:
+    return default if value is None else str(value)

@@ -1,0 +1,32 @@
+id: enable-2fa
+name: Enable two-factor authentication
+application_version_ids:
+  - fixture-app-defective
+  - fixture-app-improved
+start_state: settings
+fixture_inputs:
+  totp_code:
+    value: "246810"
+    sensitive: true
+budget:
+  max_steps: 24
+  max_observations: 12
+  max_interactions: 10
+  timeout_seconds: 60
+verifier:
+  type: fixture-state
+  resource: security
+  field: two_factor_enabled
+  operator: truthy
+  expected_fixture_key: totp_code
+safeguards:
+  - fixture-only
+  - test-account-only
+  - no-outbound-communication
+eligible_persona_ids:
+  - first-time-nontechnical
+  - impatient
+expected_evidence:
+  - target-discovery
+  - hierarchy-depth
+  - verified-completion

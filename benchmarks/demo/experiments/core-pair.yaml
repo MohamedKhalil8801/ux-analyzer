@@ -1,0 +1,15 @@
+id: core-pair
+name: Core unrestricted versus progressive attention pair
+scenario_ids:
+  - invite-teammate
+  - enable-2fa
+application_version_ids:
+  - fixture-app-defective
+  - fixture-app-improved
+persona_ids:
+  - first-time-nontechnical
+  - impatient
+policies:
+  - full-list
+  - progressive-prominence-scent
+run_count: 10

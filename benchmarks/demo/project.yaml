@@ -1,0 +1,133 @@
+id: attention-guided-demo
+name: Attention-guided UI agent demo
+
+applications:
+  - id: fixture-app
+    name: Controlled SaaS fixture
+    versions:
+      - id: fixture-app-defective
+        kind: defective
+        label: Defective
+      - id: fixture-app-improved
+        kind: improved
+        label: Improved
+
+scenarios:
+  - id: invite-teammate
+    name: Invite teammate
+    goal: Invite teammate to workspace
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    start_state: dashboard
+    fixture_inputs:
+      invite_email:
+        value: demo-invite@example.test
+        sensitive: true
+      invite_role:
+        value: member
+        sensitive: false
+    budget:
+      max_steps: 24
+      max_observations: 12
+      max_interactions: 10
+      timeout_seconds: 60
+    verifier:
+      type: fixture-state
+      resource: workspace
+      field: invited_email
+      operator: equals
+      expected_fixture_key: invite_email
+    safeguards:
+      - fixture-only
+      - test-account-only
+      - no-outbound-communication
+    eligible_persona_ids:
+      - first-time-nontechnical
+      - impatient
+    expected_evidence:
+      - target-discovery
+      - information-scent
+      - verified-completion
+
+  - id: enable-2fa
+    name: Enable two-factor authentication
+    goal: Enable two-factor authentication
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    start_state: settings
+    fixture_inputs:
+      totp_code:
+        value: "246810"
+        sensitive: true
+    budget:
+      max_steps: 24
+      max_observations: 12
+      max_interactions: 10
+      timeout_seconds: 60
+    verifier:
+      type: fixture-state
+      resource: security
+      field: two_factor_enabled
+      operator: truthy
+      expected_fixture_key: totp_code
+    safeguards:
+      - fixture-only
+      - test-account-only
+      - no-outbound-communication
+    eligible_persona_ids:
+      - first-time-nontechnical
+      - impatient
+    expected_evidence:
+      - target-discovery
+      - hierarchy-depth
+      - verified-completion
+
+personas:
+  - id: first-time-nontechnical
+    name: First-time nontechnical user
+    working_memory_capacity: 4
+    initial_confidence: 0.55
+    initial_frustration: 0.10
+    abandonment_threshold: 0.72
+    attention_temperature: 1.15
+  - id: impatient
+    name: Impatient user
+    working_memory_capacity: 3
+    initial_confidence: 0.60
+    initial_frustration: 0.18
+    abandonment_threshold: 0.55
+    attention_temperature: 0.85
+
+experiments:
+  - id: core-pair
+    name: Core unrestricted versus progressive attention pair
+    scenario_ids:
+      - invite-teammate
+      - enable-2fa
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    persona_ids:
+      - first-time-nontechnical
+      - impatient
+    policies:
+      - full-list
+      - progressive-prominence-scent
+    run_count: 10
+  - id: ablations
+    name: Attention policy ablations
+    scenario_ids:
+      - invite-teammate
+      - enable-2fa
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    persona_ids:
+      - first-time-nontechnical
+      - impatient
+    policies:
+      - prominence-ranked-list
+      - progressive-prominence
+    run_count: 10

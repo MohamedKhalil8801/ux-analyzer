@@ -1,0 +1,7 @@
+id: impatient
+name: Impatient user
+working_memory_capacity: 3
+initial_confidence: 0.60
+initial_frustration: 0.18
+abandonment_threshold: 0.55
+attention_temperature: 0.85

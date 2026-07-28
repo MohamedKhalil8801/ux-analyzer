@@ -1,0 +1,35 @@
+id: invite-teammate
+name: Invite teammate
+application_version_ids:
+  - fixture-app-defective
+  - fixture-app-improved
+start_state: dashboard
+fixture_inputs:
+  invite_email:
+    value: demo-invite@example.test
+    sensitive: true
+  invite_role:
+    value: member
+    sensitive: false
+budget:
+  max_steps: 24
+  max_observations: 12
+  max_interactions: 10
+  timeout_seconds: 60
+verifier:
+  type: fixture-state
+  resource: workspace
+  field: invited_email
+  operator: equals
+  expected_fixture_key: invite_email
+safeguards:
+  - fixture-only
+  - test-account-only
+  - no-outbound-communication
+eligible_persona_ids:
+  - first-time-nontechnical
+  - impatient
+expected_evidence:
+  - target-discovery
+  - information-scent
+  - verified-completion

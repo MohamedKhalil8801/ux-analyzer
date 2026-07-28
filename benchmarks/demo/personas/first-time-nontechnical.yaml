@@ -1,0 +1,7 @@
+id: first-time-nontechnical
+name: First-time nontechnical user
+working_memory_capacity: 4
+initial_confidence: 0.55
+initial_frustration: 0.10
+abandonment_threshold: 0.72
+attention_temperature: 1.15
