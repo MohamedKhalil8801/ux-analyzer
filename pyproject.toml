@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ux-analyzer"
+version = "0.1.0"
+description = "Attention-guided UI agent benchmark proof of concept"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.112",
+    "httpx>=0.27",
+    "jinja2>=3.1",
+    "playwright>=1.46",
+    "pydantic>=2.8",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+uxa = "ux_analyzer.cli:app"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.390",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ux_analyzer"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.pyright]
+include = ["src/ux_analyzer"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
