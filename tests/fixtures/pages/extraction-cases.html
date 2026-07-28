@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Extraction cases</title>
+    <style>
+      :root { font-family: sans-serif; }
+      body { margin: 0; color: #17212b; background: #f5f7f9; }
+      header { position: sticky; top: 0; z-index: 20; padding: 12px; background: #ffffff; }
+      main { padding: 16px; }
+      .controls { display: grid; gap: 8px; max-width: 520px; padding: 16px; background: #ffffff; }
+      .tabs { display: flex; gap: 8px; }
+      .scroll-box { width: 230px; height: 74px; overflow: auto; border: 1px solid #68737d; }
+      .scroll-content { height: 220px; padding: 8px; }
+      .clipper { width: 120px; height: 22px; overflow: hidden; white-space: nowrap; }
+      .cards { display: grid; gap: 8px; margin-top: 12px; }
+      .card { padding: 12px; background: #ffffff; border: 1px solid #c5ccd3; }
+      .partial { position: absolute; top: 740px; left: 16px; height: 160px; padding: 12px; background: #dceef5; }
+      .below-fold { position: absolute; top: 1500px; left: 16px; padding: 12px; }
+      .sticky-target { margin-top: 10px; padding: 20px; background: #ffdca8; }
+      .covered { position: relative; height: 60px; }
+      .covered button { position: absolute; inset: 10px auto auto 10px; z-index: 1; }
+      .cover { position: absolute; inset: 0; z-index: 4; background: rgba(12, 28, 40, 0.82); }
+      .zero-size { width: 0; height: 0; overflow: hidden; }
+      .transparent { opacity: 0; }
+      .faint { opacity: 0.18; }
+      dialog { padding: 18px; }
+      .modal-stage { position: relative; height: 100px; margin-top: 16px; }
+      .modal-target { padding: 14px; background: #ffffff; }
+      .modal-cover { position: absolute; inset: 0; z-index: 4; background: rgba(12, 28, 40, 0.72); }
+      .modal-dialog { position: absolute; inset: 18px 24px; z-index: 5; padding: 18px; background: #ffffff; border: 1px solid #68737d; }
+    </style>
+  </head>
+  <body>
+    <header id="private-header" data-testid="header-test-id">
+      <nav aria-label="Primary navigation">
+        <a id="brand-link" href="/private-destination">Workspace</a>
+        <button type="button" aria-label="Open menu" data-testid="menu-test-id">☰</button>
+      </nav>
+    </header>
+    <main>
+      <section class="controls" aria-labelledby="controls-heading">
+        <h1 id="controls-heading">Workspace controls</h1>
+        <div class="tabs" role="tablist" aria-label="Views">
+          <button role="tab" aria-selected="true">Overview</button>
+          <button role="tab" hidden>Hidden tab</button>
+          <button role="tab" aria-hidden="true">Aria hidden tab</button>
+        </div>
+        <form aria-label="Invite form">
+          <label for="email-input">Email address</label>
+          <input id="email-input" data-testid="email-test-id" type="email" placeholder="name@example.test">
+          <label for="role-input">Role</label>
+          <select id="role-input">
+            <option>Member</option>
+          </select>
+          <button id="disabled-button" type="button" disabled>Disabled action</button>
+          <button id="submit-button" type="submit" onclick="sendPrivateRequest()">Send invitation</button>
+        </form>
+        <div role="menu" aria-label="Actions">
+          <button role="menuitem">Save</button>
+        </div>
+        <div class="clipper">Clipped text stays rendered</div>
+        <div class="scroll-box" aria-label="Scrollable panel">
+          <div class="scroll-content">
+            <button>Nested scroll action</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="cards" aria-label="Repeated cards">
+        <article class="card"><h2>First card</h2><a href="/private-card-one">Open first</a></article>
+        <article class="card"><h2>Second card</h2><a href="/private-card-two">Open second</a></article>
+      </section>
+
+      <section class="covered" aria-label="Occlusion case">
+        <button>Covered action</button>
+        <div class="cover" aria-hidden="true"></div>
+      </section>
+      <div class="sticky-target">Sticky overlay leaves this content partly visible.</div>
+      <section class="partial" aria-label="Partial viewport section">Partial viewport section</section>
+      <div class="below-fold">Below fold must not appear</div>
+
+      <div class="zero-size">Zero size must not appear</div>
+      <div class="transparent">Transparent must not appear</div>
+      <div class="faint">Faint text remains rendered</div>
+
+      <div class="modal-stage">
+        <div class="modal-target">Background behind dialog</div>
+        <div class="modal-cover" aria-hidden="true"></div>
+        <div role="dialog" aria-label="Blocking dialog" class="modal-dialog">
+          <h2>Blocking dialog</h2>
+          <button type="button">Close dialog</button>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
