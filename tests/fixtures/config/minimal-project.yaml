@@ -1,0 +1,72 @@
+id: minimal-project
+name: Minimal benchmark project
+
+applications:
+  - id: fixture-app
+    name: Fixture application
+    versions:
+      - id: fixture-app-defective
+        kind: defective
+        label: Defective
+      - id: fixture-app-improved
+        kind: improved
+        label: Improved
+
+scenarios:
+  - id: invite-teammate
+    name: Invite teammate
+    goal: Invite teammate to workspace
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    start_state: dashboard
+    fixture_inputs:
+      invite_email:
+        value: person@example.com
+        sensitive: true
+      invite_role:
+        value: member
+        sensitive: false
+    budget:
+      max_steps: 20
+      max_observations: 10
+      max_interactions: 8
+      timeout_seconds: 60
+    verifier:
+      type: fixture-state
+      resource: workspace
+      field: invited_email
+      operator: equals
+      expected_fixture_key: invite_email
+    safeguards:
+      - fixture-only
+    eligible_persona_ids:
+      - first-time-user
+    expected_evidence:
+      - target-discovery
+
+personas:
+  - id: first-time-user
+    name: First-time user
+    working_memory_capacity: 5
+    initial_confidence: 0.6
+    initial_frustration: 0.1
+    abandonment_threshold: 0.9
+    attention_temperature: 0.8
+
+experiments:
+  - id: smoke
+    name: Smoke experiment
+    scenario_ids:
+      - invite-teammate
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    persona_ids:
+      - first-time-user
+    policies:
+      - full-list
+    seeds:
+      - 11
+      - 12
+    run_count: 2
