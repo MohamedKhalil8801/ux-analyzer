@@ -35,6 +35,10 @@ packages = ["src/ux_analyzer"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: bundled fixture browser acceptance tests",
+    "live: opt-in OpenAI-compatible endpoint tests",
+]
 
 [tool.ruff]
 target-version = "py312"
