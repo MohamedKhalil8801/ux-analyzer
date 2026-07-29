@@ -90,7 +90,8 @@ def test_validate_reports_actionable_config_error(tmp_path: Path) -> None:
     assert "missing-version" in result.stdout
 
 
-def test_env_check_never_prints_secret_values(monkeypatch) -> None:
+def test_env_check_never_prints_secret_values(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
     secret = "super-secret-api-key"
     monkeypatch.setenv("UXA_LLM_API_KEY", secret)
     monkeypatch.delenv("UXA_LLM_BASE_URL", raising=False)
@@ -235,11 +236,13 @@ def test_production_agent_uses_project_and_persona_runtime_configuration(
     assert agent.state_update_config.abandonment_threshold == pytest.approx(
         spec.persona.abandonment_threshold
     )
+    assert agent.cognitive_agent.fixture_keys == tuple(
+        sorted(spec.scenario.fixture_inputs.values)
+    )
     assert agent.model_record_source is client
     assert agent.result_evaluator is not None
 
 
-def test_report_regenerates_from_finalized_bundles(tmp_path: Path) -> None:
 def test_session_config_uses_scenario_viewport(tmp_path: Path) -> None:
     loaded = load_project(DEMO_PROJECT)
     definition = next(
@@ -355,6 +358,7 @@ async def test_fixture_provider_resets_state_before_reload_and_deletes_on_end(
     ]
 
 
+def test_report_regenerates_from_finalized_bundles(tmp_path: Path) -> None:
     _write_run(tmp_path)
     output = tmp_path / "report.html"
 

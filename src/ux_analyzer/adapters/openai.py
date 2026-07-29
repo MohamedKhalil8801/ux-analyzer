@@ -15,10 +15,12 @@ import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TypeVar, cast
 from urllib.parse import urlsplit
 
 import httpx
+from dotenv import dotenv_values, load_dotenv
 from pydantic import BaseModel, ValidationError
 
 from ux_analyzer.ports.models import (
@@ -56,6 +58,22 @@ class ModelConfigurationError(ValueError):
 
 class ModelFailureError(RuntimeError):
     """Terminal model failure after classification and bounded retries."""
+
+
+def load_environment_file(
+    dotenv_path: Path | None = None,
+    *,
+    environ: dict[str, str] | None = None,
+) -> None:
+    """Load local dotenv values without overriding explicit environment values."""
+
+    path = dotenv_path or Path.cwd() / ".env"
+    if environ is None:
+        load_dotenv(dotenv_path=path, override=False)
+        return
+    for name, value in dotenv_values(path).items():
+        if value is not None:
+            environ.setdefault(name, value)
 
 
 def sanitize_for_log(value: object, *, secrets: Sequence[str] = ()) -> Any:
@@ -141,9 +159,18 @@ class OpenAICompatibleSettings:
 
     @classmethod
     def from_env(
-        cls, environ: Mapping[str, str] | None = None
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        dotenv_path: Path | None = None,
     ) -> OpenAICompatibleSettings:
-        values = environ if environ is not None else os.environ
+        if environ is None:
+            load_environment_file(dotenv_path)
+            values: Mapping[str, str] = os.environ
+        else:
+            merged_values = dict(environ)
+            load_environment_file(dotenv_path, environ=merged_values)
+            values = merged_values
         names = (
             "UXA_LLM_BASE_URL",
             "UXA_LLM_API_KEY",
@@ -425,6 +452,7 @@ class OpenAICompatibleStructuredClient:
                         last_reason,
                         None,
                         retry_policy,
+                        len(retries) + 1,
                     )
                 )
                 await self._sleep(retries[-1].delay_seconds)
@@ -452,8 +480,8 @@ class OpenAICompatibleStructuredClient:
                             attempts,
                             "rate-limit",
                             response.status_code,
-                        len(retries) + 1,
                             retry_policy,
+                            len(retries) + 1,
                         )
                     )
                     await self._sleep(retries[-1].delay_seconds)
@@ -470,6 +498,7 @@ class OpenAICompatibleStructuredClient:
                             "server-error",
                             response.status_code,
                             retry_policy,
+                            len(retries) + 1,
                         )
                     )
                     await self._sleep(retries[-1].delay_seconds)
@@ -481,7 +510,6 @@ class OpenAICompatibleStructuredClient:
 
             try:
                 parsed = _structured_content(response_payload)
-                            len(retries) + 1,
                 result = schema.model_validate(parsed)
             except (ValueError, TypeError, ValidationError):
                 last_reason = "invalid structured output"
@@ -494,11 +522,11 @@ class OpenAICompatibleStructuredClient:
                             "invalid-structured-output",
                             response.status_code,
                             retry_policy,
+                            len(retries) + 1,
                         )
                     )
                     await self._sleep(retries[-1].delay_seconds)
                     continue
-                            len(retries) + 1,
                 break
 
             record = self._record(
@@ -522,7 +550,6 @@ class OpenAICompatibleStructuredClient:
 
         request_payload = self._request_payload(
             schema, normalized_messages, model, role_value, mode
-                            len(retries) + 1,
         )
         self._record(
             role_value,
@@ -581,6 +608,7 @@ class OpenAICompatibleStructuredClient:
         reason: str,
         status_code: int | None,
         policy: RetryPolicy,
+        retry_number: int,
     ) -> RetryEvent:
         event = RetryEvent(
             role=role,
@@ -608,7 +636,6 @@ class OpenAICompatibleStructuredClient:
         request_payload: Mapping[str, object],
         response_payload: Mapping[str, object],
         token_usage: TokenUsage,
-        retry_number: int,
         retries: Sequence[RetryEvent],
     ) -> ModelCallRecord:
         record = ModelCallRecord(

@@ -20,6 +20,7 @@ from ux_analyzer.adapters.openai import (
     ModelConfigurationError,
     OpenAICompatibleSettings,
     OpenAICompatibleStructuredClient,
+    load_environment_file,
 )
 from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
 from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
@@ -99,6 +100,8 @@ class _ResolvedMatrix:
 @app.callback()
 def main() -> None:
     """Run UX analyzer commands."""
+
+    load_environment_file()
 
 
 @app.command()
@@ -499,6 +502,7 @@ class _FixtureObservationProvider:
                 json={"session_id": session.session_id, "inputs": self._fixture_inputs},
             )
             response.raise_for_status()
+        await self._adapter.reset(session)
 
     async def end_session(self, session: SessionHandle) -> None:
         try:
@@ -509,7 +513,6 @@ class _FixtureObservationProvider:
                     f"{self._fixture_origin}/__control/session/{quote(session.session_id, safe='')}"
                 )
                 response.raise_for_status()
-        await self._adapter.reset(session)
 
 
 class _AttentionPolicyAdapter:
@@ -570,10 +573,10 @@ class _BundleFactory:
         self._runtime = runtime
 
     def start(self, spec: RunSpec) -> RunBundleWriter:
+        scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
         model_manifests = [
             ProviderManifest(
                 provider_id="openai-compatible-structured",
-        scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
                 role="cognitive",
                 model_id=self._settings.cognitive_model,
                 endpoint_origin=self._settings.endpoint_origin,
@@ -624,10 +627,10 @@ class _BundleFactory:
                 "discovery_cost": self._runtime.discovery_cost.version,
                 "findings": self._runtime.findings.version,
                 "state_updates": self._runtime.state_updates.version,
+                "expectation": "disabled",
             },
             provider_manifests=tuple(model_manifests),
         )
-                "expectation": "disabled",
         return FilesystemRunBundleWriter.start(
             self._output,
             manifest,
