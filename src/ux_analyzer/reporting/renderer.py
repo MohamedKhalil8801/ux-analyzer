@@ -389,6 +389,10 @@ def _viewport(
         _mapping(snapshot.get("viewport")),
         _mapping(snapshot.get("viewport_size")),
         _mapping(event.get("viewport")),
+        {
+            "width": event.get("viewport_width"),
+            "height": event.get("viewport_height"),
+        },
     )
     for candidate in candidates:
         width = _number(candidate.get("width"), 0)
@@ -751,7 +755,10 @@ def _metric_row(name: object, value: object, source: object) -> dict[str, Any]:
 def _evidence(
     result: dict[str, Any], metrics: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    records = result.get("evidence", metrics.get("evidence"))
+    result_records = result.get("evidence")
+    records: object = metrics.get("evidence")
+    if isinstance(result_records, list | tuple):
+        records = cast(object, result_records)
     supported: list[dict[str, Any]] = []
     limitations: list[str] = []
     for item in _list_of_mappings(records):

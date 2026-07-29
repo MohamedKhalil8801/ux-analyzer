@@ -204,6 +204,12 @@ def test_evaluate_run_reports_metrics_and_preserves_cost_components() -> None:
     assert metrics.discovery_cost.total == pytest.approx(13.5)
     assert metrics.evidence
     assert metrics.metric("discovery-cost").evidence_ids
+    assert metrics.metric("target-discovery-rank").evidence_class is (
+        EvidenceClass.DETERMINISTIC_FACT
+    )
+    assert metrics.metric("target-prominence").evidence_class is (
+        EvidenceClass.DETERMINISTIC_FACT
+    )
 
 
 def test_aggregate_cell_provides_median_interval_and_reproducibility() -> None:

@@ -45,9 +45,9 @@ from ux_analyzer.ports.observation import (
     PlatformActionResult,
     SafetyBlocked,
     SessionHandle,
-    TestAccountId,
     ViewportSize,
 )
+from ux_analyzer.ports.observation import TestAccountId as AccountId
 from ux_analyzer.providers.attention_policy import ObservationSelection
 from ux_analyzer.providers.cognitive import CognitiveDecision
 from ux_analyzer.providers.prominence import ProminenceResult
@@ -89,7 +89,7 @@ class FakeObservationProvider:
             raise self.start_failure
         return SessionHandle(
             session_id=config.session_id,
-            test_account_id=TestAccountId("test-run"),
+            test_account_id=AccountId("test-run"),
             viewport=config.viewport,
             trace_path=config.trace_path,
             blocked_events=[],
@@ -290,6 +290,9 @@ def _snapshot(
     viewport_id: str = "viewport-1",
     element_id: str = "target",
     second_element_id: str | None = None,
+    *,
+    lineage_id: str | None = None,
+    second_lineage_id: str | None = None,
 ) -> ViewportSnapshot:
     elements = [
         ElementSnapshot(
@@ -300,6 +303,7 @@ def _snapshot(
             visibility_fraction=1,
             actionable=True,
             provider_id="fake-observer",
+            lineage_id=lineage_id,
             execution_reference=PrivateExecutionReference(
                 provider_id="fake-observer",
                 viewport_id=viewport_id,
@@ -317,6 +321,7 @@ def _snapshot(
                 visibility_fraction=1,
                 actionable=True,
                 provider_id="fake-observer",
+                lineage_id=second_lineage_id,
                 execution_reference=PrivateExecutionReference(
                     provider_id="fake-observer",
                     viewport_id=viewport_id,
@@ -380,7 +385,7 @@ def _config(spec: object, tmp_path: Path) -> ObservationSessionConfig:
     return ObservationSessionConfig(
         session_id="run-1",
         start_url="http://fixture.test/app/run-1/improved",
-        test_account_id=TestAccountId("test-run"),
+        test_account_id=AccountId("test-run"),
         viewport=ViewportSize(width=1024, height=768),
         trace_path=tmp_path / "trace.zip",
     )
@@ -438,8 +443,16 @@ async def test_verified_success_records_claim_separately_and_finalizes_after_ter
     assert result.outcome.kind == "verified-success"
     assert result.verification.verified
     assert result.agent_claimed_success is False
+    assert result.state.attention.confidence == pytest.approx(0.55)
     assert bundles.bundle.finalized
     assert bundles.bundle.events[-1].kind == "run-terminated"
+    viewport_event = next(
+        event
+        for event in bundles.bundle.events
+        if getattr(event, "kind", None) == "viewport-captured"
+    )
+    assert viewport_event.viewport_width == 1024
+    assert viewport_event.viewport_height == 768
     assert provider.ended == 1
 
 
@@ -619,6 +632,54 @@ async def test_scroll_back_wait_wrong_and_stale_actions_recapture_and_recover(
         event.get("kind") == "action-rejected"
         for event in bundles.bundle.events
         if isinstance(event, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_recapture_does_not_rediscover_unchanged_lineage(
+    tmp_path: Path,
+) -> None:
+    provider = FakeObservationProvider(
+        (
+            _snapshot(
+                "viewport-old",
+                "target-old",
+                lineage_id="lineage-target",
+            ),
+            _snapshot(
+                "viewport-new",
+                "target-new",
+                "fallback-new",
+                lineage_id="lineage-target",
+                second_lineage_id="lineage-fallback",
+            ),
+        )
+    )
+    cognitive = FakeCognitiveAgent(
+        (
+            CognitiveDecision(action={"kind": "wait"}, reason="Recapture."),
+            CognitiveDecision(
+                action={"kind": "abandon", "reason": "Done."}, reason="Done."
+            ),
+        )
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+    )
+
+    result = await agent.execute(_spec())
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [
+        observation.newly_revealed_elements[0].label
+        for observation in cognitive.observations
+    ] == ["Invite teammate", "Fallback"]
+    assert result.state.attention.noticed_ids == frozenset(
+        {"target-new", "fallback-new"}
     )
 
 

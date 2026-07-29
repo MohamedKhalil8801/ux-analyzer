@@ -7,6 +7,9 @@
     {% if version == "improved" %}
     <h1>Security</h1>
     <p class="muted">Keep account access protected.</p>
+    {% elif screen == "security" %}
+    <h1>Protection</h1>
+    <p class="muted">Review account access options.</p>
     {% else %}
     <h1>Account settings</h1>
     <p class="muted">Update workspace preferences.</p>
@@ -29,11 +32,12 @@
     <a class="selected" href="/app/{{ session_id }}/{{ version }}/settings">Security</a>
     <a href="/app/{{ session_id }}/{{ version }}/settings">Notifications</a>
     {% else %}
-    <a class="selected" href="/app/{{ session_id }}/{{ version }}/settings">General</a>
-    <a href="/app/{{ session_id }}/{{ version }}/settings/security">Protection</a>
+    <a {% if screen == "settings" %}class="selected"{% endif %} href="/app/{{ session_id }}/{{ version }}/settings">General</a>
+    <a {% if screen == "security" %}class="selected"{% endif %} href="/app/{{ session_id }}/{{ version }}/settings/security"><span aria-hidden="true">&#9671;</span> Protection</a>
     {% endif %}
   </aside>
 
+  {% if version == "improved" or screen == "security" %}
   <section class="surface settings-panel" aria-labelledby="two-factor-heading">
     {% if version == "improved" %}
     <p class="eyebrow">Security</p>
@@ -56,5 +60,12 @@
     </form>
     {% endif %}
   </section>
+  {% else %}
+  <section class="surface settings-panel" aria-labelledby="preferences-heading">
+    <p class="eyebrow">General</p>
+    <h2 id="preferences-heading">Workspace preferences</h2>
+    <p class="muted">Manage language, time zone, and account defaults.</p>
+  </section>
+  {% endif %}
 </div>
 {% endblock %}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,11 @@ from ux_analyzer.config.loader import load_project
 from ux_analyzer.domain.attention import AttentionState
 from ux_analyzer.domain.benchmark import Budget
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
+from ux_analyzer.ports.observation import (
+    SessionHandle,
+    ViewportSize,
+)
+from ux_analyzer.ports.observation import TestAccountId as AccountId
 from ux_analyzer.providers.full_list_policy import FullListPolicy
 
 DEMO_PROJECT = Path(__file__).parents[3] / "benchmarks" / "demo" / "project.yaml"
@@ -234,6 +240,121 @@ def test_production_agent_uses_project_and_persona_runtime_configuration(
 
 
 def test_report_regenerates_from_finalized_bundles(tmp_path: Path) -> None:
+def test_session_config_uses_scenario_viewport(tmp_path: Path) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    definition = next(
+        item for item in loaded.project.experiments if item.id == "core-pair"
+    )
+    spec = next(
+        iter(
+            expand_experiment(
+                ExperimentContext(definition, loaded.project, loaded.config_digest)
+            )
+        )
+    )
+    spec = replace(
+        spec,
+        scenario=replace(spec.scenario, viewport_width=900, viewport_height=700),
+    )
+
+    config = cli._session_config(
+        spec,
+        output=tmp_path,
+        fixture_origin="http://fixture.test",
+    )
+
+    assert config.viewport == ViewportSize(width=900, height=700)
+
+
+def test_full_list_bundle_manifest_omits_unused_scent_roles(tmp_path: Path) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    definition = next(
+        item for item in loaded.project.experiments if item.id == "core-pair"
+    )
+    spec = next(
+        item
+        for item in expand_experiment(
+            ExperimentContext(definition, loaded.project, loaded.config_digest)
+        )
+        if item.policy.value == "full-list"
+    )
+    settings = OpenAICompatibleSettings(
+        base_url="https://llm.example.test/v1",
+        api_key="secret",
+        scent_model="scent-model",
+        cognitive_model="cognitive-model",
+    )
+
+    writer = cli._BundleFactory(tmp_path, settings, loaded.runtime).start(spec)
+    manifest = json.loads((writer.staging_path / "manifest.json").read_text())
+    writer.abort("test complete")
+
+    assert manifest["model_ids"] == {"cognitive": "cognitive-model"}
+    assert manifest["prompt_versions"] == {"cognitive": "cognitive-v1"}
+    assert [item["role"] for item in manifest["provider_manifests"]] == ["cognitive"]
+
+
+@pytest.mark.asyncio
+async def test_fixture_provider_resets_state_before_reload_and_deletes_on_end(
+    monkeypatch, tmp_path: Path
+) -> None:
+    events: list[str] = []
+
+    class FakeAdapter:
+        async def reset(self, session: SessionHandle) -> None:
+            del session
+            events.append("browser-reset")
+
+        async def end_session(self, session: SessionHandle) -> None:
+            del session
+            events.append("browser-end")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+        async def post(self, url: str, json: object) -> FakeResponse:
+            del url, json
+            events.append("fixture-reset")
+            return FakeResponse()
+
+        async def delete(self, url: str) -> FakeResponse:
+            del url
+            events.append("fixture-delete")
+            return FakeResponse()
+
+    monkeypatch.setattr(cli.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    provider = cli._FixtureObservationProvider(
+        FakeAdapter(),  # type: ignore[arg-type]
+        "http://fixture.test",
+        {"totp_code": "246810"},
+    )
+    session = SessionHandle(
+        session_id="run-1",
+        test_account_id=AccountId("test-run-1"),
+        viewport=ViewportSize(900, 700),
+        trace_path=tmp_path / "trace.zip",
+        blocked_events=[],
+    )
+
+    await provider.reset(session)
+    await provider.end_session(session)
+
+    assert events == [
+        "fixture-reset",
+        "browser-reset",
+        "browser-end",
+        "fixture-delete",
+    ]
+
+
     _write_run(tmp_path)
     output = tmp_path / "report.html"
 

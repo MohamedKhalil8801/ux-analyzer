@@ -105,6 +105,24 @@ def _translate(
             ClickAction(element_id=element_id, bounds=_bounds(snapshot, element_id)),
             None,
         )
+    if kind == "type-fixture":
+        if not isinstance(element_id, str):
+            raise ValueError("fixture type action needs element ID")
+        fixture_key = getattr(action, "fixture_key", None)
+        if not isinstance(fixture_key, str):
+            raise ValueError("fixture type action needs fixture key")
+        values = _fixture_values(fixture_inputs)
+        if fixture_key not in values:
+            raise ValueError("typed value must resolve through scenario fixture")
+        return (
+            InteractWithElement(element_id=element_id),
+            TypeTextAction(
+                element_id=element_id,
+                text=values[fixture_key],
+                bounds=_bounds(snapshot, element_id),
+            ),
+            fixture_key,
+        )
     if kind == "scroll":
         direction_value = getattr(action, "direction", "down")
         if direction_value not in {"up", "down"}:

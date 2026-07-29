@@ -128,7 +128,11 @@ async def test_role_providers_keep_models_and_payloads_separate() -> None:
 
     coarse = StructuredCoarseScentEvaluator(client, model="scent-model")
     full = StructuredFullScentEvaluator(client, model="scent-model")
-    cognitive = StructuredCognitiveAgent(client, model="cognitive-model")
+    cognitive = StructuredCognitiveAgent(
+        client,
+        model="cognitive-model",
+        fixture_keys=("invite_email", "totp_code"),
+    )
 
     await coarse.evaluate("Find invite", snapshot)
     await full.evaluate("Find invite", _noticed_state(snapshot), snapshot)
@@ -163,6 +167,7 @@ async def test_role_providers_keep_models_and_payloads_separate() -> None:
 
     cognitive_payload = json.loads(client.calls[2][3])
     assert "unnoticed" not in client.calls[2][3]
+    assert cognitive_payload["fixture_keys"] == ["invite_email", "totp_code"]
     cognitive_text = client.calls[2][3].lower()
     for forbidden in (
         "data-testid",

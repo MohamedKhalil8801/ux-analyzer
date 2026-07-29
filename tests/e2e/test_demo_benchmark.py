@@ -20,6 +20,7 @@ from ux_analyzer.application.evaluation import (
     EvaluationMetric,
     EvaluationTarget,
     RunEvaluationInputs,
+    evaluate_experiment_results,
     evaluate_run,
 )
 from ux_analyzer.application.experiment import (
@@ -71,6 +72,7 @@ from ux_analyzer.providers.attention_policy import (
 )
 from ux_analyzer.providers.cognitive import CognitiveDecision
 from ux_analyzer.providers.finding_rules import FindingRuleSet
+from ux_analyzer.providers.full_list_policy import FullListPolicy
 from ux_analyzer.providers.prominence import HeuristicProminenceProvider
 from ux_analyzer.providers.scent import (
     StructuredCoarseScentEvaluator,
@@ -262,7 +264,11 @@ class _AcceptanceVerifier:
         action_kinds = [action.kind for action in self.provider.executed]
         has_typed_input = "type-text" in action_kinds
         click_count = action_kinds.count("click")
-        required_clicks = 2 if self.spec.scenario.id == "invite-teammate" else 1
+        defective = self.spec.application_version.kind.value == "defective"
+        if self.spec.scenario.id == "invite-teammate":
+            required_clicks = 3 if defective else 2
+        else:
+            required_clicks = 2 if defective else 1
         verified = has_typed_input and click_count >= required_clicks
         return VerificationResult(
             verified=verified,
@@ -326,27 +332,17 @@ class _ScriptedCognitiveAgent:
                 InteractWithElement(element_id=target.id),
                 "Visible goal action matches invite task.",
             )
-        menu = choose("Open account menu") or choose("NK")
-        if menu is not None:
-            return _ScriptedDecision(
-                CognitiveDecision.model_validate(
-                    {
-                        "action": {"kind": "interact", "element_id": menu.id},
-                        "reason": "Open account navigation.",
-                    }
-                ),
-                "Open account navigation.",
-            )
         members = choose("Members")
         if members is not None:
             return _ScriptedDecision(
-                CognitiveDecision.model_validate(
-                    {
-                        "action": {"kind": "interact", "element_id": members.id},
-                        "reason": "Open team management.",
-                    }
-                ),
+                InteractWithElement(element_id=members.id),
                 "Open team management.",
+            )
+        menu = choose("Open account menu") or choose("NK")
+        if menu is not None:
+            return _ScriptedDecision(
+                InteractWithElement(element_id=menu.id),
+                "Open account navigation.",
             )
         email = next(
             (element for element in actionable if element.label == "Email address"),
@@ -463,6 +459,7 @@ def _recorded_snapshot(
                 viewport_id=snapshot_id,
                 token=f"token-{snapshot_id}-{index}",
             ),
+            lineage_id=f"recorded:{role}:{label}",
         )
         for index, (label, role, actionable) in enumerate(elements)
     )
@@ -497,7 +494,15 @@ async def _capture_fixture_snapshots() -> dict[
                 assert 'aria-label="Invite teammate"' in dashboard.text
             dashboard = _recorded_snapshot(
                 f"recorded-{version}-dashboard",
-                (("NK", "button", True), ("Invite teammate", "link", True)),
+                (
+                    (("NK", "button", True),)
+                    if version == "defective"
+                    else (("Invite teammate", "link", True),)
+                ),
+            )
+            menu = _recorded_snapshot(
+                f"recorded-{version}-menu",
+                (("NK", "button", True), ("Members", "link", True)),
             )
             team = _recorded_snapshot(
                 f"recorded-{version}-team",
@@ -508,9 +513,7 @@ async def _capture_fixture_snapshots() -> dict[
                 ),
             )
             captured[("invite-teammate", version)] = (
-                (dashboard, dashboard, team)
-                if version == "defective"
-                else (dashboard, team)
+                (dashboard, menu, team) if version == "defective" else (dashboard, team)
             )
 
             twofa_session = f"capture-twofa-{version}"
@@ -522,6 +525,12 @@ async def _capture_fixture_snapshots() -> dict[
             assert settings.status_code == 200
             if version == "defective":
                 assert "Protection" in settings.text
+                assert "Verification code" not in settings.text
+                security = await client.get(
+                    f"/app/{twofa_session}/{version}/settings/security"
+                )
+                assert security.status_code == 200
+                assert "Verification code" in security.text
                 code_label, button_label = "Verification code", "Enable protection"
             else:
                 assert "Two-factor authentication" in settings.text
@@ -529,15 +538,24 @@ async def _capture_fixture_snapshots() -> dict[
                     "Setup code",
                     "Enable two-factor authentication",
                 )
-            captured[("enable-2fa", version)] = (
-                _recorded_snapshot(
-                    f"recorded-{version}-settings",
-                    (
-                        (code_label, "input", True),
-                        (button_label, "button", True),
-                        ("Security status", "text", False),
-                    ),
+            form = _recorded_snapshot(
+                f"recorded-{version}-security",
+                (
+                    (code_label, "input", True),
+                    (button_label, "button", True),
+                    ("Security status", "text", False),
                 ),
+            )
+            captured[("enable-2fa", version)] = (
+                (
+                    _recorded_snapshot(
+                        "recorded-defective-settings",
+                        (("Protection", "link", True),),
+                    ),
+                    form,
+                )
+                if version == "defective"
+                else (form,)
             )
     return captured
 
@@ -620,6 +638,34 @@ def _target_for(result: object, scenario_id: str) -> EvaluationTarget:
     return EvaluationTarget(selected)
 
 
+def _evaluate_acceptance_result(result: object, spec: RunSpec):
+    target = _target_for(result, spec.scenario.id)
+    target_snapshot = next(
+        snapshot
+        for snapshot in reversed(result.state.snapshots)
+        if target.element_id in {element.id for element in snapshot.elements}
+    )
+    prominence = HeuristicProminenceProvider().score(target_snapshot)
+    target_score = next(
+        score for score in prominence if score.element_id == target.element_id
+    )
+    defective = spec.application_version.kind.value == "defective"
+    inputs = RunEvaluationInputs(
+        target_prominence=target_score.normalized_probability,
+        scent_scores={target.element_id: 0.5},
+        target_below_fold=False,
+        ambiguous_target=(defective and spec.scenario.id == "invite-teammate"),
+        unexpected_hierarchy=(defective and spec.scenario.id == "enable-2fa"),
+        navigation_depth=2 if defective else 1,
+        feedback_observed=True,
+        uncertainty=0.8 if defective else 0.2,
+        model_dependent=True,
+    )
+    metrics = evaluate_run(result, target, inputs=inputs)
+    findings = FindingRuleSet.default().evaluate(metrics)
+    return replace(result, metrics=metrics, findings=findings)
+
+
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence(
@@ -627,6 +673,10 @@ async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence
 ) -> None:
     _, specs = _project_matrix()
     assert len(specs) == 16
+    assert {spec.policy for spec in specs} == {
+        ExperimentPolicy.FULL_LIST,
+        ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
+    }
     assert {
         (spec.scenario.id, spec.application_version.kind.value, spec.persona.id)
         for spec in specs
@@ -636,13 +686,6 @@ async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence
         for version in ("defective", "improved")
         for persona in ("first-time-nontechnical", "impatient")
     }
-
-    progressive_specs = tuple(
-        spec
-        for spec in specs
-        if spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
-    )
-    assert len(progressive_specs) == 8
 
     origin = "http://fixture.test"
     fixture_snapshots = await _capture_fixture_snapshots()
@@ -655,34 +698,57 @@ async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence
         )
         providers[spec.run_id] = provider
         verifier = _AcceptanceVerifier(provider, spec)
+        policy = (
+            FullListPolicy()
+            if spec.policy is ExperimentPolicy.FULL_LIST
+            else _DeterministicProgressivePolicy(
+                spec.scenario.id, spec.application_version.kind.value
+            )
+        )
+        scent_evaluators = (
+            {}
+            if spec.policy is ExperimentPolicy.FULL_LIST
+            else {
+                "coarse_scent_evaluator": StructuredCoarseScentEvaluator(
+                    client, model="scent-model"
+                ),
+                "full_scent_evaluator": StructuredFullScentEvaluator(
+                    client, model="scent-model"
+                ),
+            }
+        )
         return RunAgent(
             observation_provider=provider,
             prominence_provider=HeuristicProminenceProvider(),
-            attention_policy=_DeterministicProgressivePolicy(
-                spec.scenario.id, spec.application_version.kind.value
-            ),
+            attention_policy=policy,
             cognitive_agent=_ScriptedCognitiveAgent(client.endpoint_origin),
             verifier=verifier,
             bundle_factory=_BundleFactory(tmp_path, client.endpoint_origin),
             session_config_factory=lambda current_spec: _session_config(
                 current_spec, tmp_path, origin
             ),
-            coarse_scent_evaluator=StructuredCoarseScentEvaluator(
-                client, model="scent-model"
+            result_evaluator=lambda run_result: _evaluate_acceptance_result(
+                run_result, spec
             ),
-            full_scent_evaluator=StructuredFullScentEvaluator(
-                client, model="scent-model"
-            ),
+            **scent_evaluators,
         )
 
-    result = await ExperimentRunner(factory).run(progressive_specs, workers=1)
+    result = await ExperimentRunner(factory).run(specs, workers=1)
 
-    assert result.failures == ()
-    assert len(result.results) == 8
+    assert result.failures == (), [
+        (
+            failure.spec.scenario.id,
+            failure.spec.application_version.kind.value,
+            failure.spec.persona.id,
+            failure.spec.policy.value,
+            failure.message,
+        )
+        for failure in result.failures
+    ]
+    assert len(result.results) == 16
     assert len(client.requests) > 8
 
-    metrics_by_identity: dict[tuple[str, str, str], object] = {}
-    for spec, run_result in zip(progressive_specs, result.results, strict=True):
+    for spec, run_result in zip(specs, result.results, strict=True):
         assert run_result.outcome.kind == "verified-success", (
             f"{spec.scenario.id}/{spec.application_version.kind.value}/"
             f"{spec.persona.id}: {run_result.outcome.kind} "
@@ -712,18 +778,24 @@ async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence
             range(1, len(events) + 1)
         )
         assert run_result.state.provider_manifests
-        assert {manifest.role for manifest in run_result.state.provider_manifests} >= {
+        expected_roles = {
             "observation",
-            "coarse-scent",
-            "full-scent",
             "cognitive",
             "verification",
         }
+        if spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT:
+            expected_roles |= {"coarse-scent", "full-scent"}
+        assert {
+            manifest.role for manifest in run_result.state.provider_manifests
+        } >= expected_roles
 
         for event in run_result.state.events:
             if not isinstance(event, ObservationRecorded):
                 continue
-            assert 1 <= len(event.observation.newly_revealed_elements) <= 3
+            if spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT:
+                assert 1 <= len(event.observation.newly_revealed_elements) <= 3
+            else:
+                assert event.observation.newly_revealed_elements
             snapshot = next(
                 snapshot
                 for snapshot in run_result.state.snapshots
@@ -738,55 +810,22 @@ async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence
                 assert "selector" not in public
                 assert "destination_url" not in public
 
-        target = _target_for(run_result, spec.scenario.id)
-        target_snapshot = next(
-            snapshot
-            for snapshot in reversed(run_result.state.snapshots)
-            if target.element_id in {element.id for element in snapshot.elements}
-        )
-        prominence = HeuristicProminenceProvider().score(target_snapshot)
-        target_score = next(
-            score for score in prominence if score.element_id == target.element_id
-        )
-        assert target_score.feature_contributions
-        inputs = RunEvaluationInputs(
-            target_prominence=target_score.normalized_probability,
-            scent_scores={target.element_id: 0.5},
-            target_below_fold=False,
-            ambiguous_target=(
-                spec.application_version.kind.value == "defective"
-                and spec.scenario.id == "invite-teammate"
-            ),
-            unexpected_hierarchy=(
-                spec.application_version.kind.value == "defective"
-                and spec.scenario.id == "enable-2fa"
-            ),
-            navigation_depth=(
-                2
-                if spec.application_version.kind.value == "defective"
-                and spec.scenario.id == "invite-teammate"
-                else 1
-            ),
-            feedback_observed=True,
-            uncertainty=(
-                0.8 if spec.application_version.kind.value == "defective" else 0.2
-            ),
-            model_dependent=True,
-        )
-        metrics = evaluate_run(run_result, target, inputs=inputs)
-        findings = FindingRuleSet.default().evaluate(metrics)
+        metrics = run_result.metrics
+        assert metrics is not None
+        findings = run_result.findings
         assert metrics.metric(EvaluationMetric.VERIFIED_COMPLETION).value == 1
         assert all(
             finding.evidence_class is not EvidenceClass.UNSUPPORTED_HUMAN_CLAIM
             for finding in findings
         )
-        if inputs.ambiguous_target:
+        if metrics.ambiguous_target:
             assert any(
                 finding.category == "ambiguous-icon-label" for finding in findings
             )
-        metrics_by_identity[
-            (spec.scenario.id, spec.application_version.kind.value, spec.persona.id)
-        ] = metrics
+        if metrics.unexpected_hierarchy:
+            assert any(
+                finding.category == "unexpected-hierarchy" for finding in findings
+            )
 
         provider = providers[spec.run_id]
         assert provider.last_session is not None
@@ -795,10 +834,15 @@ async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence
         if spec.scenario.id == "enable-2fa":
             assert "type-text" in {action.kind for action in provider.executed}
 
-    for persona in ("first-time-nontechnical", "impatient"):
-        defective = metrics_by_identity[("invite-teammate", "defective", persona)]
-        improved = metrics_by_identity[("invite-teammate", "improved", persona)]
-        assert improved.discovery_cost.total < defective.discovery_cost.total
+    evaluation = evaluate_experiment_results(result.results)
+    assert len(evaluation.variant_comparisons) == 8
+    for comparison in evaluation.variant_comparisons:
+        assert comparison.gate.paired_seed_count == len(CI_SEEDS)
+        assert comparison.gate.discovery_cost_decreased
+        assert comparison.gate.wrong_action_burden_not_increased
+        assert comparison.gate.backtrack_burden_not_increased
+        assert comparison.gate.verified_completion_rate_not_regressed
+        assert comparison.gate.passed, comparison.gate.reasons
 
     forbidden_values = {
         "api-key": "ci-api-key",
@@ -807,7 +851,7 @@ async def test_demo_benchmark_runs_fixture_matrix_and_records_supported_evidence
     }
     for index, request in enumerate(client.requests, start=1):
         _assert_no_leaks(f"model-request-{index}", request, forbidden_values)
-    for spec, run_result in zip(progressive_specs, result.results, strict=True):
+    for spec, run_result in zip(specs, result.results, strict=True):
         for event in run_result.state.events:
             if isinstance(event, ObservationRecorded):
                 _assert_no_leaks(

@@ -135,3 +135,52 @@ async def test_authentication_failure_is_terminal_without_retry() -> None:
     assert calls == 1
     assert client.retry_events == ()
     await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_retry_backoff_restarts_for_each_logical_model_call() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls in {1, 3}:
+            return httpx.Response(429, json={"error": {"message": "slow down"}})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"scores": []})}}]},
+        )
+
+    settings = _settings(
+        retry_policy={
+            "max_attempts": 2,
+            "base_delay_seconds": 0.25,
+            "max_delay_seconds": 1.0,
+            "multiplier": 2.0,
+        }
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(settings, http_client=http_client)
+    delays: list[float] = []
+
+    async def record_sleep(delay_seconds: float) -> None:
+        delays.append(delay_seconds)
+
+    client._sleep = record_sleep  # type: ignore[method-assign]
+    messages = (ChatMessage(role="user", content="{}"),)
+
+    await client.complete(
+        CoarseScentResponse,
+        messages,
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+    await client.complete(
+        CoarseScentResponse,
+        messages,
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    assert delays == [0.25, 0.25]
+    await http_client.aclose()

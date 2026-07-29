@@ -54,18 +54,23 @@ One `RunAgent.execute` call performs:
 4. Capture and normalize current viewport.
 5. Score visible elements with heuristic prominence.
 6. Optionally call coarse scent provider.
-7. Sample bounded progressive observation using run seed.
+7. Sample bounded progressive observation using run seed, or preserve the complete
+   persona-safe list for unrestricted list policies.
 8. Call cognitive role with persona-visible observation and memory.
 9. Validate action against noticed/remembered/actionable/stale-snapshot rules.
 10. Resolve typed input through scenario fixture values, then execute platform action.
 11. Record result, apply deterministic state updates, and recapture after state change.
 12. Verify independently after state-changing actions and at terminal decision.
-13. Record terminal event, provider manifests, config digest, and artifact checksums.
-14. Finalize bundle atomically or leave crash marker on failure.
+13. Record terminal event, provider/model manifests, sanitized role call records,
+    config digest, and artifact checksums.
+14. Calculate per-run metrics/findings before publishing the immutable bundle.
+15. Finalize bundle atomically or leave crash marker and return no success result.
 
 The experiment runner expands stable `RunSpec` values and executes runs with
 bounded concurrency. Default worker count is one. Each run gets isolated agent
 state and fixture session; partial experiment results retain per-run failures.
+After execution, CLI aggregates cells, runs exact paired-seed directional gates,
+writes `experiment.json`, and renders `<output>/report.html` from persisted bundles.
 
 ## Current POC Choices
 
@@ -74,6 +79,8 @@ state and fixture session; partial experiment results retain per-run failures.
 - Prominence: `heuristic-prominence-v1`, inspectable feature contributions.
 - Attention: `progressive-attention-v1`, region-first seeded softmax sampling,
   one to three newly revealed elements.
+- Unrestricted baselines: `full-list` and `prominence-ranked-list` expose every
+  visible persona-safe element in one complete observation.
 - Scent: optional structured coarse and full roles for
   `progressive-prominence-scent`.
 - Cognitive action: structured model output limited to listed element IDs and

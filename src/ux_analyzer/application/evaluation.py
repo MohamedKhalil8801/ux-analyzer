@@ -503,8 +503,8 @@ def evaluate_run(
         record(
             EvaluationMetric.TARGET_DISCOVERY_RANK,
             float(target_rank),
-            estimated,
-            "Target first appeared in progressive observation order.",
+            deterministic,
+            "Target first appeared in recorded observation order.",
             event_ids,
         )
     record(
@@ -564,8 +564,8 @@ def evaluate_run(
         record(
             EvaluationMetric.TARGET_PROMINENCE,
             target_prominence,
-            estimated,
-            "Configured prominence evidence for target.",
+            deterministic,
+            "Recorded heuristic prominence evidence for target.",
         )
     if target_scent is not None:
         record(
@@ -1076,8 +1076,12 @@ def _standard_metric_values(run: RunMetrics) -> dict[str, tuple[float, EvidenceC
         EvaluationMetric.DISCOVERY_COST.value: (run.discovery_cost.total, estimated),
     }
     optional: tuple[tuple[EvaluationMetric, float | None, EvidenceClass], ...] = (
-        (EvaluationMetric.TARGET_DISCOVERY_RANK, run.target_discovery_rank, estimated),
-        (EvaluationMetric.TARGET_PROMINENCE, run.target_prominence, estimated),
+        (
+            EvaluationMetric.TARGET_DISCOVERY_RANK,
+            run.target_discovery_rank,
+            deterministic,
+        ),
+        (EvaluationMetric.TARGET_PROMINENCE, run.target_prominence, deterministic),
         (EvaluationMetric.TARGET_SCENT, run.target_scent, estimated),
         (
             EvaluationMetric.STRONGEST_COMPETING_SCENT,

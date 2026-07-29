@@ -35,6 +35,7 @@ class CognitiveElement(_RoleSchema):
 
 class CognitiveObservation(_RoleSchema):
     goal: str
+    fixture_keys: tuple[str, ...]
     newly_revealed_elements: tuple[CognitiveElement, ...]
     remembered_elements: tuple[CognitiveElement, ...]
     region_label: str | None = None
@@ -48,6 +49,12 @@ class InspectAction(_RoleSchema):
 class InteractAction(_RoleSchema):
     kind: Literal["interact"] = "interact"
     element_id: str
+
+
+class TypeFixtureAction(_RoleSchema):
+    kind: Literal["type-fixture"] = "type-fixture"
+    element_id: str
+    fixture_key: str
 
 
 class ScrollAction(_RoleSchema):
@@ -71,6 +78,7 @@ class AbandonAction(_RoleSchema):
 CognitiveAction = Annotated[
     InspectAction
     | InteractAction
+    | TypeFixtureAction
     | ScrollAction
     | WaitAction
     | BackAction
@@ -121,9 +129,19 @@ class StructuredCognitiveAgent:
     role = ModelRole.COGNITIVE
     prompt_version = "cognitive-v1"
 
-    def __init__(self, client: StructuredModelClient, *, model: str) -> None:
+    def __init__(
+        self,
+        client: StructuredModelClient,
+        *,
+        model: str,
+        fixture_keys: tuple[str, ...] = (),
+    ) -> None:
         self.client = client
         self.model = model
+        keys = tuple(fixture_keys)
+        if any(not key for key in keys) or len(keys) != len(set(keys)):
+            raise ValueError("fixture keys must be unique non-empty names")
+        self.fixture_keys = keys
 
     @property
     def manifest(self) -> ModelManifest:
@@ -139,6 +157,7 @@ class StructuredCognitiveAgent:
         )
         payload = CognitiveObservation(
             goal=goal,
+            fixture_keys=self.fixture_keys,
             newly_revealed_elements=tuple(
                 _element_payload(element, region_label)
                 for element in observation.newly_revealed_elements

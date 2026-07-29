@@ -17,6 +17,7 @@
 | `PersonaVisibleElement` | Safe projection of an element sent to persona/model logic. |
 | `AttentionState` | Noticed and inspected IDs, focus region, budgets, bounded memory, confidence, frustration, failed candidates, subgoal, and current viewport. |
 | `ProgressiveObservation` | One bounded public reveal with one to three new elements, remembered elements, and optional region context. |
+| `CompleteObservation` | One complete visible persona-safe list used only by `full-list` and `prominence-ranked-list`. |
 | `Finding` | Evidence-backed category/severity/reproducibility record. Unsupported human claims cannot become findings. |
 
 Relationship:
@@ -93,9 +94,11 @@ current viewport. Interactions additionally require actionable, non-disabled
 state and a remaining interaction budget. Typed input is not invented by the
 model: action validation resolves a fixture key through scenario inputs.
 
-Progressive observations reveal one to three new elements. All revealed IDs and
-optional region IDs must exist in the captured viewport. Coarse scent may guide
-pre-notice sampling. Full scent requires the element to be noticed first.
+Progressive observations reveal one to three new elements. Complete list policies
+preserve every visible persona-safe element, including lists larger than three.
+All revealed IDs and optional region IDs must exist in the captured viewport.
+Coarse scent may guide pre-notice sampling. Full scent requires the element to be
+noticed first.
 
 ## Run State Machine
 

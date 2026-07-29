@@ -39,6 +39,11 @@ prompt version, schema version, `ModelRole`, manifest, model call record, retry
 records, and usage record. The current `progressive-prominence-scent` policy
 uses all three. Other policies use cognitive calls without scent calls.
 
+Production creates one audit client per run, even when HTTP transport is shared.
+Each sanitized role call is appended to `timeline.jsonl` as
+`model-call-recorded`; role-specific prompt/schema manifests are stored in the
+bundle manifest and terminal run state.
+
 ## Forbidden Exposure
 
 No role receives selectors, test IDs, hidden labels, destination URLs, provider

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -65,9 +66,10 @@ async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionRe
     snapshots: list[ElementSnapshot] = []
     contrast: dict[str, float] = {}
     occlusion: dict[str, float] = {}
-    for raw_element in raw_elements:
+    lineage_ids = _lineage_ids(raw_elements, raw_regions)
+    for raw_element, lineage_id in zip(raw_elements, lineage_ids, strict=True):
         bounds = raw_element.bounds.to_domain()
-        element_id = f"element-{raw_element.ordinal}"
+        element_id = f"{viewport_id}-element-{raw_element.ordinal}"
         local_contrast = screenshot_local_contrast(
             screenshot,
             bounds,
@@ -89,7 +91,7 @@ async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionRe
                 actionable=raw_element.actionable,
                 disabled=raw_element.disabled,
                 region_id=(
-                    f"region-{raw_element.region_ordinals[0]}"
+                    f"{viewport_id}-region-{raw_element.region_ordinals[0]}"
                     if raw_element.region_ordinals
                     else None
                 ),
@@ -103,13 +105,16 @@ async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionRe
                 test_id=raw_element.test_id,
                 hidden_label=raw_element.hidden_label,
                 destination_url=raw_element.destination_url,
+                lineage_id=lineage_id,
                 local_contrast=local_contrast,
                 occlusion_fraction=occlusion_fraction,
             )
         )
         contrast[element_id] = local_contrast
         occlusion[element_id] = occlusion_fraction
-    regions, graph_edges = build_regions_and_edges(raw_regions, raw_elements, snapshots)
+    regions, graph_edges = build_regions_and_edges(
+        viewport_id, raw_regions, raw_elements, snapshots
+    )
     snapshot = ViewportSnapshot(
         id=viewport_id,
         elements=tuple(snapshots),
@@ -129,6 +134,43 @@ async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionRe
 def _execution_token(viewport_id: str, element: RawElementFact) -> str:
     material = f"{viewport_id}\0{element.ordinal}\0{element.selector}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _lineage_ids(
+    elements: tuple[RawElementFact, ...],
+    regions: tuple[RawRegionFact, ...],
+) -> tuple[str | None, ...]:
+    """Link semantically unchanged controls without selectors or public identity."""
+
+    region_by_ordinal = {region.ordinal: region for region in regions}
+    signatures: list[str] = []
+    for element in elements:
+        region_context = tuple(
+            f"{region_by_ordinal[ordinal].kind}:{region_by_ordinal[ordinal].label}"
+            for ordinal in element.region_ordinals
+            if ordinal in region_by_ordinal
+        )
+        signature = "\0".join(
+            (
+                "element-lineage-v1",
+                element.tag,
+                element.role,
+                element.label,
+                str(element.actionable),
+                str(element.disabled),
+                *region_context,
+            )
+        )
+        signatures.append(signature)
+    counts = Counter(signatures)
+    return tuple(
+        (
+            f"lineage-v1-{hashlib.sha256(signature.encode('utf-8')).hexdigest()}"
+            if counts[signature] == 1
+            else None
+        )
+        for signature in signatures
+    )
 
 
 def _domain_role(role: str, tag: str) -> ElementRole:

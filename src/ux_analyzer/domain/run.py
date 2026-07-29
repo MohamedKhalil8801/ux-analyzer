@@ -197,6 +197,15 @@ class RunStarted:
 class ViewportCaptured:
     kind: Literal["viewport-captured"] = "viewport-captured"
     snapshot: ViewportSnapshot = None  # type: ignore[assignment]
+    viewport_width: int | None = None
+    viewport_height: int | None = None
+
+    def __post_init__(self) -> None:
+        dimensions = (self.viewport_width, self.viewport_height)
+        if any(value is not None and value <= 0 for value in dimensions):
+            raise ValueError("viewport dimensions must be positive")
+        if (self.viewport_width is None) != (self.viewport_height is None):
+            raise ValueError("viewport dimensions must be recorded together")
 
 
 @dataclass(frozen=True, slots=True)

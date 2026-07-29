@@ -19,6 +19,7 @@ from ux_analyzer.application.state_updates import (
     apply_failure,
     apply_interaction_result,
     apply_observation,
+    reconcile_snapshot_state,
 )
 from ux_analyzer.domain.attention import Abandon, InteractWithElement
 from ux_analyzer.domain.findings import Finding
@@ -445,6 +446,7 @@ class RunAgent:
                     memory_policy=self.memory_policy,
                 )
             )
+            _sync_run_attention(context)
 
             if context.application_state.budgets.steps <= 0:
                 return _Execution(
@@ -516,6 +518,7 @@ class RunAgent:
                         memory_policy=self.memory_policy,
                     )
                 )
+                _sync_run_attention(context)
                 if context.application_state.abandoned:
                     return _Execution(
                         state=context.state,
@@ -563,6 +566,7 @@ class RunAgent:
                         memory_policy=self.memory_policy,
                     )
                 )
+                _sync_run_attention(context)
                 continue
 
             result = await self.observation_provider.execute(
@@ -589,6 +593,7 @@ class RunAgent:
                     memory_policy=self.memory_policy,
                 )
             )
+            _sync_run_attention(context)
             if context.application_state.abandoned:
                 return _Execution(
                     state=context.state,
@@ -626,14 +631,28 @@ class RunAgent:
             raise RuntimeError("capture requires active session")
         capture = await self.observation_provider.capture(session)
         snapshot = self.snapshot_extractor(capture)
+        previous_snapshot = context.state.current_snapshot
         screenshot = writer.write_artifact(f"{snapshot.id}.png", capture.screenshot)
         screenshot_checksum = _artifact_checksum(screenshot)
         artifact_checksums.append(screenshot_checksum)
         context.screenshot_artifacts.append(screenshot_checksum)
         snapshot = replace(snapshot, screenshot_artifact=screenshot.path)
+        if previous_snapshot is not None:
+            context.application_state = _require_application_state(
+                reconcile_snapshot_state(
+                    context.application_state,
+                    previous_snapshot,
+                    snapshot,
+                )
+            )
+            _sync_run_attention(context)
         context.state = _record(
             context.state,
-            ViewportCaptured(snapshot=snapshot),
+            ViewportCaptured(
+                snapshot=snapshot,
+                viewport_width=capture.viewport.width,
+                viewport_height=capture.viewport.height,
+            ),
             writer,
         )
 
@@ -803,6 +822,12 @@ def _require_application_state(state: object) -> ApplicationState:
     if not isinstance(state, ApplicationState):
         raise RuntimeError("application state transition returned invalid state")
     return state
+
+
+def _sync_run_attention(context: _RunContext) -> None:
+    context.state = replace(
+        context.state, attention=context.application_state.attention
+    )
 
 
 def _record(state: RunState, event: RunEvent, writer: RunBundleWriter) -> RunState:

@@ -160,6 +160,31 @@ async def settings(
     )
 
 
+@app.get("/app/{session_id}/{version}/settings/security", response_class=HTMLResponse)
+async def security_settings(
+    request: Request,
+    session_id: str,
+    version: str,
+    notice: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+) -> HTMLResponse:
+    checked_version = _check_version(version)
+    state = session_store.get_or_create(session_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="settings.html",
+        context=_page_context(
+            request=request,
+            session_id=session_id,
+            version=checked_version,
+            state=state,
+            screen="security",
+            notice=notice,
+            error=error,
+        ),
+    )
+
+
 @app.post("/app/{session_id}/{version}/settings/security/2fa")
 async def enable_two_factor(
     request: Request,
@@ -172,12 +197,12 @@ async def enable_two_factor(
     code = values.get("totp_code", "").strip()
     if code != state.fixture_inputs["totp_code"]:
         return RedirectResponse(
-            _settings_route(checked_version, session_id, error="invalid-code"),
+            _two_factor_route(checked_version, session_id, error="invalid-code"),
             status_code=303,
         )
     session_store.enable_two_factor(session_id)
     return RedirectResponse(
-        _settings_route(checked_version, session_id, notice="two-factor-enabled"),
+        _two_factor_route(checked_version, session_id, notice="two-factor-enabled"),
         status_code=303,
     )
 
@@ -218,6 +243,15 @@ def _settings_route(version: Version, session_id: str, **query: str) -> str:
     query_string = "&".join(f"{key}={value}" for key, value in query.items())
     suffix = f"?{query_string}" if query_string else ""
     return f"/app/{session_id}/{version}/settings{suffix}"
+
+
+def _two_factor_route(version: Version, session_id: str, **query: str) -> str:
+    route = _settings_route(version, session_id)
+    if version == "defective":
+        route = f"{route}/security"
+    query_string = "&".join(f"{key}={value}" for key, value in query.items())
+    suffix = f"?{query_string}" if query_string else ""
+    return f"{route}{suffix}"
 
 
 async def _request_values(request: Request) -> dict[str, str]:

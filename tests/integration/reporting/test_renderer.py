@@ -48,9 +48,10 @@ def _write_run(
         {
             "sequence": 1,
             "kind": "viewport-captured",
+            "viewport_width": 800,
+            "viewport_height": 600,
             "snapshot": {
                 "id": "viewport-1",
-                "viewport": {"width": 800, "height": 600},
                 "screenshot_artifact": "artifacts/screenshot.png",
                 "elements": [
                     {
@@ -163,6 +164,14 @@ def _write_run(
         {
             "run_id": run_id,
             "agent_claimed_success": True,
+            "evidence": {
+                "prominence": [],
+                "scent": [],
+                "selections": [],
+                "decisions": [],
+                "model_calls": [],
+                "screenshot_artifacts": [],
+            },
             "metrics": {
                 "scenario_id": "invite",
                 "application_version_id": version,
@@ -228,6 +237,7 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "Model manifests" in html
     assert "Model calls" in html
     assert "Limitations" in html
+    assert "Seeded discovery cost." in html
     assert 'data-viewport-width="800"' in html
     assert "secret-token" not in html
     assert "data-testid=secret" not in html

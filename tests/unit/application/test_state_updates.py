@@ -8,6 +8,7 @@ from ux_analyzer.application.state_updates import (
     apply_failure,
     apply_interaction_result,
     apply_observation,
+    reconcile_snapshot_state,
 )
 from ux_analyzer.domain.attention import (
     AttentionState,
@@ -217,3 +218,75 @@ def test_failure_clamps_confidence_and_frustration_at_bounds() -> None:
 
     assert updated.attention.confidence == 0.0
     assert updated.attention.frustration == 1.0
+
+
+def test_recapture_reconciles_attention_and_memory_through_safe_lineage() -> None:
+    previous = ViewportSnapshot(
+        id="viewport-old",
+        provider_id="fixture",
+        elements=(
+            ElementSnapshot(
+                id="target-old",
+                role="button",
+                label="Invite teammate",
+                bounds=BoundingBox(x=10, y=10, width=100, height=30),
+                visibility_fraction=1,
+                actionable=True,
+                provider_id="fixture",
+                lineage_id="lineage-target",
+            ),
+        ),
+    )
+    current = ViewportSnapshot(
+        id="viewport-new",
+        provider_id="fixture",
+        elements=(
+            ElementSnapshot(
+                id="target-new",
+                role="button",
+                label="Invite teammate",
+                bounds=BoundingBox(x=10, y=10, width=100, height=30),
+                visibility_fraction=1,
+                actionable=True,
+                provider_id="fixture",
+                lineage_id="lineage-target",
+            ),
+        ),
+    )
+    observed = apply_observation(
+        ApplicationState.from_attention(_attention()),
+        ProgressiveObservation.from_snapshot(
+            previous, newly_revealed_ids=("target-old",)
+        ),
+        snapshot=previous,
+    )
+    inspected = apply_interaction_result(
+        observed,
+        InspectElement(element_id="target-old"),
+        True,
+        snapshot=previous,
+    )
+    failed = apply_interaction_result(
+        inspected,
+        InteractWithElement(element_id="target-old"),
+        PlatformActionResult(
+            succeeded=False,
+            url="https://fixture.invalid/app",
+            duration_ms=1,
+            error="wrong target",
+        ),
+        snapshot=previous,
+    )
+
+    reconciled = reconcile_snapshot_state(failed, previous, current)
+
+    assert reconciled.attention.current_viewport_id == "viewport-new"
+    assert reconciled.attention.noticed_ids == frozenset({"target-new"})
+    assert reconciled.attention.inspected_ids == frozenset({"target-new"})
+    assert reconciled.attention.failed_candidates == frozenset({"target-new"})
+    assert reconciled.attention.remembered_ids == frozenset({"target-new"})
+    assert reconciled.attention.current_observation_ids == frozenset({"target-new"})
+    assert reconciled.memory.working[0].key == "target-new"
+    assert reconciled.memory.working[0].viewport_id == "viewport-new"
+    assert reconciled.memory.episodic[0].key == "target-new"
+    assert reconciled.memory.episodic[0].viewport_id == "viewport-new"

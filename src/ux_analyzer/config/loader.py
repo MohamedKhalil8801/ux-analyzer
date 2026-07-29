@@ -58,6 +58,7 @@ class RuntimeConfig:
     discovery_cost: DiscoveryCostConfig
     findings: FindingRuleConfig
     state_updates: StateUpdateConfig
+    expectation_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +156,7 @@ def _to_runtime(config: ProjectModel) -> RuntimeConfig:
             failure_confidence_delta=state_updates.failure_confidence_delta,
             failure_frustration_delta=state_updates.failure_frustration_delta,
         ),
+        expectation_enabled=config.providers.expectation.enabled,
     )
 
 
@@ -338,6 +340,8 @@ def _to_scenario(scenario: ScenarioModel) -> Scenario:
         safeguards=tuple(scenario.safeguards),
         eligible_persona_ids=tuple(scenario.eligible_persona_ids),
         expected_evidence=tuple(scenario.expected_evidence),
+        viewport_width=scenario.viewport.width,
+        viewport_height=scenario.viewport.height,
     )
 
 

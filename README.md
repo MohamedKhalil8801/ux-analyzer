@@ -50,6 +50,10 @@ Run core benchmark:
 uv run uxa run benchmarks/demo/project.yaml --experiment core-pair --output .uxa-output --workers 1
 ```
 
+Completed execution writes immutable run bundles, `.uxa-output/experiment.json`,
+and `.uxa-output/report.html`. Summary contains per-run metrics/findings,
+per-cell aggregates, and exact paired-seed directional gates.
+
 Run policy ablations:
 
 ```powershell
@@ -129,6 +133,11 @@ Supported verifiers:
 Personas contain `id`, `name`, positive `working_memory_capacity`, bounded
 `initial_confidence`, `initial_frustration`, and `abandonment_threshold`, plus
 positive `attention_temperature`.
+
+Root `providers` config versions prominence weights/temperature and progressive
+attention formula weights. Root `evaluation` config versions discovery-cost,
+finding-rule, and state-update formulas. Persona attention temperature and
+abandonment threshold override corresponding per-run policy values.
 
 Experiments contain `id`, `name`, `scenario_ids`, `application_version_ids`,
 `persona_ids`, `policies`, optional unique `seeds`, and positive `run_count`.

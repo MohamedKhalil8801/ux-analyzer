@@ -53,6 +53,7 @@ class RawElementFact:
 
 
 def build_regions_and_edges(
+    viewport_id: str,
     regions: Iterable[RawRegionFact],
     elements: Iterable[RawElementFact],
     snapshots: Iterable[ElementSnapshot],
@@ -65,7 +66,10 @@ def build_regions_and_edges(
         element.ordinal: snapshot
         for element, snapshot in zip(raw_elements, snapshots, strict=True)
     }
-    region_ids = {region.ordinal: f"region-{region.ordinal}" for region in raw_regions}
+    region_ids = {
+        region.ordinal: f"{viewport_id}-region-{region.ordinal}"
+        for region in raw_regions
+    }
     element_ids = {
         ordinal: snapshot.id for ordinal, snapshot in snapshot_by_ordinal.items()
     }

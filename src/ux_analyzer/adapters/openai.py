@@ -452,6 +452,7 @@ class OpenAICompatibleStructuredClient:
                             attempts,
                             "rate-limit",
                             response.status_code,
+                        len(retries) + 1,
                             retry_policy,
                         )
                     )
@@ -480,6 +481,7 @@ class OpenAICompatibleStructuredClient:
 
             try:
                 parsed = _structured_content(response_payload)
+                            len(retries) + 1,
                 result = schema.model_validate(parsed)
             except (ValueError, TypeError, ValidationError):
                 last_reason = "invalid structured output"
@@ -496,6 +498,7 @@ class OpenAICompatibleStructuredClient:
                     )
                     await self._sleep(retries[-1].delay_seconds)
                     continue
+                            len(retries) + 1,
                 break
 
             record = self._record(
@@ -519,6 +522,7 @@ class OpenAICompatibleStructuredClient:
 
         request_payload = self._request_payload(
             schema, normalized_messages, model, role_value, mode
+                            len(retries) + 1,
         )
         self._record(
             role_value,
@@ -584,7 +588,7 @@ class OpenAICompatibleStructuredClient:
             attempt=attempt,
             reason=reason,
             status_code=status_code,
-            delay_seconds=policy.delay_for_retry(len(self._retry_events) + 1),
+            delay_seconds=policy.delay_for_retry(retry_number),
         )
         self._retry_events.append(event)
         return event
@@ -604,6 +608,7 @@ class OpenAICompatibleStructuredClient:
         request_payload: Mapping[str, object],
         response_payload: Mapping[str, object],
         token_usage: TokenUsage,
+        retry_number: int,
         retries: Sequence[RetryEvent],
     ) -> ModelCallRecord:
         record = ModelCallRecord(

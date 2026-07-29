@@ -151,3 +151,55 @@ async def test_persona_projection_cannot_leak_private_dom_data(
         }
         for item in dumped
     )
+
+
+@pytest.mark.asyncio
+async def test_capture_scopes_element_and_region_ids_to_viewport(
+    extraction_page: Page,
+) -> None:
+    first = await capture(extraction_page, "viewport-first")
+    second = await capture(extraction_page, "viewport-second")
+
+    first_element_ids = {element.id for element in first.elements}
+    second_element_ids = {element.id for element in second.elements}
+    first_region_ids = {region.id for region in first.regions}
+    second_region_ids = {region.id for region in second.regions}
+
+    assert first_element_ids.isdisjoint(second_element_ids)
+    assert first_region_ids.isdisjoint(second_region_ids)
+    assert all(
+        element_id.startswith("viewport-first-") for element_id in first_element_ids
+    )
+    assert all(
+        region_id.startswith("viewport-second-") for region_id in second_region_ids
+    )
+
+
+@pytest.mark.asyncio
+async def test_capture_links_unchanged_elements_without_exposing_lineage(
+    extraction_page: Page,
+) -> None:
+    first = await capture(extraction_page, "viewport-lineage-first")
+    await extraction_page.eval_on_selector(
+        "#submit-button",
+        """node => {
+            node.id = 'changed-private-id';
+            node.setAttribute('data-testid', 'changed-private-test-id');
+        }""",
+    )
+    second = await capture(extraction_page, "viewport-lineage-second")
+
+    first_send = next(
+        element for element in first.elements if element.label == "Send invitation"
+    )
+    second_send = next(
+        element for element in second.elements if element.label == "Send invitation"
+    )
+
+    assert first_send.id != second_send.id
+    assert first_send.lineage_id
+    assert first_send.lineage_id == second_send.lineage_id
+    assert "lineage_id" not in first.persona_visible_elements()[0].model_dump()
+    assert len({element.lineage_id for element in first.elements}) == len(
+        first.elements
+    )

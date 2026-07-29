@@ -63,6 +63,11 @@ class BudgetModel(_ConfigModel):
     timeout_seconds: float = Field(gt=0)
 
 
+class ViewportModel(_ConfigModel):
+    width: int = Field(default=1280, gt=0)
+    height: int = Field(default=800, gt=0)
+
+
 class ScenarioModel(_ConfigModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -75,6 +80,7 @@ class ScenarioModel(_ConfigModel):
     safeguards: list[str] = Field(default_factory=list)
     eligible_persona_ids: list[str] = Field(min_length=1)
     expected_evidence: list[str] = Field(default_factory=list)
+    viewport: ViewportModel = Field(default_factory=ViewportModel)
 
 
 class PersonaModel(_ConfigModel):
@@ -120,9 +126,16 @@ class AttentionProviderModel(_ConfigModel):
     failure_penalty: float = Field(default=0.5, ge=0, le=1)
 
 
+class ExpectationProviderModel(_ConfigModel):
+    enabled: Literal[False] = False
+
+
 class ProvidersModel(_ConfigModel):
     prominence: ProminenceProviderModel = Field(default_factory=ProminenceProviderModel)
     attention: AttentionProviderModel = Field(default_factory=AttentionProviderModel)
+    expectation: ExpectationProviderModel = Field(
+        default_factory=ExpectationProviderModel
+    )
 
 
 class DiscoveryCostModel(_ConfigModel):

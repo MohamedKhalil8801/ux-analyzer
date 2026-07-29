@@ -101,6 +101,37 @@ def test_validate_type_action_resolves_fixture_key_and_rejects_invented_value() 
         )
 
 
+def test_validate_cognitive_fixture_type_action_resolves_only_configured_value() -> (
+    None
+):
+    snapshot = _snapshot()
+    fixtures = FixtureInputs(
+        values={"invite_email": "person@example.com"},
+        sensitive_keys=frozenset({"invite_email"}),
+    )
+    state = _state(snapshot).attention
+
+    validated = validate_action(
+        CognitiveDecision.model_validate(
+            {
+                "action": {
+                    "kind": "type-fixture",
+                    "element_id": "email",
+                    "fixture_key": "invite_email",
+                },
+                "reason": "Fill visible email input from scenario fixture.",
+            }
+        ),
+        state,
+        snapshot,
+        fixture_inputs=fixtures,
+    )
+
+    assert validated.platform_action.kind == "type-text"
+    assert validated.platform_action.text == "person@example.com"
+    assert validated.fixture_key == "invite_email"
+
+
 def test_validate_rejects_unremembered_unactionable_and_stale_targets() -> None:
     snapshot = _snapshot(actionable=False)
     state = _state(snapshot).attention

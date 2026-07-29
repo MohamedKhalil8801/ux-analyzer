@@ -239,6 +239,8 @@ class PlaywrightSessionAdapter:
                 )
             elif isinstance(action, TypeTextAction):
                 await self._click(managed.page, action.element_id, action.bounds)
+                await managed.page.keyboard.press("ControlOrMeta+A")
+                await managed.page.keyboard.press("Backspace")
                 await managed.page.keyboard.type(action.text)
             elif isinstance(action, ClearTextAction):
                 await self._click(managed.page, action.element_id, action.bounds)

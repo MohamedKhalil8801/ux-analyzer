@@ -143,7 +143,7 @@ class FindingRuleSet:
                 FindingRule(
                     FindingCategory.WEAK_TARGET_PROMINENCE,
                     FindingSeverity.MEDIUM,
-                    model,
+                    fact,
                     lambda item: (
                         item.target_prominence is not None
                         and item.target_prominence

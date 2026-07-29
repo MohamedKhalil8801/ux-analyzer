@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 import pytest
+from playwright.async_api import async_playwright
 
 from fixture_app.app import app
 
@@ -120,6 +121,39 @@ async def test_two_factor_completion_contract_matches_both_versions() -> None:
     assert states[0]["security"].keys() == states[1]["security"].keys()
     assert states[0]["completion"]["enable-2fa"] is True
     assert states[1]["completion"]["enable-2fa"] is True
+
+
+@pytest.mark.asyncio
+async def test_defective_two_factor_setup_requires_deeper_security_view_in_browser(
+    fixture_origin: str,
+) -> None:
+    session_id = "twofa-browser-depth"
+    async with httpx.AsyncClient(base_url=fixture_origin) as client:
+        reset = await client.post(
+            "/__control/reset",
+            json={"session_id": session_id, "inputs": {"totp_code": "654321"}},
+        )
+        assert reset.status_code == 200
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.goto(f"{fixture_origin}/app/{session_id}/defective/settings")
+            assert await page.get_by_label("Verification code").count() == 0
+            assert (
+                await page.get_by_role("button", name="Enable protection").count() == 0
+            )
+
+            await page.get_by_role("link", name="Protection").click()
+
+            assert page.url.endswith(f"/app/{session_id}/defective/settings/security")
+            assert await page.get_by_label("Verification code").count() == 1
+            assert (
+                await page.get_by_role("button", name="Enable protection").count() == 1
+            )
+        finally:
+            await browser.close()
 
 
 @pytest.mark.asyncio

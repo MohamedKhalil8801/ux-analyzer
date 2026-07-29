@@ -86,8 +86,10 @@ run-terminated
 
 The current application also records provider/application events such as
 `coarse-scent-recorded`, `full-scent-recorded`, `agent-claim`,
-`action-rejected`, and prominence records. The last lifecycle terminal event is
-`run-terminated`.
+`action-rejected`, `prominence-recorded`, `attention-selection-recorded`,
+`decision-recorded`, and `model-call-recorded`. Model call records contain
+sanitized request/response, retries, latency, attempts, and token usage. The last
+lifecycle terminal event is `run-terminated`.
 
 Typical terminal event fields include `outcome`, `verification`,
 `provider_manifests`, `configuration_digest`, and `artifact_checksums`.
@@ -95,9 +97,13 @@ Typical terminal event fields include `outcome`, `verification`,
 ## `result.json`
 
 Contains serialized `RunResult`, including run ID, terminal outcome,
-independent verification, agent claim, final state, and bundle path when
-available. JSON serialization converts domain dataclasses, enums, paths, bytes,
-and mappings at the storage boundary.
+independent verification, agent claim, final state, replay evidence, per-run
+metrics, findings, and bundle path when available. JSON serialization converts
+domain dataclasses, enums, paths, bytes, and mappings at the storage boundary.
+
+Experiment execution also writes `<output>/experiment.json` with per-run metrics,
+cell aggregates, paired variant comparisons, directional gates, findings, and
+partial failures. This file feeds the comparison/gate sections in the HTML report.
 
 ## `checksums.sha256`
 

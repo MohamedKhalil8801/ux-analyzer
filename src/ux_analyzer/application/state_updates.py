@@ -223,6 +223,36 @@ def apply_failure(
     return _build(state, next_attention, next_memory, next_abandoned, next_reason)
 
 
+def reconcile_snapshot_state(
+    state: StateLike,
+    previous_snapshot: ViewportSnapshot,
+    current_snapshot: ViewportSnapshot,
+) -> StateLike:
+    """Rebase current element state through one-to-one private lineage links."""
+
+    attention, memory, abandoned, reason = _parts(state)
+    id_map = _lineage_id_map(previous_snapshot, current_snapshot)
+    next_memory = MemoryState(
+        working=_remap_memory_entries(memory.working, id_map, current_snapshot.id),
+        episodic=_remap_memory_entries(memory.episodic, id_map, current_snapshot.id),
+    )
+    next_attention = replace(
+        attention,
+        noticed_ids=_remap_ids(attention.noticed_ids, id_map),
+        inspected_ids=_remap_ids(attention.inspected_ids, id_map),
+        failed_candidates=_remap_ids(attention.failed_candidates, id_map),
+        focus_region=None,
+        current_viewport_id=current_snapshot.id,
+        current_observation_ids=frozenset(
+            id_map[element_id]
+            for element_id in attention.current_observation_ids
+            if element_id in id_map
+        ),
+    )
+    next_attention = _sync_working_memory(next_attention, next_memory)
+    return _build(state, next_attention, next_memory, abandoned, reason)
+
+
 def should_abandon(
     state: AttentionState | ApplicationState,
     threshold: float,
@@ -275,6 +305,52 @@ def _sync_working_memory(
         for entry in memory.working[-attention.memory_capacity :]
     )
     return replace(attention, memory=remembered)
+
+
+def _lineage_id_map(
+    previous_snapshot: ViewportSnapshot,
+    current_snapshot: ViewportSnapshot,
+) -> dict[str, str]:
+    if previous_snapshot.provider_id != current_snapshot.provider_id:
+        return {}
+    previous_by_lineage: dict[str, list[str]] = {}
+    current_by_lineage: dict[str, list[str]] = {}
+    for element in previous_snapshot.elements:
+        if element.lineage_id:
+            previous_by_lineage.setdefault(element.lineage_id, []).append(element.id)
+    for element in current_snapshot.elements:
+        if element.lineage_id:
+            current_by_lineage.setdefault(element.lineage_id, []).append(element.id)
+    return {
+        previous_ids[0]: current_by_lineage[lineage_id][0]
+        for lineage_id, previous_ids in previous_by_lineage.items()
+        if len(previous_ids) == 1 and len(current_by_lineage.get(lineage_id, ())) == 1
+    }
+
+
+def _remap_ids(values: frozenset[str], id_map: dict[str, str]) -> frozenset[str]:
+    return frozenset(id_map.get(value, value) for value in values)
+
+
+def _remap_memory_entries(
+    entries: tuple[MemoryEntry, ...],
+    id_map: dict[str, str],
+    viewport_id: str,
+) -> tuple[MemoryEntry, ...]:
+    remapped: dict[str, MemoryEntry] = {}
+    order: list[str] = []
+    for entry in entries:
+        key = id_map.get(entry.key, entry.key)
+        updated = (
+            replace(entry, key=key, viewport_id=viewport_id)
+            if entry.key in id_map
+            else entry
+        )
+        if key in remapped:
+            order.remove(key)
+        remapped[key] = updated
+        order.append(key)
+    return tuple(remapped[key] for key in order)
 
 
 def _adjust_emotion(

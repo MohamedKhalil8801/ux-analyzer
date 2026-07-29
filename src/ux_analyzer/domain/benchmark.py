@@ -145,6 +145,8 @@ class Scenario:
     safeguards: tuple[str, ...]
     eligible_persona_ids: tuple[str, ...]
     expected_evidence: tuple[str, ...]
+    viewport_width: int = 1280
+    viewport_height: int = 800
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -155,6 +157,8 @@ class Scenario:
             self, "eligible_persona_ids", tuple(self.eligible_persona_ids)
         )
         object.__setattr__(self, "expected_evidence", tuple(self.expected_evidence))
+        if self.viewport_width <= 0 or self.viewport_height <= 0:
+            raise ValueError("scenario viewport dimensions must be greater than zero")
 
 
 @dataclass(frozen=True, slots=True)

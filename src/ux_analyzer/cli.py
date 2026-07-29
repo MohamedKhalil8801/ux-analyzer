@@ -493,7 +493,6 @@ class _FixtureObservationProvider:
         return await self._adapter.execute(session, action)
 
     async def reset(self, session: SessionHandle) -> None:
-        await self._adapter.reset(session)
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 f"{self._fixture_origin}/__control/reset",
@@ -502,7 +501,15 @@ class _FixtureObservationProvider:
             response.raise_for_status()
 
     async def end_session(self, session: SessionHandle) -> None:
-        await self._adapter.end_session(session)
+        try:
+            await self._adapter.end_session(session)
+        finally:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.delete(
+                    f"{self._fixture_origin}/__control/session/{quote(session.session_id, safe='')}"
+                )
+                response.raise_for_status()
+        await self._adapter.reset(session)
 
 
 class _AttentionPolicyAdapter:
@@ -566,6 +573,7 @@ class _BundleFactory:
         model_manifests = [
             ProviderManifest(
                 provider_id="openai-compatible-structured",
+        scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
                 role="cognitive",
                 model_id=self._settings.cognitive_model,
                 endpoint_origin=self._settings.endpoint_origin,
@@ -574,7 +582,7 @@ class _BundleFactory:
                 schema_version="cognitive-v1",
             )
         ]
-        if spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT:
+        if scent_enabled:
             model_manifests.extend(
                 ProviderManifest(
                     provider_id="openai-compatible-structured",
@@ -594,12 +602,18 @@ class _BundleFactory:
             spec,
             endpoint_origin=self._settings.endpoint_origin,
             model_ids={
-                "scent": self._settings.scent_model,
+                **({"scent": self._settings.scent_model} if scent_enabled else {}),
                 "cognitive": self._settings.cognitive_model,
             },
             prompt_versions={
-                "coarse-scent": "scent-coarse-v1",
-                "full-scent": "scent-full-v1",
+                **(
+                    {
+                        "coarse-scent": "scent-coarse-v1",
+                        "full-scent": "scent-full-v1",
+                    }
+                    if scent_enabled
+                    else {}
+                ),
                 "cognitive": "cognitive-v1",
             },
             provider_versions={
@@ -613,6 +627,7 @@ class _BundleFactory:
             },
             provider_manifests=tuple(model_manifests),
         )
+                "expectation": "disabled",
         return FilesystemRunBundleWriter.start(
             self._output,
             manifest,
@@ -698,7 +713,9 @@ def _build_agent(
         else None
     )
     cognitive = StructuredCognitiveAgent(
-        cast(StructuredModelClient, client), model=settings.cognitive_model
+        cast(StructuredModelClient, client),
+        model=settings.cognitive_model,
+        fixture_keys=tuple(sorted(spec.scenario.fixture_inputs.values)),
     )
     verifier = WebVerifier(
         spec.scenario.verifier,
@@ -822,7 +839,10 @@ def _session_config(
         session_id=spec.run_id,
         start_url=f"{fixture_origin}/app/{quote(spec.run_id)}/{version}{page}",
         test_account_id=TestAccountId(f"test-{spec.run_id.removeprefix('run-')}"),
-        viewport=ViewportSize(width=1280, height=800),
+        viewport=ViewportSize(
+            width=spec.scenario.viewport_width,
+            height=spec.scenario.viewport_height,
+        ),
         trace_path=output / "traces" / f"{spec.run_id}.zip",
     )
 

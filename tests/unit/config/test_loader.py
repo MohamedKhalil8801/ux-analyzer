@@ -71,7 +71,9 @@ def test_loads_versioned_runtime_provider_and_evaluation_formulas(
             "novelty_penalty": 0.2,
             "failure_penalty": 0.4,
         },
+        "expectation": {"enabled": False},
     }
+    project["scenarios"][0]["viewport"] = {"width": 900, "height": 700}
     project["evaluation"] = {
         "discovery_cost": {
             "version": "discovery-project-v2",
@@ -109,6 +111,17 @@ def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     assert loaded.runtime.discovery_cost.version == "discovery-project-v2"
     assert loaded.runtime.findings.version == "finding-project-v2"
     assert loaded.runtime.state_updates.version == "state-project-v2"
+    assert loaded.runtime.expectation_enabled is False
+    assert loaded.project.scenarios[0].viewport_width == 900
+    assert loaded.project.scenarios[0].viewport_height == 700
+
+
+def test_expectation_provider_cannot_be_enabled_in_poc(tmp_path: Path) -> None:
+    project = _read_project()
+    project["providers"] = {"expectation": {"enabled": True}}
+
+    with pytest.raises(ProjectConfigError, match="expectation"):
+        load_project(_write_project(tmp_path, project))
 
 
 def test_domain_project_is_immutable() -> None:
