@@ -11,6 +11,7 @@ from types import MappingProxyType
 from ux_analyzer.domain.attention import (
     AttentionState,
     CoarseScent,
+    PersonaObservation,
     ProgressiveObservation,
 )
 from ux_analyzer.domain.interface import ViewportSnapshot
@@ -67,7 +68,7 @@ class AttentionPolicyConfig:
 class ObservationSelection:
     """Sampled observation plus probabilities used to make the choice."""
 
-    observation: ProgressiveObservation
+    observation: PersonaObservation
     region_id: str | None
     element_probabilities: Mapping[str, float]
     region_probabilities: Mapping[str | None, float]
@@ -108,8 +109,14 @@ class _Candidate:
 class ProgressiveAttentionPolicy:
     """Select regions first, then sample a small batch of child elements."""
 
+    id = "progressive-attention"
+
     def __init__(self, config: AttentionPolicyConfig | None = None) -> None:
         self.config = config or AttentionPolicyConfig()
+
+    @property
+    def version(self) -> str:
+        return self.config.version
 
     def next_observation(
         self,

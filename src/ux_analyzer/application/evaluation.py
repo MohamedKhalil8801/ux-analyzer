@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING
 from ux_analyzer.domain.attention import (
     Back,
     InteractWithElement,
-    ProgressiveObservation,
+    PersonaObservation,
     Scroll,
 )
+from ux_analyzer.domain.benchmark import ApplicationVersionKind
 from ux_analyzer.domain.findings import (
     Evidence,
     EvidenceClass,
@@ -378,6 +379,15 @@ class VariantComparison:
         return self.gate.passed
 
 
+@dataclass(frozen=True, slots=True)
+class ExperimentEvaluation:
+    """Persistable run metrics, cell aggregates, and paired variant gates."""
+
+    run_metrics: tuple[RunMetrics, ...]
+    cell_aggregates: tuple[CellAggregate, ...]
+    variant_comparisons: tuple[VariantComparison, ...]
+
+
 def evaluate_run(
     result: RunResult,
     target: EvaluationTarget | str | None = None,
@@ -675,6 +685,119 @@ def calculate_run_metrics(*args: object, **kwargs: object) -> RunMetrics:
     return evaluate_run(*args, **kwargs)  # type: ignore[arg-type]
 
 
+def evaluation_target_for(result: RunResult) -> EvaluationTarget:
+    """Infer best recorded target without hidden verifier or selector data."""
+
+    interactions: list[ActionExecuted] = []
+    for event in result.state.events:
+        if isinstance(event, ActionExecuted) and isinstance(
+            event.action, InteractWithElement
+        ):
+            interactions.append(event)
+    successful = [event for event in interactions if event.succeeded]
+    selected = successful[-1:] or interactions[-1:]
+    if selected:
+        action = selected[0].action
+        if not isinstance(action, InteractWithElement):
+            raise TypeError("recorded interaction lost typed action")
+        return EvaluationTarget(action.element_id)
+    observations = [
+        event.observation
+        for event in result.state.events
+        if isinstance(event, ObservationRecorded)
+    ]
+    visible = [
+        element
+        for observation in observations
+        for element in observation.newly_revealed_elements
+    ]
+    candidate = next(
+        (element for element in reversed(visible) if element.actionable), None
+    )
+    if candidate is None and visible:
+        candidate = visible[-1]
+    if candidate is None:
+        raise ValueError(
+            f"run {result.run_id} has no persona-visible evaluation target"
+        )
+    return EvaluationTarget(candidate.id, candidate.region_id)
+
+
+def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
+    """Build evaluator inputs from evidence recorded by production RunAgent."""
+
+    prominence_scores: dict[str, float] = {}
+    for record in result.evidence.prominence:
+        for score in record.scores:
+            prominence_scores[score.element_id] = score.normalized_probability
+    scent_scores: dict[str, float] = {}
+    for record in result.evidence.scent:
+        for score in record.scores:
+            element_id = getattr(score, "element_id", None)
+            value = getattr(score, "score", None)
+            if isinstance(element_id, str) and isinstance(value, int | float):
+                scent_scores[element_id] = float(value)
+    navigation_depth = sum(
+        isinstance(event, ActionExecuted)
+        and isinstance(event.action, InteractWithElement)
+        and event.succeeded
+        for event in result.state.events
+    )
+    recovery_actions = sum(
+        isinstance(event, ActionExecuted) and isinstance(event.action, Back)
+        for event in result.state.events
+    )
+    return RunEvaluationInputs(
+        prominence_scores=prominence_scores,
+        scent_scores=scent_scores,
+        navigation_depth=navigation_depth,
+        recovery_actions=recovery_actions,
+        recovery_success=(result.verification.verified if recovery_actions else None),
+        uncertainty=max(0.0, 1.0 - result.state.attention.confidence),
+        model_dependent=bool(result.evidence.model_calls),
+    )
+
+
+def evaluate_experiment_results(results: Sequence[RunResult]) -> ExperimentEvaluation:
+    """Aggregate evaluated production runs and apply exact paired-seed gates."""
+
+    run_results = tuple(results)
+    metrics = tuple(
+        result.metrics for result in run_results if result.metrics is not None
+    )
+    if len(metrics) != len(run_results):
+        raise ValueError("every completed run needs persisted metrics")
+    cells = aggregate_cells(metrics)
+    grouped: dict[
+        tuple[str, str, str, str | None],
+        dict[ApplicationVersionKind, list[RunMetrics]],
+    ] = {}
+    by_run_id = {result.run_id: result for result in run_results}
+    for metric in metrics:
+        result = by_run_id[metric.run_id]
+        key = (
+            metric.scenario_id,
+            metric.persona_id,
+            metric.policy,
+            metric.config_digest,
+        )
+        grouped.setdefault(key, {}).setdefault(
+            result.state.spec.application_version.kind, []
+        ).append(metric)
+    comparisons: list[VariantComparison] = []
+    for key in sorted(grouped):
+        variants = grouped[key]
+        baseline = variants.get(ApplicationVersionKind.DEFECTIVE)
+        improved = variants.get(ApplicationVersionKind.IMPROVED)
+        if (
+            baseline
+            and improved
+            and {run.seed for run in baseline} == {run.seed for run in improved}
+        ):
+            comparisons.append(compare_variants(baseline, improved))
+    return ExperimentEvaluation(metrics, cells, tuple(comparisons))
+
+
 def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
     """Aggregate repeated runs sharing one scenario/version/persona/policy cell."""
 
@@ -879,7 +1002,7 @@ def compare_variants(
 
 
 def _target_rank(
-    observations: Sequence[ProgressiveObservation], target_id: str
+    observations: Sequence[PersonaObservation], target_id: str
 ) -> int | None:
     rank = 0
     for observation in observations:

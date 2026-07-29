@@ -6,7 +6,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from ux_analyzer.domain.attention import ProgressiveObservation
+from ux_analyzer.domain.attention import PersonaObservation
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +132,7 @@ class MemoryPolicy:
         working: Iterable[MemoryEntry] = (),
         episodic: Iterable[MemoryEntry] = (),
         failures: Iterable[MemoryEntry] = (),
-        observation: ProgressiveObservation | None = None,
+        observation: PersonaObservation | None = None,
         elapsed_steps: int = 1,
     ) -> MemoryState:
         """Return next memory state using explicit, seed-independent formulas."""
@@ -230,7 +230,7 @@ class MemoryPolicy:
 
     @staticmethod
     def _entries_from_observation(
-        observation: ProgressiveObservation,
+        observation: PersonaObservation,
     ) -> tuple[MemoryEntry, ...]:
         return tuple(
             MemoryEntry(

@@ -156,7 +156,9 @@ def _snapshot() -> ViewportSnapshot:
                 visibility_fraction=1.0,
                 actionable=True,
             )
-            for index, element_id in enumerate(("first", "second", "third"))
+            for index, element_id in enumerate(
+                ("first", "second", "third", "fourth", "fifth")
+            )
         ),
     )
 
@@ -174,8 +176,8 @@ def test_full_list_policy_reveals_all_visible_persona_safe_elements() -> None:
         random.Random(1),
     )
 
-    assert selection.selected_ids == ("first", "second", "third")
-    assert len(selection.observation.newly_revealed_elements) == 3
+    assert selection.selected_ids == ("first", "second", "third", "fourth", "fifth")
+    assert len(selection.observation.newly_revealed_elements) == 5
     assert (
         "execution_reference"
         not in selection.observation.newly_revealed_elements[0].model_dump()
@@ -188,6 +190,8 @@ def test_ranked_list_policy_sorts_without_exposing_numeric_scores() -> None:
         ProminenceResult("first", 0.1, 0.1),
         ProminenceResult("second", 0.9, 0.8),
         ProminenceResult("third", 0.5, 0.4),
+        ProminenceResult("fourth", 0.3, 0.3),
+        ProminenceResult("fifth", 0.2, 0.2),
     )
 
     selection = ProminenceRankedListPolicy().next_observation(
@@ -202,7 +206,13 @@ def test_ranked_list_policy_sorts_without_exposing_numeric_scores() -> None:
         random.Random(1),
     )
 
-    assert selection.selected_ids == ("second", "third", "first")
+    assert selection.selected_ids == (
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+        "first",
+    )
     assert all(
         "normalized_probability" not in item.model_dump()
         for item in selection.observation.newly_revealed_elements

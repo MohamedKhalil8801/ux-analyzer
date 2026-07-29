@@ -10,7 +10,7 @@ from ux_analyzer.domain.attention import (
     AttentionAction,
     AttentionState,
     InteractWithElement,
-    ProgressiveObservation,
+    PersonaObservation,
 )
 from ux_analyzer.domain.benchmark import (
     ApplicationVersion,
@@ -48,6 +48,8 @@ class ProviderManifest:
     model_id: str | None
     endpoint_origin: str
     version: str
+    prompt_version: str | None = None
+    schema_version: str | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -200,7 +202,7 @@ class ViewportCaptured:
 @dataclass(frozen=True, slots=True)
 class ObservationRecorded:
     kind: Literal["observation-recorded"] = "observation-recorded"
-    observation: ProgressiveObservation = None  # type: ignore[assignment]
+    observation: PersonaObservation = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True, slots=True)

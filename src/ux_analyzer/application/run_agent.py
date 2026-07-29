@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
-from typing import Protocol
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Protocol
 
 from ux_analyzer.application.action_validation import (
     ActionValidationError,
@@ -21,6 +21,7 @@ from ux_analyzer.application.state_updates import (
     apply_observation,
 )
 from ux_analyzer.domain.attention import Abandon, InteractWithElement
+from ux_analyzer.domain.findings import Finding
 from ux_analyzer.domain.interface import (
     PrivateExecutionReference,
     ViewportSnapshot,
@@ -52,7 +53,11 @@ from ux_analyzer.domain.run import (
     SafetyBlocked as SafetyBlockedOutcome,
 )
 from ux_analyzer.ports.artifacts import ArtifactReference, RunBundleWriter
-from ux_analyzer.ports.models import CoarseScentEvaluator, FullScentEvaluator
+from ux_analyzer.ports.models import (
+    CoarseScentEvaluator,
+    FullScentEvaluator,
+    ModelCallRecord,
+)
 from ux_analyzer.ports.observation import (
     ObservationCapture,
     ObservationProvider,
@@ -65,6 +70,9 @@ from ux_analyzer.ports.verification import VerificationProvider
 from ux_analyzer.providers.attention_policy import ObservationSelection
 from ux_analyzer.providers.memory import MemoryPolicy
 from ux_analyzer.providers.prominence import ProminenceResult
+
+if TYPE_CHECKING:
+    from ux_analyzer.application.evaluation import RunMetrics
 
 
 class ProminenceProvider(Protocol):
@@ -98,9 +106,64 @@ class RunBundleFactory(Protocol):
     def start(self, spec: RunSpec) -> RunBundleWriter: ...
 
 
+class ModelRecordSource(Protocol):
+    """Role-call audit source scoped to one run."""
+
+    @property
+    def records(self) -> Sequence[ModelCallRecord]: ...
+
+
 SessionConfigFactory = Callable[[RunSpec], ObservationSessionConfig]
 SnapshotExtractor = Callable[[ObservationCapture], ViewportSnapshot]
 ProviderManifestFactory = Callable[[RunSpec], Sequence[ProviderManifest]]
+ResultEvaluator = Callable[["RunResult"], "RunResult"]
+
+
+class RunFinalizationError(RuntimeError):
+    """Bundle publication failed; no successful run result was published."""
+
+    def __init__(self, reason: str) -> None:
+        self.outcome = InternalError(reason=reason)
+        super().__init__(reason)
+
+
+@dataclass(frozen=True, slots=True)
+class ProminenceEvidence:
+    viewport_id: str
+    scores: tuple[ProminenceResult, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScentEvidence:
+    kind: str
+    viewport_id: str
+    scores: tuple[object, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionEvidence:
+    viewport_id: str
+    selected_ids: tuple[str, ...]
+    selection_mode: str
+    region_id: str | None
+    element_probabilities: object
+    region_probabilities: object
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionEvidence:
+    viewport_id: str
+    decision: object
+
+
+@dataclass(frozen=True, slots=True)
+class RunEvidence:
+    prominence: tuple[ProminenceEvidence, ...] = ()
+    scent: tuple[ScentEvidence, ...] = ()
+    selections: tuple[SelectionEvidence, ...] = ()
+    decisions: tuple[DecisionEvidence, ...] = ()
+    model_calls: tuple[ModelCallRecord, ...] = ()
+    screenshot_artifacts: tuple[ArtifactChecksum, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +177,9 @@ class RunResult:
     state: RunState
     bundle_path: object | None = None
     terminal_reason: str | None = None
+    evidence: RunEvidence = field(default_factory=RunEvidence)
+    metrics: RunMetrics | None = None
+    findings: tuple[Finding, ...] = ()
 
     @property
     def claimed_success(self) -> bool:
@@ -138,6 +204,23 @@ class _RunContext:
     state: RunState
     application_state: ApplicationState
     session: SessionHandle | None = None
+    prominence: list[ProminenceEvidence] = field(
+        default_factory=lambda: list[ProminenceEvidence]()
+    )
+    scent: list[ScentEvidence] = field(default_factory=lambda: list[ScentEvidence]())
+    selections: list[SelectionEvidence] = field(
+        default_factory=lambda: list[SelectionEvidence]()
+    )
+    decisions: list[DecisionEvidence] = field(
+        default_factory=lambda: list[DecisionEvidence]()
+    )
+    model_calls: list[ModelCallRecord] = field(
+        default_factory=lambda: list[ModelCallRecord]()
+    )
+    screenshot_artifacts: list[ArtifactChecksum] = field(
+        default_factory=lambda: list[ArtifactChecksum]()
+    )
+    model_record_cursor: int = 0
 
 
 class RunAgent:
@@ -161,6 +244,8 @@ class RunAgent:
         state_update_config: StateUpdateConfig | None = None,
         snapshot_extractor: SnapshotExtractor | None = None,
         provider_manifest_factory: ProviderManifestFactory | None = None,
+        model_record_source: ModelRecordSource | None = None,
+        result_evaluator: ResultEvaluator | None = None,
     ) -> None:
         selected_bundle_factory = bundle_factory or bundle_writer_factory
         selected_session_factory = session_config_factory or session_factory
@@ -181,6 +266,8 @@ class RunAgent:
         self.state_update_config = state_update_config or StateUpdateConfig()
         self.snapshot_extractor = snapshot_extractor or _snapshot_from_capture
         self.provider_manifest_factory = provider_manifest_factory
+        self.model_record_source = model_record_source
+        self.result_evaluator = result_evaluator
 
     async def execute(self, spec: RunSpec) -> RunResult:
         """Execute, independently verify, finalize, and always clean up one run."""
@@ -244,7 +331,7 @@ class RunAgent:
                     )
                 except TimeoutError:
                     execution = _timed_out_execution(execution, writer)
-            return self._finalize(spec, execution, writer, artifact_checksums)
+            return self._finalize(spec, execution, writer, artifact_checksums, context)
         except BaseException as error:
             if writer is not None:
                 _abort_bundle(
@@ -287,10 +374,25 @@ class RunAgent:
                 raise RuntimeError("run has no current viewport")
 
             scores = tuple(self.prominence_provider.score(snapshot))
+            prominence_record = ProminenceEvidence(snapshot.id, scores)
+            context.prominence.append(prominence_record)
+            writer.append_event(
+                {
+                    "kind": "prominence-recorded",
+                    "viewport_id": snapshot.id,
+                    "scores": tuple(_prominence_payload(score) for score in scores),
+                }
+            )
             coarse_scent: object = ()
             if self.coarse_scent_evaluator is not None:
-                coarse_scent = await self.coarse_scent_evaluator.evaluate(
-                    spec.scenario.goal, snapshot
+                try:
+                    coarse_scent = await self.coarse_scent_evaluator.evaluate(
+                        spec.scenario.goal, snapshot
+                    )
+                finally:
+                    self._record_model_calls(context, writer)
+                context.scent.append(
+                    ScentEvidence("coarse-scent", snapshot.id, tuple(coarse_scent))
                 )
                 writer.append_event(
                     {
@@ -310,6 +412,26 @@ class RunAgent:
                 rng,
             )
             observation = selection.observation
+            selection_record = SelectionEvidence(
+                viewport_id=snapshot.id,
+                selected_ids=tuple(selection.selected_ids),
+                selection_mode=str(selection.selection_mode),
+                region_id=getattr(selection, "region_id", None),
+                element_probabilities=getattr(selection, "element_probabilities", {}),
+                region_probabilities=getattr(selection, "region_probabilities", {}),
+            )
+            context.selections.append(selection_record)
+            writer.append_event(
+                {
+                    "kind": "attention-selection-recorded",
+                    "viewport_id": snapshot.id,
+                    "selected_ids": selection_record.selected_ids,
+                    "selection_mode": selection_record.selection_mode,
+                    "region_id": selection_record.region_id,
+                    "element_probabilities": selection_record.element_probabilities,
+                    "region_probabilities": selection_record.region_probabilities,
+                }
+            )
             context.state = _record(
                 context.state,
                 ObservationRecorded(observation=observation),
@@ -334,10 +456,16 @@ class RunAgent:
                 )
 
             if self.full_scent_evaluator is not None:
-                full_scent = await self.full_scent_evaluator.evaluate(
-                    spec.scenario.goal,
-                    context.application_state.attention,
-                    snapshot,
+                try:
+                    full_scent = await self.full_scent_evaluator.evaluate(
+                        spec.scenario.goal,
+                        context.application_state.attention,
+                        snapshot,
+                    )
+                finally:
+                    self._record_model_calls(context, writer)
+                context.scent.append(
+                    ScentEvidence("full-scent", snapshot.id, tuple(full_scent))
                 )
                 writer.append_event(
                     {
@@ -349,8 +477,22 @@ class RunAgent:
                     }
                 )
 
-            decision = await self.cognitive_agent.decide(
-                spec.scenario.goal, observation
+            try:
+                decision = await self.cognitive_agent.decide(
+                    spec.scenario.goal, observation
+                )
+            finally:
+                self._record_model_calls(context, writer)
+            context.decisions.append(DecisionEvidence(snapshot.id, decision))
+            writer.append_event(
+                {
+                    "kind": "decision-recorded",
+                    "viewport_id": snapshot.id,
+                    "decision": decision,
+                    "reason": getattr(decision, "reason", None),
+                    "action": getattr(decision, "action", None),
+                    "claimed_success": _agent_claim(decision),
+                }
             )
             claim = _agent_claim(decision)
             claimed_success = claimed_success or claim
@@ -484,11 +626,11 @@ class RunAgent:
             raise RuntimeError("capture requires active session")
         capture = await self.observation_provider.capture(session)
         snapshot = self.snapshot_extractor(capture)
-        artifact_checksums.append(
-            _artifact_checksum(
-                writer.write_artifact(f"{snapshot.id}.png", capture.screenshot)
-            )
-        )
+        screenshot = writer.write_artifact(f"{snapshot.id}.png", capture.screenshot)
+        screenshot_checksum = _artifact_checksum(screenshot)
+        artifact_checksums.append(screenshot_checksum)
+        context.screenshot_artifacts.append(screenshot_checksum)
+        snapshot = replace(snapshot, screenshot_artifact=screenshot.path)
         context.state = _record(
             context.state,
             ViewportCaptured(snapshot=snapshot),
@@ -562,6 +704,7 @@ class RunAgent:
         execution: _Execution,
         writer: RunBundleWriter,
         artifact_checksums: Sequence[ArtifactChecksum],
+        context: _RunContext,
     ) -> RunResult:
         verification = execution.verification or VerificationResult(
             verified=False,
@@ -593,15 +736,39 @@ class RunAgent:
             agent_claimed_success=execution.agent_claimed_success,
             state=final_state,
             terminal_reason=execution.terminal_reason,
+            evidence=RunEvidence(
+                prominence=tuple(context.prominence),
+                scent=tuple(context.scent),
+                selections=tuple(context.selections),
+                decisions=tuple(context.decisions),
+                model_calls=tuple(context.model_calls),
+                screenshot_artifacts=tuple(context.screenshot_artifacts),
+            ),
         )
+        if self.result_evaluator is not None:
+            result = self.result_evaluator(result)
         try:
             bundle_path = writer.finalize(result)
         except BaseException as error:
-            bundle_path = _abort_bundle(
+            reason = f"finalization failed: {_safe_error_message(error)}"
+            _abort_bundle(
                 writer,
-                f"finalization failed: {_safe_error_message(error)}",
+                reason,
             )
+            raise RunFinalizationError(reason) from error
         return replace(result, bundle_path=bundle_path)
+
+    def _record_model_calls(
+        self, context: _RunContext, writer: RunBundleWriter
+    ) -> None:
+        source = self.model_record_source
+        if source is None:
+            return
+        records = tuple(source.records)
+        for record in records[context.model_record_cursor :]:
+            context.model_calls.append(record)
+            writer.append_event({"kind": "model-call-recorded", "record": record})
+        context.model_record_cursor = len(records)
 
     def _provider_manifests(self, spec: RunSpec) -> tuple[ProviderManifest, ...]:
         if self.provider_manifest_factory is not None:
@@ -610,6 +777,8 @@ class RunAgent:
                 return manifests
         providers: list[tuple[object, str]] = [
             (self.observation_provider, "observation"),
+            (self.prominence_provider, "prominence"),
+            (self.attention_policy, "attention"),
         ]
         for provider, fallback_role in (
             (self.coarse_scent_evaluator, "coarse-scent"),
@@ -652,6 +821,19 @@ def _artifact_checksum(reference: ArtifactReference) -> ArtifactChecksum:
     return ArtifactChecksum(path=reference.path, sha256=reference.sha256)
 
 
+def _prominence_payload(score: ProminenceResult) -> dict[str, object]:
+    return {
+        "element_id": score.element_id,
+        "raw_score": score.raw_score,
+        "normalized_probability": score.normalized_probability,
+        "first_notice_probability": score.first_notice_probability,
+        "notice_within_budget_probability": score.notice_within_budget_probability,
+        "feature_contributions": dict(score.feature_contributions),
+        "raw_values": dict(score.raw_values),
+        "normalized_values": dict(score.normalized_values),
+    }
+
+
 def _execution_reference(
     snapshot: ViewportSnapshot,
     validated: ValidatedAction,
@@ -691,6 +873,8 @@ def _provider_manifest(provider: object, role: str) -> ProviderManifest:
                     getattr(provider, "version", "unknown"),
                 )
             ),
+            prompt_version=str(getattr(manifest, "prompt_version", "")) or None,
+            schema_version=str(getattr(manifest, "schema_version", "")) or None,
         )
     return ProviderManifest(
         provider_id=str(getattr(provider, "id", type(provider).__name__)),

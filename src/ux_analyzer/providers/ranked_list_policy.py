@@ -24,6 +24,8 @@ class ProminenceRankedListPolicy(FullListPolicy):
     """Reveal full persona-safe list sorted by heuristic prominence."""
 
     selection_mode = "prominence-ranked-list"
+    id = "prominence-ranked-list"
+    version = "prominence-ranked-list-v1"
 
     def __init__(
         self, prominence_provider: HeuristicProminenceProvider | None = None

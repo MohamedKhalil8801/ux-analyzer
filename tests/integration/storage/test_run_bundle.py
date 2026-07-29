@@ -178,3 +178,27 @@ def test_finalized_bundle_refuses_all_mutation(tmp_path: Path) -> None:
         writer.finalize({"status": "again"})
     with pytest.raises(BundleAlreadyFinalizedError):
         writer.abort("too late")
+
+
+def test_atomic_publish_failure_leaves_internal_error_recovery_marker(
+    monkeypatch, tmp_path: Path
+) -> None:
+    writer = FilesystemRunBundleWriter.start(tmp_path, bundle_manifest())
+    writer.append_event({"kind": "run-terminated", "outcome": "verified-success"})
+
+    def fail_publish(source: object, destination: object) -> None:
+        del source, destination
+        raise OSError("atomic publish failed")
+
+    monkeypatch.setattr("ux_analyzer.storage.run_bundle.os.replace", fail_publish)
+
+    with pytest.raises(OSError, match="atomic publish failed"):
+        writer.finalize({"outcome": "verified-success"})
+
+    marker = json.loads(
+        (writer.staging_path / "crash.marker").read_text(encoding="utf-8")
+    )
+    assert "finalization failed" in marker["reason"]
+    assert "atomic publish failed" in marker["reason"]
+    assert marker["outcome"] == "internal-error"
+    assert not writer.final_path.exists()

@@ -7,28 +7,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from ux_analyzer.domain.attention import AttentionState
+from ux_analyzer.domain.attention import AttentionState, CompleteObservation
 from ux_analyzer.domain.interface import PersonaVisibleElement, ViewportSnapshot
 
-
-@dataclass(frozen=True, slots=True)
-class ListObservation:
-    """Persona-visible observation used by unrestricted list policies."""
-
-    viewport_id: str
-    newly_revealed_elements: tuple[PersonaVisibleElement, ...]
-    remembered_elements: tuple[PersonaVisibleElement, ...] = ()
-
-    def __post_init__(self) -> None:
-        elements = tuple(self.newly_revealed_elements)
-        remembered = tuple(self.remembered_elements)
-        if not elements:
-            raise ValueError("list observation needs at least one visible element")
-        ids = [element.id for element in elements]
-        if len(ids) != len(set(ids)):
-            raise ValueError("list observation contains duplicate elements")
-        object.__setattr__(self, "newly_revealed_elements", elements)
-        object.__setattr__(self, "remembered_elements", remembered)
+ListObservation = CompleteObservation
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +34,14 @@ class ListObservationSelection:
 
         return MappingProxyType({})
 
+    @property
+    def region_id(self) -> None:
+        return None
+
+    @property
+    def region_probabilities(self) -> Mapping[None, float]:
+        return MappingProxyType({None: 1.0})
+
 
 def visible_elements(snapshot: ViewportSnapshot) -> tuple[PersonaVisibleElement, ...]:
     """Project all rendered, non-zero-visibility elements into safe data."""
@@ -67,14 +57,12 @@ class FullListPolicy:
     """Reveal every visible persona-safe element in capture order."""
 
     selection_mode = "full-list"
+    id = "full-list"
+    version = "full-list-v1"
 
     def select(self, snapshot: ViewportSnapshot) -> ListObservationSelection:
-        elements = visible_elements(snapshot)
         return ListObservationSelection(
-            observation=ListObservation(
-                viewport_id=snapshot.id,
-                newly_revealed_elements=elements,
-            ),
+            observation=CompleteObservation.from_snapshot(snapshot),
             selection_mode=self.selection_mode,
         )
 

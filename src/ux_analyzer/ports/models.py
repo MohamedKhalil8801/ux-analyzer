@@ -9,7 +9,7 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from ux_analyzer.domain.attention import CoarseScent, FullScent, ProgressiveObservation
+from ux_analyzer.domain.attention import CoarseScent, FullScent, PersonaObservation
 from ux_analyzer.domain.interface import ViewportSnapshot
 
 
@@ -191,6 +191,4 @@ class FullScentEvaluator(Protocol):
 class CognitiveAgent(Protocol):
     """Port for qualitative action selection from persona-visible context."""
 
-    async def decide(
-        self, goal: str, observation: ProgressiveObservation
-    ) -> BaseModel: ...
+    async def decide(self, goal: str, observation: PersonaObservation) -> BaseModel: ...

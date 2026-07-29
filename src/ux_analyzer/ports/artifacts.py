@@ -158,6 +158,8 @@ class BundleManifest:
                         manifest.endpoint_origin
                     ),
                     "version": manifest.version,
+                    "prompt_version": manifest.prompt_version,
+                    "schema_version": manifest.schema_version,
                 }
                 for manifest in self.provider_manifests
             ],

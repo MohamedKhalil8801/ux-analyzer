@@ -12,6 +12,8 @@ from typing import cast
 import yaml
 from pydantic import ValidationError
 
+from ux_analyzer.application.evaluation import DiscoveryCostConfig
+from ux_analyzer.application.state_updates import StateUpdateConfig
 from ux_analyzer.config.models import (
     ApplicationModel,
     ExperimentModel,
@@ -35,10 +37,27 @@ from ux_analyzer.domain.benchmark import (
     VerifierSpec,
     VisibleResultVerifierSpec,
 )
+from ux_analyzer.providers.attention_policy import AttentionPolicyConfig
+from ux_analyzer.providers.finding_rules import FindingRuleConfig
+from ux_analyzer.providers.prominence import (
+    DEFAULT_PROMINENCE_WEIGHTS,
+    HeuristicProminenceConfig,
+)
 
 
 class ProjectConfigError(ValueError):
     """Raised when project YAML is invalid or internally inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfig:
+    """Resolved versioned provider and evaluation formulas for composition."""
+
+    prominence: HeuristicProminenceConfig
+    attention: AttentionPolicyConfig
+    discovery_cost: DiscoveryCostConfig
+    findings: FindingRuleConfig
+    state_updates: StateUpdateConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +66,7 @@ class LoadedProject:
 
     project: BenchmarkProject
     config_digest: str
+    runtime: RuntimeConfig
 
     @property
     def digest(self) -> str:
@@ -80,7 +100,62 @@ def load_project(path: Path) -> LoadedProject:
     _validate_references(config)
     project = _to_domain(config)
     digest = _canonical_digest(config.model_dump(mode="json"))
-    return LoadedProject(project=project, config_digest=digest)
+    return LoadedProject(
+        project=project,
+        config_digest=digest,
+        runtime=_to_runtime(config),
+    )
+
+
+def _to_runtime(config: ProjectModel) -> RuntimeConfig:
+    prominence = config.providers.prominence
+    attention = config.providers.attention
+    discovery = config.evaluation.discovery_cost
+    findings = config.evaluation.findings
+    state_updates = config.evaluation.state_updates
+    return RuntimeConfig(
+        prominence=HeuristicProminenceConfig(
+            version=prominence.version,
+            weights=prominence.weights or dict(DEFAULT_PROMINENCE_WEIGHTS),
+            temperature=prominence.temperature,
+        ),
+        attention=AttentionPolicyConfig(
+            version=attention.version,
+            batch_size=attention.batch_size,
+            temperature=1.0,
+            prominence_weight=attention.prominence_weight,
+            coarse_scent_weight=attention.coarse_scent_weight,
+            novelty_penalty=attention.novelty_penalty,
+            failure_penalty=attention.failure_penalty,
+        ),
+        discovery_cost=DiscoveryCostConfig(
+            version=discovery.version,
+            inspection_cost=discovery.inspection_cost,
+            region_cost=discovery.region_cost,
+            scroll_cost=discovery.scroll_cost,
+            wrong_action_cost=discovery.wrong_action_cost,
+            backtrack_cost=discovery.backtrack_cost,
+            uncertainty_cost=discovery.uncertainty_cost,
+            abandonment_penalty=discovery.abandonment_penalty,
+        ),
+        findings=FindingRuleConfig(
+            version=findings.version,
+            weak_target_prominence_below=findings.weak_target_prominence_below,
+            weak_scent_below=findings.weak_scent_below,
+            misleading_scent_margin=findings.misleading_scent_margin,
+            excessive_navigation_depth_at_least=(
+                findings.excessive_navigation_depth_at_least
+            ),
+            wrong_action_count_at_least=findings.wrong_action_count_at_least,
+        ),
+        state_updates=StateUpdateConfig(
+            version=state_updates.version,
+            success_confidence_delta=state_updates.success_confidence_delta,
+            success_frustration_delta=state_updates.success_frustration_delta,
+            failure_confidence_delta=state_updates.failure_confidence_delta,
+            failure_frustration_delta=state_updates.failure_frustration_delta,
+        ),
+    )
 
 
 def _format_validation_error(error: ValidationError) -> str:

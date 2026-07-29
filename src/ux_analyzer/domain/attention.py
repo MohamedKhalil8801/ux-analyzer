@@ -151,6 +151,48 @@ class ProgressiveObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class CompleteObservation:
+    """Complete persona-safe visible list used only by unrestricted policies."""
+
+    viewport_id: str
+    newly_revealed_elements: tuple[PersonaVisibleElement, ...]
+    remembered_elements: tuple[PersonaVisibleElement, ...] = ()
+    region_context: PersonaVisibleRegion | None = None
+
+    def __post_init__(self) -> None:
+        newly_revealed = tuple(self.newly_revealed_elements)
+        remembered = tuple(self.remembered_elements)
+        if not newly_revealed:
+            raise ValueError("complete observation needs at least one visible element")
+        ids = [element.id for element in newly_revealed]
+        if len(ids) != len(set(ids)):
+            raise ValueError("complete observation contains duplicate elements")
+        remembered_ids = [element.id for element in remembered]
+        if len(remembered_ids) != len(set(remembered_ids)):
+            raise ValueError(
+                "complete observation contains duplicate remembered element"
+            )
+        if set(ids) & set(remembered_ids):
+            raise ValueError("complete elements cannot already be remembered")
+        object.__setattr__(self, "newly_revealed_elements", newly_revealed)
+        object.__setattr__(self, "remembered_elements", remembered)
+
+    @classmethod
+    def from_snapshot(cls, snapshot: ViewportSnapshot) -> CompleteObservation:
+        return cls(
+            viewport_id=snapshot.id,
+            newly_revealed_elements=tuple(
+                PersonaVisibleElement.from_snapshot(element)
+                for element in snapshot.elements
+                if element.visibility_fraction > 0
+            ),
+        )
+
+
+type PersonaObservation = ProgressiveObservation | CompleteObservation
+
+
+@dataclass(frozen=True, slots=True)
 class AttentionState:
     """All mutable-looking runtime attention state represented immutably."""
 
@@ -165,6 +207,7 @@ class AttentionState:
     failed_candidates: frozenset[str]
     current_subgoal: str | None
     current_viewport_id: str | None
+    current_observation_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.memory_capacity <= 0:
@@ -179,6 +222,9 @@ class AttentionState:
         object.__setattr__(self, "inspected_ids", frozenset(self.inspected_ids))
         object.__setattr__(self, "failed_candidates", frozenset(self.failed_candidates))
         object.__setattr__(self, "memory", tuple(self.memory))
+        object.__setattr__(
+            self, "current_observation_ids", frozenset(self.current_observation_ids)
+        )
         if len(self.memory) > self.memory_capacity:
             raise ValueError("memory exceeds configured capacity")
 
@@ -208,13 +254,14 @@ class AttentionState:
             failed_candidates=frozenset(),
             current_subgoal=current_subgoal,
             current_viewport_id=None,
+            current_observation_ids=frozenset(),
         )
 
     @property
     def remembered_ids(self) -> frozenset[str]:
         return frozenset(item.element_id for item in self.memory)
 
-    def after_observation(self, observation: ProgressiveObservation) -> AttentionState:
+    def after_observation(self, observation: PersonaObservation) -> AttentionState:
         """Notice new elements and retain bounded persona-visible memory."""
 
         budgets = self.budgets.consume_observation().consume_steps()
@@ -251,6 +298,7 @@ class AttentionState:
             failed_candidates=self.failed_candidates,
             current_subgoal=self.current_subgoal,
             current_viewport_id=observation.viewport_id,
+            current_observation_ids=frozenset(element.id for element in new_elements),
         )
 
     def after_action(self, action: AttentionAction) -> AttentionState:
@@ -278,6 +326,7 @@ class AttentionState:
             failed_candidates=self.failed_candidates,
             current_subgoal=self.current_subgoal,
             current_viewport_id=self.current_viewport_id,
+            current_observation_ids=self.current_observation_ids,
         )
 
     def validate_action(
@@ -290,7 +339,10 @@ class AttentionState:
         if isinstance(action, (InspectElement, InteractWithElement)):
             if action.element_id not in self.noticed_ids:
                 raise ValueError("interaction target must be noticed")
-            if action.element_id not in self.remembered_ids:
+            if (
+                action.element_id not in self.remembered_ids
+                and action.element_id not in self.current_observation_ids
+            ):
                 raise ValueError("interaction target must be remembered")
         if self.current_viewport_id != snapshot.id:
             raise ValueError("action targets stale viewport")
@@ -314,6 +366,7 @@ class AttentionState:
             failed_candidates=self.failed_candidates | {element_id},
             current_subgoal=self.current_subgoal,
             current_viewport_id=self.current_viewport_id,
+            current_observation_ids=self.current_observation_ids,
         )
 
 

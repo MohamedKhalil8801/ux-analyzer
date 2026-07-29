@@ -100,6 +100,53 @@ personas:
     abandonment_threshold: 0.55
     attention_temperature: 0.85
 
+providers:
+  prominence:
+    version: heuristic-prominence-v1
+    temperature: 1.0
+    weights:
+      area: 0.16
+      center_distance: 0.14
+      reading_order: 0.10
+      typography: 0.12
+      contrast: 0.12
+      isolation: 0.10
+      actionability: 0.14
+      motion: 0.05
+      competition: -0.08
+      occlusion: -0.09
+  attention:
+    version: progressive-attention-v1
+    batch_size: 1
+    prominence_weight: 1.0
+    coarse_scent_weight: 0.5
+    novelty_penalty: 0.25
+    failure_penalty: 0.5
+
+evaluation:
+  discovery_cost:
+    version: discovery-cost-v1
+    inspection_cost: 1.0
+    region_cost: 1.0
+    scroll_cost: 1.0
+    wrong_action_cost: 1.0
+    backtrack_cost: 1.0
+    uncertainty_cost: 1.0
+    abandonment_penalty: 1.0
+  findings:
+    version: finding-rules-v1
+    weak_target_prominence_below: 0.25
+    weak_scent_below: 0.30
+    misleading_scent_margin: 0.20
+    excessive_navigation_depth_at_least: 4
+    wrong_action_count_at_least: 2
+  state_updates:
+    version: state-updates-v1
+    success_confidence_delta: 0.05
+    success_frustration_delta: -0.10
+    failure_confidence_delta: -0.10
+    failure_frustration_delta: 0.20
+
 experiments:
   - id: core-pair
     name: Core unrestricted versus progressive attention pair

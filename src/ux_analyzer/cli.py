@@ -6,7 +6,8 @@ import asyncio
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, NoReturn, cast
 from urllib.parse import quote, urlsplit
@@ -24,6 +25,12 @@ from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
 from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
 from ux_analyzer.adapters.web.session import PlaywrightSessionAdapter
 from ux_analyzer.adapters.web.verifier import WebVerifier
+from ux_analyzer.application.evaluation import (
+    evaluate_experiment_results,
+    evaluate_run,
+    evaluation_inputs_for,
+    evaluation_target_for,
+)
 from ux_analyzer.application.experiment import (
     ExperimentContext,
     ExperimentResult,
@@ -33,12 +40,17 @@ from ux_analyzer.application.experiment import (
 )
 from ux_analyzer.application.report import render_experiment_report
 from ux_analyzer.application.run_agent import CognitiveAgent as RunCognitiveAgent
-from ux_analyzer.application.run_agent import RunAgent
-from ux_analyzer.config.loader import LoadedProject, ProjectConfigError, load_project
-from ux_analyzer.domain.attention import ProgressiveObservation
+from ux_analyzer.application.run_agent import RunAgent, RunResult
+from ux_analyzer.config.loader import (
+    LoadedProject,
+    ProjectConfigError,
+    RuntimeConfig,
+    load_project,
+)
+from ux_analyzer.domain.attention import CompleteObservation, ProgressiveObservation
 from ux_analyzer.domain.benchmark import ExperimentDefinition, ExperimentPolicy
 from ux_analyzer.domain.interface import ViewportSnapshot
-from ux_analyzer.domain.run import RunSpec
+from ux_analyzer.domain.run import ProviderManifest, RunSpec
 from ux_analyzer.ports.artifacts import (
     BundleManifest,
     RedactionPolicy,
@@ -57,6 +69,7 @@ from ux_analyzer.ports.observation import (
 )
 from ux_analyzer.providers.attention_policy import ObservationSelection
 from ux_analyzer.providers.cognitive import StructuredCognitiveAgent
+from ux_analyzer.providers.finding_rules import FindingRuleSet
 from ux_analyzer.providers.prominence import HeuristicProminenceProvider
 from ux_analyzer.providers.scent import (
     StructuredCoarseScentEvaluator,
@@ -257,6 +270,14 @@ def _run_experiment_command(
     typer.echo(
         f"completed runs: {len(result.results)}; failures: {len(result.failures)}"
     )
+    summary_path, report_path = _complete_experiment(
+        result,
+        output=output,
+        runtime=matrix.loaded.runtime,
+    )
+    typer.echo(f"evaluation summary: {summary_path}")
+    if report_path is not None:
+        typer.echo(f"report generated: {report_path}")
     if result.failures:
         raise typer.Exit(1)
 
@@ -490,6 +511,14 @@ class _AttentionPolicyAdapter:
     def __init__(self, policy: object) -> None:
         self._policy = policy
 
+    @property
+    def id(self) -> str:
+        return str(getattr(self._policy, "id", type(self._policy).__name__))
+
+    @property
+    def version(self) -> str:
+        return str(getattr(self._policy, "version", "unknown"))
+
     def next_observation(
         self,
         state: object,
@@ -501,7 +530,7 @@ class _AttentionPolicyAdapter:
         method = getattr(self._policy, "next_observation")
         selected = method(state, snapshot, scores, coarse_scent, rng)
         observation = getattr(selected, "observation", None)
-        if isinstance(observation, ProgressiveObservation):
+        if isinstance(observation, (ProgressiveObservation, CompleteObservation)):
             return cast(ObservationSelection, selected)
         selected_ids = tuple(
             element_id
@@ -527,11 +556,40 @@ class _BundleFactory:
         self,
         output: Path,
         settings: OpenAICompatibleSettings,
+        runtime: RuntimeConfig,
     ) -> None:
         self._output = output
         self._settings = settings
+        self._runtime = runtime
 
     def start(self, spec: RunSpec) -> RunBundleWriter:
+        model_manifests = [
+            ProviderManifest(
+                provider_id="openai-compatible-structured",
+                role="cognitive",
+                model_id=self._settings.cognitive_model,
+                endpoint_origin=self._settings.endpoint_origin,
+                version="openai-compatible-v1",
+                prompt_version="cognitive-v1",
+                schema_version="cognitive-v1",
+            )
+        ]
+        if spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT:
+            model_manifests.extend(
+                ProviderManifest(
+                    provider_id="openai-compatible-structured",
+                    role=role,
+                    model_id=self._settings.scent_model,
+                    endpoint_origin=self._settings.endpoint_origin,
+                    version="openai-compatible-v1",
+                    prompt_version=prompt_version,
+                    schema_version=schema_version,
+                )
+                for role, prompt_version, schema_version in (
+                    ("coarse-scent", "scent-coarse-v1", "scent-coarse-v1"),
+                    ("full-scent", "scent-full-v1", "scent-full-v1"),
+                )
+            )
         manifest = BundleManifest.from_run_spec(
             spec,
             endpoint_origin=self._settings.endpoint_origin,
@@ -547,7 +605,13 @@ class _BundleFactory:
             provider_versions={
                 "observation": "fixture-web-v1",
                 "models": "openai-compatible-v1",
+                "prominence": self._runtime.prominence.version,
+                "attention": self._runtime.attention.version,
+                "discovery_cost": self._runtime.discovery_cost.version,
+                "findings": self._runtime.findings.version,
+                "state_updates": self._runtime.state_updates.version,
             },
+            provider_manifests=tuple(model_manifests),
         )
         return FilesystemRunBundleWriter.start(
             self._output,
@@ -570,7 +634,6 @@ async def _execute_matrix(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         client_http = httpx.AsyncClient(timeout=settings.timeout_seconds)
-        client = OpenAICompatibleStructuredClient(settings, http_client=client_http)
         adapter = PlaywrightSessionAdapter(
             browser=browser,
             allowed_origins=BrowserAllowedOrigins.fixture_only([origin]),
@@ -579,6 +642,9 @@ async def _execute_matrix(
         try:
 
             def factory(spec: RunSpec) -> RunAgent:
+                client = OpenAICompatibleStructuredClient(
+                    settings, http_client=client_http
+                )
                 return _build_agent(
                     spec,
                     adapter=adapter,
@@ -586,6 +652,7 @@ async def _execute_matrix(
                     output=output,
                     fixture_origin=origin,
                     settings=settings,
+                    runtime=matrix.loaded.runtime,
                 )
 
             return await ExperimentRunner(factory).run(matrix.specs, workers=workers)
@@ -603,11 +670,18 @@ def _build_agent(
     output: Path,
     fixture_origin: str,
     settings: OpenAICompatibleSettings,
+    runtime: RuntimeConfig,
 ) -> RunAgent:
     provider = _FixtureObservationProvider(
         adapter, fixture_origin, spec.scenario.fixture_inputs.values
     )
-    policy = _AttentionPolicyAdapter(attention_policy_for(spec.policy))
+    attention_config = replace(
+        runtime.attention,
+        temperature=spec.persona.attention_temperature,
+    )
+    policy = _AttentionPolicyAdapter(
+        attention_policy_for(spec.policy, attention_config)
+    )
     scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
     coarse = (
         StructuredCoarseScentEvaluator(
@@ -635,17 +709,104 @@ def _build_agent(
     )
     return RunAgent(
         observation_provider=cast(ObservationProvider, provider),
-        prominence_provider=HeuristicProminenceProvider(),
+        prominence_provider=HeuristicProminenceProvider(runtime.prominence),
         attention_policy=policy,
         cognitive_agent=cast(RunCognitiveAgent, cognitive),
         verifier=verifier,
-        bundle_factory=_BundleFactory(output, settings),
+        bundle_factory=_BundleFactory(output, settings, runtime),
         session_config_factory=lambda current_spec: _session_config(
             current_spec, output=output, fixture_origin=fixture_origin
         ),
         coarse_scent_evaluator=coarse,
         full_scent_evaluator=full,
+        state_update_config=replace(
+            runtime.state_updates,
+            abandonment_threshold=spec.persona.abandonment_threshold,
+        ),
+        model_record_source=client,
+        result_evaluator=lambda result: _evaluate_result(result, runtime),
     )
+
+
+def _evaluate_result(result: object, runtime: RuntimeConfig):
+    from ux_analyzer.application.run_agent import RunResult
+
+    if not isinstance(result, RunResult):
+        raise TypeError("run evaluator requires RunResult")
+    metrics = evaluate_run(
+        result,
+        evaluation_target_for(result),
+        inputs=evaluation_inputs_for(result),
+        cost_config=runtime.discovery_cost,
+    )
+    findings = FindingRuleSet.default(runtime.findings).evaluate(metrics)
+    return replace(result, metrics=metrics, findings=findings)
+
+
+def _complete_experiment(
+    result: ExperimentResult,
+    *,
+    output: Path,
+    runtime: RuntimeConfig,
+) -> tuple[Path, Path | None]:
+    del runtime
+    completed: list[RunResult] = []
+    for item in result.results:
+        if not isinstance(item, RunResult):
+            raise TypeError("experiment result contains non-RunResult value")
+        completed.append(item)
+    run_results = tuple(completed)
+    evaluation = evaluate_experiment_results(run_results)
+    summary = {
+        "run_metrics": evaluation.run_metrics,
+        "cell_aggregates": evaluation.cell_aggregates,
+        "variant_comparisons": evaluation.variant_comparisons,
+        "findings": {item.run_id: item.findings for item in run_results},
+        "failures": result.failures,
+    }
+    output.mkdir(parents=True, exist_ok=True)
+    summary_path = output / "experiment.json"
+    temporary = output / ".experiment.json.tmp"
+    temporary.write_text(
+        json.dumps(
+            _json_data(summary),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(summary_path)
+    report_path = (
+        render_experiment_report(output, output / "report.html")
+        if run_results
+        else None
+    )
+    return summary_path, report_path
+
+
+def _json_data(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        return {str(key): _json_data(item) for key, item in mapping.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        sequence = cast(Sequence[object], value)
+        return [_json_data(item) for item in sequence]
+    if is_dataclass(value):
+        return {
+            item.name: _json_data(getattr(value, item.name)) for item in fields(value)
+        }
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _json_data(model_dump(mode="json"))
+    raise TypeError(f"cannot serialize experiment value {type(value)!r}")
 
 
 def _session_config(

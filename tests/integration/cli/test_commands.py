@@ -4,10 +4,23 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
+import ux_analyzer.cli as cli
+from ux_analyzer.adapters.openai import OpenAICompatibleSettings
+from ux_analyzer.application.experiment import (
+    ExperimentContext,
+    ExperimentResult,
+    expand_experiment,
+)
 from ux_analyzer.cli import app
+from ux_analyzer.config.loader import load_project
+from ux_analyzer.domain.attention import AttentionState
+from ux_analyzer.domain.benchmark import Budget
+from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
+from ux_analyzer.providers.full_list_policy import FullListPolicy
 
 DEMO_PROJECT = Path(__file__).parents[3] / "benchmarks" / "demo" / "project.yaml"
 runner = CliRunner()
@@ -143,6 +156,83 @@ def test_ablate_selects_optional_policies_and_run_count_override(
     assert "run specs: 32" in result.stdout
 
 
+def test_production_policy_adapter_preserves_complete_list_observation() -> None:
+    snapshot = ViewportSnapshot(
+        id="viewport-complete",
+        elements=tuple(
+            ElementSnapshot(
+                id=f"item-{index}",
+                role="button",
+                label=f"Item {index}",
+                bounds=BoundingBox(x=index * 20, y=0, width=10, height=10),
+                visibility_fraction=1,
+                actionable=True,
+            )
+            for index in range(5)
+        ),
+    )
+    state = AttentionState.initial(Budget(10, 10, 5, 10), confidence=0.5, frustration=0)
+
+    selection = cli._AttentionPolicyAdapter(FullListPolicy()).next_observation(
+        state,
+        snapshot,
+        (),
+        (),
+        object(),
+    )
+
+    assert selection.selected_ids == tuple(f"item-{index}" for index in range(5))
+    assert len(selection.observation.newly_revealed_elements) == 5
+
+
+def test_production_agent_uses_project_and_persona_runtime_configuration(
+    tmp_path: Path,
+) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    definition = next(
+        item for item in loaded.project.experiments if item.id == "core-pair"
+    )
+    spec = next(
+        item
+        for item in expand_experiment(
+            ExperimentContext(definition, loaded.project, loaded.config_digest)
+        )
+        if item.policy.value == "progressive-prominence-scent"
+    )
+
+    class FakeClient:
+        endpoint_origin = "https://llm.example.test"
+        records: tuple[object, ...] = ()
+
+    settings = OpenAICompatibleSettings(
+        base_url="https://llm.example.test/v1",
+        api_key="secret",
+        scent_model="scent-model",
+        cognitive_model="cognitive-model",
+    )
+    client = FakeClient()
+    agent = cli._build_agent(
+        spec,
+        adapter=object(),
+        client=client,
+        output=tmp_path,
+        fixture_origin="http://fixture.test",
+        settings=settings,
+        runtime=loaded.runtime,
+    )
+
+    assert agent.prominence_provider.config.version == "heuristic-prominence-v1"
+    assert agent.attention_policy._policy.config.temperature == pytest.approx(
+        spec.persona.attention_temperature
+    )
+    assert agent.state_update_config.version == "state-updates-v1"
+    assert agent.state_update_config.abandonment_threshold == pytest.approx(
+        spec.persona.abandonment_threshold
+    )
+    assert agent.model_record_source is client
+    assert agent.result_evaluator is not None
+
+
 def test_report_regenerates_from_finalized_bundles(tmp_path: Path) -> None:
     _write_run(tmp_path)
     output = tmp_path / "report.html"
@@ -187,3 +277,51 @@ def test_fixture_serve_delegates_to_uvicorn(monkeypatch) -> None:
         "host": "127.0.0.1",
         "port": 8765,
     }
+
+
+def test_production_run_completes_evaluation_summary_and_report(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    completed: dict[str, object] = {}
+
+    async def fake_execute_matrix(*args: object, **kwargs: object) -> ExperimentResult:
+        del args, kwargs
+        return ExperimentResult(specs=(), results=(), failures=())
+
+    def fake_complete(
+        result: ExperimentResult, *, output: Path, runtime: object
+    ) -> tuple[Path, Path]:
+        completed.update(result=result, output=output, runtime=runtime)
+        summary = output / "experiment.json"
+        report = output / "report.html"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text("{}", encoding="utf-8")
+        report.write_text("<html></html>", encoding="utf-8")
+        return summary, report
+
+    monkeypatch.setattr(cli, "_execute_matrix", fake_execute_matrix)
+    monkeypatch.setattr(cli, "_complete_experiment", fake_complete, raising=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(DEMO_PROJECT),
+            "--experiment",
+            "core-pair",
+            "--run-count",
+            "1",
+            "--output",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert completed["output"] == tmp_path
+    assert completed["runtime"] is not None
+    assert "evaluation summary:" in result.stdout
+    assert "report generated:" in result.stdout

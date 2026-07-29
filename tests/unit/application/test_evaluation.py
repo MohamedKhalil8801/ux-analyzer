@@ -11,6 +11,7 @@ from ux_analyzer.application.evaluation import (
     RunEvaluationInputs,
     aggregate_cell,
     compare_variants,
+    evaluate_experiment_results,
     evaluate_run,
 )
 from ux_analyzer.application.run_agent import RunResult
@@ -283,3 +284,57 @@ def test_scorecard_rejects_unsupported_human_evidence() -> None:
 
     with pytest.raises(UnsupportedHumanClaimError):
         aggregate_cell((unsupported,))
+
+
+def test_evaluate_experiment_results_aggregates_cells_and_paired_gate() -> None:
+    defective = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    improved = ApplicationVersion(
+        id="improved", kind=ApplicationVersionKind.IMPROVED, label="Improved"
+    )
+    baseline_result = _result(defective)
+    improved_result = _result(improved)
+    baseline_metrics = evaluate_run(baseline_result, EvaluationTarget("target"))
+    improved_metrics = replace(
+        evaluate_run(improved_result, EvaluationTarget("target")),
+        discovery_cost=DiscoveryCostBreakdown(0, 0, 0, 0, 0, 0, 0),
+    )
+
+    evaluation = evaluate_experiment_results(
+        (
+            replace(baseline_result, metrics=baseline_metrics),
+            replace(improved_result, metrics=improved_metrics),
+        )
+    )
+
+    assert len(evaluation.run_metrics) == 2
+    assert len(evaluation.cell_aggregates) == 2
+    assert len(evaluation.variant_comparisons) == 1
+    assert evaluation.variant_comparisons[0].gate.passed
+
+
+def test_experiment_evaluation_retains_partial_cells_without_unpaired_gate() -> None:
+    defective = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    improved = ApplicationVersion(
+        id="improved", kind=ApplicationVersionKind.IMPROVED, label="Improved"
+    )
+    baseline_result = _result(defective)
+    improved_result = _result(improved)
+    baseline_metrics = evaluate_run(baseline_result, EvaluationTarget("target"))
+    improved_metrics = replace(
+        evaluate_run(improved_result, EvaluationTarget("target")),
+        seed=8,
+    )
+
+    evaluation = evaluate_experiment_results(
+        (
+            replace(baseline_result, metrics=baseline_metrics),
+            replace(improved_result, metrics=improved_metrics),
+        )
+    )
+
+    assert len(evaluation.cell_aggregates) == 2
+    assert evaluation.variant_comparisons == ()

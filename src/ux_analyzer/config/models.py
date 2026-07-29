@@ -11,6 +11,10 @@ def _empty_int_list() -> list[int]:
     return []
 
 
+def _empty_float_mapping() -> dict[str, float]:
+    return {}
+
+
 class _ConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -101,6 +105,60 @@ class ExperimentModel(_ConfigModel):
     run_count: int = Field(gt=0)
 
 
+class ProminenceProviderModel(_ConfigModel):
+    version: str = Field(default="heuristic-prominence-v1", min_length=1)
+    weights: dict[str, float] = Field(default_factory=_empty_float_mapping)
+    temperature: float = Field(default=1.0, gt=0)
+
+
+class AttentionProviderModel(_ConfigModel):
+    version: str = Field(default="progressive-attention-v1", min_length=1)
+    batch_size: int = Field(default=1, ge=1, le=3)
+    prominence_weight: float = Field(default=1.0, ge=0)
+    coarse_scent_weight: float = Field(default=0.5, ge=0)
+    novelty_penalty: float = Field(default=0.25, ge=0, le=1)
+    failure_penalty: float = Field(default=0.5, ge=0, le=1)
+
+
+class ProvidersModel(_ConfigModel):
+    prominence: ProminenceProviderModel = Field(default_factory=ProminenceProviderModel)
+    attention: AttentionProviderModel = Field(default_factory=AttentionProviderModel)
+
+
+class DiscoveryCostModel(_ConfigModel):
+    version: str = Field(default="discovery-cost-v1", min_length=1)
+    inspection_cost: float = Field(default=1.0, ge=0)
+    region_cost: float = Field(default=1.0, ge=0)
+    scroll_cost: float = Field(default=1.0, ge=0)
+    wrong_action_cost: float = Field(default=1.0, ge=0)
+    backtrack_cost: float = Field(default=1.0, ge=0)
+    uncertainty_cost: float = Field(default=1.0, ge=0)
+    abandonment_penalty: float = Field(default=1.0, ge=0)
+
+
+class FindingRulesModel(_ConfigModel):
+    version: str = Field(default="finding-rules-v1", min_length=1)
+    weak_target_prominence_below: float = Field(default=0.25, ge=0, le=1)
+    weak_scent_below: float = Field(default=0.30, ge=0, le=1)
+    misleading_scent_margin: float = Field(default=0.20, ge=0, le=1)
+    excessive_navigation_depth_at_least: int = Field(default=4, ge=1)
+    wrong_action_count_at_least: int = Field(default=2, ge=1)
+
+
+class StateUpdatesModel(_ConfigModel):
+    version: str = Field(default="state-updates-v1", min_length=1)
+    success_confidence_delta: float = 0.05
+    success_frustration_delta: float = -0.1
+    failure_confidence_delta: float = -0.1
+    failure_frustration_delta: float = 0.2
+
+
+class EvaluationModel(_ConfigModel):
+    discovery_cost: DiscoveryCostModel = Field(default_factory=DiscoveryCostModel)
+    findings: FindingRulesModel = Field(default_factory=FindingRulesModel)
+    state_updates: StateUpdatesModel = Field(default_factory=StateUpdatesModel)
+
+
 class ProjectModel(_ConfigModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -108,3 +166,5 @@ class ProjectModel(_ConfigModel):
     scenarios: list[ScenarioModel] = Field(min_length=1)
     personas: list[PersonaModel] = Field(min_length=1)
     experiments: list[ExperimentModel] = Field(min_length=1)
+    providers: ProvidersModel = Field(default_factory=ProvidersModel)
+    evaluation: EvaluationModel = Field(default_factory=EvaluationModel)

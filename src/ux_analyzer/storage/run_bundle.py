@@ -121,6 +121,8 @@ def _coerce_manifest(value: BundleManifest | Mapping[str, object]) -> BundleMani
                     model_id=cast(str | None, item_mapping.get("model_id")),
                     endpoint_origin=str(item_mapping["endpoint_origin"]),
                     version=str(item_mapping["version"]),
+                    prompt_version=cast(str | None, item_mapping.get("prompt_version")),
+                    schema_version=cast(str | None, item_mapping.get("schema_version")),
                 )
             )
     seed_value = value.get("seed")
@@ -260,22 +262,43 @@ class FilesystemRunBundleWriter:
         """Write terminal result and checksums, then atomically publish bundle."""
 
         self._ensure_writable()
-        self._timeline.flush()
-        self._timeline.close()
-        _write_bytes(
-            self.staging_path / "result.json",
-            _json_bytes(result, self.redaction),
-        )
-        (self.staging_path / _ACTIVE_MARKER).unlink(missing_ok=True)
-        checksums = self._checksums()
-        checksum_content = "".join(
-            f"{digest}  {relative_path}\n" for relative_path, digest in checksums
-        ).encode("utf-8")
-        _write_bytes(self.staging_path / _CHECKSUMS_FILE, checksum_content)
-        self.final_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.final_path.exists():
-            raise BundleStateError("run bundle final path already exists")
-        os.replace(self.staging_path, self.final_path)
+        try:
+            self._timeline.flush()
+            self._timeline.close()
+            _write_bytes(
+                self.staging_path / "result.json",
+                _json_bytes(result, self.redaction),
+            )
+            (self.staging_path / _ACTIVE_MARKER).unlink(missing_ok=True)
+            checksums = self._checksums()
+            checksum_content = "".join(
+                f"{digest}  {relative_path}\n" for relative_path, digest in checksums
+            ).encode("utf-8")
+            _write_bytes(self.staging_path / _CHECKSUMS_FILE, checksum_content)
+            self.final_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.final_path.exists():
+                raise BundleStateError("run bundle final path already exists")
+            os.replace(self.staging_path, self.final_path)
+        except BaseException as error:
+            if not self._timeline.closed:
+                self._timeline.close()
+            reason = (
+                f"finalization failed: {str(error).strip() or type(error).__name__}"
+            )
+            _write_bytes(
+                self.staging_path / _CRASH_MARKER,
+                _json_bytes(
+                    {
+                        "run_id": self.run_id,
+                        "outcome": "internal-error",
+                        "reason": reason,
+                    },
+                    self.redaction,
+                ),
+            )
+            (self.staging_path / _ACTIVE_MARKER).unlink(missing_ok=True)
+            self._aborted = True
+            raise
         self._finalized = True
         return self.final_path
 

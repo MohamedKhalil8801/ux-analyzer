@@ -35,6 +35,7 @@ class FindingCategory(StrEnum):
 class FindingRuleConfig:
     """Thresholds for typed finding predicates."""
 
+    version: str = "finding-rules-v1"
     weak_target_prominence_below: float = 0.25
     weak_scent_below: float = 0.30
     misleading_scent_margin: float = 0.20
@@ -42,6 +43,8 @@ class FindingRuleConfig:
     wrong_action_count_at_least: int = 2
 
     def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("finding rule version must not be empty")
         for name in (
             "weak_target_prominence_below",
             "weak_scent_below",

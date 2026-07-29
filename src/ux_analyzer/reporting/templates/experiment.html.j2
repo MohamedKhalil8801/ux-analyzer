@@ -56,6 +56,34 @@
           </tbody>
         </table>
       </div>
+      {% if gate_rows %}
+      <div class="table-wrap">
+        <table id="gate-table">
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>Persona</th>
+              <th>Policy</th>
+              <th>Paired seeds</th>
+              <th>Directional gate</th>
+              <th>Reasons</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for row in gate_rows %}
+            <tr>
+              <td>{{ row.scenario_label }}</td>
+              <td>{{ row.persona_label }}</td>
+              <td>{{ row.policy }}</td>
+              <td>{{ row.paired_seed_count }}</td>
+              <td>{{ "pass" if row.passed else "fail" }}</td>
+              <td>{{ row.reasons | join(", ") if row.reasons else "All directional checks passed" }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
       <div class="evidence-summary" aria-label="Evidence classes">
         {% for item in evidence_summary %}
         <span class="evidence-chip evidence-{{ item.evidence_class }}">

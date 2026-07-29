@@ -256,6 +256,15 @@ class HeuristicProminenceConfig:
 class HeuristicProminenceProvider:
     """Calculate deterministic, weighted prominence for visible elements."""
 
+    id = "heuristic-prominence"
+
+    def __init__(self, config: HeuristicProminenceConfig | None = None) -> None:
+        self.config = config
+
+    @property
+    def version(self) -> str:
+        return (self.config or HeuristicProminenceConfig()).version
+
     def score(
         self,
         snapshot: ViewportSnapshot,
@@ -263,7 +272,7 @@ class HeuristicProminenceProvider:
     ) -> tuple[ProminenceResult, ...]:
         """Score snapshot elements while retaining every feature calculation."""
 
-        settings = config or HeuristicProminenceConfig()
+        settings = config or self.config or HeuristicProminenceConfig()
         elements = snapshot.elements
         if not elements:
             return ()
@@ -394,7 +403,7 @@ def _raw_feature(
         }[ElementRole(element.role)]
         return role_strength + min(len(element.label) / 40, 1.0) * 0.2
     if feature == "contrast":
-        return 0.5
+        return element.local_contrast if element.local_contrast is not None else 0.5
     if feature == "isolation":
         return 1 / (1 + near_count)
     if feature == "actionability":
@@ -404,7 +413,11 @@ def _raw_feature(
     if feature == "competition":
         return float(near_count)
     if feature == "occlusion":
-        return 1 - element.visibility_fraction
+        return (
+            element.occlusion_fraction
+            if element.occlusion_fraction is not None
+            else 1 - element.visibility_fraction
+        )
     raise ValueError(f"unknown prominence feature: {feature}")
 
 

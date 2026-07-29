@@ -226,6 +226,7 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "Verification" in html
     assert "Memory" in html
     assert "Model manifests" in html
+    assert "Model calls" in html
     assert "Limitations" in html
     assert 'data-viewport-width="800"' in html
     assert "secret-token" not in html
@@ -239,6 +240,32 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
 def test_renderer_builds_comparison_and_splits_large_experiment(tmp_path: Path) -> None:
     _write_run(tmp_path, "run-defective", version="defective", discovery_cost=8)
     _write_run(tmp_path, "run-improved", version="improved", discovery_cost=3)
+    _write_json(
+        tmp_path / "experiment.json",
+        {
+            "variant_comparisons": [
+                {
+                    "baseline": {
+                        "scenario_id": "invite",
+                        "application_version_id": "defective",
+                        "persona_id": "persona",
+                        "policy": "progressive-prominence-scent",
+                    },
+                    "improved": {
+                        "scenario_id": "invite",
+                        "application_version_id": "improved",
+                        "persona_id": "persona",
+                        "policy": "progressive-prominence-scent",
+                    },
+                    "gate": {
+                        "passed": True,
+                        "paired_seed_count": 1,
+                        "reasons": [],
+                    },
+                }
+            ]
+        },
+    )
 
     output = render_experiment_report(
         tmp_path,
@@ -256,3 +283,5 @@ def test_renderer_builds_comparison_and_splits_large_experiment(tmp_path: Path) 
     assert "Defective" in html
     assert "Improved" in html
     assert "discovery-cost" in html
+    assert "Directional gate" in html
+    assert "All directional checks passed" in html

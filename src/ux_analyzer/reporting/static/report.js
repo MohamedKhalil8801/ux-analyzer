@@ -196,6 +196,7 @@
     addPanel(grid, "Verification", run.verification ? [run.verification] : [], addJsonRecord);
     addPanel(grid, "Memory", run.memory, addJsonRecord);
     addPanel(grid, "Model manifests", run.manifests && run.manifests.provider_manifests ? run.manifests.provider_manifests : [], addJsonRecord);
+    addPanel(grid, "Model calls", run.model_calls || [], addJsonRecord);
     addPanel(grid, "Evidence", run.evidence, addJsonRecord);
     addPanel(grid, "Findings", run.findings, addJsonRecord);
     addPanel(grid, "Metrics", run.metrics, addJsonRecord);

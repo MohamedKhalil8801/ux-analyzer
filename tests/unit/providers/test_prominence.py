@@ -30,6 +30,8 @@ def _element(
     actionable: bool = True,
     visibility_fraction: float = 1.0,
     region_id: str | None = "main",
+    local_contrast: float | None = None,
+    occlusion_fraction: float | None = None,
 ) -> ElementSnapshot:
     return ElementSnapshot(
         id=element_id,
@@ -39,6 +41,8 @@ def _element(
         visibility_fraction=visibility_fraction,
         actionable=actionable,
         region_id=region_id,
+        local_contrast=local_contrast,
+        occlusion_fraction=occlusion_fraction,
     )
 
 
@@ -119,3 +123,31 @@ def test_visibility_and_competition_reduce_prominence() -> None:
         > by_id["clear"].raw_values["occlusion"]
     )
     assert by_id["occluded"].feature_contributions["occlusion"] < 0
+
+
+def test_rendered_contrast_and_occlusion_diagnostics_drive_features() -> None:
+    snapshot = _snapshot(
+        _element(
+            "measured",
+            x=10,
+            y=10,
+            local_contrast=0.9,
+            occlusion_fraction=0.6,
+        ),
+        _element(
+            "plain",
+            x=200,
+            y=10,
+            local_contrast=0.2,
+            occlusion_fraction=0.1,
+        ),
+    )
+
+    by_id = {
+        item.element_id: item for item in HeuristicProminenceProvider().score(snapshot)
+    }
+
+    assert by_id["measured"].raw_values["contrast"] == pytest.approx(0.9)
+    assert by_id["measured"].raw_values["occlusion"] == pytest.approx(0.6)
+    assert by_id["plain"].raw_values["contrast"] == pytest.approx(0.2)
+    assert by_id["plain"].raw_values["occlusion"] == pytest.approx(0.1)

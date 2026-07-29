@@ -146,6 +146,8 @@ class ElementSnapshot:
     hidden_label: str | None = None
     destination_url: str | None = None
     lineage_id: str | None = None
+    local_contrast: float | None = None
+    occlusion_fraction: float | None = None
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -157,6 +159,12 @@ class ElementSnapshot:
             raise ValueError("visibility_fraction must be between 0 and 1")
         if self.provider_id is not None and not self.provider_id:
             raise ValueError("provider_id must not be empty")
+        for name, value in (
+            ("local_contrast", self.local_contrast),
+            ("occlusion_fraction", self.occlusion_fraction),
+        ):
+            if value is not None and (not math.isfinite(value) or not 0 <= value <= 1):
+                raise ValueError(f"{name} must be between 0 and 1")
 
     @property
     def element_id(self) -> str:

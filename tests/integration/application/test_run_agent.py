@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from ux_analyzer.adapters.web.verifier import WebVerifier
-from ux_analyzer.application.run_agent import RunAgent
+from ux_analyzer.application.evaluation import EvaluationTarget, evaluate_run
+from ux_analyzer.application.run_agent import RunAgent, RunFinalizationError
 from ux_analyzer.domain.attention import Abandon, ProgressiveObservation
 from ux_analyzer.domain.benchmark import (
     ApplicationVersion,
@@ -29,6 +31,12 @@ from ux_analyzer.domain.interface import (
 )
 from ux_analyzer.domain.run import VerificationResult
 from ux_analyzer.ports.artifacts import ArtifactReference
+from ux_analyzer.ports.models import (
+    ModelCallRecord,
+    ModelRole,
+    RetryEvent,
+    TokenUsage,
+)
 from ux_analyzer.ports.observation import (
     ObservationCapture,
     ObservationProviderError,
@@ -132,6 +140,7 @@ class FakeProminenceProvider:
                 element_id=element.id,
                 raw_score=0,
                 normalized_probability=probability,
+                feature_contributions={"contrast": probability},
             )
             for element in snapshot.elements
         )
@@ -212,6 +221,7 @@ class FakeBundle:
         self.finalized = False
         self.aborted = False
         self.final_result: object | None = None
+        self.finalize_error: BaseException | None = None
 
     def append_event(self, event: object) -> int:
         self.events.append(event)
@@ -227,6 +237,8 @@ class FakeBundle:
         )
 
     def finalize(self, result: object) -> str:
+        if self.finalize_error is not None:
+            raise self.finalize_error
         self.finalized = True
         self.final_result = result
         return "runs/run-1"
@@ -244,6 +256,34 @@ class FakeBundleFactory:
     def start(self, spec: object) -> FakeBundle:
         del spec
         return self.bundle
+
+
+class FakeModelRecordSource:
+    def __init__(self) -> None:
+        self.records = (
+            ModelCallRecord(
+                role=ModelRole.COGNITIVE,
+                model="cognitive-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest="prompt-digest",
+                schema_version="cognitive-v1",
+                attempts=2,
+                latency_ms=17,
+                token_usage=TokenUsage(4, 3, 7),
+                request={"messages": [{"content": "[REDACTED]"}]},
+                response={"action": {"kind": "abandon"}},
+                retries=(
+                    RetryEvent(
+                        role=ModelRole.COGNITIVE,
+                        model="cognitive-model",
+                        attempt=1,
+                        reason="rate-limit",
+                        status_code=429,
+                        delay_seconds=0.25,
+                    ),
+                ),
+            ),
+        )
 
 
 def _snapshot(
@@ -354,6 +394,8 @@ def _agent(
     bundles: FakeBundleFactory,
     *,
     timeout_seconds: float = 1,
+    model_record_source: FakeModelRecordSource | None = None,
+    result_evaluator=None,
 ) -> RunAgent:
     spec = _spec(timeout_seconds=timeout_seconds)
     return RunAgent(
@@ -364,6 +406,8 @@ def _agent(
         verifier=verifier,
         bundle_factory=bundles,
         session_config_factory=lambda _: _config(spec, tmp_path),
+        model_record_source=model_record_source,
+        result_evaluator=result_evaluator,
     )
 
 
@@ -700,3 +744,122 @@ async def test_terminal_event_append_failure_aborts_bundle_and_cleans_up(
 
     assert bundles.bundle.aborted
     assert provider.ended == 1
+
+
+@pytest.mark.asyncio
+async def test_run_records_replay_and_role_specific_model_evidence(
+    tmp_path: Path,
+) -> None:
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="No viable path.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        model_record_source=FakeModelRecordSource(),
+    )
+
+    result = await agent.execute(_spec())
+
+    mapping_events = [
+        event for event in bundles.bundle.events if isinstance(event, dict)
+    ]
+    kinds = {event["kind"] for event in mapping_events}
+    assert {
+        "prominence-recorded",
+        "attention-selection-recorded",
+        "decision-recorded",
+        "model-call-recorded",
+    }.issubset(kinds)
+    viewport_event = next(
+        event
+        for event in bundles.bundle.events
+        if getattr(event, "kind", None) == "viewport-captured"
+    )
+    assert viewport_event.snapshot.screenshot_artifact.startswith("artifacts/")
+    prominence = next(
+        event for event in mapping_events if event["kind"] == "prominence-recorded"
+    )
+    assert prominence["scores"][0]["feature_contributions"]
+    model_call = next(
+        event for event in mapping_events if event["kind"] == "model-call-recorded"
+    )
+    assert model_call["record"].role is ModelRole.COGNITIVE
+    assert model_call["record"].retries[0].status_code == 429
+    persisted_model_record = json.dumps(asdict(model_call["record"]))
+    assert "super-secret-api-key" not in persisted_model_record
+    assert "demo-secret@example.test" not in persisted_model_record
+    assert "[REDACTED]" in persisted_model_record
+    assert result.evidence.model_calls[0].token_usage.total_tokens == 7
+
+
+@pytest.mark.asyncio
+async def test_bundle_publication_failure_never_returns_success_result(
+    tmp_path: Path,
+) -> None:
+    bundles = FakeBundleFactory()
+    bundles.bundle.finalize_error = OSError("atomic publish failed")
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "target"},
+                    reason="Complete task.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=True),)),
+        bundles,
+    )
+
+    with pytest.raises(RunFinalizationError) as failure:
+        await agent.execute(_spec())
+
+    assert failure.value.outcome.kind == "internal-error"
+    assert bundles.bundle.aborted
+    assert bundles.bundle.finalized is False
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_is_persisted_before_bundle_publication(
+    tmp_path: Path,
+) -> None:
+    bundles = FakeBundleFactory()
+
+    def evaluate(result):
+        metrics = evaluate_run(result, EvaluationTarget("target"))
+        return replace(result, metrics=metrics)
+
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="No viable path.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        result_evaluator=evaluate,
+    )
+
+    result = await agent.execute(_spec())
+
+    assert result.metrics is not None
+    assert result.metrics.run_id == result.run_id
+    persisted = bundles.bundle.final_result
+    assert persisted is not None
+    assert persisted.metrics == result.metrics

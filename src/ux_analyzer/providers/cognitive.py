@@ -8,7 +8,7 @@ from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ux_analyzer.domain.attention import ProgressiveObservation
+from ux_analyzer.domain.attention import PersonaObservation
 from ux_analyzer.domain.interface import PersonaVisibleElement
 from ux_analyzer.ports.models import (
     ChatMessage,
@@ -130,7 +130,7 @@ class StructuredCognitiveAgent:
         return _manifest(self.client, self.model)
 
     async def decide(
-        self, goal: str, observation: ProgressiveObservation
+        self, goal: str, observation: PersonaObservation
     ) -> CognitiveDecision:
         region_label = (
             observation.region_context.label

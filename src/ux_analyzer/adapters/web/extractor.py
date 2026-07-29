@@ -68,9 +68,16 @@ async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionRe
     for raw_element in raw_elements:
         bounds = raw_element.bounds.to_domain()
         element_id = f"element-{raw_element.ordinal}"
+        local_contrast = screenshot_local_contrast(
+            screenshot,
+            bounds,
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+        )
+        occlusion_fraction = max(0.0, min(1.0, raw_element.occlusion_fraction))
         effective_fraction = effective_visibility(
             geometric_visibility(raw_element.bounds, raw_element.visible_bounds),
-            raw_element.occlusion_fraction,
+            occlusion_fraction,
         )
         snapshots.append(
             ElementSnapshot(
@@ -96,15 +103,12 @@ async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionRe
                 test_id=raw_element.test_id,
                 hidden_label=raw_element.hidden_label,
                 destination_url=raw_element.destination_url,
+                local_contrast=local_contrast,
+                occlusion_fraction=occlusion_fraction,
             )
         )
-        contrast[element_id] = screenshot_local_contrast(
-            screenshot,
-            bounds,
-            viewport_width=viewport_width,
-            viewport_height=viewport_height,
-        )
-        occlusion[element_id] = max(0.0, min(1.0, raw_element.occlusion_fraction))
+        contrast[element_id] = local_contrast
+        occlusion[element_id] = occlusion_fraction
     regions, graph_edges = build_regions_and_edges(raw_regions, raw_elements, snapshots)
     snapshot = ViewportSnapshot(
         id=viewport_id,

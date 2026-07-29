@@ -13,7 +13,7 @@ from ux_analyzer.domain.attention import (
     InspectElement,
     InteractWithElement,
     NoticeElements,
-    ProgressiveObservation,
+    PersonaObservation,
     RememberedElement,
     Scroll,
     Wait,
@@ -116,7 +116,7 @@ StateLike = AttentionState | ApplicationState
 
 def apply_observation(
     state: StateLike,
-    observation: ProgressiveObservation,
+    observation: PersonaObservation,
     *,
     snapshot: ViewportSnapshot | None = None,
     memory_policy: MemoryPolicy | None = None,

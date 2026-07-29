@@ -53,6 +53,64 @@ def test_load_valid_project_into_frozen_domain_contracts() -> None:
     assert len(loaded.config_digest) == 64
 
 
+def test_loads_versioned_runtime_provider_and_evaluation_formulas(
+    tmp_path: Path,
+) -> None:
+    project = _read_project()
+    project["providers"] = {
+        "prominence": {
+            "version": "prominence-project-v2",
+            "weights": {"contrast": 0.7, "occlusion": -0.3},
+            "temperature": 0.75,
+        },
+        "attention": {
+            "version": "attention-project-v2",
+            "batch_size": 2,
+            "prominence_weight": 1.4,
+            "coarse_scent_weight": 0.6,
+            "novelty_penalty": 0.2,
+            "failure_penalty": 0.4,
+        },
+    }
+    project["evaluation"] = {
+        "discovery_cost": {
+            "version": "discovery-project-v2",
+            "inspection_cost": 2.0,
+            "region_cost": 3.0,
+            "scroll_cost": 4.0,
+            "wrong_action_cost": 5.0,
+            "backtrack_cost": 6.0,
+            "uncertainty_cost": 7.0,
+            "abandonment_penalty": 8.0,
+        },
+        "findings": {
+            "version": "finding-project-v2",
+            "weak_target_prominence_below": 0.2,
+            "weak_scent_below": 0.25,
+            "misleading_scent_margin": 0.15,
+            "excessive_navigation_depth_at_least": 3,
+            "wrong_action_count_at_least": 1,
+        },
+        "state_updates": {
+            "version": "state-project-v2",
+            "success_confidence_delta": 0.1,
+            "success_frustration_delta": -0.2,
+            "failure_confidence_delta": -0.2,
+            "failure_frustration_delta": 0.3,
+        },
+    }
+
+    loaded = load_project(_write_project(tmp_path, project))
+
+    assert loaded.runtime.prominence.version == "prominence-project-v2"
+    assert loaded.runtime.prominence.weights["contrast"] == pytest.approx(0.7)
+    assert loaded.runtime.attention.version == "attention-project-v2"
+    assert loaded.runtime.attention.batch_size == 2
+    assert loaded.runtime.discovery_cost.version == "discovery-project-v2"
+    assert loaded.runtime.findings.version == "finding-project-v2"
+    assert loaded.runtime.state_updates.version == "state-project-v2"
+
+
 def test_domain_project_is_immutable() -> None:
     project = load_project(FIXTURE_PATH).project
 

@@ -108,9 +108,11 @@ def _load_experiment(root: Path) -> dict[str, Any]:
     if not run_directories:
         raise ValueError(f"no finalized run bundles found under {root}")
     runs = tuple(_load_run(path) for path in run_directories)
+    summary = _read_object(root / "experiment.json", required=False)
     return {
         "runs": runs,
         "comparison_rows": _comparison_rows(runs),
+        "gate_rows": _gate_rows(summary, runs),
         "evidence_summary": _evidence_summary(runs),
         "limitations": _unique(
             limitation for run in runs for limitation in run["limitations"]
@@ -222,6 +224,7 @@ def _load_run(path: Path) -> dict[str, Any]:
         "verification": verification,
         "memory": _memory(attention),
         "manifests": _manifests(manifest, result, state),
+        "model_calls": _model_calls(events),
         "evidence": supported_evidence,
         "findings": findings,
         "metrics": _metric_rows(metrics, verification, outcome),
@@ -271,6 +274,7 @@ def _report_context(
     return {
         "runs": runs,
         "comparison_rows": experiment["comparison_rows"],
+        "gate_rows": experiment["gate_rows"],
         "evidence_summary": experiment["evidence_summary"],
         "limitations": experiment["limitations"],
         "initial_viewport_width": initial_width,
@@ -278,6 +282,7 @@ def _report_context(
             {
                 "runs": runs,
                 "comparison_rows": experiment["comparison_rows"],
+                "gate_rows": experiment["gate_rows"],
                 "evidence_summary": experiment["evidence_summary"],
                 "limitations": experiment["limitations"],
             }
@@ -492,6 +497,8 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
         result["scores"] = _public_scores(
             event.get("scores"), prominence="prominence" in kind
         )
+    elif kind == "model-call-recorded":
+        result["record"] = _safe_value(event.get("record"))
     elif kind == "verification-recorded":
         result["verification"] = _public_verification(event.get("result"))
     elif kind == "run-terminated":
@@ -583,8 +590,19 @@ def _decisions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "claimed_success": bool(event.get("claimed_success", False)),
         }
         for event in events
-        if _kind(event) in {"action-proposed", "agent-claim"}
+        if _kind(event) in {"decision-recorded", "action-proposed", "agent-claim"}
     ]
+
+
+def _model_calls(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for event in events:
+        if _kind(event) != "model-call-recorded":
+            continue
+        record = _safe_value(event.get("record"))
+        if isinstance(record, dict):
+            records.append(cast(dict[str, Any], record))
+    return records
 
 
 def _actions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -658,6 +676,8 @@ def _manifests(
                 "model_id": _optional_text(item.get("model_id")),
                 "endpoint_origin": _optional_text(item.get("endpoint_origin")),
                 "version": _text(item.get("version")),
+                "prompt_version": _optional_text(item.get("prompt_version")),
+                "schema_version": _optional_text(item.get("schema_version")),
             }
             for item in terminal
         ],
@@ -805,6 +825,50 @@ def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 "discovery_cost": _median_metric(grouped, "discovery-cost"),
                 "wrong_actions": _median_metric(grouped, "wrong-actions"),
                 "backtracks": _median_metric(grouped, "backtracks"),
+            }
+        )
+    return rows
+
+
+def _gate_rows(
+    summary: dict[str, Any], runs: tuple[dict[str, Any], ...]
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for comparison in _list_of_mappings(summary.get("variant_comparisons")):
+        baseline = _mapping(comparison.get("baseline"))
+        improved = _mapping(comparison.get("improved"))
+        gate = _mapping(comparison.get("gate"))
+        scenario_id = _text(baseline.get("scenario_id"))
+        persona_id = _text(baseline.get("persona_id"))
+        policy = _text(baseline.get("policy"))
+        matching = next(
+            (
+                run
+                for run in runs
+                if run["scenario_id"] == scenario_id
+                and run["persona_id"] == persona_id
+                and run["policy"] == policy
+            ),
+            None,
+        )
+        if matching is None:
+            matching = {}
+        rows.append(
+            {
+                "scenario_id": scenario_id,
+                "scenario_label": matching.get("scenario_label", scenario_id),
+                "persona_id": persona_id,
+                "persona_label": matching.get("persona_label", persona_id),
+                "policy": policy,
+                "baseline_version": _text(
+                    baseline.get("application_version_id"), "defective"
+                ),
+                "improved_version": _text(
+                    improved.get("application_version_id"), "improved"
+                ),
+                "paired_seed_count": int(_number(gate.get("paired_seed_count"), 0)),
+                "passed": bool(gate.get("passed", False)),
+                "reasons": _strings(gate.get("reasons")),
             }
         )
     return rows
