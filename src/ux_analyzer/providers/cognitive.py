@@ -94,6 +94,18 @@ class CognitiveDecision(_RoleSchema):
     reason: str = Field(min_length=1)
 
 
+class CognitiveModelResponse(_RoleSchema):
+    """Provider-facing flat response accepted by less strict model APIs."""
+
+    schema_version: ClassVar[str] = "cognitive-v1"
+
+    action: str | None = None
+    element_id: str | None = None
+    fixture_key: str | None = None
+    direction: str | None = None
+    reason: str | None = None
+
+
 def _prompt() -> str:
     path = Path(__file__).resolve().parents[1] / "prompts" / "cognitive-v1.txt"
     return path.read_text(encoding="utf-8").strip()
@@ -110,6 +122,30 @@ def _element_payload(
         disabled=element.disabled,
         region_label=region_label,
     )
+
+
+def _normalize_model_response(response: CognitiveModelResponse) -> CognitiveDecision:
+    action_name = (response.action or "").strip().lower()
+    action_name = {
+        "click": "interact",
+        "tap": "interact",
+        "press": "interact",
+        "input": "type-fixture",
+        "type": "type-fixture",
+    }.get(action_name, action_name)
+
+    action_data: dict[str, object] = {"kind": action_name}
+    if response.element_id is not None:
+        action_data["element_id"] = response.element_id
+    if response.fixture_key is not None:
+        action_data["fixture_key"] = response.fixture_key
+    if response.direction is not None:
+        action_data["direction"] = response.direction
+    if action_name == "abandon" and response.reason is not None:
+        action_data["reason"] = response.reason
+
+    reason = response.reason or "Provider-compatible cognitive decision"
+    return CognitiveDecision.model_validate({"action": action_data, "reason": reason})
 
 
 def _manifest(client: StructuredModelClient, model: str) -> ModelManifest:
@@ -180,9 +216,10 @@ class StructuredCognitiveAgent:
                 ),
             ),
         )
-        return await self.client.complete(
-            CognitiveDecision,
+        response = await self.client.complete(
+            CognitiveModelResponse,
             messages,
             model=self.model,
             role=self.role,
         )
+        return _normalize_model_response(response)

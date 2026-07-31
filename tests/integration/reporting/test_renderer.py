@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ux_analyzer.application.report import render_experiment_report
+from ux_analyzer.reporting.renderer import render_experiment_report
 
 
 def _write_json(path: Path, value: object) -> None:

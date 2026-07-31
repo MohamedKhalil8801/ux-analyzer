@@ -107,6 +107,9 @@ class PlaywrightSessionAdapter:
                 permissions=[],
                 service_workers="block",
             )
+            await context.route_web_socket(
+                "**/*", lambda websocket: policy.handle_websocket(websocket)
+            )
             await context.route(
                 "**/*", lambda route, request: policy.handle_route(route, request)
             )
@@ -212,6 +215,7 @@ class PlaywrightSessionAdapter:
     ) -> PlatformActionResult:
         managed = self._active(session)
         started = monotonic()
+        initial_url = managed.page.url
         try:
             navigation_occurred = False
             if isinstance(action, NavigateAction):
@@ -264,7 +268,9 @@ class PlaywrightSessionAdapter:
                 succeeded=True,
                 url=managed.page.url,
                 duration_ms=_elapsed_ms(started),
-                navigation_occurred=navigation_occurred,
+                navigation_occurred=(
+                    navigation_occurred or managed.page.url != initial_url
+                ),
                 state_changed=not isinstance(action, (WaitAction, PressKeyAction)),
             )
         except SafetyBlocked:
@@ -333,7 +339,7 @@ class PlaywrightSessionAdapter:
             await popup.wait_for_load_state("domcontentloaded", timeout=500)
         except PlaywrightError:
             pass
-        if not managed.policy.allowed_origins.allows(popup.url):
+        if not managed.policy.allowed_origins.allows(popup.url, kind="popup"):
             managed.policy.record_popup(popup.url)
             await popup.close()
 

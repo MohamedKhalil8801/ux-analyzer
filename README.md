@@ -174,7 +174,7 @@ the directional gate described in [evaluation docs](docs/domain-model.md).
 - [Model provider](docs/model-provider.md)
 - [Security](docs/security.md)
 - [Roadmap and deferred contracts](docs/roadmap.md)
-- [Original concept](docs/overview.md)
+- [Testing](docs/testing.md)
 
 ## Verification
 

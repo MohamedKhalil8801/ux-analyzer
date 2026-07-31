@@ -307,6 +307,8 @@ def _is_schema_unsupported(status_code: int, body: object) -> bool:
     if status_code != 400:
         return False
     text = _body_text(body).lower()
+    if "invalid_request" in text or "invalid request" in text:
+        return True
     return any(
         marker in text
         for marker in ("response_format", "json_schema", "strict", "unsupported")
@@ -421,7 +423,10 @@ class OpenAICompatibleStructuredClient:
         attempts = 0
         started = time.perf_counter()
         response_payload: object = {}
-        mode = "strict"
+        # This endpoint hangs on cognitive discriminated schemas instead of
+        # returning a useful unsupported-schema response. Keep local validation
+        # while using its compatible JSON-object mode for that role.
+        mode = "json-object" if role_value is ModelRole.COGNITIVE else "strict"
         last_reason = "model call failed"
 
         while attempts < retry_policy.max_attempts:

@@ -14,7 +14,7 @@ from ux_analyzer.domain.interface import (
 )
 from ux_analyzer.ports.models import ModelRole
 from ux_analyzer.providers.cognitive import (
-    CognitiveDecision,
+    CognitiveModelResponse,
     StructuredCognitiveAgent,
 )
 from ux_analyzer.providers.scent import (
@@ -47,9 +47,10 @@ class RecordingClient:
         if schema is FullScentResponse:
             payload = {"scores": [{"element_id": "target", "score": 0.8}]}
             return schema.model_validate(payload)
-        if schema is CognitiveDecision:
+        if schema is CognitiveModelResponse:
             payload = {
-                "action": {"kind": "inspect", "element_id": "target"},
+                "action": "inspect",
+                "element_id": "target",
                 "reason": "Visible control matches goal.",
             }
             return schema.model_validate(payload)

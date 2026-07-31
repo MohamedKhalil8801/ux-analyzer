@@ -170,6 +170,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Local Codebase Memory index
+.codebase-memory/
+
 # PyPI configuration file
 .pypirc
 

@@ -21,7 +21,10 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from fixture_app.app import app as fixture_app
-from ux_analyzer.adapters.web.network_policy import NetworkPolicy
+from ux_analyzer.adapters.web.network_policy import (
+    BrowserAllowedOrigins,
+    NetworkPolicy,
+)
 from ux_analyzer.adapters.web.session import (
     PlaywrightSessionAdapter,
     ProviderFailure,
@@ -156,6 +159,28 @@ def test_verification_port_has_no_browser_dependency() -> None:
     assert VerificationProvider.__module__ == "ux_analyzer.ports.verification"
 
 
+def test_fixture_policy_rejects_foreign_schemes_and_explicit_about_navigation() -> None:
+    origins = BrowserAllowedOrigins.fixture_only(("http://fixture.test",))
+
+    assert origins.allows("about:blank", kind="internal")
+    for url in (
+        "about:config",
+        "data:text/html,unsafe",
+        "blob:http://fixture.test/unsafe",
+        "file:///etc/passwd",
+        "ftp://fixture.test/file",
+        "javascript:alert(1)",
+    ):
+        assert not origins.allows(url)
+        with pytest.raises(SafetyBlocked):
+            origins.require_allowed(url)
+
+    with pytest.raises(SafetyBlocked):
+        origins.require_allowed(
+            "about:blank", resource_type="document", kind="navigation"
+        )
+
+
 @pytest.mark.asyncio
 async def test_foreign_navigation_and_redirect_are_blocked(
     browser_adapter: Any,
@@ -208,8 +233,9 @@ async def test_foreign_popup_form_fetch_and_image_are_blocked(
         _session_config(fixture_origin, tmp_path / "resources.zip")
     )
     page = browser_adapter.page_for_testing(session)
-    await page.goto(
-        "data:text/html,<html><body><iframe name='sink' hidden></iframe></body></html>"
+    await page.goto("about:blank")
+    await page.set_content(
+        "<html><body><iframe name='sink' hidden></iframe></body></html>"
     )
     await page.evaluate(
         """
@@ -234,6 +260,62 @@ async def test_foreign_popup_form_fetch_and_image_are_blocked(
     resource_types = {event.resource_type for event in session.blocked_events}
     assert {"document", "fetch", "image"}.issubset(resource_types)
     assert any(event.kind == "popup" for event in session.blocked_events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    (
+        "data:text/html,<h1>unsafe</h1>",
+        "blob:http://fixture.test/unsafe-page",
+        "about:blank",
+    ),
+)
+async def test_non_fixture_page_schemes_are_blocked_as_navigation(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+    url: str,
+) -> None:
+    fixture_origin, _ = running_servers
+    session = await browser_adapter.start_session(
+        _session_config(fixture_origin, tmp_path / f"scheme-{quote(url, safe='')}.zip")
+    )
+
+    with pytest.raises(SafetyBlocked):
+        await browser_adapter.execute(session, NavigateAction(url=url))
+
+
+@pytest.mark.asyncio
+async def test_foreign_websocket_is_closed_and_recorded(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+) -> None:
+    fixture_origin, foreign_origin = running_servers
+    foreign_websocket = foreign_origin.replace("http://", "ws://") + "/socket"
+    session = await browser_adapter.start_session(
+        _session_config(fixture_origin, tmp_path / "websocket.zip")
+    )
+    page = browser_adapter.page_for_testing(session)
+
+    result = await page.evaluate(
+        """
+        url => new Promise(resolve => {
+          const socket = new WebSocket(url);
+          socket.addEventListener('open', () => resolve('opened'));
+          socket.addEventListener('error', () => resolve('rejected'));
+          socket.addEventListener('close', () => resolve('closed'));
+        })
+        """,
+        foreign_websocket,
+    )
+
+    assert result in {"closed", "rejected"}
+    assert any(
+        event.kind == "websocket" and event.origin == foreign_origin
+        for event in session.blocked_events
+    )
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ import hashlib
 import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
@@ -17,12 +17,6 @@ from ux_analyzer.domain.benchmark import (
     ExperimentPolicy,
 )
 from ux_analyzer.domain.run import RunSpec
-from ux_analyzer.providers.attention_policy import (
-    AttentionPolicyConfig,
-    ProgressiveAttentionPolicy,
-)
-from ux_analyzer.providers.full_list_policy import FullListPolicy
-from ux_analyzer.providers.ranked_list_policy import ProminenceRankedListPolicy
 
 
 def _empty_model_config() -> dict[str, str]:
@@ -203,25 +197,6 @@ def expand_experiment(
     if not specs:
         raise ValueError("experiment expansion produced no eligible run specs")
     return tuple(specs)
-
-
-def attention_policy_for(
-    policy: ExperimentPolicy | str,
-    config: AttentionPolicyConfig | None = None,
-) -> object:
-    """Build policy implementation for one experiment policy enum."""
-
-    selected = ExperimentPolicy(policy)
-    if selected is ExperimentPolicy.FULL_LIST:
-        return FullListPolicy()
-    if selected is ExperimentPolicy.PROMINENCE_RANKED_LIST:
-        return ProminenceRankedListPolicy()
-    if selected is ExperimentPolicy.PROGRESSIVE_PROMINENCE:
-        settings = config or AttentionPolicyConfig()
-        return ProgressiveAttentionPolicy(replace(settings, coarse_scent_weight=0.0))
-    if selected is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT:
-        return ProgressiveAttentionPolicy(config or AttentionPolicyConfig())
-    raise ValueError(f"unsupported experiment policy: {selected.value}")
 
 
 class ExperimentRunner:

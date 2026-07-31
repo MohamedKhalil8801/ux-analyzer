@@ -6,11 +6,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit
 
-from playwright.async_api import Request, Route
+from playwright.async_api import Request, Route, WebSocketRoute
 
 from ux_analyzer.ports.observation import BlockedRequest, SafetyBlocked
 
-_NON_NETWORK_SCHEMES = frozenset({"about", "blob", "data"})
+_INTERNAL_BLANK_URL = "about:blank"
 _FIXTURE_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "fixture.test"})
 
 
@@ -39,10 +39,11 @@ def _origin(value: str) -> str:
 
 def _request_origin(value: str) -> str:
     parsed = urlsplit(value)
-    if parsed.scheme in _NON_NETWORK_SCHEMES:
-        return value
+    if parsed.scheme in {"ws", "wss"} and parsed.netloc:
+        network_scheme = "http" if parsed.scheme == "ws" else "https"
+        return _origin(f"{network_scheme}://{parsed.netloc}")
     if parsed.scheme not in {"http", "https"}:
-        return value
+        return f"{parsed.scheme}:" if parsed.scheme else value
     if not parsed.scheme or not parsed.netloc:
         return value
     return _origin(f"{parsed.scheme}://{parsed.netloc}")
@@ -64,10 +65,12 @@ class BrowserAllowedOrigins:
     def fixture_only(cls, origins: Iterable[str]) -> BrowserAllowedOrigins:
         return cls(frozenset(origins))
 
-    def allows(self, url: str) -> bool:
+    def allows(self, url: str, *, kind: str = "request") -> bool:
+        if url == _INTERNAL_BLANK_URL:
+            return kind == "internal"
         parsed = urlsplit(url)
-        if parsed.scheme in _NON_NETWORK_SCHEMES:
-            return True
+        if parsed.scheme not in {"http", "https", "ws", "wss"}:
+            return False
         try:
             return _request_origin(url) in self.origins
         except ValueError:
@@ -76,7 +79,7 @@ class BrowserAllowedOrigins:
     def require_allowed(
         self, url: str, *, resource_type: str = "other", kind: str = "request"
     ) -> None:
-        if self.allows(url):
+        if self.allows(url, kind=kind):
             return
         origin = _request_origin(url)
         raise SafetyBlocked(
@@ -155,3 +158,15 @@ class NetworkPolicy:
                 await route.abort(error_code="blockedbyclient")
                 return
         await route.fulfill(response=response)
+
+    async def handle_websocket(self, websocket: WebSocketRoute) -> None:
+        try:
+            self.check(
+                websocket.url,
+                resource_type="websocket",
+                kind="websocket",
+            )
+        except SafetyBlocked:
+            await websocket.close(code=1008, reason="fixture-only browser policy")
+            return
+        websocket.connect_to_server()

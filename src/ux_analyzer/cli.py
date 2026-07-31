@@ -25,7 +25,7 @@ from ux_analyzer.adapters.openai import (
 from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
 from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
 from ux_analyzer.adapters.web.session import PlaywrightSessionAdapter
-from ux_analyzer.adapters.web.verifier import WebVerifier
+from ux_analyzer.adapters.web.verifier import HttpFixtureStateClient, WebVerifier
 from ux_analyzer.application.evaluation import (
     evaluate_experiment_results,
     evaluate_run,
@@ -36,10 +36,8 @@ from ux_analyzer.application.experiment import (
     ExperimentContext,
     ExperimentResult,
     ExperimentRunner,
-    attention_policy_for,
     expand_experiment,
 )
-from ux_analyzer.application.report import render_experiment_report
 from ux_analyzer.application.run_agent import CognitiveAgent as RunCognitiveAgent
 from ux_analyzer.application.run_agent import RunAgent, RunResult
 from ux_analyzer.config.loader import (
@@ -68,14 +66,21 @@ from ux_analyzer.ports.observation import (
     TestAccountId,
     ViewportSize,
 )
-from ux_analyzer.providers.attention_policy import ObservationSelection
+from ux_analyzer.providers.attention_policy import (
+    AttentionPolicyConfig,
+    ObservationSelection,
+    ProgressiveAttentionPolicy,
+)
 from ux_analyzer.providers.cognitive import StructuredCognitiveAgent
 from ux_analyzer.providers.finding_rules import FindingRuleSet
+from ux_analyzer.providers.full_list_policy import FullListPolicy
 from ux_analyzer.providers.prominence import HeuristicProminenceProvider
+from ux_analyzer.providers.ranked_list_policy import ProminenceRankedListPolicy
 from ux_analyzer.providers.scent import (
     StructuredCoarseScentEvaluator,
     StructuredFullScentEvaluator,
 )
+from ux_analyzer.reporting.renderer import render_experiment_report
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
 app = typer.Typer(add_completion=False)
@@ -475,10 +480,12 @@ class _FixtureObservationProvider:
         adapter: PlaywrightSessionAdapter,
         fixture_origin: str,
         fixture_inputs: Mapping[str, str],
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._adapter = adapter
         self._fixture_origin = fixture_origin.rstrip("/")
         self._fixture_inputs = dict(fixture_inputs)
+        self._http_client = http_client
 
     async def start_session(self, config: ObservationSessionConfig) -> SessionHandle:
         return await self._adapter.start_session(config)
@@ -496,23 +503,40 @@ class _FixtureObservationProvider:
         return await self._adapter.execute(session, action)
 
     async def reset(self, session: SessionHandle) -> None:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
+        if self._http_client is not None:
+            response = await self._http_client.post(
                 f"{self._fixture_origin}/__control/reset",
                 json={"session_id": session.session_id, "inputs": self._fixture_inputs},
             )
             response.raise_for_status()
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._fixture_origin}/__control/reset",
+                    json={
+                        "session_id": session.session_id,
+                        "inputs": self._fixture_inputs,
+                    },
+                )
+                response.raise_for_status()
         await self._adapter.reset(session)
 
     async def end_session(self, session: SessionHandle) -> None:
         try:
             await self._adapter.end_session(session)
         finally:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.delete(
+            if self._http_client is not None:
+                response = await self._http_client.delete(
                     f"{self._fixture_origin}/__control/session/{quote(session.session_id, safe='')}"
                 )
                 response.raise_for_status()
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.delete(
+                        f"{self._fixture_origin}/__control/session/"
+                        f"{quote(session.session_id, safe='')}"
+                    )
+                    response.raise_for_status()
 
 
 class _AttentionPolicyAdapter:
@@ -559,6 +583,23 @@ class _AttentionPolicyAdapter:
             region_probabilities={None: 1.0},
             selection_mode=str(getattr(selected, "selection_mode", "list")),
         )
+
+
+def _attention_policy_for(
+    policy: ExperimentPolicy | str,
+    config: AttentionPolicyConfig | None = None,
+) -> object:
+    selected = ExperimentPolicy(policy)
+    if selected is ExperimentPolicy.FULL_LIST:
+        return FullListPolicy()
+    if selected is ExperimentPolicy.PROMINENCE_RANKED_LIST:
+        return ProminenceRankedListPolicy()
+    if selected is ExperimentPolicy.PROGRESSIVE_PROMINENCE:
+        settings = config or AttentionPolicyConfig()
+        return ProgressiveAttentionPolicy(replace(settings, coarse_scent_weight=0.0))
+    if selected is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT:
+        return ProgressiveAttentionPolicy(config or AttentionPolicyConfig())
+    raise ValueError(f"unsupported experiment policy: {selected.value}")
 
 
 class _BundleFactory:
@@ -652,6 +693,7 @@ async def _execute_matrix(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         client_http = httpx.AsyncClient(timeout=settings.timeout_seconds)
+        fixture_http = httpx.AsyncClient(timeout=30.0)
         adapter = PlaywrightSessionAdapter(
             browser=browser,
             allowed_origins=BrowserAllowedOrigins.fixture_only([origin]),
@@ -671,12 +713,14 @@ async def _execute_matrix(
                     fixture_origin=origin,
                     settings=settings,
                     runtime=matrix.loaded.runtime,
+                    fixture_http_client=fixture_http,
                 )
 
             return await ExperimentRunner(factory).run(matrix.specs, workers=workers)
         finally:
             await adapter.close()
             await client_http.aclose()
+            await fixture_http.aclose()
             await browser.close()
 
 
@@ -689,16 +733,20 @@ def _build_agent(
     fixture_origin: str,
     settings: OpenAICompatibleSettings,
     runtime: RuntimeConfig,
+    fixture_http_client: httpx.AsyncClient | None = None,
 ) -> RunAgent:
     provider = _FixtureObservationProvider(
-        adapter, fixture_origin, spec.scenario.fixture_inputs.values
+        adapter,
+        fixture_origin,
+        spec.scenario.fixture_inputs.values,
+        fixture_http_client,
     )
     attention_config = replace(
         runtime.attention,
         temperature=spec.persona.attention_temperature,
     )
     policy = _AttentionPolicyAdapter(
-        attention_policy_for(spec.policy, attention_config)
+        _attention_policy_for(spec.policy, attention_config)
     )
     scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
     coarse = (
@@ -723,7 +771,11 @@ def _build_agent(
     verifier = WebVerifier(
         spec.scenario.verifier,
         fixture_inputs=spec.scenario.fixture_inputs,
-        fixture_control_origin=fixture_origin,
+        fixture_state_client=HttpFixtureStateClient(
+            fixture_origin,
+            http_client=fixture_http_client,
+            timeout_seconds=30.0,
+        ),
         observation_provider=cast(ObservationProvider, provider),
         snapshot_extractor=_snapshot_from_capture,
     )

@@ -228,6 +228,9 @@ class ActionExecuted:
     execution_reference: PrivateExecutionReference | None = None
     succeeded: bool = True
     error: str | None = None
+    platform_action_kind: str | None = None
+    navigation_occurred: bool = False
+    state_changed: bool = False
 
 
 @dataclass(frozen=True, slots=True)

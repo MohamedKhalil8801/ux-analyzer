@@ -19,13 +19,14 @@ from ux_analyzer.application.experiment import (
 from ux_analyzer.cli import app
 from ux_analyzer.config.loader import load_project
 from ux_analyzer.domain.attention import AttentionState
-from ux_analyzer.domain.benchmark import Budget
+from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
 from ux_analyzer.ports.observation import (
     SessionHandle,
     ViewportSize,
 )
 from ux_analyzer.ports.observation import TestAccountId as AccountId
+from ux_analyzer.providers.attention_policy import ProgressiveAttentionPolicy
 from ux_analyzer.providers.full_list_policy import FullListPolicy
 
 DEMO_PROJECT = Path(__file__).parents[3] / "benchmarks" / "demo" / "project.yaml"
@@ -192,6 +193,18 @@ def test_production_policy_adapter_preserves_complete_list_observation() -> None
     assert len(selection.observation.newly_revealed_elements) == 5
 
 
+def test_cli_composition_distinguishes_progressive_ablation() -> None:
+    prominence_only = cli._attention_policy_for(ExperimentPolicy.PROGRESSIVE_PROMINENCE)
+    prominence_with_scent = cli._attention_policy_for(
+        ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
+    )
+
+    assert isinstance(prominence_only, ProgressiveAttentionPolicy)
+    assert isinstance(prominence_with_scent, ProgressiveAttentionPolicy)
+    assert prominence_only.config.coarse_scent_weight == 0
+    assert prominence_with_scent.config.coarse_scent_weight > 0
+
+
 def test_production_agent_uses_project_and_persona_runtime_configuration(
     tmp_path: Path,
 ) -> None:
@@ -299,7 +312,7 @@ def test_full_list_bundle_manifest_omits_unused_scent_roles(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_fixture_provider_resets_state_before_reload_and_deletes_on_end(
-    monkeypatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     events: list[str] = []
 
@@ -333,11 +346,12 @@ async def test_fixture_provider_resets_state_before_reload_and_deletes_on_end(
             events.append("fixture-delete")
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    client = FakeClient()
     provider = cli._FixtureObservationProvider(
         FakeAdapter(),  # type: ignore[arg-type]
         "http://fixture.test",
         {"totp_code": "246810"},
+        client,  # type: ignore[arg-type]
     )
     session = SessionHandle(
         session_id="run-1",

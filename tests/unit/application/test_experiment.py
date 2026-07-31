@@ -6,7 +6,6 @@ import pytest
 
 from ux_analyzer.application.experiment import (
     ExperimentContext,
-    attention_policy_for,
     expand_experiment,
 )
 from ux_analyzer.domain.attention import AttentionState
@@ -24,7 +23,6 @@ from ux_analyzer.domain.benchmark import (
     VisibleResultVerifierSpec,
 )
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
-from ux_analyzer.providers.attention_policy import ProgressiveAttentionPolicy
 from ux_analyzer.providers.full_list_policy import FullListPolicy
 from ux_analyzer.providers.prominence import ProminenceResult
 from ux_analyzer.providers.ranked_list_policy import ProminenceRankedListPolicy
@@ -217,15 +215,3 @@ def test_ranked_list_policy_sorts_without_exposing_numeric_scores() -> None:
         "normalized_probability" not in item.model_dump()
         for item in selection.observation.newly_revealed_elements
     )
-
-
-def test_policy_factory_distinguishes_progressive_ablation() -> None:
-    prominence_only = attention_policy_for(ExperimentPolicy.PROGRESSIVE_PROMINENCE)
-    prominence_with_scent = attention_policy_for(
-        ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
-    )
-
-    assert isinstance(prominence_only, ProgressiveAttentionPolicy)
-    assert isinstance(prominence_with_scent, ProgressiveAttentionPolicy)
-    assert prominence_only.config.coarse_scent_weight == 0
-    assert prominence_with_scent.config.coarse_scent_weight > 0

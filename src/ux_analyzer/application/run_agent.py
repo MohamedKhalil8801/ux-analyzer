@@ -580,6 +580,9 @@ class RunAgent:
                     execution_reference=_execution_reference(snapshot, validated),
                     succeeded=result.succeeded,
                     error=result.error,
+                    platform_action_kind=validated.platform_action.kind,
+                    navigation_occurred=result.navigation_occurred,
+                    state_changed=result.state_changed,
                 ),
                 writer,
             )
@@ -607,6 +610,7 @@ class RunAgent:
                 )
 
             if result.state_changed:
+                await self._capture(context, writer, artifact_checksums)
                 verification = await self._verify(context.state, writer, session)
                 context.state = verification[0]
                 if verification[1].verified:
@@ -618,7 +622,8 @@ class RunAgent:
                         terminal_reason=None,
                     )
 
-            await self._capture(context, writer, artifact_checksums)
+            if not result.state_changed:
+                await self._capture(context, writer, artifact_checksums)
 
     async def _capture(
         self,

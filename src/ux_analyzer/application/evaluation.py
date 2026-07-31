@@ -23,6 +23,7 @@ from ux_analyzer.domain.findings import (
     Reproducibility,
     UnsupportedHumanClaimError,
 )
+from ux_analyzer.domain.interface import ElementSnapshot
 from ux_analyzer.domain.run import (
     ActionExecuted,
     AgentAbandoned,
@@ -726,6 +727,9 @@ def evaluation_target_for(result: RunResult) -> EvaluationTarget:
 def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
     """Build evaluator inputs from evidence recorded by production RunAgent."""
 
+    target = evaluation_target_for(result)
+    target_elements = _target_elements(result, target)
+    target_ids = {element.id for element in target_elements}
     prominence_scores: dict[str, float] = {}
     for record in result.evidence.prominence:
         for score in record.scores:
@@ -739,23 +743,166 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
                 scent_scores[element_id] = float(value)
     navigation_depth = sum(
         isinstance(event, ActionExecuted)
-        and isinstance(event.action, InteractWithElement)
         and event.succeeded
+        and event.navigation_occurred
         for event in result.state.events
     )
     recovery_actions = sum(
         isinstance(event, ActionExecuted) and isinstance(event.action, Back)
         for event in result.state.events
     )
+    target_prominence = next(
+        (
+            prominence_scores[element_id]
+            for element_id in reversed(tuple(prominence_scores))
+            if element_id in target_ids
+        ),
+        None,
+    )
+    target_below_fold = _target_below_fold(result, target_elements)
+    path_labels = _pretarget_interaction_labels(result, target_elements)
+    ambiguous_target = not _label_matches_goal(
+        target_elements[-1].label, result.state.spec.scenario.goal
+    ) or any(
+        not _label_matches_goal(label, result.state.spec.scenario.goal)
+        for label in path_labels
+    )
+    unexpected_hierarchy = bool(
+        len(path_labels) >= 2
+        or (
+            path_labels
+            and target_elements[-1].id
+            not in {element.id for element in result.state.snapshots[0].elements}
+            and ambiguous_target
+        )
+    )
     return RunEvaluationInputs(
         prominence_scores=prominence_scores,
         scent_scores=scent_scores,
+        target_prominence=target_prominence,
+        target_below_fold=target_below_fold,
+        unexpected_hierarchy=unexpected_hierarchy,
+        ambiguous_target=ambiguous_target,
         navigation_depth=navigation_depth,
+        feedback_observed=_feedback_observed(result, target_elements),
         recovery_actions=recovery_actions,
         recovery_success=(result.verification.verified if recovery_actions else None),
         uncertainty=max(0.0, 1.0 - result.state.attention.confidence),
-        model_dependent=bool(result.evidence.model_calls),
+        model_dependent=bool(result.evidence.model_calls or result.evidence.scent),
     )
+
+
+def _target_elements(
+    result: RunResult, target: EvaluationTarget
+) -> tuple[ElementSnapshot, ...]:
+    selected = [
+        element
+        for snapshot in result.state.snapshots
+        for element in snapshot.elements
+        if element.id == target.element_id
+    ]
+    if not selected:
+        raise ValueError(f"target {target.element_id!r} has no recorded snapshot")
+    lineage_id = selected[-1].lineage_id
+    if lineage_id is None:
+        return tuple(selected)
+    return tuple(
+        element
+        for snapshot in result.state.snapshots
+        for element in snapshot.elements
+        if element.lineage_id == lineage_id
+    )
+
+
+def _target_below_fold(
+    result: RunResult, target_elements: Sequence[ElementSnapshot]
+) -> bool:
+    target_ids = {element.id for element in target_elements}
+    scrolled = False
+    for event in result.state.events:
+        if isinstance(event, ActionExecuted) and isinstance(event.action, Scroll):
+            scrolled = True
+        if isinstance(event, ObservationRecorded) and any(
+            element.id in target_ids
+            for element in event.observation.newly_revealed_elements
+        ):
+            return scrolled
+    return False
+
+
+def _pretarget_interaction_labels(
+    result: RunResult, target_elements: Sequence[ElementSnapshot]
+) -> tuple[str, ...]:
+    target_ids = {element.id for element in target_elements}
+    snapshots = {snapshot.id: snapshot for snapshot in result.state.snapshots}
+    labels: list[str] = []
+    for event in result.state.events:
+        if not isinstance(event, ActionExecuted) or not isinstance(
+            event.action, InteractWithElement
+        ):
+            continue
+        if event.action.element_id in target_ids:
+            break
+        if not event.succeeded:
+            continue
+        if event.platform_action_kind in {"clear-text", "type-text"}:
+            continue
+        labels.append(
+            snapshots[event.viewport_id].element(event.action.element_id).label
+        )
+    return tuple(labels)
+
+
+def _feedback_observed(
+    result: RunResult, target_elements: Sequence[ElementSnapshot]
+) -> bool:
+    target_ids = {element.id for element in target_elements}
+    target_executed = False
+    goal = result.state.spec.scenario.goal
+    for event in result.state.events:
+        if isinstance(event, ActionExecuted) and isinstance(
+            event.action, InteractWithElement
+        ):
+            target_executed = target_executed or event.action.element_id in target_ids
+            continue
+        if target_executed and hasattr(event, "snapshot"):
+            snapshot = getattr(event, "snapshot")
+            if any(
+                _is_success_feedback(element.label, goal)
+                for element in snapshot.elements
+            ):
+                return True
+    return False
+
+
+def _is_success_feedback(label: str, goal: str) -> bool:
+    lowered = label.lower()
+    return any(
+        marker in lowered for marker in ("sent", "enabled", "completed", "success")
+    ) and _label_matches_goal(label, goal)
+
+
+def _label_matches_goal(label: str, goal: str) -> bool:
+    ignored = {"a", "an", "authentication", "enable", "send", "the", "to"}
+    label_tokens = {_token_root(token) for token in _words(label)} - ignored
+    goal_tokens = {_token_root(token) for token in _words(goal)} - ignored
+    return bool(label_tokens & goal_tokens)
+
+
+def _words(value: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in "".join(
+            character.lower() if character.isalnum() else " " for character in value
+        ).split()
+        if token
+    )
+
+
+def _token_root(value: str) -> str:
+    if value.startswith("invit"):
+        return "invite"
+    return value
 
 
 def evaluate_experiment_results(results: Sequence[RunResult]) -> ExperimentEvaluation:

@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
 from ux_analyzer.adapters.openai import (
     ModelFailureError,
@@ -78,6 +79,82 @@ async def test_strict_schema_fallback_validates_locally_and_records_usage() -> N
         ModelRole.COARSE_SCENT
     )
     assert "secret-api-key" not in json.dumps(client.records[0].request)
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_request_falls_back_from_strict_schema() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "INVALID_REQUEST",
+                        "message": "The request could not be processed.",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"ok": true}'}}],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    result = await client.complete(
+        SimpleResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    assert result.ok
+    assert [request["response_format"]["type"] for request in requests] == [
+        "json_schema",
+        "json_object",
+    ]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cognitive_role_starts_in_json_object_mode() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"ok": true}'}}],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    result = await client.complete(
+        SimpleResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="cognitive-model",
+        role=ModelRole.COGNITIVE,
+    )
+
+    assert result.ok
+    assert requests[0]["response_format"] == {"type": "json_object"}
     await http_client.aclose()
 
 

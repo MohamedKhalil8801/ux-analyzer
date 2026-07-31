@@ -13,9 +13,15 @@ from ux_analyzer.application.evaluation import (
     compare_variants,
     evaluate_experiment_results,
     evaluate_run,
+    evaluation_inputs_for,
 )
-from ux_analyzer.application.run_agent import RunResult
-from ux_analyzer.domain.attention import Back, ProgressiveObservation, Scroll
+from ux_analyzer.application.run_agent import (
+    ProminenceEvidence,
+    RunEvidence,
+    RunResult,
+    ScentEvidence,
+)
+from ux_analyzer.domain.attention import Back, FullScent, ProgressiveObservation, Scroll
 from ux_analyzer.domain.benchmark import (
     ApplicationVersion,
     ApplicationVersionKind,
@@ -51,6 +57,7 @@ from ux_analyzer.domain.run import (
     VerifiedSuccess,
     ViewportCaptured,
 )
+from ux_analyzer.providers.prominence import ProminenceResult
 
 
 def _spec(version: ApplicationVersion) -> RunSpec:
@@ -270,6 +277,79 @@ def test_model_dependent_inputs_are_not_reported_as_seed_only() -> None:
     )
 
     assert metrics.reproducibility.value == "model-dependent"
+
+
+def test_production_inputs_derive_scores_and_fold_facts_from_recorded_evidence() -> (
+    None
+):
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    result = _result(version)
+    result = replace(
+        result,
+        evidence=RunEvidence(
+            prominence=(
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    scores=(
+                        ProminenceResult(
+                            element_id="target",
+                            raw_score=0.2,
+                            normalized_probability=0.2,
+                            first_notice_probability=0.2,
+                            notice_within_budget_probability=0.2,
+                            feature_contributions={},
+                            raw_values={},
+                            normalized_values={},
+                        ),
+                    ),
+                ),
+            ),
+            scent=(
+                ScentEvidence(
+                    kind="full-scent",
+                    viewport_id="viewport-1",
+                    scores=(
+                        FullScent(
+                            element_id="target",
+                            viewport_id="viewport-1",
+                            score=0.25,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+
+    assert inputs.target_prominence == pytest.approx(0.2)
+    assert inputs.scent_scores["target"] == pytest.approx(0.25)
+    assert inputs.target_below_fold is False
+    assert inputs.feedback_observed is False
+    assert inputs.model_dependent is True
+
+
+def test_production_inputs_mark_target_below_fold_after_recorded_scroll() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    result = _result(version)
+    events = list(result.state.events)
+    observation = next(
+        event for event in events if isinstance(event, ObservationRecorded)
+    )
+    events.remove(observation)
+    scroll_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, ActionExecuted) and isinstance(event.action, Scroll)
+    )
+    events.insert(scroll_index + 1, observation)
+    result = replace(result, state=replace(result.state, events=tuple(events)))
+
+    assert evaluation_inputs_for(result).target_below_fold is True
 
 
 def test_scorecard_rejects_unsupported_human_evidence() -> None:

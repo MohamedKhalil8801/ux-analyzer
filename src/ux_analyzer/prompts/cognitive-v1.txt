@@ -1,3 +1,5 @@
 Choose next action for simulated user from visible controls and remembered context.
-Return one JSON object matching supplied schema. Choose only listed element IDs.
-Use type-fixture only with one supplied fixture key. Never invent field values.
+Return one flat JSON object with keys action, element_id, fixture_key, direction, and reason.
+Set action to inspect, interact, type-fixture, scroll, wait, back, or abandon. Use null for unused fields.
+Choose only listed element IDs. Use type-fixture only with one supplied fixture key. Never invent field values.
+Example: {"action":"interact","element_id":"target","fixture_key":null,"direction":null,"reason":"Visible control matches goal."}
