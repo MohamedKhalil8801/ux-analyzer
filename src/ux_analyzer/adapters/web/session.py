@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from ux_analyzer.adapters.web.network_policy import (
     BrowserAllowedOrigins,
     NetworkPolicy,
 )
+from ux_analyzer.ports.artifacts import sanitize_artifact_content
 from ux_analyzer.ports.observation import (
     BackAction,
     ClearTextAction,
@@ -385,6 +387,7 @@ class PlaywrightSessionAdapter:
         try:
             if managed.trace_started:
                 await managed.context.tracing.stop(path=str(managed.handle.trace_path))
+                _sanitize_trace(managed)
         except PlaywrightError:
             managed.handle.trace_path.touch(exist_ok=True)
         finally:
@@ -392,6 +395,20 @@ class PlaywrightSessionAdapter:
                 await managed.context.close()
             except PlaywrightError:
                 pass
+
+
+def _sanitize_trace(managed: _ManagedSession) -> None:
+    path = managed.handle.trace_path
+    if not path.is_file():
+        return
+    sanitized = sanitize_artifact_content(
+        path.name,
+        path.read_bytes(),
+        managed.config.artifact_redaction,
+    )
+    temporary = path.with_name(f".{path.name}.sanitized")
+    temporary.write_bytes(sanitized)
+    os.replace(temporary, path)
 
 
 def _center(bounds: object) -> tuple[float, float]:

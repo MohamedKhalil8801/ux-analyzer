@@ -68,6 +68,12 @@ class ViewportModel(_ConfigModel):
     height: int = Field(default=800, gt=0)
 
 
+class ScenarioEvaluationTargetModel(_ConfigModel):
+    labels_by_version: dict[str, str] = Field(min_length=1)
+    role: str | None = Field(default=None, min_length=1)
+    region_label: str | None = Field(default=None, min_length=1)
+
+
 class ScenarioModel(_ConfigModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -80,6 +86,7 @@ class ScenarioModel(_ConfigModel):
     safeguards: list[str] = Field(default_factory=list)
     eligible_persona_ids: list[str] = Field(min_length=1)
     expected_evidence: list[str] = Field(default_factory=list)
+    evaluation_target: ScenarioEvaluationTargetModel
     viewport: ViewportModel = Field(default_factory=ViewportModel)
 
 

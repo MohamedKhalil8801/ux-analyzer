@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import struct
+import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -13,6 +17,27 @@ from ux_analyzer.ports.artifacts import (
     RedactionPolicy,
 )
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
+
+
+def _png_with_trailing_data(data: bytes) -> bytes:
+    raw = b"\x00" + b"\xff\x00\x00\xff"
+    compressed = zlib.compress(raw)
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", compressed)
+        + chunk(b"IEND", b"")
+        + data
+    )
 
 
 def bundle_manifest(run_id: str = "run-1") -> BundleManifest:
@@ -150,6 +175,46 @@ def test_identical_artifacts_share_content_hash_path(tmp_path: Path) -> None:
     assert first.sha256 == second.sha256
     assert first.path == second.path
     assert len(list((writer.staging_path / "artifacts").iterdir())) == 1
+
+
+def test_binary_artifacts_redact_sensitive_values_before_persistence(
+    tmp_path: Path,
+) -> None:
+    sensitive_email = "invitee@example.test"
+    sensitive_totp = "246810"
+    trace_buffer = io.BytesIO()
+    with zipfile.ZipFile(trace_buffer, "w") as archive:
+        archive.writestr(
+            "trace.trace",
+            json.dumps({"input": sensitive_email, "code": sensitive_totp}),
+        )
+        archive.writestr(
+            "resources/page.png",
+            _png_with_trailing_data(sensitive_email.encode()),
+        )
+
+    writer = FilesystemRunBundleWriter.start(
+        tmp_path,
+        bundle_manifest(),
+        redaction=RedactionPolicy(exact_values=(sensitive_email, sensitive_totp)),
+    )
+    screenshot = writer.write_artifact(
+        "screenshot.png", _png_with_trailing_data(sensitive_totp.encode())
+    )
+    trace = writer.write_artifact("trace.zip", trace_buffer.getvalue())
+
+    screenshot_bytes = (writer.staging_path / screenshot.path).read_bytes()
+    trace_bytes = (writer.staging_path / trace.path).read_bytes()
+    assert sensitive_email.encode() not in screenshot_bytes
+    assert sensitive_totp.encode() not in screenshot_bytes
+    assert sensitive_email.encode() not in trace_bytes
+    assert sensitive_totp.encode() not in trace_bytes
+    with zipfile.ZipFile(io.BytesIO(trace_bytes)) as archive:
+        assert all(
+            sensitive_email not in archive.read(name).decode("utf-8", "ignore")
+            and sensitive_totp not in archive.read(name).decode("utf-8", "ignore")
+            for name in archive.namelist()
+        )
 
 
 def test_abort_leaves_crash_recovery_marker_in_staging_directory(

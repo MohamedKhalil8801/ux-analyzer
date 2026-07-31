@@ -5,6 +5,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 
+from ux_analyzer.application.memory import (
+    MemoryEntry,
+    MemoryPolicy,
+    MemoryPolicyConfig,
+    MemoryState,
+)
 from ux_analyzer.domain.attention import (
     Abandon,
     AttentionAction,
@@ -34,12 +40,6 @@ from ux_analyzer.ports.observation import (
     ToggleAction,
     TypeTextAction,
     WaitAction,
-)
-from ux_analyzer.providers.memory import (
-    MemoryEntry,
-    MemoryPolicy,
-    MemoryPolicyConfig,
-    MemoryState,
 )
 
 

@@ -33,3 +33,8 @@ expected_evidence:
   - target-discovery
   - information-scent
   - verified-completion
+evaluation_target:
+  labels_by_version:
+    defective: Invite teammate
+    improved: Invite teammate
+  role: button

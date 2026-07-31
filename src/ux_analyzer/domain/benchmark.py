@@ -99,6 +99,37 @@ type VerifierSpec = FixtureStateVerifierSpec | VisibleResultVerifierSpec
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioEvaluationTarget:
+    """Stable persona-visible target labels declared before run execution."""
+
+    labels_by_version: Mapping[str, str]
+    role: str | None = None
+    region_label: str | None = None
+
+    def __post_init__(self) -> None:
+        labels = dict(self.labels_by_version)
+        if not labels or any(not key or not label for key, label in labels.items()):
+            raise ValueError("evaluation target needs non-empty version labels")
+        if self.role is not None and not self.role:
+            raise ValueError("evaluation target role must not be empty")
+        if self.region_label is not None and not self.region_label:
+            raise ValueError("evaluation target region label must not be empty")
+        object.__setattr__(self, "labels_by_version", MappingProxyType(labels))
+
+    def label_for(self, version: ApplicationVersion) -> str:
+        """Resolve target label by exact version ID, then version kind."""
+
+        label = self.labels_by_version.get(version.id)
+        if label is None:
+            label = self.labels_by_version.get(version.kind.value)
+        if label is None:
+            raise ValueError(
+                f"evaluation target has no label for application version {version.id!r}"
+            )
+        return label
+
+
+@dataclass(frozen=True, slots=True)
 class ApplicationVersion:
     """Immutable presentation version of an application."""
 
@@ -145,6 +176,7 @@ class Scenario:
     safeguards: tuple[str, ...]
     eligible_persona_ids: tuple[str, ...]
     expected_evidence: tuple[str, ...]
+    evaluation_target: ScenarioEvaluationTarget
     viewport_width: int = 1280
     viewport_height: int = 800
 

@@ -44,6 +44,11 @@ scenarios:
       - first-time-user
     expected_evidence:
       - target-discovery
+    evaluation_target:
+      labels_by_version:
+        defective: Invite teammate
+        improved: Invite teammate
+      role: button
 
 personas:
   - id: first-time-user

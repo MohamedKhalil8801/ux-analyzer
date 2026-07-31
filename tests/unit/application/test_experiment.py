@@ -20,6 +20,7 @@ from ux_analyzer.domain.benchmark import (
     FixtureInputs,
     Persona,
     Scenario,
+    ScenarioEvaluationTarget,
     VisibleResultVerifierSpec,
 )
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
@@ -55,6 +56,13 @@ def _project() -> BenchmarkProject:
         safeguards=("fixture-only",),
         eligible_persona_ids=("new-user",),
         expected_evidence=("discovery-cost",),
+        evaluation_target=ScenarioEvaluationTarget(
+            labels_by_version={
+                "defective": "Invite teammate",
+                "improved": "Invite teammate",
+            },
+            role="button",
+        ),
     )
     persona = Persona(
         id="new-user",

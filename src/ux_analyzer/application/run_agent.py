@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
@@ -13,6 +13,7 @@ from ux_analyzer.application.action_validation import (
     ValidatedAction,
     validate_action,
 )
+from ux_analyzer.application.memory import MemoryPolicy
 from ux_analyzer.application.state_updates import (
     ApplicationState,
     StateUpdateConfig,
@@ -21,7 +22,11 @@ from ux_analyzer.application.state_updates import (
     apply_observation,
     reconcile_snapshot_state,
 )
-from ux_analyzer.domain.attention import Abandon, InteractWithElement
+from ux_analyzer.domain.attention import (
+    Abandon,
+    InteractWithElement,
+    PersonaObservation,
+)
 from ux_analyzer.domain.findings import Finding
 from ux_analyzer.domain.interface import (
     PrivateExecutionReference,
@@ -68,12 +73,35 @@ from ux_analyzer.ports.observation import (
     SessionHandle,
 )
 from ux_analyzer.ports.verification import VerificationProvider
-from ux_analyzer.providers.attention_policy import ObservationSelection
-from ux_analyzer.providers.memory import MemoryPolicy
-from ux_analyzer.providers.prominence import ProminenceResult
 
 if TYPE_CHECKING:
     from ux_analyzer.application.evaluation import RunMetrics
+
+
+class ProminenceResult(Protocol):
+    """Application-facing prominence evidence shape."""
+
+    element_id: str
+    raw_score: float
+    normalized_probability: float
+    first_notice_probability: float | None
+    notice_within_budget_probability: float | None
+    feature_contributions: Mapping[str, float]
+    raw_values: Mapping[str, float]
+    normalized_values: Mapping[str, float]
+
+
+class ObservationSelection(Protocol):
+    """Application-facing observation selection shape."""
+
+    observation: PersonaObservation
+    region_id: str | None
+    element_probabilities: object
+    region_probabilities: object
+    selection_mode: str
+
+    @property
+    def selected_ids(self) -> Sequence[str]: ...
 
 
 class ProminenceProvider(Protocol):
@@ -333,6 +361,18 @@ class RunAgent:
                     )
                 except TimeoutError:
                     execution = _timed_out_execution(execution, writer)
+            trace_session = context.session
+            await self._end_session(trace_session)
+            context.session = None
+            if trace_session is not None and trace_session.trace_path.is_file():
+                artifact_checksums.append(
+                    _artifact_checksum(
+                        writer.write_artifact(
+                            trace_session.trace_path.name,
+                            trace_session.trace_path.read_bytes(),
+                        )
+                    )
+                )
             return self._finalize(spec, execution, writer, artifact_checksums, context)
         except BaseException as error:
             if writer is not None:

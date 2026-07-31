@@ -15,7 +15,10 @@ from ux_analyzer.domain.attention import (
     PersonaObservation,
     Scroll,
 )
-from ux_analyzer.domain.benchmark import ApplicationVersionKind
+from ux_analyzer.domain.benchmark import (
+    ApplicationVersionKind,
+    ScenarioEvaluationTarget,
+)
 from ux_analyzer.domain.findings import (
     Evidence,
     EvidenceClass,
@@ -139,12 +142,18 @@ class DiscoveryCostBreakdown:
 class EvaluationTarget:
     """Persona-visible target identity used to interpret run events."""
 
-    element_id: str
+    element_id: str | None
     region_id: str | None = None
+    expected_label: str | None = None
+    role: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.element_id:
+        if self.element_id is not None and not self.element_id:
             raise ValueError("evaluation target element ID must not be empty")
+        if self.expected_label is not None and not self.expected_label:
+            raise ValueError("evaluation target label must not be empty")
+        if self.element_id is None and self.expected_label is None:
+            raise ValueError("evaluation target needs element ID or expected label")
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,7 +420,7 @@ def evaluate_run(
     selected_target = (
         target
         if isinstance(target, EvaluationTarget)
-        else EvaluationTarget(target or target_element_id or "")
+        else EvaluationTarget(target or target_element_id)
     )
     settings = inputs or RunEvaluationInputs()
     config = cost_config or DiscoveryCostConfig()
@@ -421,7 +430,9 @@ def evaluate_run(
         for event in state.events
         if isinstance(event, ObservationRecorded)
     )
-    target_rank = _target_rank(observations, selected_target.element_id)
+    target_elements = _target_elements(result, selected_target)
+    target_ids = {element.id for element in target_elements}
+    target_rank = _target_rank(observations, target_ids)
     inspected_regions = len(
         {
             observation.region_context.id
@@ -436,9 +447,7 @@ def evaluate_run(
     backtracks = sum(isinstance(event.action, Back) for event in executed_actions)
     wrong_actions = sum(
         isinstance(event.action, InteractWithElement)
-        and (
-            not event.succeeded or event.action.element_id != selected_target.element_id
-        )
+        and (not event.succeeded or event.action.element_id not in target_ids)
         for event in executed_actions
     )
     outcome = _outcome_kind(result.outcome)
@@ -459,12 +468,26 @@ def evaluate_run(
     )
     target_prominence = settings.target_prominence
     if target_prominence is None:
-        target_prominence = settings.prominence_scores.get(selected_target.element_id)
-    target_scent = settings.scent_scores.get(selected_target.element_id)
+        target_prominence = next(
+            (
+                settings.prominence_scores[element_id]
+                for element_id in reversed(tuple(settings.prominence_scores))
+                if element_id in target_ids
+            ),
+            None,
+        )
+    target_scent = next(
+        (
+            settings.scent_scores[element_id]
+            for element_id in reversed(tuple(settings.scent_scores))
+            if element_id in target_ids
+        ),
+        None,
+    )
     competitor_scores = [
         score
         for element_id, score in settings.scent_scores.items()
-        if element_id != selected_target.element_id
+        if element_id not in target_ids
     ]
     strongest_competing_scent = max(competitor_scores, default=None)
     verified = result.verification.verified
@@ -685,7 +708,7 @@ def evaluate_run(
         discovery_cost=cost,
         config_digest=state.spec.config_digest,
         viewport_ids=tuple(snapshot.id for snapshot in state.snapshots),
-        element_ids=(selected_target.element_id,),
+        element_ids=tuple(element.id for element in target_elements),
         action_sequence=_action_sequence(executed_actions),
     )
 
@@ -697,41 +720,25 @@ def calculate_run_metrics(*args: object, **kwargs: object) -> RunMetrics:
 
 
 def evaluation_target_for(result: RunResult) -> EvaluationTarget:
-    """Infer best recorded target without hidden verifier or selector data."""
+    """Resolve target only from immutable scenario contract and recorded snapshots."""
 
-    interactions: list[ActionExecuted] = []
-    for event in result.state.events:
-        if isinstance(event, ActionExecuted) and isinstance(
-            event.action, InteractWithElement
-        ):
-            interactions.append(event)
-    successful = [event for event in interactions if event.succeeded]
-    selected = successful[-1:] or interactions[-1:]
-    if selected:
-        action = selected[0].action
-        if not isinstance(action, InteractWithElement):
-            raise TypeError("recorded interaction lost typed action")
-        return EvaluationTarget(action.element_id)
-    observations = [
-        event.observation
-        for event in result.state.events
-        if isinstance(event, ObservationRecorded)
-    ]
-    visible = [
-        element
-        for observation in observations
-        for element in observation.newly_revealed_elements
-    ]
-    candidate = next(
-        (element for element in reversed(visible) if element.actionable), None
+    spec = result.state.spec
+    contract = spec.scenario.evaluation_target
+    expected_label = contract.label_for(spec.application_version)
+    for snapshot in reversed(result.state.snapshots):
+        regions = {region.id: region.label for region in snapshot.regions}
+        for element in reversed(snapshot.elements):
+            if _matches_target(element, regions, contract, expected_label):
+                return EvaluationTarget(
+                    element_id=element.id,
+                    region_id=element.region_id,
+                    expected_label=expected_label,
+                    role=contract.role,
+                )
+    raise ValueError(
+        f"run {result.run_id} has no recorded scenario evaluation target "
+        f"matching {expected_label!r}"
     )
-    if candidate is None and visible:
-        candidate = visible[-1]
-    if candidate is None:
-        raise ValueError(
-            f"run {result.run_id} has no persona-visible evaluation target"
-        )
-    return EvaluationTarget(candidate.id, candidate.region_id)
 
 
 def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
@@ -770,21 +777,34 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
         None,
     )
     target_below_fold = _target_below_fold(result, target_elements)
-    path_labels = _pretarget_interaction_labels(result, target_elements)
-    ambiguous_target = not _label_matches_goal(
-        target_elements[-1].label, result.state.spec.scenario.goal
-    ) or any(
-        not _label_matches_goal(label, result.state.spec.scenario.goal)
-        for label in path_labels
+    path_labels = (
+        _pretarget_interaction_labels(result, target_elements)
+        if target_elements
+        else ()
     )
-    unexpected_hierarchy = bool(
-        len(path_labels) >= 2
-        or (
-            path_labels
-            and target_elements[-1].id
-            not in {element.id for element in result.state.snapshots[0].elements}
-            and ambiguous_target
+    ambiguous_target = (
+        not _label_matches_goal(
+            target_elements[-1].label, result.state.spec.scenario.goal
         )
+        or any(
+            not _label_matches_goal(label, result.state.spec.scenario.goal)
+            for label in path_labels
+        )
+        if target_elements
+        else None
+    )
+    unexpected_hierarchy = (
+        bool(
+            len(path_labels) >= 2
+            or (
+                path_labels
+                and target_elements[-1].id
+                not in {element.id for element in result.state.snapshots[0].elements}
+                and ambiguous_target
+            )
+        )
+        if target_elements
+        else None
     )
     return RunEvaluationInputs(
         prominence_scores=prominence_scores,
@@ -805,6 +825,8 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
 def _target_elements(
     result: RunResult, target: EvaluationTarget
 ) -> tuple[ElementSnapshot, ...]:
+    if target.element_id is None:
+        return ()
     selected = [
         element
         for snapshot in result.state.snapshots
@@ -812,7 +834,7 @@ def _target_elements(
         if element.id == target.element_id
     ]
     if not selected:
-        raise ValueError(f"target {target.element_id!r} has no recorded snapshot")
+        return ()
     lineage_id = selected[-1].lineage_id
     if lineage_id is None:
         return tuple(selected)
@@ -826,7 +848,9 @@ def _target_elements(
 
 def _target_below_fold(
     result: RunResult, target_elements: Sequence[ElementSnapshot]
-) -> bool:
+) -> bool | None:
+    if not target_elements:
+        return None
     target_ids = {element.id for element in target_elements}
     scrolled = False
     for event in result.state.events:
@@ -866,6 +890,8 @@ def _pretarget_interaction_labels(
 def _feedback_observed(
     result: RunResult, target_elements: Sequence[ElementSnapshot]
 ) -> bool | None:
+    if not target_elements:
+        return None
     target_ids = {element.id for element in target_elements}
     goal = result.state.spec.scenario.goal
     events = result.state.events
@@ -1178,15 +1204,40 @@ def compare_variants(
 
 
 def _target_rank(
-    observations: Sequence[PersonaObservation], target_id: str
+    observations: Sequence[PersonaObservation], target_ids: set[str]
 ) -> int | None:
+    if not target_ids:
+        return None
     rank = 0
     for observation in observations:
         for element in observation.newly_revealed_elements:
             rank += 1
-            if element.id == target_id:
+            if element.id in target_ids:
                 return rank
     return None
+
+
+def _matches_target(
+    element: ElementSnapshot,
+    region_labels: Mapping[str, str],
+    contract: ScenarioEvaluationTarget,
+    expected_label: str,
+) -> bool:
+    if element.label.strip().casefold() != expected_label.strip().casefold():
+        return False
+    if (
+        contract.role is not None
+        and str(getattr(element.role, "value", element.role)) != contract.role
+    ):
+        return False
+    if contract.region_label is None:
+        return True
+    if element.region_id is None:
+        return False
+    return (
+        region_labels.get(element.region_id, "").strip().casefold()
+        == contract.region_label.strip().casefold()
+    )
 
 
 def _outcome_kind(outcome: RunOutcome) -> str:

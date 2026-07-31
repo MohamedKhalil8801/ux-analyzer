@@ -39,8 +39,13 @@ from ux_analyzer.application.experiment import (
     ExperimentRunner,
     expand_experiment,
 )
+from ux_analyzer.application.run_agent import (
+    AttentionPolicy,
+    ProminenceProvider,
+    RunAgent,
+    RunResult,
+)
 from ux_analyzer.application.run_agent import CognitiveAgent as RunCognitiveAgent
-from ux_analyzer.application.run_agent import RunAgent, RunResult
 from ux_analyzer.config.loader import (
     LoadedProject,
     ProjectConfigError,
@@ -146,7 +151,11 @@ def fixture_serve(
     """Serve bundled controlled fixture application."""
     import uvicorn
 
-    uvicorn.run("fixture_app.app:app", host=host, port=port)
+    try:
+        bind_host = _loopback_bind_host(host)
+    except ValueError as error:
+        _exit_with_error(str(error))
+    uvicorn.run("fixture_app.app:app", host=bind_host, port=port)
 
 
 @app.command()
@@ -781,8 +790,10 @@ def _build_agent(
     )
     return RunAgent(
         observation_provider=cast(ObservationProvider, provider),
-        prominence_provider=HeuristicProminenceProvider(runtime.prominence),
-        attention_policy=policy,
+        prominence_provider=cast(
+            ProminenceProvider, HeuristicProminenceProvider(runtime.prominence)
+        ),
+        attention_policy=cast(AttentionPolicy, policy),
         cognitive_agent=cast(RunCognitiveAgent, cognitive),
         verifier=verifier,
         bundle_factory=_BundleFactory(output, settings, runtime),
@@ -958,6 +969,9 @@ def _session_config(
             height=spec.scenario.viewport_height,
         ),
         trace_path=output / "traces" / f"{spec.run_id}.zip",
+        artifact_redaction=RedactionPolicy.from_fixture_inputs(
+            spec.scenario.fixture_inputs
+        ),
     )
 
 
@@ -976,6 +990,15 @@ def _fixture_origin(value: str) -> str:
     if parsed.path or parsed.query or parsed.fragment:
         raise ValueError("fixture origin must not contain path or query")
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _loopback_bind_host(value: str) -> str:
+    host = value.strip().lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError(
+            "fixture host must be loopback-only: use 127.0.0.1, localhost, or ::1"
+        )
+    return host
 
 
 def _mapping(value: object) -> dict[str, Any]:

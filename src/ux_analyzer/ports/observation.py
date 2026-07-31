@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from ux_analyzer.domain.interface import BoundingBox, ViewportSnapshot
+from ux_analyzer.ports.artifacts import RedactionPolicy
 
 
 class ObservationProviderError(RuntimeError):
@@ -49,6 +50,7 @@ class ObservationSessionConfig:
     test_account_id: TestAccountId | str
     viewport: ViewportSize
     trace_path: Path
+    artifact_redaction: RedactionPolicy = RedactionPolicy()
 
     def __post_init__(self) -> None:
         if not self.session_id:

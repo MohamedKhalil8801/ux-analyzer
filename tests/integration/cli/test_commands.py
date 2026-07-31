@@ -419,6 +419,18 @@ def test_fixture_serve_delegates_to_uvicorn(monkeypatch) -> None:
     }
 
 
+def test_fixture_serve_rejects_external_bind_host(monkeypatch) -> None:
+    def unexpected_run(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"uvicorn must not start: {args!r} {kwargs!r}")
+
+    monkeypatch.setattr("uvicorn.run", unexpected_run)
+
+    result = runner.invoke(app, ["fixture", "serve", "--host", "0.0.0.0"])
+
+    assert result.exit_code == 1
+    assert "loopback" in result.stdout
+
+
 def test_production_run_completes_evaluation_summary_and_report(
     monkeypatch, tmp_path: Path
 ) -> None:

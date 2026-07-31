@@ -21,6 +21,7 @@ from ux_analyzer.domain.benchmark import (
     FixtureInputs,
     Persona,
     Scenario,
+    ScenarioEvaluationTarget,
     VisibleResultVerifierSpec,
 )
 from ux_analyzer.domain.findings import (
@@ -112,6 +113,10 @@ def run_spec() -> RunSpec:
         safeguards=(),
         eligible_persona_ids=("persona",),
         expected_evidence=(),
+        evaluation_target=ScenarioEvaluationTarget(
+            labels_by_version={"improved": "Invite teammate"},
+            role="button",
+        ),
     )
     return RunSpec(
         run_id="run-1",

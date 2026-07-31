@@ -113,11 +113,18 @@ class FindingRule:
             cause=_cause(category, metrics),
             run_ids=(metrics.run_id,),
             viewport_ids=metrics.viewport_ids,
-            element_ids=metrics.element_ids or (metrics.target.element_id,),
+            element_ids=(
+                metrics.element_ids
+                or ((metrics.target.element_id,) if metrics.target.element_id else ())
+            ),
             supporting_metrics=_metric_values(metrics, category.value),
             action_sequence=metrics.action_sequence,
             replay_links=(
-                f"#run={metrics.run_id}&element={metrics.target.element_id}",
+                *(
+                    (f"#run={metrics.run_id}&element={metrics.target.element_id}",)
+                    if metrics.target.element_id
+                    else ()
+                ),
             ),
         )
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
+from ux_analyzer.domain.run import RunStarted
+from ux_analyzer.ports.artifacts import BundleManifest, RedactionPolicy
 from ux_analyzer.reporting.renderer import render_experiment_report
+from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -219,6 +223,7 @@ def _write_run(
             "limitations": ["Simulated benchmark; not human satisfaction evidence."],
         },
     )
+    (run / "checksums.sha256").write_text("test  result.json\n", encoding="utf-8")
 
 
 def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) -> None:
@@ -278,6 +283,16 @@ def test_renderer_includes_all_failed_experiment_and_staging_crash(
         {"run_id": "run-crashed", "reason": "browser capture failed"},
     )
     _write_json(
+        staging / "result.json",
+        {
+            "metrics": {
+                "discovery_cost": {"total": 999999},
+                "verified_completion": True,
+            },
+            "outcome": {"kind": "verified-success"},
+        },
+    )
+    _write_json(
         tmp_path / "experiment.json",
         {
             "run_metrics": [],
@@ -310,6 +325,88 @@ def test_renderer_includes_all_failed_experiment_and_staging_crash(
     assert "run-crashed" in html
     assert "enable-2fa" in html
     assert "progressive-prominence-scent" in html
+    assert "999999" not in html
+
+
+def test_renderer_does_not_score_incomplete_bundle_with_result_metrics(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / ".staging" / "run-incomplete"
+    staging.mkdir(parents=True)
+    _write_json(staging / "manifest.json", {"run_id": "run-incomplete", "seed": 8})
+    (staging / "timeline.jsonl").write_text(
+        json.dumps({"sequence": 1, "kind": "run-started"}) + "\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        staging / "result.json",
+        {"metrics": {"discovery_cost": {"total": 888888}}},
+    )
+    _write_json(staging / "crash.marker", {"reason": "capture failed"})
+
+    output = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    assert "888888" not in output.read_text(encoding="utf-8")
+
+
+def test_renderer_never_embeds_sensitive_fixture_artifacts(tmp_path: Path) -> None:
+    invite_email = "invitee@example.test"
+    totp_code = "246810"
+    writer = FilesystemRunBundleWriter.start(
+        tmp_path,
+        BundleManifest(
+            run_id="run-sensitive",
+            seed=1,
+            config_digest="config-sha",
+            endpoint_origin="https://llm.example.test",
+        ),
+        redaction=RedactionPolicy(exact_values=(invite_email, totp_code)),
+    )
+    screenshot = writer.write_artifact(
+        "screenshot.png",
+        b"\x89PNG\r\n\x1a\n" + invite_email.encode() + totp_code.encode(),
+    )
+    writer.append_event(RunStarted(run_id="run-sensitive"))
+    writer.append_event(
+        {
+            "kind": "viewport-captured",
+            "snapshot": {
+                "id": "viewport-1",
+                "screenshot_artifact": screenshot.path,
+                "elements": [],
+            },
+        }
+    )
+    writer.append_event(
+        {
+            "kind": "run-terminated",
+            "outcome": {"kind": "agent-abandoned"},
+            "fixture_inputs": {
+                "invite_email": invite_email,
+                "totp_code": totp_code,
+            },
+        }
+    )
+    final_path = writer.finalize(
+        {
+            "outcome": {"kind": "agent-abandoned"},
+            "invite_email": invite_email,
+            "totp_code": totp_code,
+        }
+    )
+
+    output = render_experiment_report(tmp_path, tmp_path / "report.html")
+    html = output.read_text(encoding="utf-8")
+
+    assert invite_email not in html
+    assert totp_code not in html
+    assert base64.b64encode(invite_email.encode()).decode() not in html
+    assert base64.b64encode(totp_code.encode()).decode() not in html
+    artifact_bytes = b"".join(
+        path.read_bytes() for path in (final_path / "artifacts").iterdir()
+    )
+    assert invite_email.encode() not in artifact_bytes
+    assert totp_code.encode() not in artifact_bytes
 
 
 def test_renderer_builds_comparison_and_splits_large_experiment(tmp_path: Path) -> None:

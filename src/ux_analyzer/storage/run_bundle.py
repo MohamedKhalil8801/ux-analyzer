@@ -21,6 +21,7 @@ from ux_analyzer.ports.artifacts import (
     BundleManifest,
     BundleStateError,
     RedactionPolicy,
+    sanitize_artifact_content,
 )
 
 _CHECKSUMS_FILE = "checksums.sha256"
@@ -244,6 +245,7 @@ class FilesystemRunBundleWriter:
         if not safe_name or safe_name in {".", ".."}:
             raise ValueError("artifact name must contain a filename")
         raw_content = content.encode("utf-8") if isinstance(content, str) else content
+        raw_content = sanitize_artifact_content(safe_name, raw_content, self.redaction)
         digest = hashlib.sha256(raw_content).hexdigest()
         relative_path = Path("artifacts") / digest
         destination = self.staging_path / relative_path

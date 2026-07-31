@@ -168,7 +168,8 @@ def _load_run(path: Path) -> dict[str, Any]:
         events = _list_of_mappings(state.get("events"))
     state = _mapping(result.get("state"))
     spec = _mapping(result.get("spec")) or _mapping(state.get("spec"))
-    metrics = _extract_metrics(result)
+    trusted = _trusted_bundle(path, result, crash, events)
+    metrics = _extract_metrics(result) if trusted else {}
     snapshots = _snapshots(path, events)
     attention = _mapping(state.get("attention"))
     noticed = set(_strings(attention.get("noticed_ids")))
@@ -194,8 +195,10 @@ def _load_run(path: Path) -> dict[str, Any]:
             element["noticed"] = element["id"] in noticed
             element["inspected"] = element["id"] in inspected
 
-    supported_evidence, unsupported_limitations = _evidence(result, metrics)
-    findings, finding_limitations = _findings(result)
+    supported_evidence, unsupported_limitations = (
+        _evidence(result, metrics) if trusted else ([], [])
+    )
+    findings, finding_limitations = _findings(result) if trusted else ([], [])
     limitations = _unique(
         [
             "Outputs describe simulated benchmark evidence, not real-user completion or satisfaction.",
@@ -209,6 +212,13 @@ def _load_run(path: Path) -> dict[str, Any]:
             *(_strings(result.get("limitations"))),
             *unsupported_limitations,
             *finding_limitations,
+            *(
+                [
+                    "Bundle is incomplete or crashed; evidence is untrusted and excluded from scorecards."
+                ]
+                if not trusted
+                else []
+            ),
         ]
     )
     verification = _verification(events, result)
@@ -265,6 +275,7 @@ def _load_run(path: Path) -> dict[str, Any]:
         "stage": stage,
         "failure_reason": failure_reason,
         "failed": stage != "complete",
+        "trusted": trusted,
         "timeline": public_events,
         "snapshots": snapshots,
         "observations": observations,
@@ -279,7 +290,7 @@ def _load_run(path: Path) -> dict[str, Any]:
         "model_calls": _model_calls(events),
         "evidence": supported_evidence,
         "findings": findings,
-        "metrics": _metric_rows(metrics, verification, outcome),
+        "metrics": _metric_rows(metrics, verification, outcome) if trusted else [],
         "limitations": limitations,
     }
 
@@ -314,6 +325,7 @@ def _report_context(
                     "stage",
                     "failure_reason",
                     "failed",
+                    "trusted",
                     "metrics",
                     "limitations",
                 )
@@ -917,7 +929,7 @@ def _findings(result: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
 def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for run in runs:
-        if not run["metrics"]:
+        if not run["trusted"] or not run["metrics"]:
             continue
         groups[
             (
@@ -968,6 +980,7 @@ def _gate_rows(
                 if run["scenario_id"] == scenario_id
                 and run["persona_id"] == persona_id
                 and run["policy"] == policy
+                and run["trusted"]
             ),
             None,
         )
@@ -1086,6 +1099,7 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
         "stage": _text(failure.get("stage"), "execution"),
         "failure_reason": _text(failure.get("reason"), "run failed"),
         "failed": True,
+        "trusted": False,
         "timeline": [],
         "snapshots": [],
         "observations": [],
@@ -1114,6 +1128,20 @@ def _run_stage(result: dict[str, Any], crash: dict[str, Any], outcome: str) -> s
         reason = _text(crash.get("reason")).lower()
         return "bundle-finalization" if "finalization" in reason else "execution"
     return "complete" if outcome == "verified-success" else "terminal"
+
+
+def _trusted_bundle(
+    path: Path,
+    result: dict[str, Any],
+    crash: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> bool:
+    return bool(
+        result
+        and not crash
+        and (path / "checksums.sha256").is_file()
+        and any(_kind(event) == "run-terminated" for event in events)
+    )
 
 
 def _safe_json(value: object) -> str:

@@ -30,3 +30,8 @@ expected_evidence:
   - target-discovery
   - hierarchy-depth
   - verified-completion
+evaluation_target:
+  labels_by_version:
+    defective: Enable protection
+    improved: Enable two-factor authentication
+  role: button

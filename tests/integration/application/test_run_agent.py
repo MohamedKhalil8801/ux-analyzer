@@ -26,6 +26,7 @@ from ux_analyzer.domain.benchmark import (
     FixtureStateVerifierSpec,
     Persona,
     Scenario,
+    ScenarioEvaluationTarget,
     VisibleResultVerifierSpec,
 )
 from ux_analyzer.domain.interface import (
@@ -382,6 +383,10 @@ def _spec(*, max_steps: int = 6, timeout_seconds: float = 1) -> object:
         safeguards=(),
         eligible_persona_ids=("persona",),
         expected_evidence=(),
+        evaluation_target=ScenarioEvaluationTarget(
+            labels_by_version={"improved": "Target"},
+            role="button",
+        ),
     )
     from ux_analyzer.domain.run import RunSpec
 

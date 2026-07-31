@@ -33,6 +33,7 @@ from ux_analyzer.domain.benchmark import (
     FixtureStateVerifierSpec,
     Persona,
     Scenario,
+    ScenarioEvaluationTarget,
     VerifierOperator,
     VerifierSpec,
     VisibleResultVerifierSpec,
@@ -233,6 +234,14 @@ def _validate_references(config: ProjectModel) -> None:
                     f"scenario {scenario.id!r} references unknown fixture input "
                     f"{scenario.verifier.expected_fixture_key!r}"
                 )
+        for version_id in scenario.application_version_ids:
+            version_kind = versions_by_id[version_id].value
+            labels = scenario.evaluation_target.labels_by_version
+            if version_id not in labels and version_kind not in labels:
+                raise ProjectConfigError(
+                    f"scenario {scenario.id!r} evaluation target has no label for "
+                    f"application version {version_id!r}"
+                )
 
     for experiment in config.experiments:
         for scenario_id in experiment.scenario_ids:
@@ -340,6 +349,11 @@ def _to_scenario(scenario: ScenarioModel) -> Scenario:
         safeguards=tuple(scenario.safeguards),
         eligible_persona_ids=tuple(scenario.eligible_persona_ids),
         expected_evidence=tuple(scenario.expected_evidence),
+        evaluation_target=ScenarioEvaluationTarget(
+            labels_by_version=scenario.evaluation_target.labels_by_version,
+            role=scenario.evaluation_target.role,
+            region_label=scenario.evaluation_target.region_label,
+        ),
         viewport_width=scenario.viewport.width,
         viewport_height=scenario.viewport.height,
     )

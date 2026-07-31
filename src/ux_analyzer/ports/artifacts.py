@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import struct
+import zipfile
+import zlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +63,74 @@ class RedactionPolicy:
             ),
             keys=inputs.sensitive_keys,
         )
+
+
+def sanitize_artifact_content(
+    name: str,
+    content: bytes,
+    policy: RedactionPolicy,
+) -> bytes:
+    """Remove configured values from persisted screenshots and trace archives."""
+
+    if not policy.exact_values:
+        return content
+    lowered_name = name.lower()
+    if lowered_name.endswith(".zip") or zipfile.is_zipfile(io.BytesIO(content)):
+        return _sanitize_zip(content, policy)
+    if lowered_name.endswith(".png") or content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return _blank_png(content)
+    return _replace_exact_bytes(content, policy)
+
+
+def _sanitize_zip(content: bytes, policy: RedactionPolicy) -> bytes:
+    source_buffer = io.BytesIO(content)
+    destination_buffer = io.BytesIO()
+    try:
+        with (
+            zipfile.ZipFile(source_buffer, "r") as source,
+            zipfile.ZipFile(destination_buffer, "w") as destination,
+        ):
+            for info in source.infolist():
+                member = source.read(info.filename)
+                destination.writestr(
+                    info,
+                    sanitize_artifact_content(info.filename, member, policy),
+                )
+    except zipfile.BadZipFile:
+        return _replace_exact_bytes(content, policy)
+    return destination_buffer.getvalue()
+
+
+def _blank_png(content: bytes) -> bytes:
+    if len(content) < 24 or not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return b""
+    width, height = struct.unpack(">II", content[16:24])
+    if width <= 0 or height <= 0 or width > 16_384 or height > 16_384:
+        return b""
+    row = b"\x00" + (b"\x00\x00\x00\xff" * width)
+    pixels = zlib.compress(row * height)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + _png_chunk(b"IDAT", pixels)
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
+    return (
+        struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum)
+    )
+
+
+def _replace_exact_bytes(content: bytes, policy: RedactionPolicy) -> bytes:
+    redacted = content
+    replacement = REDACTED_VALUE.encode("utf-8")
+    for exact_value in sorted(policy.exact_values, key=len, reverse=True):
+        for encoding in ("utf-8", "utf-16-le", "utf-16-be"):
+            redacted = redacted.replace(exact_value.encode(encoding), replacement)
+    return redacted
 
 
 def _origin_without_credentials(endpoint: str) -> str:

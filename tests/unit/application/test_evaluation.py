@@ -14,6 +14,7 @@ from ux_analyzer.application.evaluation import (
     evaluate_experiment_results,
     evaluate_run,
     evaluation_inputs_for,
+    evaluation_target_for,
 )
 from ux_analyzer.application.run_agent import (
     ProminenceEvidence,
@@ -36,6 +37,7 @@ from ux_analyzer.domain.benchmark import (
     FixtureInputs,
     Persona,
     Scenario,
+    ScenarioEvaluationTarget,
     VisibleResultVerifierSpec,
 )
 from ux_analyzer.domain.findings import (
@@ -52,6 +54,7 @@ from ux_analyzer.domain.interface import (
 from ux_analyzer.domain.run import (
     ActionExecuted,
     ActionProposed,
+    AgentAbandoned,
     ArtifactChecksum,
     ObservationRecorded,
     ProviderManifest,
@@ -84,6 +87,10 @@ def _spec(version: ApplicationVersion) -> RunSpec:
         safeguards=(),
         eligible_persona_ids=("persona",),
         expected_evidence=(),
+        evaluation_target=ScenarioEvaluationTarget(
+            labels_by_version={"defective": "Target", "improved": "Target"},
+            role="button",
+        ),
     )
     return RunSpec(
         run_id=f"run-{version.id}",
@@ -337,6 +344,52 @@ def test_production_inputs_derive_scores_and_fold_facts_from_recorded_evidence()
     assert inputs.model_dependent is True
 
 
+def test_evaluation_uses_scenario_target_after_wrong_action_and_abandonment() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    result = _result(version)
+    events = list(result.state.events)
+    wrong = InteractWithElement(element_id="competitor")
+    events.insert(-1, ActionProposed(action=wrong))
+    events.insert(
+        -1,
+        ActionExecuted(
+            action=wrong,
+            viewport_id="viewport-1",
+            succeeded=False,
+            error="wrong action",
+        ),
+    )
+    abandoned = AgentAbandoned(reason="user gave up")
+    result = replace(
+        result,
+        outcome=abandoned,
+        verification=VerificationResult(verified=False),
+        state=replace(
+            result.state,
+            events=tuple(events[:-1])
+            + (
+                RunTerminated(
+                    outcome=abandoned,
+                    verification=VerificationResult(verified=False),
+                    configuration_digest=result.state.spec.config_digest,
+                    artifact_checksums=(
+                        ArtifactChecksum(path="timeline", sha256="sha"),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    metrics = evaluate_run(result, evaluation_target_for(result))
+
+    assert metrics.target.element_id is not None
+    assert metrics.target.element_id.endswith("target")
+    assert metrics.wrong_actions == 1
+    assert metrics.abandoned is True
+
+
 def test_production_inputs_mark_target_below_fold_after_recorded_scroll() -> None:
     version = ApplicationVersion(
         id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
@@ -455,6 +508,13 @@ def _feedback_result(
         safeguards=(),
         eligible_persona_ids=(persona_id,),
         expected_evidence=(),
+        evaluation_target=ScenarioEvaluationTarget(
+            labels_by_version={
+                "defective": "Enable two-factor authentication",
+                "improved": "Enable two-factor authentication",
+            },
+            role="button",
+        ),
     )
     spec = RunSpec(
         run_id=f"run-{version_kind.value}-{persona_id}-{policy.value}",

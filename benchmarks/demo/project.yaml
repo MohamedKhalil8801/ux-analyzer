@@ -49,6 +49,11 @@ scenarios:
       - target-discovery
       - information-scent
       - verified-completion
+    evaluation_target:
+      labels_by_version:
+        defective: Invite teammate
+        improved: Invite teammate
+      role: button
 
   - id: enable-2fa
     name: Enable two-factor authentication
@@ -83,6 +88,11 @@ scenarios:
       - target-discovery
       - hierarchy-depth
       - verified-completion
+    evaluation_target:
+      labels_by_version:
+        defective: Enable protection
+        improved: Enable two-factor authentication
+      role: button
 
 personas:
   - id: first-time-nontechnical
