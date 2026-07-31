@@ -532,8 +532,14 @@
   function applyHash() {
     var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     var runId = params.get("run");
+    var eventId = params.get("event");
     var elementId = params.get("element");
     if (runId && runs.some(function (run) { return run.run_id === runId; })) state.runId = runId;
+    if (eventId) {
+      var run = currentRun();
+      var eventIndex = run ? (run.timeline || []).findIndex(function (event) { return event.event_id === eventId; }) : -1;
+      if (eventIndex >= 0) state.eventIndex = eventIndex;
+    }
     if (elementId) state.elementId = elementId;
   }
 

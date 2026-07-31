@@ -416,7 +416,10 @@ class PlaywrightSessionAdapter:
                 await managed.context.tracing.stop(path=str(managed.handle.trace_path))
                 _sanitize_trace(managed)
         except PlaywrightError:
-            managed.handle.trace_path.touch(exist_ok=True)
+            _discard_trace(managed.handle.trace_path)
+        except BaseException:
+            _discard_trace(managed.handle.trace_path)
+            raise
         finally:
             try:
                 await managed.context.close()
@@ -436,6 +439,18 @@ def _sanitize_trace(managed: _ManagedSession) -> None:
     temporary = path.with_name(f".{path.name}.sanitized")
     temporary.write_bytes(sanitized)
     os.replace(temporary, path)
+
+
+def _discard_trace(path: Path) -> None:
+    for candidate in (path, path.with_name(f".{path.name}.sanitized")):
+        try:
+            with candidate.open("r+b") as trace:
+                trace.truncate(0)
+                trace.flush()
+                os.fsync(trace.fileno())
+        except FileNotFoundError:
+            continue
+        candidate.unlink(missing_ok=True)
 
 
 async def _shielded_cleanup(awaitable: Awaitable[None]) -> None:

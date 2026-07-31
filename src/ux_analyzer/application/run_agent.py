@@ -160,6 +160,7 @@ class RunFinalizationError(RuntimeError):
 class ProminenceEvidence:
     viewport_id: str
     scores: tuple[ProminenceResult, ...]
+    source_event_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +168,7 @@ class ScentEvidence:
     kind: str
     viewport_id: str
     scores: tuple[object, ...]
+    source_event_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,12 +179,14 @@ class SelectionEvidence:
     region_id: str | None
     element_probabilities: object
     region_probabilities: object
+    source_event_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class DecisionEvidence:
     viewport_id: str
     decision: object
+    source_event_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +197,7 @@ class RunEvidence:
     decisions: tuple[DecisionEvidence, ...] = ()
     model_calls: tuple[ModelCallRecord, ...] = ()
     screenshot_artifacts: tuple[ArtifactChecksum, ...] = ()
+    state_event_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +255,7 @@ class _RunContext:
     screenshot_artifacts: list[ArtifactChecksum] = field(
         default_factory=lambda: list[ArtifactChecksum]()
     )
+    state_event_ids: list[str] = field(default_factory=lambda: list[str]())
     model_record_cursor: int = 0
 
 
@@ -322,6 +328,7 @@ class RunAgent:
                 context.state,
                 RunStarted(run_id=spec.run_id),
                 writer,
+                context.state_event_ids,
             )
 
             try:
@@ -350,7 +357,9 @@ class RunAgent:
 
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                execution = _timed_out_execution(execution, writer)
+                execution = _timed_out_execution(
+                    execution, writer, context.state_event_ids
+                )
             else:
                 try:
                     execution = await asyncio.wait_for(
@@ -358,11 +367,14 @@ class RunAgent:
                             execution,
                             writer,
                             context.session,
+                            context.state_event_ids,
                         ),
                         timeout=remaining,
                     )
                 except TimeoutError:
-                    execution = _timed_out_execution(execution, writer)
+                    execution = _timed_out_execution(
+                        execution, writer, context.state_event_ids
+                    )
             trace_session = context.session
             context.session = None
             await self._end_session(trace_session)
@@ -428,14 +440,17 @@ class RunAgent:
                 raise RuntimeError("run has no current viewport")
 
             scores = tuple(self.prominence_provider.score(snapshot))
-            prominence_record = ProminenceEvidence(snapshot.id, scores)
-            context.prominence.append(prominence_record)
-            writer.append_event(
+            prominence_sequence = writer.append_event(
                 {
                     "kind": "prominence-recorded",
                     "viewport_id": snapshot.id,
                     "scores": tuple(_prominence_payload(score) for score in scores),
                 }
+            )
+            context.prominence.append(
+                ProminenceEvidence(
+                    snapshot.id, scores, source_event_id=_event_id(prominence_sequence)
+                )
             )
             coarse_scent: object = ()
             if self.coarse_scent_evaluator is not None:
@@ -445,10 +460,7 @@ class RunAgent:
                     )
                 finally:
                     self._record_model_calls(context, writer)
-                context.scent.append(
-                    ScentEvidence("coarse-scent", snapshot.id, tuple(coarse_scent))
-                )
-                writer.append_event(
+                coarse_sequence = writer.append_event(
                     {
                         "kind": "coarse-scent-recorded",
                         "scores": tuple(
@@ -456,6 +468,14 @@ class RunAgent:
                             for item in coarse_scent
                         ),
                     }
+                )
+                context.scent.append(
+                    ScentEvidence(
+                        "coarse-scent",
+                        snapshot.id,
+                        tuple(coarse_scent),
+                        source_event_id=_event_id(coarse_sequence),
+                    )
                 )
 
             selection = self.attention_policy.next_observation(
@@ -474,8 +494,7 @@ class RunAgent:
                 element_probabilities=getattr(selection, "element_probabilities", {}),
                 region_probabilities=getattr(selection, "region_probabilities", {}),
             )
-            context.selections.append(selection_record)
-            writer.append_event(
+            selection_sequence = writer.append_event(
                 {
                     "kind": "attention-selection-recorded",
                     "viewport_id": snapshot.id,
@@ -486,10 +505,17 @@ class RunAgent:
                     "region_probabilities": selection_record.region_probabilities,
                 }
             )
+            context.selections.append(
+                replace(
+                    selection_record,
+                    source_event_id=_event_id(selection_sequence),
+                )
+            )
             context.state = _record(
                 context.state,
                 ObservationRecorded(observation=observation),
                 writer,
+                context.state_event_ids,
             )
             context.application_state = _require_application_state(
                 apply_observation(
@@ -519,10 +545,7 @@ class RunAgent:
                     )
                 finally:
                     self._record_model_calls(context, writer)
-                context.scent.append(
-                    ScentEvidence("full-scent", snapshot.id, tuple(full_scent))
-                )
-                writer.append_event(
+                full_sequence = writer.append_event(
                     {
                         "kind": "full-scent-recorded",
                         "scores": tuple(
@@ -531,6 +554,14 @@ class RunAgent:
                         ),
                     }
                 )
+                context.scent.append(
+                    ScentEvidence(
+                        "full-scent",
+                        snapshot.id,
+                        tuple(full_scent),
+                        source_event_id=_event_id(full_sequence),
+                    )
+                )
 
             try:
                 decision = await self.cognitive_agent.decide(
@@ -538,8 +569,7 @@ class RunAgent:
                 )
             finally:
                 self._record_model_calls(context, writer)
-            context.decisions.append(DecisionEvidence(snapshot.id, decision))
-            writer.append_event(
+            decision_sequence = writer.append_event(
                 {
                     "kind": "decision-recorded",
                     "viewport_id": snapshot.id,
@@ -548,6 +578,13 @@ class RunAgent:
                     "action": getattr(decision, "action", None),
                     "claimed_success": _agent_claim(decision),
                 }
+            )
+            context.decisions.append(
+                DecisionEvidence(
+                    snapshot.id,
+                    decision,
+                    source_event_id=_event_id(decision_sequence),
+                )
             )
             claim = _agent_claim(decision)
             claimed_success = claimed_success or claim
@@ -589,6 +626,7 @@ class RunAgent:
                 context.state,
                 ActionProposed(action=validated.domain_action),
                 writer,
+                context.state_event_ids,
             )
             if isinstance(validated.domain_action, Abandon):
                 return _Execution(
@@ -608,6 +646,7 @@ class RunAgent:
                         succeeded=True,
                     ),
                     writer,
+                    context.state_event_ids,
                 )
                 context.application_state = _require_application_state(
                     apply_interaction_result(
@@ -638,6 +677,7 @@ class RunAgent:
                     state_changed=result.state_changed,
                 ),
                 writer,
+                context.state_event_ids,
             )
             context.application_state = _require_application_state(
                 apply_interaction_result(
@@ -664,7 +704,9 @@ class RunAgent:
 
             if result.state_changed:
                 await self._capture(context, writer, artifact_checksums)
-                verification = await self._verify(context.state, writer, session)
+                verification = await self._verify(
+                    context.state, writer, session, context.state_event_ids
+                )
                 context.state = verification[0]
                 if verification[1].verified:
                     return _Execution(
@@ -712,6 +754,7 @@ class RunAgent:
                 viewport_height=capture.viewport.height,
             ),
             writer,
+            context.state_event_ids,
         )
 
     async def _verify(
@@ -719,10 +762,16 @@ class RunAgent:
         state: RunState,
         writer: RunBundleWriter,
         session: SessionHandle,
+        state_event_ids: list[str],
     ) -> tuple[RunState, VerificationResult]:
         result = await self.verifier.verify(session)
         return (
-            _record(state, VerificationRecorded(result=result), writer),
+            _record(
+                state,
+                VerificationRecorded(result=result),
+                writer,
+                state_event_ids,
+            ),
             result,
         )
 
@@ -731,6 +780,7 @@ class RunAgent:
         execution: _Execution,
         writer: RunBundleWriter,
         session: SessionHandle | None,
+        state_event_ids: list[str],
     ) -> _Execution:
         if execution.verification is not None:
             return execution
@@ -744,6 +794,7 @@ class RunAgent:
                 execution.state,
                 VerificationRecorded(result=result),
                 writer,
+                state_event_ids,
             )
             return replace(execution, state=state, verification=result)
 
@@ -760,6 +811,7 @@ class RunAgent:
                 execution.state,
                 VerificationRecorded(result=result),
                 writer,
+                state_event_ids,
             )
             return replace(
                 execution,
@@ -773,6 +825,7 @@ class RunAgent:
             execution.state,
             VerificationRecorded(result=result),
             writer,
+            state_event_ids,
         )
         outcome = VerifiedSuccess() if result.verified else execution.outcome
         return replace(execution, state=state, outcome=outcome, verification=result)
@@ -791,7 +844,12 @@ class RunAgent:
         )
         state = execution.state
         if state.verification is None:
-            state = _record(state, VerificationRecorded(result=verification), writer)
+            state = _record(
+                state,
+                VerificationRecorded(result=verification),
+                writer,
+                context.state_event_ids,
+            )
         manifests = self._provider_manifests(spec)
         terminal = RunTerminated(
             outcome=execution.outcome,
@@ -801,7 +859,7 @@ class RunAgent:
             artifact_checksums=tuple(artifact_checksums),
         )
         try:
-            final_state = _record(state, terminal, writer)
+            final_state = _record(state, terminal, writer, context.state_event_ids)
         except BaseException as error:
             _abort_bundle(
                 writer, f"terminal event failed: {_safe_error_message(error)}"
@@ -822,6 +880,7 @@ class RunAgent:
                 decisions=tuple(context.decisions),
                 model_calls=tuple(context.model_calls),
                 screenshot_artifacts=tuple(context.screenshot_artifacts),
+                state_event_ids=tuple(context.state_event_ids),
             ),
         )
         if self.result_evaluator is not None:
@@ -895,10 +954,19 @@ def _sync_run_attention(context: _RunContext) -> None:
     )
 
 
-def _record(state: RunState, event: RunEvent, writer: RunBundleWriter) -> RunState:
+def _record(
+    state: RunState,
+    event: RunEvent,
+    writer: RunBundleWriter,
+    state_event_ids: list[str],
+) -> RunState:
     next_state = state.apply(event)
-    writer.append_event(event)
+    state_event_ids.append(_event_id(writer.append_event(event)))
     return next_state
+
+
+def _event_id(sequence: int) -> str:
+    return f"event-{sequence}"
 
 
 def _snapshot_from_capture(capture: ObservationCapture) -> ViewportSnapshot:
@@ -1026,6 +1094,7 @@ async def _shielded_await(awaitable: Awaitable[None]) -> None:
 def _timed_out_execution(
     execution: _Execution,
     writer: RunBundleWriter,
+    state_event_ids: list[str],
 ) -> _Execution:
     result = VerificationResult(
         verified=False,
@@ -1035,6 +1104,7 @@ def _timed_out_execution(
         execution.state,
         VerificationRecorded(result=result),
         writer,
+        state_event_ids,
     )
     return replace(
         execution,

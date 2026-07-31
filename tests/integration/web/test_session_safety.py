@@ -14,6 +14,7 @@ import pytest_asyncio
 import uvicorn
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -520,3 +521,34 @@ async def test_trace_sanitization_failure_propagates_after_context_cleanup(
         await browser_adapter.end_session(session)
 
     assert browser_adapter.active_session_count == 0
+
+
+@pytest.mark.asyncio
+async def test_trace_stop_failure_removes_partially_written_sensitive_bytes(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_origin, _ = running_servers
+    sensitive = b"invitee@example.test:246810"
+    session = await browser_adapter.start_session(
+        _session_config(fixture_origin, tmp_path / "partial-sensitive.zip")
+    )
+    page = browser_adapter.page_for_testing(session)
+    managed = browser_adapter._sessions[session.session_id]
+
+    async def fail_after_partial_write(*, path: str) -> None:
+        Path(path).write_bytes(sensitive)
+        raise PlaywrightError("trace stop failed")
+
+    monkeypatch.setattr(managed.context.tracing, "stop", fail_after_partial_write)
+
+    await browser_adapter.end_session(session)
+
+    assert browser_adapter.active_session_count == 0
+    assert page.is_closed()
+    artifact_bytes = b"".join(
+        path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    )
+    assert sensitive not in artifact_bytes

@@ -417,6 +417,23 @@ def test_renderer_excludes_tampered_bundle_from_scorecards_and_gates(
     assert "All directional checks passed" not in html
 
 
+def test_renderer_excludes_active_bundle_from_scorecards_and_findings(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-active", version="improved", discovery_cost=777777)
+    active_run = tmp_path / "runs" / "run-active"
+    (active_run / ".active").write_text('{"run_id":"run-active"}', encoding="utf-8")
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "run-active" in html
+    assert "active bundle marker present" in html
+    assert "777777" not in html
+    assert "Target wording gives weak goal cues" not in html
+
+
 @pytest.mark.parametrize("filename", ("manifest.json", "timeline.jsonl", "result.json"))
 def test_renderer_reports_missing_required_bundle_file_as_untrusted(
     tmp_path: Path, filename: str
@@ -595,3 +612,51 @@ def test_renderer_replaces_oversized_run_page_with_bounded_notice(
         "Detailed replay omitted because run page exceeds configured size limit."
         in html
     )
+
+
+def test_renderer_streams_checksum_verification_for_unreferenced_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_run(tmp_path, "run-streamed", version="defective", discovery_cost=8)
+    artifact = tmp_path / "runs" / "run-streamed" / "artifacts" / "large.bin"
+    artifact.write_bytes(b"x" * 100_000)
+    _write_checksums(artifact.parents[1])
+    original_read_bytes = Path.read_bytes
+
+    def reject_whole_file_read(path: Path) -> bytes:
+        if path == artifact:
+            raise AssertionError("checksum verification read whole artifact")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_whole_file_read)
+
+    output = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    assert output.is_file()
+
+
+def test_renderer_split_index_is_concise_and_uses_collision_safe_run_links(
+    tmp_path: Path,
+) -> None:
+    for run_id in ("run active", "run_active"):
+        _write_run(tmp_path, run_id, version="defective", discovery_cost=8)
+        result_path = tmp_path / "runs" / run_id / "result.json"
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        result["limitations"] = ["x" * 120_000]
+        _write_json(result_path, result)
+        _write_checksums(result_path.parent)
+    threshold = 80_000
+
+    output = render_experiment_report(
+        tmp_path,
+        tmp_path / "report.html",
+        max_single_file_bytes=threshold,
+    )
+
+    html = output.read_text(encoding="utf-8")
+    run_pages = tuple((tmp_path / "report-runs").glob("*.html"))
+    assert output.stat().st_size <= threshold
+    assert "x" * 1_000 not in html
+    assert len(run_pages) == 2
+    assert len({path.name for path in run_pages}) == 2
+    assert all(path.name in html for path in run_pages)

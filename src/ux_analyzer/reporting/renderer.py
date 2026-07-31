@@ -16,6 +16,7 @@ from typing import Any, cast
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
 DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
+_HASH_CHUNK_BYTES = 1024 * 1024
 _CHECKSUM_PATTERN = re.compile(r"[0-9a-f]{64}")
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
 _PRIVATE_KEYS = frozenset(
@@ -81,9 +82,10 @@ def render_experiment_report(
 
     run_directory = destination.parent / f"{destination.stem}-runs"
     run_directory.mkdir(parents=True, exist_ok=True)
+    run_page_names = _run_page_names(experiment["runs"])
     run_links = {
-        run["run_id"]: f"{run_directory.name}/{_safe_filename(run['run_id'])}.html"
-        for run in experiment["runs"]
+        run_id: f"{run_directory.name}/{page_name}"
+        for run_id, page_name in run_page_names.items()
     }
     index_context = _report_context(
         experiment,
@@ -105,7 +107,7 @@ def render_experiment_report(
         )
         if len(run_html.encode("utf-8")) > threshold:
             run_html = _oversized_run_html(run["run_id"], threshold)
-        (run_directory / f"{_safe_filename(run['run_id'])}.html").write_text(
+        (run_directory / run_page_names[run["run_id"]]).write_text(
             run_html, encoding="utf-8"
         )
     return destination
@@ -185,7 +187,8 @@ def _run_directories(root: Path) -> tuple[Path, ...]:
         candidates.extend(
             path
             for path in staging_root.iterdir()
-            if path.is_dir() and (path / "crash.marker").is_file()
+            if path.is_dir()
+            and ((path / "crash.marker").is_file() or (path / ".active").is_file())
         )
     return tuple(sorted(candidates, key=lambda path: path.name))
 
@@ -206,6 +209,9 @@ def _load_run(path: Path) -> dict[str, Any]:
         *crash_failures,
         *timeline_failures,
     ]
+    active = (path / ".active").is_file()
+    if active:
+        integrity_failures.append("active bundle marker present; run is partial")
     if not manifest:
         integrity_failures.append("manifest.json contains no manifest data")
     if not result:
@@ -308,6 +314,8 @@ def _load_run(path: Path) -> dict[str, Any]:
     terminal_state = (
         "crashed"
         if crash
+        else "partial"
+        if active
         else "untrusted"
         if integrity_failures
         else "finalized"
@@ -386,7 +394,6 @@ def _report_context(
                     "failed",
                     "trusted",
                     "metrics",
-                    "limitations",
                 )
             }
         )
@@ -398,22 +405,43 @@ def _report_context(
         if run["snapshots"]:
             initial_width = run["snapshots"][0]["viewport"]["width"]
             break
+    failure_rows = [
+        {
+            key: run[key]
+            for key in (
+                "run_id",
+                "scenario_id",
+                "version_id",
+                "persona_id",
+                "policy",
+                "stage",
+                "terminal_state",
+                "failure_reason",
+            )
+        }
+        for run in _list_of_mappings(experiment["failure_rows"])
+    ]
+    limitations = (
+        experiment["limitations"]
+        if include_run_payload
+        else ["Run-specific limitations are available on self-contained run pages."]
+    )
     return {
         "runs": runs,
         "comparison_rows": experiment["comparison_rows"],
         "gate_rows": experiment["gate_rows"],
-        "failure_rows": experiment["failure_rows"],
+        "failure_rows": failure_rows,
         "evidence_summary": experiment["evidence_summary"],
-        "limitations": experiment["limitations"],
+        "limitations": limitations,
         "initial_viewport_width": initial_width,
         "report_json": _safe_json(
             {
                 "runs": runs,
                 "comparison_rows": experiment["comparison_rows"],
                 "gate_rows": experiment["gate_rows"],
-                "failure_rows": experiment["failure_rows"],
+                "failure_rows": failure_rows,
                 "evidence_summary": experiment["evidence_summary"],
-                "limitations": experiment["limitations"],
+                "limitations": limitations,
             }
         ),
     }
@@ -534,10 +562,18 @@ def _bundle_integrity_failures(path: Path) -> list[str]:
     for relative_path in sorted(checksums.keys() - actual_files):
         failures.append(f"checksummed file missing: {relative_path}")
     for relative_path in sorted(actual_files & checksums.keys()):
-        digest = hashlib.sha256((path / relative_path).read_bytes()).hexdigest()
+        digest = _file_sha256(path / relative_path)
         if digest != checksums[relative_path]:
             failures.append(f"checksum mismatch: {relative_path}")
     return _unique(failures)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(_HASH_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _snapshots(path: Path, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -692,8 +728,10 @@ def _public_region(value: object) -> dict[str, str] | None:
 
 def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     kind = _kind(event)
+    sequence = int(_number(event.get("sequence"), 0))
     result: dict[str, Any] = {
-        "sequence": _number(event.get("sequence"), 0),
+        "event_id": f"event-{sequence}" if sequence > 0 else "",
+        "sequence": sequence,
         "kind": kind,
     }
     if kind == "viewport-captured":
@@ -1340,6 +1378,23 @@ def _safe_filename(value: str) -> str:
         character if character.isalnum() or character in "-_" else "_"
         for character in value
     )
+
+
+def _run_page_names(runs: object) -> dict[str, str]:
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for run in _list_of_mappings(runs):
+        run_id = _text(run.get("run_id"), "run")
+        grouped[_safe_filename(run_id) or "run"].append(run_id)
+    names: dict[str, str] = {}
+    for safe_name, run_ids in grouped.items():
+        for run_id in run_ids:
+            suffix = (
+                f"-{hashlib.sha256(run_id.encode('utf-8')).hexdigest()[:8]}"
+                if len(run_ids) > 1
+                else ""
+            )
+            names[run_id] = f"{safe_name}{suffix}.html"
+    return names
 
 
 def _mapping(value: object) -> dict[str, Any]:

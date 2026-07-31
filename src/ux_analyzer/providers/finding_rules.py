@@ -93,6 +93,7 @@ class FindingRule:
             return None
         category = FindingCategory(self.category)
         evidence_ids = _evidence_ids(metrics, category.value)
+        source_event_ids = _source_event_ids(metrics, evidence_ids)
         reproducibility = (
             metrics.reproducibility
             if self.evidence_class is EvidenceClass.MODEL_ESTIMATE
@@ -121,7 +122,13 @@ class FindingRule:
             action_sequence=metrics.action_sequence,
             replay_links=(
                 *(
-                    (f"#run={metrics.run_id}&element={metrics.target.element_id}",)
+                    (
+                        _replay_link(
+                            metrics.run_id,
+                            metrics.target.element_id,
+                            source_event_ids[0] if source_event_ids else None,
+                        ),
+                    )
                     if metrics.target.element_id
                     else ()
                 ),
@@ -300,6 +307,24 @@ def _evidence_ids(metrics: RunMetrics, category: str) -> tuple[str, ...]:
     if related:
         return related
     return (f"{metrics.run_id}:{category}",)
+
+
+def _source_event_ids(
+    metrics: RunMetrics, evidence_ids: tuple[str, ...]
+) -> tuple[str, ...]:
+    result: list[str] = []
+    for evidence in metrics.evidence:
+        if evidence.evidence_id not in evidence_ids:
+            continue
+        for event_id in evidence.source_event_ids:
+            if event_id not in result:
+                result.append(event_id)
+    return tuple(result)
+
+
+def _replay_link(run_id: str, element_id: str, event_id: str | None) -> str:
+    event = f"&event={event_id}" if event_id else ""
+    return f"#run={run_id}{event}&element={element_id}"
 
 
 def _metric_names(category: str) -> tuple[str, ...]:

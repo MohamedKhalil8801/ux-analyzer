@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -37,7 +37,11 @@ from ux_analyzer.domain.run import (
 )
 
 if TYPE_CHECKING:
-    from ux_analyzer.application.run_agent import RunResult
+    from ux_analyzer.application.run_agent import (
+        ProminenceEvidence,
+        RunResult,
+        ScentEvidence,
+    )
 
 
 def _empty_float_mapping() -> dict[str, float]:
@@ -517,7 +521,9 @@ def evaluate_run(
     reproducibility = (
         Reproducibility.MODEL_DEPENDENT if model_dependent else Reproducibility.SEEDED
     )
-    event_ids = _event_ids(state.events)
+    event_ids = _event_ids(result)
+    prominence_event_ids = _prominence_event_ids(result.evidence.prominence, target_ids)
+    scent_event_ids = _scent_event_ids(result.evidence.scent, target_ids)
     evidence_records: list[Evidence] = []
     metric_records: list[Metric] = []
 
@@ -616,6 +622,7 @@ def evaluate_run(
             target_prominence,
             estimated,
             "Heuristic prominence estimate for target.",
+            prominence_event_ids,
         )
     if target_scent is not None:
         record(
@@ -623,6 +630,7 @@ def evaluate_run(
             target_scent,
             estimated,
             "Configured scent evidence for target.",
+            scent_event_ids,
         )
     if strongest_competing_scent is not None:
         record(
@@ -630,6 +638,10 @@ def evaluate_run(
             strongest_competing_scent,
             estimated,
             "Strongest configured non-target scent.",
+            _scent_event_ids(
+                result.evidence.scent,
+                frozenset(settings.scent_scores) - target_ids,
+            ),
         )
     if settings.target_below_fold is not None:
         record(
@@ -1300,8 +1312,41 @@ def _has_model_manifest(manifests: Sequence[object]) -> bool:
     )
 
 
-def _event_ids(events: Sequence[object]) -> tuple[str, ...]:
-    return tuple(f"event-{index}" for index, _ in enumerate(events, start=1))
+def _event_ids(result: RunResult) -> tuple[str, ...]:
+    event_ids = tuple(result.evidence.state_event_ids)
+    if len(event_ids) != len(result.state.events):
+        return ()
+    return event_ids
+
+
+def _prominence_event_ids(
+    records: Sequence[ProminenceEvidence], target_ids: Collection[str]
+) -> tuple[str, ...]:
+    return _unique_event_ids(
+        record.source_event_id
+        for record in records
+        if any(score.element_id in target_ids for score in record.scores)
+    )
+
+
+def _scent_event_ids(
+    records: Sequence[ScentEvidence], target_ids: Collection[str]
+) -> tuple[str, ...]:
+    return _unique_event_ids(
+        record.source_event_id
+        for record in records
+        if any(
+            getattr(score, "element_id", None) in target_ids for score in record.scores
+        )
+    )
+
+
+def _unique_event_ids(values: Iterable[str | None]) -> tuple[str, ...]:
+    result: list[str] = []
+    for value in values:
+        if value is not None and value not in result:
+            result.append(value)
+    return tuple(result)
 
 
 def _has_metric(run: RunMetrics, name: str) -> bool:

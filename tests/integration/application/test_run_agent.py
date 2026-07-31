@@ -12,6 +12,7 @@ import pytest
 from ux_analyzer.adapters.web.verifier import WebVerifier
 from ux_analyzer.application.evaluation import (
     EvaluationTarget,
+    RunEvaluationInputs,
     evaluate_run,
     evaluation_target_for,
 )
@@ -56,6 +57,7 @@ from ux_analyzer.ports.observation import (
 from ux_analyzer.ports.observation import TestAccountId as AccountId
 from ux_analyzer.providers.attention_policy import ObservationSelection
 from ux_analyzer.providers.cognitive import CognitiveDecision
+from ux_analyzer.providers.finding_rules import FindingRuleSet
 from ux_analyzer.providers.prominence import ProminenceResult
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
@@ -888,6 +890,68 @@ async def test_run_records_replay_and_role_specific_model_evidence(
     assert "demo-secret@example.test" not in persisted_model_record
     assert "[REDACTED]" in persisted_model_record
     assert result.evidence.model_calls[0].token_usage.total_tokens == 7
+
+
+@pytest.mark.asyncio
+async def test_evidence_and_finding_replay_links_use_persisted_event_sequences(
+    tmp_path: Path,
+) -> None:
+    bundles = FilesystemBundleFactory(tmp_path)
+
+    def evaluate_with_finding(result):
+        metrics = evaluate_run(
+            result,
+            EvaluationTarget(element_id="target"),
+            inputs=RunEvaluationInputs(target_prominence=0.1),
+        )
+        findings = FindingRuleSet.default().evaluate(metrics)
+        return replace(result, metrics=metrics, findings=findings)
+
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="No viable path.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        result_evaluator=evaluate_with_finding,
+    )
+
+    result = await agent.execute(_spec())
+
+    assert isinstance(result.bundle_path, Path)
+    timeline = [
+        json.loads(line)
+        for line in (result.bundle_path / "timeline.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    timeline_events = {f"event-{event['sequence']}": event for event in timeline}
+    prominence_evidence = next(
+        evidence
+        for evidence in result.metrics.evidence
+        if evidence.evidence_id.endswith(":target-prominence")
+    )
+    inspected_evidence = next(
+        evidence
+        for evidence in result.metrics.evidence
+        if evidence.evidence_id.endswith(":inspected-elements")
+    )
+    finding = next(
+        item for item in result.findings if item.category == "weak-target-prominence"
+    )
+    assert prominence_evidence.source_event_ids == ("event-3",)
+    assert timeline_events["event-3"]["kind"] == "prominence-recorded"
+    assert "event-5" in inspected_evidence.source_event_ids
+    assert "event-3" not in inspected_evidence.source_event_ids
+    assert timeline_events["event-5"]["kind"] == "observation-recorded"
+    assert "event=event-3" in finding.replay_links[0]
 
 
 @pytest.mark.asyncio
