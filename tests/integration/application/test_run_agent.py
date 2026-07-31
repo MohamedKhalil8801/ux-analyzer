@@ -920,6 +920,74 @@ async def test_bundle_publication_failure_never_returns_success_result(
 
 
 @pytest.mark.asyncio
+async def test_cancellation_propagates_aborts_staging_and_cleans_up_once(
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+
+    class BlockingCognitiveAgent(FakeCognitiveAgent):
+        async def decide(
+            self, goal: str, observation: ProgressiveObservation
+        ) -> object:
+            del goal, observation
+            started.set()
+            await asyncio.Future()
+
+    provider = FakeObservationProvider((_snapshot(),))
+    output = tmp_path / "cancelled-run"
+    agent = _agent(
+        tmp_path,
+        provider,
+        BlockingCognitiveAgent(()),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FilesystemBundleFactory(output),
+    )
+    task = asyncio.create_task(agent.execute(_spec()))
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    staging = output / ".staging" / "run-1"
+    assert provider.ended == 1
+    assert (staging / "crash.marker").is_file()
+    assert not (staging / "result.json").exists()
+    assert not (output / "runs" / "run-1").exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_security_failure_aborts_without_publishing_result(
+    tmp_path: Path,
+) -> None:
+    class TraceSanitizationError(RuntimeError):
+        pass
+
+    class FailingCleanupProvider(FakeObservationProvider):
+        async def end_session(self, session: SessionHandle) -> None:
+            del session
+            self.ended += 1
+            raise TraceSanitizationError("trace sanitization failed")
+
+    provider = FailingCleanupProvider((_snapshot(),))
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent((Abandon(reason="Stop."),)),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+    )
+
+    with pytest.raises(TraceSanitizationError, match="trace sanitization failed"):
+        await agent.execute(_spec())
+
+    assert provider.ended == 1
+    assert bundles.bundle.aborted
+    assert bundles.bundle.finalized is False
+
+
+@pytest.mark.asyncio
 async def test_run_evaluation_is_persisted_before_bundle_publication(
     tmp_path: Path,
 ) -> None:
@@ -1005,15 +1073,18 @@ async def test_evaluator_failure_still_publishes_closed_immutable_bundle(
     )
     assert result.metrics is None
     assert result.findings is None
-    assert result.evaluation_failure_reason == "result evaluation failed: ValueError"
+    assert result.evaluation_failure_reason is not None
+    assert result.evaluation_failure_reason.startswith(
+        "evaluation evidence unavailable:"
+    )
     assert result.state.events[-1].kind == "run-terminated"
     assert bundle.is_dir()
     assert not (output / ".staging" / result.run_id).exists()
     persisted = json.loads((bundle / "result.json").read_text(encoding="utf-8"))
     assert persisted["metrics"] is None
     assert persisted["findings"] is None
-    assert (
-        persisted["evaluation_failure_reason"] == "result evaluation failed: ValueError"
+    assert persisted["evaluation_failure_reason"].startswith(
+        "evaluation evidence unavailable:"
     )
     assert result.run_id not in result.evaluation_failure_reason
     timeline = [

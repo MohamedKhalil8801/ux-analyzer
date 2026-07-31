@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
@@ -337,6 +337,8 @@ class RunAgent:
                     agent_claimed_success=False,
                     terminal_reason="run timeout exceeded",
                 )
+            except asyncio.CancelledError:
+                raise
             except BaseException as error:
                 execution = _Execution(
                     state=context.state,
@@ -362,8 +364,8 @@ class RunAgent:
                 except TimeoutError:
                     execution = _timed_out_execution(execution, writer)
             trace_session = context.session
-            await self._end_session(trace_session)
             context.session = None
+            await self._end_session(trace_session)
             if trace_session is not None and trace_session.trace_path.is_file():
                 artifact_checksums.append(
                     _artifact_checksum(
@@ -374,6 +376,16 @@ class RunAgent:
                     )
                 )
             return self._finalize(spec, execution, writer, artifact_checksums, context)
+        except asyncio.CancelledError as cancellation:
+            if writer is not None:
+                _abort_bundle(writer, "run execution cancelled")
+            session = context.session
+            context.session = None
+            try:
+                await self._end_session(session)
+            except BaseException as cleanup_error:
+                raise cancellation from cleanup_error
+            raise
         except BaseException as error:
             if writer is not None:
                 _abort_bundle(
@@ -737,6 +749,8 @@ class RunAgent:
 
         try:
             result = await self.verifier.verify(session)
+        except asyncio.CancelledError:
+            raise
         except BaseException as error:
             result = VerificationResult(
                 verified=False,
@@ -866,10 +880,7 @@ class RunAgent:
     async def _end_session(self, session: SessionHandle | None) -> None:
         if session is None:
             return
-        try:
-            await self.observation_provider.end_session(session)
-        except BaseException:
-            return
+        await _shielded_await(self.observation_provider.end_session(session))
 
 
 def _require_application_state(state: object) -> ApplicationState:
@@ -990,7 +1001,26 @@ def _safe_error_message(error: BaseException) -> str:
 
 
 def _evaluation_failure_reason(error: BaseException) -> str:
+    safe_reason = getattr(error, "safe_reason", None)
+    if isinstance(safe_reason, str) and safe_reason:
+        return safe_reason
     return f"result evaluation failed: {error.__class__.__name__}"
+
+
+async def _shielded_await(awaitable: Awaitable[None]) -> None:
+    operation = asyncio.ensure_future(awaitable)
+    cancellation: asyncio.CancelledError | None = None
+    while not operation.done():
+        try:
+            await asyncio.shield(operation)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    operation_error = operation.exception()
+    if cancellation is not None:
+        raise cancellation from operation_error
+    if operation_error is not None:
+        raise operation_error
+    operation.result()
 
 
 def _timed_out_execution(

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import html
 import json
 import math
 import mimetypes
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
@@ -13,6 +16,8 @@ from typing import Any, cast
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
 DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
+_CHECKSUM_PATTERN = re.compile(r"[0-9a-f]{64}")
+_REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
 _PRIVATE_KEYS = frozenset(
     {
         "api_key",
@@ -66,12 +71,13 @@ def render_experiment_report(
         raise ValueError("report size threshold must be greater than zero")
 
     experiment = _load_experiment(root)
-    full_context = _report_context(experiment)
-    single_html = _render_html(full_context, "Attention-guided experiment replay")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if len(single_html.encode("utf-8")) <= threshold:
-        destination.write_text(single_html, encoding="utf-8")
-        return destination
+    if _estimated_full_report_bytes(experiment) <= threshold:
+        full_context = _report_context(experiment)
+        single_html = _render_html(full_context, "Attention-guided experiment replay")
+        if len(single_html.encode("utf-8")) <= threshold:
+            destination.write_text(single_html, encoding="utf-8")
+            return destination
 
     run_directory = destination.parent / f"{destination.stem}-runs"
     run_directory.mkdir(parents=True, exist_ok=True)
@@ -93,14 +99,47 @@ def render_experiment_report(
             {**experiment, "runs": [run]},
             run_links={run["run_id"]: ""},
         )
+        run_html = _render_html(
+            run_context,
+            f"Run replay: {run['run_id']}",
+        )
+        if len(run_html.encode("utf-8")) > threshold:
+            run_html = _oversized_run_html(run["run_id"], threshold)
         (run_directory / f"{_safe_filename(run['run_id'])}.html").write_text(
-            _render_html(
-                run_context,
-                f"Run replay: {run['run_id']}",
-            ),
-            encoding="utf-8",
+            run_html, encoding="utf-8"
         )
     return destination
+
+
+def _estimated_full_report_bytes(experiment: dict[str, Any]) -> int:
+    template_root = Path(__file__).parent
+    shell_bytes = sum(
+        path.stat().st_size
+        for path in (
+            template_root / "templates" / "experiment.html.j2",
+            template_root / "static" / "report.css",
+            template_root / "static" / "report.js",
+        )
+    )
+    return shell_bytes + len(_safe_json(experiment).encode("utf-8"))
+
+
+def _oversized_run_html(run_id: str, threshold: int) -> str:
+    escaped_run_id = html.escape(run_id)
+    detailed = (
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        f"<title>Run replay omitted: {escaped_run_id}</title>"
+        f"<h1>Run {escaped_run_id}</h1>"
+        "<p>Detailed replay omitted because run page exceeds configured size limit.</p>"
+        "<p>Run remains listed in experiment index with trust and failure details.</p>"
+        "</html>"
+    )
+    if len(detailed.encode("utf-8")) <= threshold:
+        return detailed
+    concise = "<!doctype html><title>Replay omitted</title><p>Run page exceeds size limit.</p>"
+    if len(concise.encode("utf-8")) > threshold:
+        raise ValueError("report size threshold is too small for overflow notice")
+    return concise
 
 
 def _load_experiment(root: Path) -> dict[str, Any]:
@@ -133,42 +172,55 @@ def _load_experiment(root: Path) -> dict[str, Any]:
 
 
 def _run_directories(root: Path) -> tuple[Path, ...]:
-    if (root / "manifest.json").is_file() and (root / "timeline.jsonl").is_file():
+    if any(
+        (root / name).exists() for name in (*_REQUIRED_BUNDLE_FILES, "crash.marker")
+    ):
         return (root,)
     candidates: list[Path] = []
     runs_root = root / "runs"
     if runs_root.is_dir():
-        candidates.extend(
-            path
-            for path in runs_root.iterdir()
-            if path.is_dir()
-            and (path / "manifest.json").is_file()
-            and (path / "timeline.jsonl").is_file()
-        )
+        candidates.extend(path for path in runs_root.iterdir() if path.is_dir())
     staging_root = root / ".staging"
     if staging_root.is_dir():
         candidates.extend(
             path
             for path in staging_root.iterdir()
-            if path.is_dir()
-            and (path / "manifest.json").is_file()
-            and (path / "timeline.jsonl").is_file()
-            and (path / "crash.marker").is_file()
+            if path.is_dir() and (path / "crash.marker").is_file()
         )
     return tuple(sorted(candidates, key=lambda path: path.name))
 
 
 def _load_run(path: Path) -> dict[str, Any]:
-    manifest = _read_object(path / "manifest.json")
-    result = _read_object(path / "result.json", required=False)
-    crash = _read_object(path / "crash.marker", required=False)
-    events = _read_jsonl(path / "timeline.jsonl")
+    manifest, manifest_failures = _read_object_safely(path / "manifest.json")
+    result, result_failures = _read_object_safely(path / "result.json")
+    crash, crash_failures = _read_object_safely(path / "crash.marker", required=False)
+    events, timeline_failures = _read_jsonl_safely(path / "timeline.jsonl")
     if not events:
         state = _mapping(result.get("state"))
         events = _list_of_mappings(state.get("events"))
     state = _mapping(result.get("state"))
     spec = _mapping(result.get("spec")) or _mapping(state.get("spec"))
-    trusted = _trusted_bundle(path, result, crash, events)
+    integrity_failures = [
+        *manifest_failures,
+        *result_failures,
+        *crash_failures,
+        *timeline_failures,
+    ]
+    if not manifest:
+        integrity_failures.append("manifest.json contains no manifest data")
+    if not result:
+        integrity_failures.append("result.json contains no run result data")
+    if not events:
+        integrity_failures.append("timeline.jsonl contains no events")
+    finalized_candidate = (
+        path.parent.name == "runs" or (path / "checksums.sha256").is_file()
+    )
+    if finalized_candidate:
+        integrity_failures.extend(_bundle_integrity_failures(path))
+    if result and not any(_kind(event) == "run-terminated" for event in events):
+        integrity_failures.append("missing terminal run event")
+    integrity_failures = _unique(integrity_failures)
+    trusted = bool(result and not crash and not integrity_failures)
     metrics = _extract_metrics(result) if trusted else {}
     snapshots = _snapshots(path, events)
     attention = _mapping(state.get("attention"))
@@ -212,6 +264,7 @@ def _load_run(path: Path) -> dict[str, Any]:
             *(_strings(result.get("limitations"))),
             *unsupported_limitations,
             *finding_limitations,
+            *integrity_failures,
             *(
                 [
                     "Bundle is incomplete or crashed; evidence is untrusted and excluded from scorecards."
@@ -249,14 +302,19 @@ def _load_run(path: Path) -> dict[str, Any]:
         ),
         "",
     )
+    failure_reason = "; ".join(
+        item for item in (failure_reason, *integrity_failures) if item
+    )
     terminal_state = (
         "crashed"
         if crash
+        else "untrusted"
+        if integrity_failures
         else "finalized"
         if result or (path / "checksums.sha256").is_file()
         else "partial"
     )
-    stage = _run_stage(result, crash, outcome)
+    stage = _run_stage(result, crash, outcome, integrity_failures)
     return {
         "run_id": run_id,
         "seed": _number(manifest.get("seed"), 0),
@@ -274,8 +332,9 @@ def _load_run(path: Path) -> dict[str, Any]:
         "terminal_state": terminal_state,
         "stage": stage,
         "failure_reason": failure_reason,
-        "failed": stage != "complete",
+        "failed": not trusted or stage != "complete",
         "trusted": trusted,
+        "integrity_failures": integrity_failures,
         "timeline": public_events,
         "snapshots": snapshots,
         "observations": observations,
@@ -387,18 +446,98 @@ def _read_object(path: Path, *, required: bool = True) -> dict[str, Any]:
     return _mapping(value)
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_object_safely(
+    path: Path, *, required: bool = True
+) -> tuple[dict[str, Any], list[str]]:
+    if not path.is_file():
+        failure = f"missing required bundle file: {path.name}" if required else ""
+        return {}, [failure] if failure else []
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}, [f"invalid JSON bundle file: {path.name}"]
+    if not isinstance(value, dict):
+        return {}, [f"bundle file must contain object: {path.name}"]
+    return cast(dict[str, Any], value), []
+
+
+def _read_jsonl_safely(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    if not path.is_file():
+        return [], [f"missing required bundle file: {path.name}"]
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return [], [f"unreadable bundle file: {path.name}"]
     events: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    failures: list[str] = []
+    for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
             value = json.loads(line)
         except json.JSONDecodeError:
+            failures.append(f"invalid timeline JSON at line {line_number}")
             continue
-        if isinstance(value, dict):
-            events.append(cast(dict[str, Any], value))
-    return events
+        if not isinstance(value, dict):
+            failures.append(f"timeline entry is not object at line {line_number}")
+            continue
+        events.append(cast(dict[str, Any], value))
+    return events, failures
+
+
+def _bundle_integrity_failures(path: Path) -> list[str]:
+    failures: list[str] = []
+    checksum_path = path / "checksums.sha256"
+    if not checksum_path.is_file():
+        return ["missing checksum file: checksums.sha256"]
+    try:
+        lines = checksum_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return ["unreadable checksum file: checksums.sha256"]
+
+    checksums: dict[str, str] = {}
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        parts = line.split("  ", maxsplit=1)
+        if len(parts) != 2 or _CHECKSUM_PATTERN.fullmatch(parts[0]) is None:
+            failures.append(f"invalid checksum entry at line {line_number}")
+            continue
+        digest, relative_path = parts
+        relative = Path(relative_path)
+        if (
+            not relative_path
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative_path == "checksums.sha256"
+        ):
+            failures.append(f"invalid checksum path at line {line_number}")
+            continue
+        normalized = relative.as_posix()
+        if normalized in checksums:
+            failures.append(f"duplicate checksum entry: {normalized}")
+            continue
+        checksums[normalized] = digest
+
+    actual_files = {
+        candidate.relative_to(path).as_posix()
+        for candidate in path.rglob("*")
+        if candidate.is_file() and candidate.name not in {"checksums.sha256", ".active"}
+    }
+    for required in sorted(_REQUIRED_BUNDLE_FILES):
+        if required not in actual_files:
+            failures.append(f"missing required bundle file: {required}")
+        elif required not in checksums:
+            failures.append(f"required file missing checksum: {required}")
+    for relative_path in sorted(actual_files - checksums.keys()):
+        failures.append(f"checksum entry missing: {relative_path}")
+    for relative_path in sorted(checksums.keys() - actual_files):
+        failures.append(f"checksummed file missing: {relative_path}")
+    for relative_path in sorted(actual_files & checksums.keys()):
+        digest = hashlib.sha256((path / relative_path).read_bytes()).hexdigest()
+        if digest != checksums[relative_path]:
+            failures.append(f"checksum mismatch: {relative_path}")
+    return _unique(failures)
 
 
 def _snapshots(path: Path, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -817,15 +956,21 @@ def _metric_rows(
     metrics: dict[str, Any], verification: dict[str, Any], outcome: str
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    explicit_names: set[str] = set()
     explicit: object = metrics.get("metrics")
     if isinstance(explicit, list):
         for item in _list_of_mappings(cast(object, explicit)):
             if _evidence_class(
                 item.get("evidence_class")
             ) != "unsupported-human-claim" and _is_number(item.get("value")):
-                rows.append(_metric_row(item.get("name"), item.get("value"), item))
+                row = _metric_row(item.get("name"), item.get("value"), item)
+                rows.append(row)
+                explicit_names.add(row["name"])
     for name, value in metrics.items():
         if name in _METRIC_IDENTITY_KEYS or name in {"metrics", "evidence"}:
+            continue
+        rendered_name = name.replace("_", "-")
+        if rendered_name in explicit_names:
             continue
         if name == "discovery_cost" and isinstance(value, dict):
             discovery_cost = cast(dict[str, Any], value)
@@ -834,7 +979,7 @@ def _metric_rows(
                 rows.append(_metric_row("discovery-cost", total, discovery_cost))
             continue
         if _is_number(value):
-            rows.append(_metric_row(name.replace("_", "-"), value, metrics))
+            rows.append(_metric_row(rendered_name, value, metrics))
     if not any(row["name"] == "verified-completion" for row in rows):
         rows.append(
             _metric_row(
@@ -856,12 +1001,32 @@ def _metric_rows(
 
 
 def _metric_row(name: object, value: object, source: object) -> dict[str, Any]:
+    metric_name = _text(name, "metric")
     return {
-        "name": _text(name, "metric"),
+        "name": metric_name,
         "value": _number(value, 0),
-        "evidence_class": _evidence_class(_mapping(source).get("evidence_class")),
+        "evidence_class": _metric_evidence_class(metric_name, source),
         "evidence_ids": _strings(_mapping(source).get("evidence_ids")),
     }
+
+
+def _metric_evidence_class(name: str, source: object) -> str:
+    explicit = _mapping(source).get("evidence_class")
+    if explicit is not None:
+        return _evidence_class(explicit)
+    deterministic = {
+        "backtracks",
+        "false-success",
+        "inspected-elements",
+        "inspected-regions",
+        "navigation-depth",
+        "outcome",
+        "recovery-actions",
+        "scrolls",
+        "verified-completion",
+        "wrong-actions",
+    }
+    return "deterministic-fact" if name in deterministic else "model-estimate"
 
 
 def _evidence(
@@ -970,6 +1135,8 @@ def _gate_rows(
         baseline = _mapping(comparison.get("baseline"))
         improved = _mapping(comparison.get("improved"))
         gate = _mapping(comparison.get("gate"))
+        if not _comparison_runs_are_trusted(baseline, improved, runs):
+            continue
         scenario_id = _text(baseline.get("scenario_id"))
         persona_id = _text(baseline.get("persona_id"))
         policy = _text(baseline.get("policy"))
@@ -1005,6 +1172,25 @@ def _gate_rows(
             }
         )
     return rows
+
+
+def _comparison_runs_are_trusted(
+    baseline: dict[str, Any],
+    improved: dict[str, Any],
+    runs: tuple[dict[str, Any], ...],
+) -> bool:
+    for cell in (baseline, improved):
+        matching = [
+            run
+            for run in runs
+            if run["scenario_id"] == _text(cell.get("scenario_id"))
+            and run["persona_id"] == _text(cell.get("persona_id"))
+            and run["policy"] == _text(cell.get("policy"))
+            and run["version_id"] == _text(cell.get("application_version_id"))
+        ]
+        if not matching or any(not run["trusted"] for run in matching):
+            return False
+    return True
 
 
 def _median_metric(runs: list[dict[str, Any]], name: str) -> float | None:
@@ -1121,27 +1307,20 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _run_stage(result: dict[str, Any], crash: dict[str, Any], outcome: str) -> str:
+def _run_stage(
+    result: dict[str, Any],
+    crash: dict[str, Any],
+    outcome: str,
+    integrity_failures: list[str],
+) -> str:
     if result.get("evaluation_failure_reason"):
         return "evaluation"
     if crash:
         reason = _text(crash.get("reason")).lower()
         return "bundle-finalization" if "finalization" in reason else "execution"
+    if integrity_failures:
+        return "integrity"
     return "complete" if outcome == "verified-success" else "terminal"
-
-
-def _trusted_bundle(
-    path: Path,
-    result: dict[str, Any],
-    crash: dict[str, Any],
-    events: list[dict[str, Any]],
-) -> bool:
-    return bool(
-        result
-        and not crash
-        and (path / "checksums.sha256").is_file()
-        and any(_kind(event) == "run-terminated" for event in events)
-    )
 
 
 def _safe_json(value: object) -> str:
@@ -1268,14 +1447,14 @@ def _safe_value(value: object) -> object:
 
 
 def _evidence_class(value: object) -> str:
-    candidate = _text(value, "deterministic-fact")
+    candidate = _text(value, "model-estimate")
     if candidate in {
         "deterministic-fact",
         "model-estimate",
         "unsupported-human-claim",
     }:
         return candidate
-    return "deterministic-fact"
+    return "model-estimate"
 
 
 def _unique(values: Any) -> list[str]:

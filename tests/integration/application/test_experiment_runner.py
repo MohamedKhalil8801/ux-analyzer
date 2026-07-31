@@ -161,8 +161,15 @@ async def test_runner_bounds_concurrency() -> None:
 
 @pytest.mark.asyncio
 async def test_runner_cancellation_cleans_up_active_agents() -> None:
-    tracker = {"active": 0, "max_active": 0, "cleaned": 0}
+    tracker = {
+        "active": 0,
+        "max_active": 0,
+        "cleanup_started": 0,
+        "cleanup_finished": 0,
+        "finalized": 0,
+    }
     started = asyncio.Event()
+    cleanup_started = asyncio.Event()
 
     class BlockingAgent(FakeAgent):
         async def execute(self, spec: RunSpec) -> FakeResult:
@@ -170,15 +177,27 @@ async def test_runner_cancellation_cleans_up_active_agents() -> None:
             started.set()
             try:
                 await asyncio.Future()
+                self.tracker["finalized"] += 1
+                return FakeResult(spec.run_id)
             finally:
                 self.tracker["active"] -= 1
 
+        async def cleanup(self) -> None:
+            self.tracker["cleanup_started"] += 1
+            cleanup_started.set()
+            await asyncio.sleep(0.01)
+            self.tracker["cleanup_finished"] += 1
+
     runner = ExperimentRunner(lambda _: BlockingAgent(tracker))
-    task = asyncio.create_task(runner.run((_spec("run-1"), _spec("run-2")), workers=2))
+    task = asyncio.create_task(runner.run((_spec("run-1"),), workers=1))
     await started.wait()
+    task.cancel()
+    await cleanup_started.wait()
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert tracker["cleaned"] == 2
+    assert tracker["cleanup_started"] == 1
+    assert tracker["cleanup_finished"] == 1
+    assert tracker["finalized"] == 0

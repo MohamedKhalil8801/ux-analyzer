@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
+import ux_analyzer.reporting.renderer as renderer
 from ux_analyzer.domain.run import RunStarted
 from ux_analyzer.ports.artifacts import BundleManifest, RedactionPolicy
 from ux_analyzer.reporting.renderer import render_experiment_report
@@ -13,6 +17,22 @@ from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _write_checksums(run: Path) -> None:
+    files = sorted(
+        path
+        for path in run.rglob("*")
+        if path.is_file() and path.name != "checksums.sha256"
+    )
+    (run / "checksums.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  "
+            f"{path.relative_to(run).as_posix()}\n"
+            for path in files
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_run(
@@ -223,7 +243,7 @@ def _write_run(
             "limitations": ["Simulated benchmark; not human satisfaction evidence."],
         },
     )
-    (run / "checksums.sha256").write_text("test  result.json\n", encoding="utf-8")
+    _write_checksums(run)
 
 
 def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) -> None:
@@ -242,6 +262,8 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "deterministic-fact" in html
     assert "model-estimate" in html
     assert "unsupported-human-claim" in html
+    assert "directly recorded bundle, action, geometry" in html
+    assert "heuristic, policy, persona, memory, scent" in html
     assert "Run filters" in html
     assert "Timeline" in html
     assert "Prominence contributions" in html
@@ -347,6 +369,67 @@ def test_renderer_does_not_score_incomplete_bundle_with_result_metrics(
     output = render_experiment_report(tmp_path, tmp_path / "report.html")
 
     assert "888888" not in output.read_text(encoding="utf-8")
+
+
+def test_renderer_excludes_tampered_bundle_from_scorecards_and_gates(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-defective", version="defective", discovery_cost=8)
+    _write_run(tmp_path, "run-improved", version="improved", discovery_cost=3)
+    tampered = tmp_path / "runs" / "run-improved" / "result.json"
+    tampered.write_text(
+        tampered.read_text(encoding="utf-8").replace('"total": 3', '"total": 999999'),
+        encoding="utf-8",
+    )
+    _write_json(
+        tmp_path / "experiment.json",
+        {
+            "variant_comparisons": [
+                {
+                    "baseline": {
+                        "scenario_id": "invite",
+                        "application_version_id": "defective",
+                        "persona_id": "persona",
+                        "policy": "progressive-prominence-scent",
+                    },
+                    "improved": {
+                        "scenario_id": "invite",
+                        "application_version_id": "improved",
+                        "persona_id": "persona",
+                        "policy": "progressive-prominence-scent",
+                    },
+                    "gate": {
+                        "passed": True,
+                        "paired_seed_count": 1,
+                        "reasons": [],
+                    },
+                }
+            ]
+        },
+    )
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "checksum mismatch: result.json" in html
+    assert "999999" not in html
+    assert "All directional checks passed" not in html
+
+
+@pytest.mark.parametrize("filename", ("manifest.json", "timeline.jsonl", "result.json"))
+def test_renderer_reports_missing_required_bundle_file_as_untrusted(
+    tmp_path: Path, filename: str
+) -> None:
+    _write_run(tmp_path, "run-missing", version="defective", discovery_cost=8)
+    (tmp_path / "runs" / "run-missing" / filename).unlink()
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert f"missing required bundle file: {filename}" in html
+    assert "run-missing" in html
 
 
 def test_renderer_never_embeds_sensitive_fixture_artifacts(tmp_path: Path) -> None:
@@ -457,3 +540,58 @@ def test_renderer_builds_comparison_and_splits_large_experiment(tmp_path: Path) 
     assert "discovery-cost" in html
     assert "Directional gate" in html
     assert "All directional checks passed" in html
+
+
+def test_renderer_preflights_threshold_before_full_aggregate_render(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-large",
+        version="defective",
+        discovery_cost=8,
+        screenshot=b"x" * 50_000,
+    )
+    aggregate_payloads: list[bool] = []
+    original_render = renderer._render_html
+
+    def track_render(context, title):
+        aggregate_payloads.append(any("timeline" in run for run in context["runs"]))
+        return original_render(context, title)
+
+    monkeypatch.setattr(renderer, "_render_html", track_render)
+
+    render_experiment_report(
+        tmp_path,
+        tmp_path / "report.html",
+        max_single_file_bytes=20_000,
+    )
+
+    assert aggregate_payloads[0] is False
+
+
+def test_renderer_replaces_oversized_run_page_with_bounded_notice(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-oversized",
+        version="defective",
+        discovery_cost=8,
+        screenshot=b"x" * 100_000,
+    )
+    threshold = 20_000
+
+    render_experiment_report(
+        tmp_path,
+        tmp_path / "report.html",
+        max_single_file_bytes=threshold,
+    )
+
+    run_page = tmp_path / "report-runs" / "run-oversized.html"
+    html = run_page.read_text(encoding="utf-8")
+    assert run_page.stat().st_size <= threshold
+    assert (
+        "Detailed replay omitted because run page exceeds configured size limit."
+        in html
+    )

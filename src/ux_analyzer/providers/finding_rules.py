@@ -154,13 +154,12 @@ class FindingRuleSet:
 
         settings = config or FindingRuleConfig()
         model = EvidenceClass.MODEL_ESTIMATE
-        fact = EvidenceClass.DETERMINISTIC_FACT
         return cls(
             rules=(
                 FindingRule(
                     FindingCategory.WEAK_TARGET_PROMINENCE,
                     FindingSeverity.MEDIUM,
-                    fact,
+                    model,
                     lambda item: (
                         item.target_prominence is not None
                         and item.target_prominence
@@ -196,13 +195,13 @@ class FindingRuleSet:
                 FindingRule(
                     FindingCategory.AMBIGUOUS_ICON_LABEL,
                     FindingSeverity.MEDIUM,
-                    fact,
+                    model,
                     lambda item: item.ambiguous_target is True,
                 ),
                 FindingRule(
                     FindingCategory.EXCESSIVE_DEPTH,
                     FindingSeverity.MEDIUM,
-                    fact,
+                    model,
                     lambda item: (
                         item.navigation_depth
                         >= settings.excessive_navigation_depth_at_least
@@ -211,19 +210,19 @@ class FindingRuleSet:
                 FindingRule(
                     FindingCategory.TARGET_BELOW_FOLD,
                     FindingSeverity.MEDIUM,
-                    fact,
+                    model,
                     lambda item: item.target_below_fold is True,
                 ),
                 FindingRule(
                     FindingCategory.MISSING_FEEDBACK,
                     FindingSeverity.HIGH,
-                    fact,
+                    model,
                     lambda item: item.feedback_observed is False,
                 ),
                 FindingRule(
                     FindingCategory.WRONG_ACTION_BURDEN,
                     FindingSeverity.HIGH,
-                    fact,
+                    model,
                     lambda item: (
                         item.wrong_actions >= settings.wrong_action_count_at_least
                     ),
@@ -231,7 +230,7 @@ class FindingRuleSet:
                 FindingRule(
                     FindingCategory.POOR_RECOVERY,
                     FindingSeverity.HIGH,
-                    fact,
+                    model,
                     lambda item: (
                         item.recovery_success is False
                         or (

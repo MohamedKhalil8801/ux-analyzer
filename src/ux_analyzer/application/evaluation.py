@@ -69,6 +69,14 @@ class EvaluationMetric(StrEnum):
     DISCOVERY_COST = "discovery-cost"
 
 
+class EvaluationEvidenceUnavailable(ValueError):
+    """Raised when declared target evidence cannot be resolved safely."""
+
+    def __init__(self, detail: str) -> None:
+        self.safe_reason = f"evaluation evidence unavailable: {detail}"
+        super().__init__(self.safe_reason)
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoveryCostConfig:
     """Versioned weights for the public discovery-cost formula."""
@@ -314,6 +322,17 @@ class IntervalSummary:
     upper: float
     confidence: float = 0.95
 
+    def __post_init__(self) -> None:
+        if self.count <= 0:
+            raise ValueError("interval count must be positive")
+        if not 0 < self.confidence < 1:
+            raise ValueError("interval confidence must be between zero and one")
+        values = (self.median, self.lower, self.upper)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("interval values must be finite")
+        if not self.lower <= self.median <= self.upper:
+            raise ValueError("interval must contain median")
+
     @property
     def interval(self) -> tuple[float, float]:
         return self.lower, self.upper
@@ -534,8 +553,8 @@ def evaluate_run(
         record(
             EvaluationMetric.TARGET_DISCOVERY_RANK,
             float(target_rank),
-            deterministic,
-            "Target first appeared in recorded observation order.",
+            estimated,
+            "Policy-dependent target rank in recorded observation order.",
             event_ids,
         )
     record(
@@ -595,8 +614,8 @@ def evaluate_run(
         record(
             EvaluationMetric.TARGET_PROMINENCE,
             target_prominence,
-            deterministic,
-            "Recorded heuristic prominence evidence for target.",
+            estimated,
+            "Heuristic prominence estimate for target.",
         )
     if target_scent is not None:
         record(
@@ -616,8 +635,8 @@ def evaluate_run(
         record(
             EvaluationMetric.TARGET_BELOW_FOLD,
             float(settings.target_below_fold),
-            deterministic,
-            "Configured viewport fold fact.",
+            estimated,
+            "Policy-dependent inference that target required scrolling before reveal.",
         )
     if settings.unexpected_hierarchy is not None:
         record(
@@ -630,8 +649,8 @@ def evaluate_run(
         record(
             EvaluationMetric.AMBIGUOUS_TARGET,
             float(settings.ambiguous_target),
-            deterministic,
-            "Configured target label or icon ambiguity fact.",
+            estimated,
+            "Heuristic goal-label ambiguity estimate.",
         )
     record(
         EvaluationMetric.NAVIGATION_DEPTH,
@@ -643,8 +662,8 @@ def evaluate_run(
         record(
             EvaluationMetric.FEEDBACK_OBSERVED,
             float(settings.feedback_observed),
-            deterministic,
-            "Configured visible feedback fact.",
+            estimated,
+            "Heuristic goal-matching feedback estimate.",
         )
     record(
         EvaluationMetric.RECOVERY_ACTIONS,
@@ -656,8 +675,8 @@ def evaluate_run(
         record(
             EvaluationMetric.RECOVERY_SUCCESS,
             float(settings.recovery_success),
-            deterministic,
-            "Configured recovery outcome.",
+            estimated,
+            "Policy-dependent recovery outcome estimate.",
         )
     for component_name, component_value in cost.components.items():
         record(
@@ -735,9 +754,14 @@ def evaluation_target_for(result: RunResult) -> EvaluationTarget:
                     expected_label=expected_label,
                     role=contract.role,
                 )
-    raise ValueError(
-        f"run {result.run_id} has no recorded scenario evaluation target "
-        f"matching {expected_label!r}"
+    role = f" role {contract.role!r}" if contract.role is not None else ""
+    region = (
+        f" region {contract.region_label!r}"
+        if contract.region_label is not None
+        else ""
+    )
+    raise EvaluationEvidenceUnavailable(
+        f"target label {expected_label!r}{role}{region} not found in recorded snapshots"
     )
 
 
@@ -825,16 +849,39 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
 def _target_elements(
     result: RunResult, target: EvaluationTarget
 ) -> tuple[ElementSnapshot, ...]:
-    if target.element_id is None:
-        return ()
-    selected = [
+    identity_candidates = [
         element
         for snapshot in result.state.snapshots
         for element in snapshot.elements
-        if element.id == target.element_id
+        if target.element_id is None or element.id == target.element_id
+    ]
+    selected = [
+        element
+        for element in identity_candidates
+        if target.expected_label is None
+        or element.label.strip().casefold() == target.expected_label.strip().casefold()
+        if target.role is None
+        or str(getattr(element.role, "value", element.role)) == target.role
+        if target.region_id is None or element.region_id == target.region_id
     ]
     if not selected:
-        return ()
+        reference = target.element_id or target.expected_label or "target"
+        constraints = tuple(
+            value
+            for value in (
+                f"role {target.role!r}" if target.role is not None else "",
+                f"region {target.region_id!r}" if target.region_id is not None else "",
+            )
+            if value
+        )
+        suffix = f" with {' and '.join(constraints)}" if constraints else ""
+        raise EvaluationEvidenceUnavailable(
+            f"target reference {reference!r}{suffix} not found in recorded snapshots"
+        )
+    if target.element_id is not None and identity_candidates[-1] not in selected:
+        raise EvaluationEvidenceUnavailable(
+            f"latest target reference {target.element_id!r} does not match declared constraints"
+        )
     lineage_id = selected[-1].lineage_id
     if lineage_id is None:
         return tuple(selected)
@@ -1113,8 +1160,8 @@ def interval_summary(
     return IntervalSummary(
         count=len(ordered),
         median=_quantile(ordered, 0.5),
-        lower=ordered[0],
-        upper=ordered[-1],
+        lower=_quantile(ordered, (1 - confidence) / 2),
+        upper=_quantile(ordered, 1 - ((1 - confidence) / 2)),
         confidence=confidence,
     )
 
@@ -1306,9 +1353,9 @@ def _standard_metric_values(run: RunMetrics) -> dict[str, tuple[float, EvidenceC
         (
             EvaluationMetric.TARGET_DISCOVERY_RANK,
             run.target_discovery_rank,
-            deterministic,
+            estimated,
         ),
-        (EvaluationMetric.TARGET_PROMINENCE, run.target_prominence, deterministic),
+        (EvaluationMetric.TARGET_PROMINENCE, run.target_prominence, estimated),
         (EvaluationMetric.TARGET_SCENT, run.target_scent, estimated),
         (
             EvaluationMetric.STRONGEST_COMPETING_SCENT,
@@ -1318,7 +1365,7 @@ def _standard_metric_values(run: RunMetrics) -> dict[str, tuple[float, EvidenceC
         (
             EvaluationMetric.TARGET_BELOW_FOLD,
             float(run.target_below_fold) if run.target_below_fold is not None else None,
-            deterministic,
+            estimated,
         ),
         (
             EvaluationMetric.UNEXPECTED_HIERARCHY,
@@ -1330,17 +1377,17 @@ def _standard_metric_values(run: RunMetrics) -> dict[str, tuple[float, EvidenceC
         (
             EvaluationMetric.AMBIGUOUS_TARGET,
             float(run.ambiguous_target) if run.ambiguous_target is not None else None,
-            deterministic,
+            estimated,
         ),
         (
             EvaluationMetric.FEEDBACK_OBSERVED,
             float(run.feedback_observed) if run.feedback_observed is not None else None,
-            deterministic,
+            estimated,
         ),
         (
             EvaluationMetric.RECOVERY_SUCCESS,
             float(run.recovery_success) if run.recovery_success is not None else None,
-            deterministic,
+            estimated,
         ),
     )
     for name, value, evidence_class in optional:

@@ -240,22 +240,30 @@ class ExperimentRunner:
             async with semaphore:
                 agent: RunAgentExecutor | None = None
                 error: BaseException | None = None
+                cancellation: asyncio.CancelledError | None = None
                 result: object | None = None
                 try:
                     agent_value = await _await_value(self._agent_factory(spec))
                     agent = _require_agent(agent_value)
                     result = await _await_value(agent.execute(spec))
-                except asyncio.CancelledError:
-                    raise
+                except asyncio.CancelledError as caught:
+                    cancellation = caught
                 except Exception as caught:
                     error = caught
                 finally:
                     if agent is not None:
                         try:
-                            await _cleanup_agent(agent)
-                        except Exception as cleanup_error:
+                            await _shielded_cleanup_agent(agent)
+                        except BaseException as cleanup_error:
+                            if cancellation is not None:
+                                cause = cleanup_error.__cause__ or cleanup_error
+                                raise cancellation from cause
+                            if isinstance(cleanup_error, asyncio.CancelledError):
+                                raise cleanup_error
                             if error is None:
                                 error = cleanup_error
+                if cancellation is not None:
+                    raise cancellation
                 if error is not None:
                     failures[index] = ExperimentFailure(
                         run_id=spec.run_id,
@@ -323,3 +331,18 @@ async def _cleanup_agent(agent: RunAgentExecutor) -> None:
         if callable(method):
             await _await_value(method())
             return
+
+
+async def _shielded_cleanup_agent(agent: RunAgentExecutor) -> None:
+    cleanup = asyncio.create_task(_cleanup_agent(agent))
+    cancellation: asyncio.CancelledError | None = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    cleanup_error = cleanup.exception()
+    if cancellation is not None:
+        raise cancellation from cleanup_error
+    if cleanup_error is not None:
+        raise cleanup_error

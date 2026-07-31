@@ -90,6 +90,20 @@ def test_finding_rules_emit_required_typed_categories_with_evidence() -> None:
         in {EvidenceClass.DETERMINISTIC_FACT, EvidenceClass.MODEL_ESTIMATE}
         for finding in findings
     )
+    by_category = {finding.category: finding for finding in findings}
+    for category in (
+        FindingCategory.WEAK_TARGET_PROMINENCE,
+        FindingCategory.UNEXPECTED_HIERARCHY,
+        FindingCategory.AMBIGUOUS_ICON_LABEL,
+        FindingCategory.EXCESSIVE_DEPTH,
+        FindingCategory.TARGET_BELOW_FOLD,
+        FindingCategory.MISSING_FEEDBACK,
+        FindingCategory.WRONG_ACTION_BURDEN,
+        FindingCategory.POOR_RECOVERY,
+    ):
+        assert (
+            by_category[category.value].evidence_class is EvidenceClass.MODEL_ESTIMATE
+        )
 
 
 def test_finding_rule_rejects_unsupported_human_claim_class() -> None:

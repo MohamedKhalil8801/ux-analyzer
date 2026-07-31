@@ -494,3 +494,29 @@ async def test_provider_failure_retains_trace_and_cleans_up(
 
     assert browser_adapter.active_session_count == 0
     assert session.trace_path.is_file()
+
+
+@pytest.mark.asyncio
+async def test_trace_sanitization_failure_propagates_after_context_cleanup(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_origin, _ = running_servers
+    session = await browser_adapter.start_session(
+        _session_config(fixture_origin, tmp_path / "sanitize-failure.zip")
+    )
+
+    def fail_sanitization(*_args: object) -> bytes:
+        raise RuntimeError("trace sanitization failed")
+
+    monkeypatch.setattr(
+        "ux_analyzer.adapters.web.session.sanitize_artifact_content",
+        fail_sanitization,
+    )
+
+    with pytest.raises(RuntimeError, match="trace sanitization failed"):
+        await browser_adapter.end_session(session)
+
+    assert browser_adapter.active_session_count == 0

@@ -7,6 +7,7 @@ import pytest
 from ux_analyzer.application.evaluation import (
     DiscoveryCostBreakdown,
     DiscoveryCostConfig,
+    EvaluationEvidenceUnavailable,
     EvaluationTarget,
     RunEvaluationInputs,
     aggregate_cell,
@@ -15,6 +16,7 @@ from ux_analyzer.application.evaluation import (
     evaluate_run,
     evaluation_inputs_for,
     evaluation_target_for,
+    interval_summary,
 )
 from ux_analyzer.application.run_agent import (
     ProminenceEvidence,
@@ -225,10 +227,13 @@ def test_evaluate_run_reports_metrics_and_preserves_cost_components() -> None:
     assert metrics.evidence
     assert metrics.metric("discovery-cost").evidence_ids
     assert metrics.metric("target-discovery-rank").evidence_class is (
-        EvidenceClass.DETERMINISTIC_FACT
+        EvidenceClass.MODEL_ESTIMATE
     )
     assert metrics.metric("target-prominence").evidence_class is (
-        EvidenceClass.DETERMINISTIC_FACT
+        EvidenceClass.MODEL_ESTIMATE
+    )
+    assert metrics.metric("target-below-fold").evidence_class is (
+        EvidenceClass.MODEL_ESTIMATE
     )
 
 
@@ -243,9 +248,40 @@ def test_aggregate_cell_provides_median_interval_and_reproducibility() -> None:
 
     assert aggregate.run_count == 2
     assert aggregate.metric_summaries["scrolls"].median == 2.0
-    assert aggregate.metric_summaries["scrolls"].interval.lower <= 1.0
-    assert aggregate.metric_summaries["scrolls"].interval.upper >= 3.0
+    assert aggregate.metric_summaries["scrolls"].interval.lower == pytest.approx(1.05)
+    assert aggregate.metric_summaries["scrolls"].interval.upper == pytest.approx(2.95)
     assert aggregate.reproducibility.value in {"seeded", "reproducible"}
+
+
+def test_interval_summary_uses_requested_central_interval() -> None:
+    summary = interval_summary(
+        tuple(float(value) for value in range(11)), confidence=0.8
+    )
+
+    assert summary.median == pytest.approx(5)
+    assert summary.lower == pytest.approx(1)
+    assert summary.upper == pytest.approx(9)
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        EvaluationTarget("missing"),
+        EvaluationTarget("target", role="link"),
+        EvaluationTarget("target", region_id="missing-region"),
+    ),
+)
+def test_invalid_target_references_are_explicitly_unavailable(
+    target: EvaluationTarget,
+) -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+
+    with pytest.raises(
+        EvaluationEvidenceUnavailable, match="evaluation evidence unavailable"
+    ):
+        evaluate_run(_result(version), target)
 
 
 def test_compare_variants_requires_paired_seeds_and_applies_directional_gate() -> None:

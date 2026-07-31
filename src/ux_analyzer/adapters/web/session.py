@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Iterable
+from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -189,6 +189,15 @@ class PlaywrightSessionAdapter:
             )
             await self._navigate(managed, config.start_url)
             return handle
+        except asyncio.CancelledError as cancellation:
+            try:
+                if managed is not None:
+                    await _shielded_cleanup(self._cleanup(managed))
+                elif context is not None:
+                    await _shielded_cleanup(context.close())
+            except BaseException as cleanup_error:
+                raise cancellation from cleanup_error
+            raise
         except BaseException:
             if managed is not None:
                 await self._cleanup(managed)
@@ -209,6 +218,12 @@ class PlaywrightSessionAdapter:
                 viewport=session.viewport,
                 screenshot=screenshot,
             )
+        except asyncio.CancelledError as cancellation:
+            try:
+                await _shielded_cleanup(self._cleanup(managed))
+            except BaseException as cleanup_error:
+                raise cancellation from cleanup_error
+            raise
         except BaseException as error:
             await self._cleanup(managed)
             if isinstance(error, SafetyBlocked):
@@ -292,6 +307,12 @@ class PlaywrightSessionAdapter:
         except SafetyBlocked:
             await self._cleanup(managed)
             raise
+        except asyncio.CancelledError as cancellation:
+            try:
+                await _shielded_cleanup(self._cleanup(managed))
+            except BaseException as cleanup_error:
+                raise cancellation from cleanup_error
+            raise
         except BaseException as error:
             await self._cleanup(managed)
             if isinstance(error, ProviderFailure):
@@ -307,6 +328,12 @@ class PlaywrightSessionAdapter:
             await self._navigate(managed, managed.config.start_url)
         except SafetyBlocked:
             await self._cleanup(managed)
+            raise
+        except asyncio.CancelledError as cancellation:
+            try:
+                await _shielded_cleanup(self._cleanup(managed))
+            except BaseException as cleanup_error:
+                raise cancellation from cleanup_error
             raise
         except BaseException as error:
             await self._cleanup(managed)
@@ -409,6 +436,21 @@ def _sanitize_trace(managed: _ManagedSession) -> None:
     temporary = path.with_name(f".{path.name}.sanitized")
     temporary.write_bytes(sanitized)
     os.replace(temporary, path)
+
+
+async def _shielded_cleanup(awaitable: Awaitable[None]) -> None:
+    cleanup = asyncio.ensure_future(awaitable)
+    cancellation: asyncio.CancelledError | None = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    cleanup_error = cleanup.exception()
+    if cancellation is not None:
+        raise cancellation from cleanup_error
+    if cleanup_error is not None:
+        raise cleanup_error
 
 
 def _center(bounds: object) -> tuple[float, float]:
