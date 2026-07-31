@@ -52,12 +52,12 @@ class FixtureInputs:
 
 @dataclass(frozen=True, slots=True)
 class Budget:
-    """Finite resources available to one benchmark run."""
+    """Bounded actions plus an optional overall deadline for one run."""
 
     max_steps: int
     max_observations: int
     max_interactions: int
-    timeout_seconds: float
+    timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.max_steps <= 0:
@@ -66,7 +66,7 @@ class Budget:
             raise ValueError("max_observations must be greater than zero")
         if self.max_interactions <= 0:
             raise ValueError("max_interactions must be greater than zero")
-        if self.timeout_seconds <= 0:
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
 
 

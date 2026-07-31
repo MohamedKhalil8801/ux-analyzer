@@ -364,6 +364,14 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     typer.echo(f"seeds per cell: {len(seeds)}")
     typer.echo(f"run specs: {len(matrix.specs)}")
     typer.echo(f"estimated model calls: {calls}")
+    timeouts = {spec.scenario.budget.timeout_seconds for spec in matrix.specs}
+    if timeouts == {None}:
+        timeout_summary = "none"
+    elif None in timeouts or len(timeouts) != 1:
+        timeout_summary = "mixed"
+    else:
+        timeout_summary = f"{next(iter(timeouts)):g}s"
+    typer.echo(f"overall run timeout: {timeout_summary}")
     typer.echo("matrix:")
     for (scenario, version, persona, policy), count in sorted(cells.items()):
         typer.echo(f"- {scenario}/{version}/{persona}/{policy}: {count} runs")

@@ -362,7 +362,7 @@ def _snapshot(
     )
 
 
-def _spec(*, max_steps: int = 6, timeout_seconds: float = 1) -> object:
+def _spec(*, max_steps: int = 6, timeout_seconds: float | None = 1) -> object:
     version = ApplicationVersion(
         id="improved",
         kind=ApplicationVersionKind.IMPROVED,
@@ -428,7 +428,7 @@ def _agent(
     verifier: FakeVerifier,
     bundles: FakeBundleFactory,
     *,
-    timeout_seconds: float = 1,
+    timeout_seconds: float | None = 1,
     model_record_source: FakeModelRecordSource | None = None,
     result_evaluator=None,
 ) -> RunAgent:
@@ -595,6 +595,83 @@ async def test_model_failure_timeout_and_budget_exhaustion_are_closed_outcomes(
     )
     budget_result = await budget_agent.execute(_spec(max_steps=1))
     assert budget_result.outcome.kind == "budget-exhausted"
+
+
+@pytest.mark.asyncio
+async def test_unlimited_run_awaits_run_and_terminal_verification(
+    tmp_path: Path,
+) -> None:
+    class DelayedVerifier(FakeVerifier):
+        async def verify(self, session: SessionHandle) -> VerificationResult:
+            await asyncio.sleep(0.02)
+            return await super().verify(session)
+
+    provider = FakeObservationProvider((_snapshot(),))
+    bundles = FakeBundleFactory()
+    verifier = DelayedVerifier((VerificationResult(verified=False),))
+    delayed_decision = asyncio.sleep(
+        0.02,
+        result=CognitiveDecision(
+            action={"kind": "abandon", "reason": "Observed outcome."},
+            reason="Observed outcome.",
+        ),
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent((delayed_decision,)),
+        verifier,
+        bundles,
+        timeout_seconds=None,
+    )
+
+    result = await asyncio.wait_for(
+        agent.execute(_spec(timeout_seconds=None)), timeout=1
+    )
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.verification.verified is False
+    assert verifier.calls == 1
+    assert bundles.bundle.finalized
+    assert bundles.bundle.events[-1].kind == "run-terminated"
+    assert provider.ended == 1
+
+
+@pytest.mark.asyncio
+async def test_finite_timeout_bounds_terminal_verification(tmp_path: Path) -> None:
+    class BlockingVerifier(FakeVerifier):
+        async def verify(self, session: SessionHandle) -> VerificationResult:
+            await asyncio.sleep(1)
+            return await super().verify(session)
+
+    provider = FakeObservationProvider((_snapshot(),))
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        BlockingVerifier((VerificationResult(verified=False),)),
+        bundles,
+        timeout_seconds=0.01,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=0.01))
+
+    assert result.outcome.kind == "timed-out"
+    assert result.verification.verified is False
+    assert result.verification.details == (
+        "independent verification unavailable before timeout"
+    )
+    assert bundles.bundle.finalized
+    assert bundles.bundle.events[-1].kind == "run-terminated"
+    assert provider.ended == 1
 
 
 @pytest.mark.asyncio

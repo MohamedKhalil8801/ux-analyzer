@@ -315,8 +315,11 @@ class RunAgent:
             application_state=ApplicationState.from_attention(initial_state.attention),
         )
         artifact_checksums: list[ArtifactChecksum] = []
+        timeout_seconds = spec.scenario.budget.timeout_seconds
         deadline = (
-            asyncio.get_running_loop().time() + spec.scenario.budget.timeout_seconds
+            asyncio.get_running_loop().time() + timeout_seconds
+            if timeout_seconds is not None
+            else None
         )
 
         try:
@@ -332,9 +335,11 @@ class RunAgent:
             )
 
             try:
-                execution = await asyncio.wait_for(
-                    self._run(spec, context, writer, artifact_checksums),
-                    timeout=spec.scenario.budget.timeout_seconds,
+                run = self._run(spec, context, writer, artifact_checksums)
+                execution = (
+                    await run
+                    if timeout_seconds is None
+                    else await asyncio.wait_for(run, timeout=timeout_seconds)
                 )
             except TimeoutError:
                 execution = _Execution(
@@ -355,26 +360,34 @@ class RunAgent:
                     terminal_reason=_safe_error_message(error),
                 )
 
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                execution = _timed_out_execution(
-                    execution, writer, context.state_event_ids
+            if deadline is None:
+                execution = await self._verify_terminal(
+                    execution,
+                    writer,
+                    context.session,
+                    context.state_event_ids,
                 )
             else:
-                try:
-                    execution = await asyncio.wait_for(
-                        self._verify_terminal(
-                            execution,
-                            writer,
-                            context.session,
-                            context.state_event_ids,
-                        ),
-                        timeout=remaining,
-                    )
-                except TimeoutError:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
                     execution = _timed_out_execution(
                         execution, writer, context.state_event_ids
                     )
+                else:
+                    try:
+                        execution = await asyncio.wait_for(
+                            self._verify_terminal(
+                                execution,
+                                writer,
+                                context.session,
+                                context.state_event_ids,
+                            ),
+                            timeout=remaining,
+                        )
+                    except TimeoutError:
+                        execution = _timed_out_execution(
+                            execution, writer, context.state_event_ids
+                        )
             trace_session = context.session
             context.session = None
             await self._end_session(trace_session)

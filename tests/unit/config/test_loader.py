@@ -53,6 +53,30 @@ def test_load_valid_project_into_frozen_domain_contracts() -> None:
     assert len(loaded.config_digest) == 64
 
 
+def test_scenario_timeout_can_be_null_or_omitted(tmp_path: Path) -> None:
+    project = _read_project()
+    project["scenarios"][0]["budget"]["timeout_seconds"] = None
+
+    loaded_with_null = load_project(_write_project(tmp_path, project, "null.yaml"))
+
+    assert loaded_with_null.project.scenarios[0].budget.timeout_seconds is None
+
+    del project["scenarios"][0]["budget"]["timeout_seconds"]
+    loaded_without_field = load_project(
+        _write_project(tmp_path, project, "omitted.yaml")
+    )
+
+    assert loaded_without_field.project.scenarios[0].budget.timeout_seconds is None
+
+
+def test_scenario_timeout_rejects_non_positive_finite_value(tmp_path: Path) -> None:
+    project = _read_project()
+    project["scenarios"][0]["budget"]["timeout_seconds"] = 0
+
+    with pytest.raises(ProjectConfigError, match="timeout_seconds"):
+        load_project(_write_project(tmp_path, project))
+
+
 def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     tmp_path: Path,
 ) -> None:

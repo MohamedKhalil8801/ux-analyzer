@@ -60,7 +60,7 @@ class BudgetModel(_ConfigModel):
     max_steps: int = Field(gt=0)
     max_observations: int = Field(gt=0)
     max_interactions: int = Field(gt=0)
-    timeout_seconds: float = Field(gt=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
 
 
 class ViewportModel(_ConfigModel):

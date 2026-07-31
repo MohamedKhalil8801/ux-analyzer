@@ -31,7 +31,7 @@ scenarios:
       max_steps: 24
       max_observations: 12
       max_interactions: 10
-      timeout_seconds: 60
+      timeout_seconds: null
     verifier:
       type: fixture-state
       resource: workspace
@@ -70,7 +70,7 @@ scenarios:
       max_steps: 24
       max_observations: 12
       max_interactions: 10
-      timeout_seconds: 60
+      timeout_seconds: null
     verifier:
       type: fixture-state
       resource: security

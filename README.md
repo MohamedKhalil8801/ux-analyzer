@@ -123,7 +123,9 @@ Scenarios contain `id`, `name`, `goal`, `application_version_ids`, `start_state`
 `fixture_inputs`, `budget`, `verifier`, `safeguards`,
 `eligible_persona_ids`, and `expected_evidence`. Fixture inputs have `value` and
 optional `sensitive: true`. Budgets require positive `max_steps`,
-`max_observations`, `max_interactions`, and `timeout_seconds`.
+`max_observations`, and `max_interactions`. `timeout_seconds` is optional; null
+means no overall run deadline. Finite values must be positive. Model, verifier,
+fixture HTTP, and browser operations keep separate bounded safety timeouts.
 
 Supported verifiers:
 

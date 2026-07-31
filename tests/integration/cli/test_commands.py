@@ -138,6 +138,7 @@ def test_run_dry_run_prints_matrix_model_calls_and_serial_default(
     assert "workers: 1" in result.stdout
     assert "run specs: 160" in result.stdout
     assert "estimated model calls: 320" in result.stdout
+    assert "overall run timeout: none" in result.stdout
     assert "super-secret-api-key" not in result.stdout
 
 

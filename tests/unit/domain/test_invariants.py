@@ -197,6 +197,20 @@ def test_invalid_bounds_and_visibility_are_rejected() -> None:
         )
 
 
+def test_budget_allows_no_overall_deadline_and_rejects_non_positive_deadline() -> None:
+    unlimited = Budget(max_steps=5, max_observations=3, max_interactions=2)
+
+    assert unlimited.timeout_seconds is None
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        Budget(
+            max_steps=5,
+            max_observations=3,
+            max_interactions=2,
+            timeout_seconds=0,
+        )
+
+
 def test_duplicate_snapshot_element_ids_are_rejected() -> None:
     first = element_snapshot("same")
     second = element_snapshot("same")
