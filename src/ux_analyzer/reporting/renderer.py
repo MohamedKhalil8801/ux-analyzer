@@ -161,10 +161,12 @@ def _load_experiment(root: Path) -> dict[str, Any]:
     if not runs:
         raise ValueError(f"no run or failure evidence found under {root}")
     ordered_runs = tuple(sorted(runs, key=lambda item: item["run_id"]))
+    gate_rows = _gate_rows(summary, ordered_runs)
     return {
         "runs": ordered_runs,
+        "run_rows": _run_overview_rows(ordered_runs, gate_rows),
         "comparison_rows": _comparison_rows(ordered_runs),
-        "gate_rows": _gate_rows(summary, ordered_runs),
+        "gate_rows": gate_rows,
         "failure_rows": [run for run in ordered_runs if run["failed"]],
         "evidence_summary": _evidence_summary(ordered_runs),
         "limitations": _unique(
@@ -295,21 +297,20 @@ def _load_run(path: Path) -> dict[str, Any]:
     policy = _first_string(metrics.get("policy"), spec.get("policy"), "unknown")
     run_id = _first_string(manifest.get("run_id"), result.get("run_id"), path.name)
     public_events = [_public_event(event) for event in events]
-    failure_reason = next(
-        (
-            _text(value)
-            for value in (
-                result.get("evaluation_failure_reason"),
-                result.get("terminal_reason"),
-                crash.get("reason"),
-                _mapping(result.get("outcome")).get("reason"),
-            )
-            if value
-        ),
-        "",
+    terminal_reason = _first_optional_string(
+        result.get("terminal_reason"),
+        crash.get("reason"),
+        _mapping(result.get("outcome")).get("reason"),
     )
+    evaluation_failure_reason = _optional_text(result.get("evaluation_failure_reason"))
     failure_reason = "; ".join(
-        item for item in (failure_reason, *integrity_failures) if item
+        item
+        for item in (
+            terminal_reason,
+            evaluation_failure_reason,
+            *integrity_failures,
+        )
+        if item
     )
     terminal_state = (
         "crashed"
@@ -339,7 +340,10 @@ def _load_run(path: Path) -> dict[str, Any]:
         "claimed": bool(result.get("agent_claimed_success", False)),
         "terminal_state": terminal_state,
         "stage": stage,
+        "terminal_reason": terminal_reason,
+        "evaluation_failure_reason": evaluation_failure_reason,
         "failure_reason": failure_reason,
+        "status_class": _status_class(outcome, stage, terminal_state, trusted),
         "failed": not trusted or stage != "complete",
         "trusted": trusted,
         "integrity_failures": integrity_failures,
@@ -390,7 +394,10 @@ def _report_context(
                     "claimed",
                     "terminal_state",
                     "stage",
+                    "terminal_reason",
+                    "evaluation_failure_reason",
                     "failure_reason",
+                    "status_class",
                     "failed",
                     "trusted",
                     "metrics",
@@ -428,6 +435,7 @@ def _report_context(
     )
     return {
         "runs": runs,
+        "run_rows": experiment["run_rows"],
         "comparison_rows": experiment["comparison_rows"],
         "gate_rows": experiment["gate_rows"],
         "failure_rows": failure_rows,
@@ -437,6 +445,7 @@ def _report_context(
         "report_json": _safe_json(
             {
                 "runs": runs,
+                "run_rows": experiment["run_rows"],
                 "comparison_rows": experiment["comparison_rows"],
                 "gate_rows": experiment["gate_rows"],
                 "failure_rows": failure_rows,
@@ -607,6 +616,8 @@ def _public_snapshot(
                 "label": _text(raw.get("label"), "Unlabelled element"),
                 "bounds": bounds,
                 "visibility_fraction": _bounded(raw.get("visibility_fraction")),
+                "occlusion_fraction": _optional_bounded(raw.get("occlusion_fraction")),
+                "local_contrast": _optional_bounded(raw.get("local_contrast")),
                 "actionable": bool(raw.get("actionable", False)),
                 "disabled": bool(raw.get("disabled", False)),
                 "region_id": _optional_text(raw.get("region_id")),
@@ -756,7 +767,7 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
             event.get("scores"), prominence="prominence" in kind
         )
     elif kind == "model-call-recorded":
-        result["record"] = _safe_value(event.get("record"))
+        result["record"] = _public_model_call(event.get("record"))
     elif kind == "attention-selection-recorded":
         result.update(
             {
@@ -776,6 +787,12 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
         result["verification"] = _public_verification(event.get("result"))
     elif kind == "run-terminated":
         result["outcome"] = _public_outcome(event.get("outcome"))
+    elif kind in {"decision-recorded", "agent-claim", "action-rejected"}:
+        if event.get("action") is not None:
+            result["action"] = _public_action(event.get("action"))
+        for key in ("reason", "claimed_success", "message", "error"):
+            if key in event:
+                result[key] = _safe_value(event[key])
     else:
         for key in ("reason", "claimed_success", "message"):
             if key in event:
@@ -892,10 +909,46 @@ def _model_calls(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for event in events:
         if _kind(event) != "model-call-recorded":
             continue
-        record = _safe_value(event.get("record"))
-        if isinstance(record, dict):
-            records.append(cast(dict[str, Any], record))
+        record = _public_model_call(event.get("record"))
+        if record:
+            records.append(record)
     return records
+
+
+def _public_model_call(value: object) -> dict[str, Any]:
+    record = _mapping(value)
+    if not record:
+        return {}
+    usage = _mapping(record.get("token_usage"))
+    return {
+        "role": _text(record.get("role"), "unknown"),
+        "model": _first_string(record.get("model"), record.get("model_id")),
+        "endpoint_origin": _optional_text(record.get("endpoint_origin")),
+        "prompt_digest": _optional_text(record.get("prompt_digest")),
+        "schema_version": _optional_text(record.get("schema_version")),
+        "attempts": int(_number(record.get("attempts"), 1)),
+        "latency_ms": int(_number(record.get("latency_ms"), 0)),
+        "token_usage": {
+            "prompt_tokens": int(_number(usage.get("prompt_tokens"), 0)),
+            "completion_tokens": int(_number(usage.get("completion_tokens"), 0)),
+            "total_tokens": int(_number(usage.get("total_tokens"), 0)),
+        },
+        "request": _safe_value(record.get("request")),
+        "response": _safe_value(record.get("response")),
+        "retries": [
+            {
+                "attempt": int(_number(item.get("attempt"), 0)),
+                "reason": _text(item.get("reason")),
+                "status_code": (
+                    int(_number(item.get("status_code"), 0))
+                    if item.get("status_code") is not None
+                    else None
+                ),
+                "delay_seconds": _number(item.get("delay_seconds"), 0),
+            }
+            for item in _list_of_mappings(record.get("retries"))
+        ],
+    }
 
 
 def _actions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1165,6 +1218,71 @@ def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     return rows
 
 
+def _run_overview_rows(
+    runs: tuple[dict[str, Any], ...], gate_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        gate = _gate_for_run(run, gate_rows)
+        rows.append(
+            {
+                "run_id": run["run_id"],
+                "scenario_id": run["scenario_id"],
+                "scenario_label": run["scenario_label"],
+                "version_id": run["version_id"],
+                "version_label": run["version_label"],
+                "persona_id": run["persona_id"],
+                "persona_label": run["persona_label"],
+                "policy": run["policy"],
+                "outcome": run["outcome"],
+                "stage": run["stage"],
+                "terminal_state": run["terminal_state"],
+                "verified": run["verified"],
+                "failure_reason": run["failure_reason"] or "None recorded",
+                "gate_status": gate["label"],
+                "gate_reason": gate["reason"],
+                "status_class": run["status_class"],
+            }
+        )
+    return rows
+
+
+def _gate_for_run(
+    run: dict[str, Any], gate_rows: list[dict[str, Any]]
+) -> dict[str, str]:
+    matching = [
+        row
+        for row in gate_rows
+        if row["scenario_id"] == run["scenario_id"]
+        and row["persona_id"] == run["persona_id"]
+        and row["policy"] == run["policy"]
+        and run["version_id"] in {row["baseline_version"], row["improved_version"]}
+    ]
+    if not matching:
+        return {
+            "label": "Gate unavailable",
+            "reason": "No directional comparison recorded for this run.",
+        }
+    if any(not row["available"] for row in matching):
+        reasons = _unique(
+            reason
+            for row in matching
+            if not row["available"]
+            for reason in row["reasons"]
+        )
+        return {
+            "label": "Gate unavailable",
+            "reason": "; ".join(reasons) or "Comparison evidence is unavailable.",
+        }
+    if any(not row["passed"] for row in matching):
+        reasons = _unique(reason for row in matching for reason in row["reasons"])
+        return {
+            "label": "Gate fail",
+            "reason": "; ".join(reasons) or "Directional comparison failed.",
+        }
+    return {"label": "Gate pass", "reason": "All directional checks passed."}
+
+
 def _gate_rows(
     summary: dict[str, Any], runs: tuple[dict[str, Any], ...]
 ) -> list[dict[str, Any]]:
@@ -1173,8 +1291,7 @@ def _gate_rows(
         baseline = _mapping(comparison.get("baseline"))
         improved = _mapping(comparison.get("improved"))
         gate = _mapping(comparison.get("gate"))
-        if not _comparison_runs_are_trusted(baseline, improved, runs):
-            continue
+        available = _comparison_runs_are_trusted(baseline, improved, runs)
         scenario_id = _text(baseline.get("scenario_id"))
         persona_id = _text(baseline.get("persona_id"))
         policy = _text(baseline.get("policy"))
@@ -1205,8 +1322,15 @@ def _gate_rows(
                     improved.get("application_version_id"), "improved"
                 ),
                 "paired_seed_count": int(_number(gate.get("paired_seed_count"), 0)),
-                "passed": bool(gate.get("passed", False)),
-                "reasons": _strings(gate.get("reasons")),
+                "available": available,
+                "passed": available and bool(gate.get("passed", False)),
+                "reasons": (
+                    _strings(gate.get("reasons"))
+                    if available
+                    else [
+                        "Directional gate unavailable because one or more comparison runs are missing or untrusted."
+                    ]
+                ),
             }
         )
     return rows
@@ -1286,9 +1410,26 @@ def _failure_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _merge_failure(run: dict[str, Any], failure: dict[str, Any]) -> None:
     run["failed"] = True
-    run["stage"] = _text(failure.get("stage"), run["stage"])
+    stage = _text(failure.get("stage"), run["stage"])
+    reason = _text(failure.get("reason"), run["failure_reason"])
+    run["stage"] = stage
     run["terminal_state"] = _text(failure.get("terminal_state"), run["terminal_state"])
-    run["failure_reason"] = _text(failure.get("reason"), run["failure_reason"])
+    if stage == "evaluation":
+        run["evaluation_failure_reason"] = reason
+    elif not run.get("terminal_reason"):
+        run["terminal_reason"] = reason
+    run["failure_reason"] = "; ".join(
+        _unique(
+            (
+                run.get("terminal_reason"),
+                run.get("evaluation_failure_reason"),
+                *run.get("integrity_failures", []),
+            )
+        )
+    )
+    run["status_class"] = _status_class(
+        run["outcome"], run["stage"], run["terminal_state"], run["trusted"]
+    )
     for target, source in (
         ("scenario_id", "scenario_id"),
         ("version_id", "application_version_id"),
@@ -1321,9 +1462,21 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
         "claimed": False,
         "terminal_state": _text(failure.get("terminal_state"), "failed"),
         "stage": _text(failure.get("stage"), "execution"),
+        "terminal_reason": (
+            None
+            if _text(failure.get("stage"), "execution") == "evaluation"
+            else _text(failure.get("reason"), "run failed")
+        ),
+        "evaluation_failure_reason": (
+            _text(failure.get("reason"), "result evaluation failed")
+            if _text(failure.get("stage"), "execution") == "evaluation"
+            else None
+        ),
         "failure_reason": _text(failure.get("reason"), "run failed"),
+        "status_class": "status-untrusted",
         "failed": True,
         "trusted": False,
+        "integrity_failures": [],
         "timeline": [],
         "snapshots": [],
         "observations": [],
@@ -1359,6 +1512,20 @@ def _run_stage(
     if integrity_failures:
         return "integrity"
     return "complete" if outcome == "verified-success" else "terminal"
+
+
+def _status_class(outcome: str, stage: str, terminal_state: str, trusted: bool) -> str:
+    if not trusted or terminal_state in {"partial", "crashed", "untrusted"}:
+        return "status-untrusted"
+    if stage == "evaluation":
+        return "status-evaluation"
+    if outcome == "verified-success":
+        return "status-success"
+    if outcome == "timed-out":
+        return "status-timeout"
+    if outcome in {"provider-failure", "model-failure", "internal-error"}:
+        return "status-error"
+    return "status-terminal"
 
 
 def _safe_json(value: object) -> str:
@@ -1452,6 +1619,10 @@ def _bounded(value: object, *, default: float = 0) -> float:
     return min(1.0, max(0.0, _number(value, default)))
 
 
+def _optional_bounded(value: object) -> float | None:
+    return _bounded(value) if _is_number(value) else None
+
+
 def _number(value: object, default: float) -> float:
     return float(cast(int | float, value)) if _is_number(value) else default
 
@@ -1483,6 +1654,17 @@ def _first_string(*values: object) -> str:
             if text:
                 return text
     return "unknown"
+
+
+def _first_optional_string(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+        if value is not None and not isinstance(value, (dict, list, tuple)):
+            text = str(value)
+            if text:
+                return text
+    return None
 
 
 def _safe_value(value: object) -> object:

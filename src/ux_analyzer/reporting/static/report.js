@@ -7,18 +7,30 @@
   var runs = data.runs || [];
   var state = {
     runId: runs.length ? runs[0].run_id : "",
+    scenarioId: "",
     eventIndex: 0,
     viewportId: "",
-    elementId: ""
+    elementId: "",
+    playing: false,
+    timer: null
   };
-  var runFilter = document.getElementById("run-filter");
-  var versionFilter = document.getElementById("version-filter");
-  var policyFilter = document.getElementById("policy-filter");
+
+  var scenarioSelect = document.getElementById("scenario-select");
   var runSelect = document.getElementById("run-select");
-  var detail = document.getElementById("run-detail");
+  var playPause = document.getElementById("play-pause");
+  var playLabel = document.getElementById("play-label");
+  var progress = document.getElementById("playback-progress");
+  var position = document.getElementById("playback-position");
+  var statusBanner = document.getElementById("run-status-banner");
+  var viewportStage = document.getElementById("viewport-stage");
+  var viewportMeta = document.getElementById("viewport-meta");
+  var eventKind = document.getElementById("event-kind");
+  var eventCard = document.getElementById("current-event-card");
+  var elementPanel = document.getElementById("selected-element-evidence");
+  var elementDetail = document.getElementById("element-detail");
+  var elementState = document.getElementById("element-state");
   var timelineList = document.getElementById("timeline-list");
-  var timelinePosition = document.getElementById("timeline-position");
-  var timelineDetail = document.getElementById("timeline-detail");
+  var timelineCount = document.getElementById("timeline-count");
 
   function element(tag, className, text) {
     var node = document.createElement(tag);
@@ -28,7 +40,7 @@
   }
 
   function exact(value) {
-    if (value === undefined || value === null || value === "") return "n/a";
+    if (value === undefined || value === null || value === "") return "unavailable";
     if (typeof value === "boolean") return value ? "yes" : "no";
     return String(value);
   }
@@ -39,52 +51,18 @@
     });
   }
 
-  function uniqueValues(key) {
-    return runs.map(function (run) { return run[key]; }).filter(function (value, index, values) {
-      return value && values.indexOf(value) === index;
-    }).sort();
-  }
-
-  function fillSelect(select, values, emptyLabel) {
-    while (select.options.length > 1) select.remove(1);
-    values.forEach(function (value) {
-      var option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      select.appendChild(option);
-    });
-    select.options[0].textContent = emptyLabel;
-  }
-
-  function visibleRuns() {
-    var search = (runFilter.value || "").toLowerCase();
-    return runs.filter(function (run) {
-      var text = [run.run_id, run.scenario_label, run.version_label, run.persona_label, run.policy].join(" ").toLowerCase();
-      return (!search || text.indexOf(search) !== -1) &&
-        (!versionFilter.value || run.version_id === versionFilter.value) &&
-        (!policyFilter.value || run.policy === policyFilter.value);
-    });
-  }
-
-  function renderRunOptions() {
-    var visible = visibleRuns();
-    while (runSelect.firstChild) runSelect.removeChild(runSelect.firstChild);
-    visible.forEach(function (run) {
-      var option = document.createElement("option");
-      option.value = run.run_id;
-      option.textContent = run.run_id + " | " + run.version_label + (run.failed ? " | failed" : "");
-      runSelect.appendChild(option);
-    });
-    if (!visible.some(function (run) { return run.run_id === state.runId; })) {
-      state.runId = visible.length ? visible[0].run_id : "";
-      state.viewportId = "";
-      state.elementId = "";
-    }
-    runSelect.value = state.runId;
+  function safeJson(value) {
+    if (value === undefined || value === null) return "unavailable";
+    try { return JSON.stringify(value, null, 2); }
+    catch (_error) { return "unavailable: invalid recorded summary"; }
   }
 
   function currentRun() {
     return runs.find(function (run) { return run.run_id === state.runId; }) || null;
+  }
+
+  function currentEvent(run) {
+    return run && run.timeline ? run.timeline[state.eventIndex] || null : null;
   }
 
   function addField(parent, label, value) {
@@ -100,12 +78,14 @@
     parent.appendChild(list);
   }
 
-  function addValues(parent, label, values) {
+  function addValues(parent, label, values, unavailableReason) {
     var block = element("div", "value-block");
     block.appendChild(element("strong", "", label));
     var list = element("ul", "compact-list");
     (values || []).forEach(function (value) { list.appendChild(element("li", "", value)); });
-    if (!list.childNodes.length) list.appendChild(element("li", "empty", "None recorded."));
+    if (!list.childNodes.length) {
+      list.appendChild(element("li", "empty", unavailableReason || "Unavailable: no recorded values."));
+    }
     block.appendChild(list);
     parent.appendChild(block);
   }
@@ -114,227 +94,212 @@
     var entries = Object.keys(mapping || {}).sort();
     var block = element("div", "value-block");
     block.appendChild(element("strong", "", label));
-    var list = element("dl", "field-list compact-fields");
-    entries.forEach(function (key) { addField(list, titleCase(key), mapping[key]); });
-    if (!entries.length) block.appendChild(element("p", "empty", "None recorded."));
-    else block.appendChild(list);
+    if (!entries.length) {
+      block.appendChild(element("p", "empty", "Unavailable: no recorded values."));
+    } else {
+      var list = element("dl", "field-list");
+      entries.forEach(function (key) { addField(list, titleCase(key), mapping[key]); });
+      block.appendChild(list);
+    }
     parent.appendChild(block);
   }
 
-  function eventSummary(value) {
-    if (!value) return "No event selected.";
-    var parts = ["Step " + exact(value.sequence), titleCase(value.kind)];
-    if (value.reason) parts.push(value.reason);
-    if (value.succeeded !== undefined) parts.push(value.succeeded ? "Succeeded" : "Failed");
-    if (value.outcome) parts.push("Outcome: " + value.outcome);
-    if (value.viewport_id) parts.push("Viewport: " + value.viewport_id);
-    return parts.join(" | ");
-  }
-
-  function renderTimeline(run) {
-    while (timelineList.firstChild) timelineList.removeChild(timelineList.firstChild);
-    var events = run ? (run.timeline || []) : [];
-    state.eventIndex = Math.min(state.eventIndex, Math.max(events.length - 1, 0));
-    events.forEach(function (event, index) {
-      var item = document.createElement("li");
-      var button = element("button", "timeline-event", (event.sequence || index + 1) + "  " + titleCase(event.kind));
-      button.type = "button";
-      button.setAttribute("aria-current", index === state.eventIndex ? "true" : "false");
-      button.addEventListener("click", function () { state.eventIndex = index; render(); });
-      item.appendChild(button);
-      timelineList.appendChild(item);
-    });
-    timelinePosition.textContent = events.length ? (state.eventIndex + 1) + " / " + events.length : "0 / 0";
-    timelineDetail.textContent = events.length ? eventSummary(events[state.eventIndex]) : "No timeline events recorded.";
-  }
-
-  function addMeta(parent, label, value) {
-    var item = element("div", "meta-item");
-    item.appendChild(element("span", "meta-label", label));
-    item.appendChild(element("span", "meta-value", exact(value)));
-    parent.appendChild(item);
-  }
-
-  function addPanel(parent, title, records, formatter, panelClass) {
-    var panel = element("section", "detail-panel" + (panelClass ? " " + panelClass : ""));
-    panel.appendChild(element("h3", "", title));
-    var list = element("ol", "record-list");
-    if (!records || !records.length) {
-      list.appendChild(element("li", "empty", "No records."));
-    } else {
-      records.forEach(function (record) {
-        var item = element("li", "record");
-        formatter(record, item);
-        list.appendChild(item);
-      });
-    }
-    panel.appendChild(list);
-    parent.appendChild(panel);
-    return panel;
+  function addJson(parent, label, value) {
+    var block = element("div", "value-block");
+    block.appendChild(element("strong", "", label));
+    block.appendChild(element("pre", "json-summary", safeJson(value)));
+    parent.appendChild(block);
   }
 
   function actionText(action) {
-    if (!action) return "No action";
+    if (!action) return "Unavailable: no recorded action.";
     var text = titleCase(action.kind || "action");
     if (action.element_id) text += " on " + action.element_id;
     if (action.direction) text += " " + action.direction;
+    if (action.duration_seconds !== undefined) text += " for " + action.duration_seconds + " seconds";
     return text;
   }
 
-  function observationCard(record, item) {
-    item.appendChild(element("strong", "", "Step " + exact(record.sequence) + " observation"));
-    addFields(item, [
-      ["Viewport", record.viewport_id],
-      ["Region", record.region_context ? record.region_context.label : "none"]
-    ]);
-    addValues(item, "Noticed now", (record.newly_revealed_elements || []).map(function (entry) {
-      return entry.label + " [" + entry.id + "]";
-    }));
-    addValues(item, "Remembered", (record.remembered_elements || []).map(function (entry) {
-      return entry.label + " [" + entry.id + "]";
-    }));
+  function eventCategory(kind) {
+    if (kind === "viewport-captured" || kind === "observation-recorded") return "Observation";
+    if (kind.indexOf("prominence") !== -1) return "Prominence";
+    if (kind.indexOf("scent") !== -1) return "Scent";
+    if (kind === "attention-selection-recorded") return "Attention selection";
+    if (kind === "model-call-recorded") return "Model request / response";
+    if (kind === "decision-recorded" || kind === "action-proposed" || kind === "agent-claim") return "Model decision and reason";
+    if (kind === "action-executed" || kind === "action-rejected") return "Action and result";
+    if (kind === "verification-recorded") return "Verification";
+    if (kind.indexOf("memory") !== -1 || kind.indexOf("state") !== -1) return "Memory / state";
+    if (kind === "run-terminated" || kind.indexOf("failure") !== -1) return "Terminal / failure";
+    return "Recorded event";
   }
 
-  function selectionCard(record, item) {
-    item.appendChild(element("strong", "", "Step " + exact(record.sequence) + " attention selection"));
-    addFields(item, [
-      ["Viewport", record.viewport_id],
-      ["Mode", record.selection_mode],
-      ["Region", record.region_id]
-    ]);
-    addValues(item, "Selected element IDs", record.selected_ids || []);
-    addMapping(item, "Element probabilities", record.element_probabilities);
-    addMapping(item, "Region probabilities", record.region_probabilities);
+  function eventSummary(record) {
+    if (!record) return "Unavailable";
+    if (record.reason) return String(record.reason);
+    if (record.action) return actionText(record.action);
+    if (record.outcome) return "Outcome: " + record.outcome;
+    if (record.viewport_id) return "Viewport: " + record.viewport_id;
+    if (record.selected_ids && record.selected_ids.length) return "Selected: " + record.selected_ids.join(", ");
+    return eventCategory(record.kind);
   }
 
-  function decisionCard(record, item) {
-    item.appendChild(element("strong", "", "Step " + exact(record.sequence) + " decision"));
-    addFields(item, [
-      ["Reason", record.reason || "No reason recorded"],
-      ["Action", actionText(record.action)],
-      ["Claimed success", record.claimed_success]
-    ]);
+  function scenarioValues() {
+    return runs.map(function (run) { return run.scenario_id; }).filter(function (value, index, values) {
+      return value && values.indexOf(value) === index;
+    }).sort();
   }
 
-  function actionCard(record, item) {
-    item.appendChild(element("strong", "", "Step " + exact(record.sequence) + " action result"));
-    addFields(item, [
-      ["Action", actionText(record.action)],
-      ["Result", record.succeeded ? "succeeded" : "failed"],
-      ["Failure reason", record.error]
-    ]);
-  }
-
-  function verificationCard(record, item) {
-    item.appendChild(element("strong", "", "Independent verification"));
-    addFields(item, [
-      ["Verified", record.verified],
-      ["Details", record.details]
-    ]);
-    addValues(item, "Evidence IDs", record.evidence_ids || []);
-  }
-
-  function memoryCard(record, item) {
-    item.appendChild(element("strong", "", record.key || "Memory item"));
-    addFields(item, [
-      ["Value", record.value],
-      ["Strength", record.strength],
-      ["Importance", record.importance],
-      ["Age", record.age],
-      ["Failure memory", record.is_failure]
-    ]);
-  }
-
-  function manifestCard(record, item) {
-    item.appendChild(element("strong", "", titleCase(record.role || "provider")));
-    addFields(item, [
-      ["Provider", record.provider_id],
-      ["Model", record.model_id],
-      ["Endpoint origin", record.endpoint_origin],
-      ["Version", record.version],
-      ["Prompt version", record.prompt_version],
-      ["Schema version", record.schema_version]
-    ]);
-  }
-
-  function modelCallCard(record, item) {
-    item.appendChild(element("strong", "", titleCase(record.role || "model call")));
-    addFields(item, [
-      ["Model", record.model_id || record.model],
-      ["Attempts", record.attempts],
-      ["Latency ms", record.latency_ms],
-      ["Prompt tokens", record.prompt_tokens],
-      ["Completion tokens", record.completion_tokens],
-      ["Total tokens", record.total_tokens],
-      ["Failure", record.error]
-    ]);
-  }
-
-  function evidenceCard(record, item) {
-    item.appendChild(element("strong", "", record.description || record.evidence_id));
-    addFields(item, [
-      ["Evidence ID", record.evidence_id],
-      ["Evidence class", record.evidence_class]
-    ]);
-    addValues(item, "Source events", record.source_event_ids || []);
-  }
-
-  function findingCard(record, item) {
-    item.appendChild(element("strong", "finding-title", record.title || titleCase(record.category)));
-    item.appendChild(element("p", "finding-cause", record.cause || record.explanation || "Cause unavailable."));
-    addFields(item, [
-      ["Severity", record.severity],
-      ["Evidence class", record.evidence_class],
-      ["Reproducibility", record.reproducibility]
-    ]);
-    addMapping(item, "Supporting metric values", record.supporting_metrics);
-    addValues(item, "Run references", record.run_ids || []);
-    addValues(item, "Viewport references", record.viewport_ids || []);
-    addValues(item, "Element references", record.element_ids || []);
-    addValues(item, "Action sequence", record.action_sequence || []);
-    addValues(item, "Limitations", record.limitations || []);
-    var links = element("div", "replay-links");
-    (record.replay_links || []).forEach(function (href) {
-      var link = element("a", "replay-link", "Replay evidence");
-      link.href = href;
-      links.appendChild(link);
+  function fillScenarioOptions() {
+    scenarioValues().forEach(function (value) {
+      var matching = runs.find(function (run) { return run.scenario_id === value; });
+      var option = document.createElement("option");
+      option.value = value;
+      option.textContent = matching ? matching.scenario_label : value;
+      scenarioSelect.appendChild(option);
     });
-    if (links.childNodes.length) item.appendChild(links);
   }
 
-  function metricCard(record, item) {
-    item.appendChild(element("strong", "", titleCase(record.name)));
-    addFields(item, [
-      ["Exact value", record.value],
-      ["Evidence class", record.evidence_class]
-    ]);
-    addValues(item, "Evidence IDs", record.evidence_ids || []);
+  function visibleRuns() {
+    return runs.filter(function (run) {
+      return !state.scenarioId || run.scenario_id === state.scenarioId;
+    });
+  }
+
+  function renderRunOptions() {
+    var visible = visibleRuns();
+    while (runSelect.firstChild) runSelect.removeChild(runSelect.firstChild);
+    visible.forEach(function (run) {
+      var option = document.createElement("option");
+      option.value = run.run_id;
+      option.textContent = run.run_id + " | " + run.version_label + " | " + run.outcome;
+      runSelect.appendChild(option);
+    });
+    if (!visible.some(function (run) { return run.run_id === state.runId; })) {
+      state.runId = visible.length ? visible[0].run_id : "";
+      state.eventIndex = 0;
+      state.viewportId = "";
+      state.elementId = "";
+    }
+    runSelect.value = state.runId;
+    scenarioSelect.value = state.scenarioId;
+  }
+
+  function setPlaying(playing) {
+    state.playing = Boolean(playing);
+    playPause.setAttribute("aria-pressed", state.playing ? "true" : "false");
+    playLabel.textContent = state.playing ? "Pause" : "Play";
+    playPause.querySelector(".play-icon").textContent = state.playing ? "Ⅱ" : "▶";
+    elementState.textContent = state.playing ? "Playing" : "Paused";
+    if (state.timer) {
+      window.clearInterval(state.timer);
+      state.timer = null;
+    }
+    if (state.playing) {
+      state.timer = window.setInterval(function () {
+        var run = currentRun();
+        var lastIndex = run && run.timeline ? run.timeline.length - 1 : -1;
+        if (state.eventIndex >= lastIndex) {
+          setPlaying(false);
+          return;
+        }
+        setEventIndex(state.eventIndex + 1, true);
+      }, 1100);
+    }
+  }
+
+  function recordedTime(event) {
+    if (!event) return "time unavailable";
+    return event.timestamp || event.recorded_at || event.time || "time unavailable";
+  }
+
+  function updateHash(run, event) {
+    if (!run) return;
+    var params = new URLSearchParams();
+    params.set("run", run.run_id);
+    if (event && event.event_id) params.set("event", event.event_id);
+    if (state.elementId) params.set("element", state.elementId);
+    window.history.replaceState(null, "", "#" + params.toString());
+  }
+
+  function setEventIndex(index, keepPlaying) {
+    var run = currentRun();
+    var events = run ? run.timeline || [] : [];
+    state.eventIndex = Math.max(0, Math.min(Number(index) || 0, Math.max(events.length - 1, 0)));
+    var snapshot = snapshotAt(run, state.eventIndex);
+    if (!snapshot || !findElement(snapshot, state.elementId)) {
+      state.elementId = "";
+    }
+    state.viewportId = snapshot ? snapshot.id : "";
+    if (!keepPlaying) setPlaying(false);
+    renderWorkspace();
+  }
+
+  function selectRun(runId, scrollWorkspace) {
+    var run = runs.find(function (item) { return item.run_id === runId; });
+    if (!run) return;
+    if (run.run_page && !(run.timeline || []).length) {
+      window.location.href = run.run_page + "#run=" + encodeURIComponent(run.run_id);
+      return;
+    }
+    setPlaying(false);
+    state.runId = run.run_id;
+    state.scenarioId = run.scenario_id;
+    state.eventIndex = 0;
+    state.viewportId = "";
+    state.elementId = "";
+    renderRunOptions();
+    renderWorkspace();
+    if (scrollWorkspace) {
+      document.getElementById("playback-workspace").scrollIntoView({ block: "start" });
+    }
   }
 
   function findSnapshot(run, viewportId) {
-    return (run.snapshots || []).find(function (snapshot) { return snapshot.id === viewportId; }) || null;
+    return run && (run.snapshots || []).find(function (snapshot) { return snapshot.id === viewportId; }) || null;
   }
 
-  function findElement(run, viewportId, elementId) {
-    var snapshot = findSnapshot(run, viewportId);
-    if (!snapshot) return null;
-    return (snapshot.elements || []).find(function (item) { return item.id === elementId; }) || null;
+  function snapshotAt(run, eventIndex) {
+    if (!run) return null;
+    var viewportId = "";
+    (run.timeline || []).slice(0, eventIndex + 1).forEach(function (record) {
+      if (record.kind === "viewport-captured" && record.viewport_id) viewportId = record.viewport_id;
+    });
+    return viewportId ? findSnapshot(run, viewportId) : null;
   }
 
-  function findProminence(run, viewportId, elementId) {
-    var records = run.prominence || [];
-    var preferred = records.filter(function (record) { return record.viewport_id === viewportId; });
-    var source = preferred.length ? preferred : records;
-    for (var index = source.length - 1; index >= 0; index -= 1) {
-      var score = (source[index].scores || []).find(function (item) { return item.element_id === elementId; });
+  function findElement(snapshot, elementId) {
+    return snapshot && (snapshot.elements || []).find(function (item) { return item.id === elementId; }) || null;
+  }
+
+  function noticedState(run, eventIndex) {
+    var noticed = {};
+    var inspected = {};
+    (run.timeline || []).slice(0, eventIndex + 1).forEach(function (record) {
+      if (record.kind === "observation-recorded" && record.observation) {
+        (record.observation.newly_revealed_elements || []).forEach(function (item) { noticed[item.id] = true; });
+      }
+      if (record.action && record.action.element_id && String(record.action.kind || "").indexOf("inspect") !== -1) {
+        inspected[record.action.element_id] = true;
+      }
+    });
+    return { noticed: noticed, inspected: inspected };
+  }
+
+  function scoreAt(run, viewportId, elementId, sequence) {
+    var records = (run.prominence || []).filter(function (record) {
+      return record.sequence <= sequence && (!record.viewport_id || record.viewport_id === viewportId);
+    });
+    for (var index = records.length - 1; index >= 0; index -= 1) {
+      var score = (records[index].scores || []).find(function (item) { return item.element_id === elementId; });
       if (score) return score;
     }
     return null;
   }
 
-  function scentFor(run, viewportId, elementId) {
+  function scentAt(run, viewportId, elementId, sequence) {
     return (run.scent_records || []).filter(function (record) {
-      return !record.viewport_id || record.viewport_id === viewportId;
+      return record.sequence <= sequence && (!record.viewport_id || record.viewport_id === viewportId);
     }).reduce(function (values, record) {
       (record.scores || []).forEach(function (score) {
         if (score.element_id === elementId) values.push(titleCase(record.kind) + ": " + exact(score.score));
@@ -366,167 +331,266 @@
     return table;
   }
 
-  function renderSelectedElement(panel, run) {
-    while (panel.firstChild) panel.removeChild(panel.firstChild);
-    panel.appendChild(element("h3", "", "Selected element evidence"));
-    var selected = findElement(run, state.viewportId, state.elementId);
+  function linkedRecords(run, elementId) {
+    var decisions = (run.decisions || []).filter(function (record) { return record.action && record.action.element_id === elementId; });
+    var actions = (run.actions || []).filter(function (record) { return record.action && record.action.element_id === elementId; });
+    var findings = (run.findings || []).filter(function (record) { return (record.element_ids || []).indexOf(elementId) !== -1; });
+    var eventIds = decisions.concat(actions).map(function (record) { return "event-" + record.sequence; });
+    var findingEvidence = findings.reduce(function (ids, finding) { return ids.concat(finding.evidence_ids || []); }, []);
+    var evidence = (run.evidence || []).filter(function (record) {
+      return (record.source_event_ids || []).some(function (id) { return eventIds.indexOf(id) !== -1; }) || findingEvidence.indexOf(record.evidence_id) !== -1;
+    });
+    return { decisions: decisions, actions: actions, findings: findings, evidence: evidence };
+  }
+
+  function renderElementDetail(run, snapshot, event) {
+    while (elementDetail.firstChild) elementDetail.removeChild(elementDetail.firstChild);
+    var selected = findElement(snapshot, state.elementId);
     if (!selected) {
-      panel.appendChild(element("p", "empty", "Hover, focus, or click recorded element overlay."));
+      delete elementPanel.dataset.selectedElementId;
+      elementDetail.appendChild(element("p", "empty", snapshot ? "Unavailable: no recorded element selected." : "Unavailable: current event has no recorded viewport."));
       return;
     }
-    panel.dataset.selectedElementId = selected.id;
-    panel.appendChild(element("strong", "selected-element-title", selected.label));
-    addFields(panel, [
+    elementPanel.dataset.selectedElementId = selected.id;
+    elementDetail.appendChild(element("strong", "selected-element-title", selected.label));
+    var region = (snapshot.regions || []).find(function (item) { return item.id === selected.region_id; });
+    var attention = noticedState(run, state.eventIndex);
+    addFields(elementDetail, [
       ["Element ID", selected.id],
-      ["Viewport ID", state.viewportId],
       ["Role", selected.role],
-      ["Region", selected.region_id],
-      ["Visibility fraction", selected.visibility_fraction],
+      ["Viewport", snapshot.id],
+      ["Region", region ? region.label + " [" + region.id + "]" : selected.region_id],
       ["Actionable", selected.actionable],
       ["Disabled", selected.disabled],
-      ["Noticed", selected.noticed],
-      ["Inspected", selected.inspected]
+      ["Bounds", "x=" + selected.bounds.x + ", y=" + selected.bounds.y + ", width=" + selected.bounds.width + ", height=" + selected.bounds.height],
+      ["Visibility fraction", selected.visibility_fraction],
+      ["Occlusion fraction", selected.occlusion_fraction],
+      ["Local contrast", selected.local_contrast],
+      ["Noticed by this step", Boolean(attention.noticed[selected.id])],
+      ["Inspected by this step", Boolean(attention.inspected[selected.id])]
     ]);
-    var score = findProminence(run, state.viewportId, selected.id);
+    var score = scoreAt(run, snapshot.id, selected.id, event ? event.sequence : 0);
     if (score) {
-      panel.appendChild(element("h4", "", "Prominence contributions"));
-      addFields(panel, [
+      elementDetail.appendChild(element("h4", "", "Prominence contributions"));
+      addFields(elementDetail, [
         ["Prominence raw score", score.raw_score],
         ["Normalized probability", score.normalized_probability],
         ["First notice probability", score.first_notice_probability],
         ["Notice within budget probability", score.notice_within_budget_probability]
       ]);
-      panel.appendChild(featureTable(score));
+      elementDetail.appendChild(featureTable(score));
     } else {
-      panel.appendChild(element("p", "empty", "No prominence record for selected element."));
+      elementDetail.appendChild(element("p", "empty", "Unavailable: no prominence record for this element at current step."));
     }
-    addValues(panel, "Scent", scentFor(run, state.viewportId, selected.id));
-    addValues(panel, "Related findings", (run.findings || []).filter(function (finding) {
-      return (finding.element_ids || []).indexOf(selected.id) !== -1;
-    }).map(function (finding) { return finding.title + ": " + finding.cause; }));
+    addValues(elementDetail, "Scent", scentAt(run, snapshot.id, selected.id, event ? event.sequence : 0), "Unavailable: no scent record at current step.");
+    var linked = linkedRecords(run, selected.id);
+    addValues(elementDetail, "Linked decisions", linked.decisions.map(function (record) { return "Step " + record.sequence + ": " + (record.reason || actionText(record.action)); }));
+    addValues(elementDetail, "Linked actions and results", linked.actions.map(function (record) { return "Step " + record.sequence + ": " + actionText(record.action) + " | " + (record.succeeded ? "succeeded" : "failed") + (record.error ? " | " + record.error : ""); }));
+    addValues(elementDetail, "Linked findings", linked.findings.map(function (record) { return record.title + ": " + record.cause; }));
+    addValues(elementDetail, "Linked evidence", linked.evidence.map(function (record) { return record.evidence_id + ": " + record.description; }));
   }
 
-  function renderViewports(parent, run) {
-    var panel = element("section", "detail-panel viewport-panel");
-    panel.appendChild(element("h3", "", "Screenshots and attention overlay"));
-    var selectedPanel = element("section", "detail-panel selected-element-panel");
-    selectedPanel.id = "selected-element-evidence";
-    var strip = element("div", "viewport-strip");
-    (run.snapshots || []).forEach(function (snapshot) {
-      var card = element("div", "viewport-card");
-      var title = element("div", "viewport-title");
-      title.appendChild(element("span", "", snapshot.id));
-      title.appendChild(element("span", "", snapshot.viewport.width + " x " + snapshot.viewport.height));
-      card.appendChild(title);
-      var frame = element("div", "viewport-frame");
-      frame.dataset.viewportWidth = String(snapshot.viewport.width);
-      frame.dataset.viewportHeight = String(snapshot.viewport.height);
-      frame.style.aspectRatio = snapshot.viewport.width + " / " + snapshot.viewport.height;
-      if (snapshot.screenshot) {
-        var image = document.createElement("img");
-        image.src = snapshot.screenshot;
-        image.alt = "Recorded screenshot for " + snapshot.id;
-        frame.appendChild(image);
-      } else {
-        frame.appendChild(element("span", "empty", "Screenshot artifact unavailable."));
-      }
-      (snapshot.elements || []).forEach(function (item) {
-        var overlay = element("button", "viewport-overlay" + (item.inspected ? " inspected" : item.noticed ? " noticed" : ""));
-        overlay.type = "button";
-        overlay.dataset.elementId = item.id;
-        overlay.dataset.viewportId = snapshot.id;
-        overlay.setAttribute("aria-label", "Inspect evidence for " + item.label);
-        var bounds = item.bounds;
-        overlay.style.left = (bounds.x / snapshot.viewport.width * 100) + "%";
-        overlay.style.top = (bounds.y / snapshot.viewport.height * 100) + "%";
-        overlay.style.width = (bounds.width / snapshot.viewport.width * 100) + "%";
-        overlay.style.height = (bounds.height / snapshot.viewport.height * 100) + "%";
-        overlay.appendChild(element("span", "overlay-label", item.label + (item.inspected ? " | inspected" : item.noticed ? " | noticed" : "")));
-        var select = function () {
-          state.viewportId = snapshot.id;
-          state.elementId = item.id;
-          renderSelectedElement(selectedPanel, run);
-        };
-        overlay.addEventListener("mouseenter", select);
-        overlay.addEventListener("focus", select);
-        overlay.addEventListener("click", select);
-        frame.appendChild(overlay);
-      });
-      card.appendChild(frame);
-      strip.appendChild(card);
+  function selectElement(run, snapshot, event, elementId) {
+    setPlaying(false);
+    state.viewportId = snapshot.id;
+    state.elementId = elementId;
+    viewportStage.querySelectorAll(".viewport-overlay").forEach(function (overlay) {
+      overlay.setAttribute("aria-pressed", overlay.dataset.elementId === elementId ? "true" : "false");
     });
-    if (!strip.childNodes.length) strip.appendChild(element("p", "empty", "No viewport captures recorded."));
-    panel.appendChild(strip);
-    parent.appendChild(panel);
-    parent.appendChild(selectedPanel);
-    if (!state.elementId && run.snapshots && run.snapshots.length && run.snapshots[0].elements.length) {
-      state.viewportId = run.snapshots[0].id;
-      state.elementId = run.snapshots[0].elements[0].id;
-    }
-    renderSelectedElement(selectedPanel, run);
+    renderElementDetail(run, snapshot, event);
+    updateHash(run, event);
   }
 
-  function renderRun(run) {
-    while (detail.firstChild) detail.removeChild(detail.firstChild);
-    if (!run) {
-      detail.appendChild(element("p", "muted", "No run matches filters."));
+  function fitFrame(frame, snapshot) {
+    var width = Math.max(viewportStage.clientWidth, 1);
+    var height = Math.max(viewportStage.clientHeight, 1);
+    var scale = Math.min(width / snapshot.viewport.width, height / snapshot.viewport.height);
+    frame.style.width = Math.max(1, Math.floor(snapshot.viewport.width * scale)) + "px";
+    frame.style.height = Math.max(1, Math.floor(snapshot.viewport.height * scale)) + "px";
+  }
+
+  function renderViewport(run, snapshot, event) {
+    while (viewportStage.firstChild) viewportStage.removeChild(viewportStage.firstChild);
+    if (!snapshot) {
+      viewportMeta.textContent = "Unavailable";
+      viewportStage.appendChild(element("p", "empty", "Unavailable: no viewport was recorded by this event."));
+      renderElementDetail(run, null, event);
       return;
     }
-    var meta = element("div", "run-meta");
-    addMeta(meta, "Run", run.run_id);
-    addMeta(meta, "Scenario", run.scenario_label);
-    addMeta(meta, "Version", run.version_label);
-    addMeta(meta, "Persona", run.persona_label);
-    addMeta(meta, "Policy", run.policy);
-    addMeta(meta, "Outcome", run.outcome);
-    addMeta(meta, "Verified", run.verified);
-    addMeta(meta, "Terminal state", run.terminal_state);
-    detail.appendChild(meta);
-    if (run.run_page) {
-      var pageLink = document.createElement("a");
-      pageLink.href = run.run_page;
-      pageLink.textContent = "Open self-contained run page";
-      detail.appendChild(pageLink);
+    viewportMeta.textContent = snapshot.id + " | " + snapshot.viewport.width + " x " + snapshot.viewport.height;
+    var frame = element("div", "viewport-frame");
+    fitFrame(frame, snapshot);
+    if (snapshot.screenshot) {
+      var image = document.createElement("img");
+      image.src = snapshot.screenshot;
+      image.alt = "Recorded screenshot for " + snapshot.id;
+      frame.appendChild(image);
+    } else {
+      frame.appendChild(element("span", "empty", "Unavailable: screenshot artifact was not recorded."));
     }
+    var attention = noticedState(run, state.eventIndex);
+    (snapshot.elements || []).filter(function (item) { return item.visibility_fraction > 0; }).forEach(function (item) {
+      var overlayClass = "viewport-overlay";
+      if (attention.inspected[item.id]) overlayClass += " inspected";
+      else if (attention.noticed[item.id]) overlayClass += " noticed";
+      var overlay = element("button", overlayClass);
+      overlay.type = "button";
+      overlay.dataset.elementId = item.id;
+      overlay.dataset.viewportId = snapshot.id;
+      overlay.setAttribute("aria-label", "Inspect recorded evidence for " + item.label);
+      overlay.setAttribute("aria-pressed", state.elementId === item.id ? "true" : "false");
+      overlay.style.left = (item.bounds.x / snapshot.viewport.width * 100) + "%";
+      overlay.style.top = (item.bounds.y / snapshot.viewport.height * 100) + "%";
+      overlay.style.width = (item.bounds.width / snapshot.viewport.width * 100) + "%";
+      overlay.style.height = (item.bounds.height / snapshot.viewport.height * 100) + "%";
+      overlay.appendChild(element("span", "overlay-label", item.label));
+      var select = function () { selectElement(run, snapshot, event, item.id); };
+      overlay.addEventListener("mouseenter", select);
+      overlay.addEventListener("focus", select);
+      overlay.addEventListener("click", select);
+      frame.appendChild(overlay);
+    });
+    viewportStage.appendChild(frame);
+    renderElementDetail(run, snapshot, event);
+  }
 
-    renderViewports(detail, run);
-    var grid = element("div", "detail-grid");
-    addPanel(grid, "Observations and notice state", run.observations || [], observationCard);
-    addPanel(grid, "Attention selections", run.selections || [], selectionCard);
-    addPanel(grid, "Scent records", run.scent_records || [], function (record, item) {
-      item.appendChild(element("strong", "", "Step " + exact(record.sequence) + " " + titleCase(record.kind)));
-      addFields(item, [["Viewport", record.viewport_id]]);
-      addValues(item, "Element scores", (record.scores || []).map(function (score) {
-        return score.element_id + ": " + exact(score.score);
-      }));
-    });
-    addPanel(grid, "Decisions and reasons", run.decisions || [], decisionCard);
-    addPanel(grid, "Actions and results", run.actions || [], actionCard);
-    addPanel(grid, "Verification", run.verification ? [run.verification] : [], verificationCard);
-    addPanel(grid, "Memory", run.memory || [], memoryCard);
-    addPanel(grid, "Model manifests", run.manifests && run.manifests.provider_manifests ? run.manifests.provider_manifests : [], manifestCard);
-    addPanel(grid, "Model calls", run.model_calls || [], modelCallCard);
-    addPanel(grid, "Evidence", run.evidence || [], evidenceCard);
-    addPanel(grid, "Findings", run.findings || [], findingCard, "finding-panel");
-    addPanel(grid, "Metrics", run.metrics || [], metricCard);
-    addPanel(grid, "Terminal status", [{
-      terminal_state: run.terminal_state,
-      stage: run.stage,
-      outcome: run.outcome,
-      failure_reason: run.failure_reason
-    }], function (record, item) {
-      item.appendChild(element("strong", "", run.failed ? "Run failed or partial" : "Run completed"));
-      addFields(item, [
-        ["Terminal state", record.terminal_state],
-        ["Stage", record.stage],
-        ["Outcome", record.outcome],
-        ["Failure reason", record.failure_reason]
+  function promptVersion(run, role) {
+    var versions = run.manifests && run.manifests.prompt_versions || {};
+    if (versions[role]) return versions[role];
+    var manifest = run.manifests && (run.manifests.provider_manifests || []).find(function (item) { return item.role === role; });
+    return manifest ? manifest.prompt_version : null;
+  }
+
+  function renderModelCall(parent, run, record) {
+    var usage = record.token_usage || {};
+    addFields(parent, [
+      ["Model role", record.role],
+      ["Model", record.model],
+      ["Endpoint origin", record.endpoint_origin],
+      ["Latency ms", record.latency_ms],
+      ["Attempts", record.attempts],
+      ["Schema version", record.schema_version],
+      ["Prompt version", promptVersion(run, record.role)],
+      ["Prompt digest", record.prompt_digest],
+      ["Prompt tokens", usage.prompt_tokens],
+      ["Completion tokens", usage.completion_tokens],
+      ["Total tokens", usage.total_tokens]
+    ]);
+    addJson(parent, "Sanitized request summary", record.request);
+    addJson(parent, "Sanitized response summary", record.response);
+    addValues(parent, "Retries", (record.retries || []).map(function (retry) { return "Attempt " + retry.attempt + ": " + retry.reason; }));
+  }
+
+  function renderEvent(run, record) {
+    while (eventCard.firstChild) eventCard.removeChild(eventCard.firstChild);
+    if (!record) {
+      eventKind.textContent = "Unavailable";
+      eventCard.appendChild(element("p", "empty", "Unavailable: no timeline events recorded."));
+      return;
+    }
+    eventKind.textContent = titleCase(record.kind);
+    eventCard.appendChild(element("span", "event-category", eventCategory(record.kind)));
+    eventCard.appendChild(element("strong", "event-title", "Step " + record.sequence + " | " + titleCase(record.kind)));
+    addFields(eventCard, [["Event ID", record.event_id], ["Recorded time", recordedTime(record)]]);
+
+    if (record.kind === "viewport-captured") {
+      var snapshot = findSnapshot(run, record.viewport_id);
+      addFields(eventCard, [["Viewport", record.viewport_id], ["Elements", snapshot ? snapshot.elements.length : null], ["Regions", snapshot ? snapshot.regions.length : null]]);
+    } else if (record.kind === "observation-recorded" && record.observation) {
+      addFields(eventCard, [["Viewport", record.observation.viewport_id], ["Region", record.observation.region_context && record.observation.region_context.label]]);
+      addValues(eventCard, "Noticed now", (record.observation.newly_revealed_elements || []).map(function (item) { return item.label + " [" + item.id + "]"; }));
+      addValues(eventCard, "Remembered", (record.observation.remembered_elements || []).map(function (item) { return item.label + " [" + item.id + "]"; }));
+    } else if (record.kind.indexOf("prominence") !== -1 || record.kind.indexOf("scent") !== -1) {
+      addValues(eventCard, "Element scores", (record.scores || []).map(function (score) { return score.element_id + ": " + exact(score.raw_score !== undefined ? score.raw_score : score.score); }));
+    } else if (record.kind === "attention-selection-recorded") {
+      addFields(eventCard, [["Viewport", record.viewport_id], ["Mode", record.selection_mode], ["Region", record.region_id]]);
+      addValues(eventCard, "Selected elements", record.selected_ids || []);
+      addMapping(eventCard, "Element probabilities", record.element_probabilities);
+      addMapping(eventCard, "Region probabilities", record.region_probabilities);
+    } else if (record.kind === "model-call-recorded" && record.record) {
+      renderModelCall(eventCard, run, record.record);
+    } else if (record.kind === "verification-recorded" && record.verification) {
+      addFields(eventCard, [["Verified", record.verification.verified], ["Details", record.verification.details]]);
+      addValues(eventCard, "Evidence IDs", record.verification.evidence_ids || []);
+    } else if (record.kind === "run-terminated") {
+      addFields(eventCard, [["Terminal outcome", record.outcome], ["Stage", run.stage], ["Terminal reason", run.terminal_reason], ["Evaluation failure", run.evaluation_failure_reason]]);
+    } else {
+      addFields(eventCard, [
+        ["Action", record.action ? actionText(record.action) : null],
+        ["Reason", record.reason],
+        ["Result", record.succeeded === undefined ? null : record.succeeded ? "succeeded" : "failed"],
+        ["Failure", record.error || record.message],
+        ["Claimed success", record.claimed_success]
       ]);
+    }
+    addValues(eventCard, "Memory / state", (run.memory || []).map(function (item) { return item.key + ": " + item.value + " | strength " + item.strength; }), "Unavailable: no public memory state recorded.");
+  }
+
+  function renderTimeline(run) {
+    while (timelineList.firstChild) timelineList.removeChild(timelineList.firstChild);
+    var events = run ? run.timeline || [] : [];
+    timelineCount.textContent = events.length + (events.length === 1 ? " event" : " events");
+    events.forEach(function (record, index) {
+      var item = document.createElement("li");
+      var button = element("button", "timeline-event");
+      button.type = "button";
+      button.dataset.eventKind = record.kind;
+      button.dataset.eventId = record.event_id || "";
+      button.setAttribute("aria-current", index === state.eventIndex ? "true" : "false");
+      button.appendChild(element("span", "timeline-step", "Step " + record.sequence));
+      button.appendChild(element("span", "timeline-kind", titleCase(record.kind)));
+      button.appendChild(element("span", "timeline-summary", eventSummary(record)));
+      button.addEventListener("click", function () { setEventIndex(index, false); });
+      item.appendChild(button);
+      timelineList.appendChild(item);
     });
-    addPanel(grid, "Limitations", (run.limitations || []).map(function (value) { return { value: value }; }), function (record, item) {
-      item.appendChild(element("span", "", record.value));
+    var current = timelineList.querySelector('[aria-current="true"]');
+    if (current) current.scrollIntoView({ block: "nearest", inline: "center" });
+  }
+
+  function renderStatus(run) {
+    statusBanner.className = "run-status-banner " + (run ? run.status_class : "status-untrusted");
+    if (!run) {
+      statusBanner.textContent = "Run unavailable: no run matches current selector.";
+      return;
+    }
+    var parts = [
+      run.run_id,
+      "outcome " + run.outcome,
+      "stage " + run.stage,
+      run.verified ? "verified" : "not verified",
+      "terminal state " + run.terminal_state
+    ];
+    if (run.terminal_reason) parts.push("terminal reason: " + run.terminal_reason);
+    if (run.evaluation_failure_reason) parts.push("evaluation failure: " + run.evaluation_failure_reason);
+    if (!run.trusted) parts.push("evidence untrusted");
+    statusBanner.textContent = parts.join(" | ");
+  }
+
+  function renderRows(run) {
+    document.querySelectorAll(".run-row[data-run-id]").forEach(function (row) {
+      row.setAttribute("aria-current", run && row.dataset.runId === run.run_id ? "true" : "false");
     });
-    detail.appendChild(grid);
+  }
+
+  function renderWorkspace() {
+    var run = currentRun();
+    var events = run ? run.timeline || [] : [];
+    state.eventIndex = Math.min(state.eventIndex, Math.max(events.length - 1, 0));
+    var record = currentEvent(run);
+    var snapshot = snapshotAt(run, state.eventIndex);
+    state.viewportId = snapshot ? snapshot.id : "";
+    renderStatus(run);
+    renderRows(run);
+    renderTimeline(run);
+    renderEvent(run, record);
+    renderViewport(run, snapshot, record);
+    progress.max = String(Math.max(events.length - 1, 0));
+    progress.value = String(state.eventIndex);
+    progress.disabled = !events.length;
+    position.textContent = events.length ? "Step " + (state.eventIndex + 1) + " / " + events.length + " | " + recordedTime(record) : "Step 0 / 0 | time unavailable";
+    runSelect.value = state.runId;
+    updateHash(run, record);
   }
 
   function applyHash() {
@@ -534,52 +598,50 @@
     var runId = params.get("run");
     var eventId = params.get("event");
     var elementId = params.get("element");
-    if (runId && runs.some(function (run) { return run.run_id === runId; })) state.runId = runId;
-    if (eventId) {
-      var run = currentRun();
-      var eventIndex = run ? (run.timeline || []).findIndex(function (event) { return event.event_id === eventId; }) : -1;
-      if (eventIndex >= 0) state.eventIndex = eventIndex;
+    if (runId && runs.some(function (run) { return run.run_id === runId; })) {
+      state.runId = runId;
+      var selectedRun = currentRun();
+      state.scenarioId = selectedRun ? selectedRun.scenario_id : "";
+    }
+    var run = currentRun();
+    if (eventId && run) {
+      var index = (run.timeline || []).findIndex(function (record) { return record.event_id === eventId; });
+      if (index >= 0) state.eventIndex = index;
     }
     if (elementId) state.elementId = elementId;
   }
 
-  function render() {
-    renderRunOptions();
-    var run = currentRun();
-    if (run && state.elementId && !state.viewportId) {
-      (run.snapshots || []).some(function (snapshot) {
-        if ((snapshot.elements || []).some(function (item) { return item.id === state.elementId; })) {
-          state.viewportId = snapshot.id;
-          return true;
-        }
-        return false;
-      });
-    }
-    renderTimeline(run);
-    renderRun(run);
-  }
-
-  fillSelect(versionFilter, uniqueValues("version_id"), "All versions");
-  fillSelect(policyFilter, uniqueValues("policy"), "All policies");
-  [runFilter, versionFilter, policyFilter].forEach(function (control) {
-    control.addEventListener("input", render);
-    control.addEventListener("change", render);
-  });
-  runSelect.addEventListener("change", function () {
-    state.runId = runSelect.value;
-    state.eventIndex = 0;
-    state.viewportId = "";
-    state.elementId = "";
-    render();
-  });
-  document.getElementById("timeline-prev").addEventListener("click", function () {
-    if (state.eventIndex > 0) { state.eventIndex -= 1; render(); }
-  });
-  document.getElementById("timeline-next").addEventListener("click", function () {
-    var run = currentRun();
-    if (run && state.eventIndex < (run.timeline || []).length - 1) { state.eventIndex += 1; render(); }
-  });
-  window.addEventListener("hashchange", function () { applyHash(); render(); });
+  fillScenarioOptions();
   applyHash();
-  render();
+  renderRunOptions();
+  renderWorkspace();
+
+  scenarioSelect.addEventListener("change", function () {
+    state.scenarioId = scenarioSelect.value;
+    var visible = visibleRuns();
+    selectRun(visible.length ? visible[0].run_id : "", false);
+  });
+  runSelect.addEventListener("change", function () { selectRun(runSelect.value, false); });
+  playPause.addEventListener("click", function () { setPlaying(!state.playing); });
+  document.getElementById("step-back").addEventListener("click", function () { setEventIndex(state.eventIndex - 1, false); });
+  document.getElementById("step-forward").addEventListener("click", function () { setEventIndex(state.eventIndex + 1, false); });
+  document.getElementById("restart-playback").addEventListener("click", function () { setEventIndex(0, false); });
+  progress.addEventListener("input", function () { setEventIndex(Number(progress.value), false); });
+  document.querySelectorAll(".run-row[data-run-id]").forEach(function (row) {
+    var open = function () { selectRun(row.dataset.runId, true); };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+    });
+  });
+  window.addEventListener("hashchange", function () {
+    setPlaying(false);
+    applyHash();
+    renderRunOptions();
+    renderWorkspace();
+  });
+  window.addEventListener("resize", function () {
+    var run = currentRun();
+    renderViewport(run, snapshotAt(run, state.eventIndex), currentEvent(run));
+  });
 }());

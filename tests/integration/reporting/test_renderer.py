@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from playwright.async_api import Route, async_playwright
 
 import ux_analyzer.reporting.renderer as renderer
 from ux_analyzer.domain.run import RunStarted
@@ -42,7 +43,12 @@ def _write_run(
     version: str,
     discovery_cost: float,
     screenshot: bytes = b"not-an-image",
+    outcome: str = "verified-success",
+    verified: bool | None = None,
+    terminal_reason: str | None = None,
+    evaluation_failure_reason: str | None = None,
 ) -> None:
+    is_verified = outcome == "verified-success" if verified is None else verified
     run = root / "runs" / run_id
     (run / "artifacts").mkdir(parents=True)
     (run / "artifacts" / "screenshot.png").write_bytes(screenshot)
@@ -84,6 +90,8 @@ def _write_run(
                         "label": '<img src=x onerror="alert(1)">',
                         "bounds": {"x": 40, "y": 50, "width": 180, "height": 40},
                         "visibility_fraction": 1,
+                        "occlusion_fraction": 0.25,
+                        "local_contrast": 0.75,
                         "actionable": True,
                         "disabled": False,
                         "region_id": "team",
@@ -172,15 +180,40 @@ def _write_run(
             "sequence": 8,
             "kind": "verification-recorded",
             "result": {
-                "verified": True,
+                "verified": is_verified,
                 "evidence_ids": ["verify-1"],
-                "details": "Independent verifier passed.",
+                "details": (
+                    "Independent verifier passed."
+                    if is_verified
+                    else "Independent verifier did not confirm completion."
+                ),
             },
         },
         {
             "sequence": 9,
+            "kind": "model-call-recorded",
+            "record": {
+                "role": "cognitive",
+                "model": "model-v1",
+                "endpoint_origin": "https://llm.example.test",
+                "prompt_digest": "prompt-sha",
+                "schema_version": "cognitive-v1",
+                "attempts": 2,
+                "latency_ms": 125,
+                "token_usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 7,
+                    "total_tokens": 19,
+                },
+                "request": {"messages": [{"role": "user", "content": "safe request"}]},
+                "response": {"summary": "safe response"},
+                "retries": [{"attempt": 1, "reason": "rate-limit"}],
+            },
+        },
+        {
+            "sequence": 10,
             "kind": "run-terminated",
-            "outcome": {"kind": "verified-success"},
+            "outcome": {"kind": outcome},
         },
     ]
     (run / "timeline.jsonl").write_text(
@@ -191,6 +224,9 @@ def _write_run(
         {
             "run_id": run_id,
             "agent_claimed_success": True,
+            "outcome": {"kind": outcome},
+            "terminal_reason": terminal_reason,
+            "evaluation_failure_reason": evaluation_failure_reason,
             "evidence": {
                 "prominence": [],
                 "scent": [],
@@ -204,7 +240,7 @@ def _write_run(
                 "application_version_id": version,
                 "persona_id": "persona",
                 "policy": "progressive-prominence-scent",
-                "verified_completion": version == "improved",
+                "verified_completion": is_verified,
                 "wrong_actions": 0 if version == "improved" else 2,
                 "backtracks": 0,
                 "discovery_cost": {"total": discovery_cost},
@@ -262,24 +298,27 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "deterministic-fact" in html
     assert "model-estimate" in html
     assert "unsupported-human-claim" in html
-    assert "directly recorded bundle, action, geometry" in html
-    assert "heuristic, policy, persona, memory, scent" in html
-    assert "Run filters" in html
-    assert "Timeline" in html
+    assert "records measured interface, action, geometry, bundle" in html
+    assert "configured heuristic, scent, policy, persona, memory" in html
+    assert "Run workspace" in html
+    assert "Recorded timeline" in html
+    assert "play-pause" in html
+    assert "restart-playback" in html
     assert "Prominence contributions" in html
-    assert "Selected element evidence" in html
-    assert "Observations and notice state" in html
-    assert "Terminal status" in html
-    assert "Scent records" in html
-    assert "Decisions" in html
-    assert "Actions" in html
+    assert "Element evidence" in html
+    assert "Observation" in html
+    assert "Terminal / failure" in html
+    assert "Scent" in html
+    assert "Model decision and reason" in html
+    assert "Action and result" in html
     assert "Verification" in html
     assert "Memory" in html
-    assert "Model manifests" in html
-    assert "Model calls" in html
-    assert "Limitations" in html
+    assert "Prompt version" in html
+    assert "Schema version" in html
+    assert "Sanitized request summary" in html
+    assert "Trust boundaries and limitations" in html
     assert "Seeded discovery cost." in html
-    assert 'data-viewport-width="800"' in html
+    assert '"width":800' in html
     assert "secret-token" not in html
     assert "data-testid=secret" not in html
     assert "<img src=x onerror" not in html
@@ -342,7 +381,8 @@ def test_renderer_includes_all_failed_experiment_and_staging_crash(
     html = output.read_text(encoding="utf-8")
 
     assert output.is_file()
-    assert "Failed and partial runs" in html
+    assert "Comparison overview" in html
+    assert 'data-run-id="run-crashed"' in html
     assert "browser capture failed" in html
     assert "run-crashed" in html
     assert "enable-2fa" in html
@@ -555,7 +595,7 @@ def test_renderer_builds_comparison_and_splits_large_experiment(tmp_path: Path) 
     assert "Defective" in html
     assert "Improved" in html
     assert "discovery-cost" in html
-    assert "Directional gate" in html
+    assert "directional gates" in html
     assert "All directional checks passed" in html
 
 
@@ -660,3 +700,203 @@ def test_renderer_split_index_is_concise_and_uses_collision_safe_run_links(
     assert len(run_pages) == 2
     assert len({path.name for path in run_pages}) == 2
     assert all(path.name in html for path in run_pages)
+
+
+def test_renderer_overview_keeps_every_run_and_preserves_outcome_from_failure_stage(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-timeout",
+        version="defective",
+        discovery_cost=12,
+        outcome="timed-out",
+        verified=False,
+        terminal_reason="run timeout exceeded",
+    )
+    _write_run(
+        tmp_path,
+        "run-evaluation",
+        version="improved",
+        discovery_cost=4,
+        outcome="agent-abandoned",
+        verified=False,
+        terminal_reason="agent chose to stop",
+        evaluation_failure_reason="evaluation evidence unavailable: target absent",
+    )
+    _write_json(
+        tmp_path / "experiment.json",
+        {
+            "failures": [
+                {
+                    "run_id": "run-evaluation",
+                    "error_type": "EvaluationFailure",
+                    "stage": "evaluation",
+                    "terminal_state": "finalized",
+                    "reason": "evaluation evidence unavailable: target absent",
+                    "scenario_id": "invite",
+                    "application_version_id": "improved",
+                    "persona_id": "persona",
+                    "policy": "progressive-prominence-scent",
+                    "seed": 7,
+                }
+            ]
+        },
+    )
+
+    experiment = renderer._load_experiment(tmp_path)
+    by_id = {run["run_id"]: run for run in experiment["runs"]}
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert len(experiment["runs"]) == 2
+    assert by_id["run-timeout"]["outcome"] == "timed-out"
+    assert by_id["run-timeout"]["terminal_reason"] == "run timeout exceeded"
+    assert by_id["run-evaluation"]["outcome"] == "agent-abandoned"
+    assert by_id["run-evaluation"]["stage"] == "evaluation"
+    assert by_id["run-evaluation"]["evaluation_failure_reason"] == (
+        "evaluation evidence unavailable: target absent"
+    )
+    assert 'data-run-id="run-timeout"' in html
+    assert 'data-run-id="run-evaluation"' in html
+    assert "timed-out" in html
+    assert "agent-abandoned" in html
+    assert "evaluation evidence unavailable: target absent" in html
+    assert "Gate unavailable" in html
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_report_browser_workspace_replays_and_inspects_without_network(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-timeout",
+        version="defective",
+        discovery_cost=12,
+        outcome="timed-out",
+        verified=False,
+        terminal_reason="run timeout exceeded",
+    )
+    _write_run(
+        tmp_path,
+        "run-evaluation",
+        version="improved",
+        discovery_cost=4,
+        outcome="agent-abandoned",
+        verified=False,
+        terminal_reason="agent chose to stop",
+        evaluation_failure_reason="evaluation evidence unavailable: target absent",
+    )
+    _write_json(
+        tmp_path / "experiment.json",
+        {
+            "failures": [
+                {
+                    "run_id": "run-evaluation",
+                    "error_type": "EvaluationFailure",
+                    "stage": "evaluation",
+                    "terminal_state": "finalized",
+                    "reason": "evaluation evidence unavailable: target absent",
+                    "scenario_id": "invite",
+                    "application_version_id": "improved",
+                    "persona_id": "persona",
+                    "policy": "progressive-prominence-scent",
+                    "seed": 7,
+                }
+            ]
+        },
+    )
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+    external_requests: list[str] = []
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(service_workers="block")
+
+        async def block_external(route: Route) -> None:
+            if route.request.url.startswith(("file:", "data:")):
+                await route.continue_()
+            else:
+                external_requests.append(route.request.url)
+                await route.abort()
+
+        await context.route("**/*", block_external)
+        page = await context.new_page()
+        await page.goto(report_path.resolve().as_uri())
+
+        await page.locator('tr[data-run-id="run-evaluation"]').click()
+        assert "run=run-evaluation" in page.url
+        event_ids = await page.locator(".timeline-event").evaluate_all(
+            "nodes => nodes.map(node => node.dataset.eventId)"
+        )
+        assert event_ids == [f"event-{sequence}" for sequence in range(1, 11)]
+        failure = page.locator("#run-status-banner")
+        assert "agent-abandoned" in (await failure.text_content() or "")
+        assert "evaluation" in (await failure.text_content() or "")
+        assert "evaluation evidence unavailable: target absent" in (
+            await failure.text_content() or ""
+        )
+
+        await page.locator("#play-pause").click()
+        assert await page.locator("#play-pause").get_attribute("aria-pressed") == "true"
+        await page.locator("#play-pause").click()
+        assert (
+            await page.locator("#play-pause").get_attribute("aria-pressed") == "false"
+        )
+        await page.locator("#step-forward").click()
+        assert "Step 2 /" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+        await page.locator("#restart-playback").click()
+        assert "Step 1 /" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+        assert "time unavailable" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+
+        await page.locator('[data-event-kind="prominence-recorded"]').click()
+        target = page.locator('[data-element-id="target"]').first
+        await target.hover()
+        panel = page.locator("#selected-element-evidence")
+        assert await panel.get_attribute("data-selected-element-id") == "target"
+        panel_text = await panel.text_content() or ""
+        assert "0.2" in panel_text
+        assert "7200" in panel_text
+        assert "0.4" in panel_text
+        assert "0.1" in panel_text
+        assert "Occlusion fraction" in panel_text
+        assert "Local contrast" in panel_text
+        assert "Linked decisions" in panel_text
+        assert "Linked actions and results" in panel_text
+        assert "Linked findings" in panel_text
+
+        await page.locator('[data-event-kind="action-proposed"]').click()
+        event_text = await page.locator("#current-event-card").text_content() or ""
+        assert "Target matches goal." in event_text
+        assert "Interact With Element" in event_text
+        await page.locator('[data-event-kind="model-call-recorded"]').click()
+        model_text = await page.locator("#current-event-card").text_content() or ""
+        assert "safe request" in model_text
+        assert "safe response" in model_text
+        assert "cognitive-v1" in model_text
+        assert "125" in model_text
+        assert "2" in model_text
+
+        await page.locator('tr[data-run-id="run-timeout"]').click()
+        timeout_text = await page.locator("#run-status-banner").text_content() or ""
+        assert "timed-out" in timeout_text
+        assert "run timeout exceeded" in timeout_text
+        await page.set_viewport_size({"width": 390, "height": 844})
+        dimensions = await page.evaluate(
+            "({scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth})"
+        )
+        assert dimensions["scrollWidth"] <= dimensions["innerWidth"]
+        assert await page.locator("#play-pause").is_visible()
+        assert await page.locator("#selected-element-evidence").is_visible()
+        await browser.close()
+
+    assert not external_requests

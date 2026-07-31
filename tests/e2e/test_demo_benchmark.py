@@ -390,6 +390,8 @@ async def test_production_cli_report_is_interactive_and_causal(
         await context.route("**/*", block_external)
         page = await context.new_page()
         await page.goto(report_path.resolve().as_uri())
+        await page.locator(f'tr[data-run-id="{persisted["run_id"]}"]').click()
+        await page.locator('[data-event-kind="prominence-recorded"]').first.click()
         selected = page.locator(f'[data-element-id="{element_id}"]').first
         await selected.hover()
         panel = page.locator("#selected-element-evidence")
@@ -404,17 +406,17 @@ async def test_production_cli_report_is_interactive_and_causal(
         assert await panel.get_attribute("data-selected-element-id") == element_id
         await selected.click()
         assert await panel.get_attribute("data-selected-element-id") == element_id
-        assert await page.get_by_text("Observations and notice state").count() == 1
-        assert await page.get_by_text("Decisions and reasons").count() == 1
-        assert await page.get_by_text("Actions and results").count() == 1
-        assert await page.get_by_text("Terminal status").count() == 1
-        assert await page.locator(".finding-title").count() >= 1
-        assert await page.locator(".finding-cause").count() >= 1
-        assert await page.locator(".replay-link").count() >= 1
-        content = await page.content()
-        assert "selector" not in content
-        assert "execution_reference" not in content
-        assert "ci-api-key" not in content
+        assert await page.get_by_text("Recorded timeline").count() == 1
+        assert await page.get_by_text("Current event").count() == 1
+        assert await page.get_by_text("Element evidence").count() == 1
+        assert await page.locator("#run-status-banner").count() == 1
+        assert await panel.get_by_text("Linked findings").count() == 1
+        assert await panel.get_by_text("Linked decisions").count() == 1
+        assert await panel.get_by_text("Linked actions and results").count() == 1
+        report_payload = await page.locator("#report-data").text_content() or ""
+        assert '"selector"' not in report_payload
+        assert '"execution_reference"' not in report_payload
+        assert "ci-api-key" not in report_payload
         await browser.close()
 
     assert not external_requests

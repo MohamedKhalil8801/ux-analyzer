@@ -8,102 +8,30 @@
 </head>
 <body>
   <header class="page-header">
-    <p class="eyebrow">UX Analyzer</p>
-    <h1>{{ title }}</h1>
-    <p class="lede">Static replay of recorded experiment evidence.</p>
+    <div>
+      <p class="eyebrow">UX Analyzer</p>
+      <h1>{{ title }}</h1>
+    </div>
+    <p class="lede">Recorded experiment evidence. Simulated metrics, not real-user predictions.</p>
   </header>
 
   <main>
-    <section class="section" aria-labelledby="overview-title">
+    <section class="section overview-section" aria-labelledby="overview-title">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Experiment</p>
           <h2 id="overview-title">Comparison overview</h2>
         </div>
-        <span class="evidence-note">Deterministic facts and model estimates stay separate.</span>
-      </div>
-      <div class="table-wrap">
-        <table id="comparison-table">
-          <thead>
-            <tr>
-              <th>Scenario</th>
-              <th>Persona</th>
-              <th>Policy</th>
-              <th>Version</th>
-              <th>Runs</th>
-              <th>Verified</th>
-              <th>Discovery cost</th>
-              <th>Wrong actions</th>
-              <th>Backtracks</th>
-            </tr>
-          </thead>
-          <tbody>
-          {% for row in comparison_rows %}
-            <tr>
-              <td>{{ row.scenario_label }}</td>
-              <td>{{ row.persona_label }}</td>
-              <td>{{ row.policy }}</td>
-              <td>{{ row.version_label }}</td>
-              <td>{{ row.run_count }}</td>
-              <td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td>
-              <td>{{ row.discovery_cost if row.discovery_cost is not none else "n/a" }}</td>
-              <td>{{ row.wrong_actions if row.wrong_actions is not none else "n/a" }}</td>
-              <td>{{ row.backtracks if row.backtracks is not none else "n/a" }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="9">No comparison rows recorded.</td></tr>
+        <div class="evidence-summary" aria-label="Evidence classes">
+          {% for item in evidence_summary %}
+          <span class="evidence-chip evidence-{{ item.evidence_class }}">
+            {{ item.evidence_class }} <strong>{{ item.count }}</strong>
+          </span>
           {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% if gate_rows %}
-      <div class="table-wrap">
-        <table id="gate-table">
-          <thead>
-            <tr>
-              <th>Scenario</th>
-              <th>Persona</th>
-              <th>Policy</th>
-              <th>Paired seeds</th>
-              <th>Directional gate</th>
-              <th>Reasons</th>
-            </tr>
-          </thead>
-          <tbody>
-          {% for row in gate_rows %}
-            <tr>
-              <td>{{ row.scenario_label }}</td>
-              <td>{{ row.persona_label }}</td>
-              <td>{{ row.policy }}</td>
-              <td>{{ row.paired_seed_count }}</td>
-              <td>{{ "pass" if row.passed else "fail" }}</td>
-              <td>{{ row.reasons | join(", ") if row.reasons else "All directional checks passed" }}</td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% endif %}
-      <div class="evidence-summary" aria-label="Evidence classes">
-        {% for item in evidence_summary %}
-        <span class="evidence-chip evidence-{{ item.evidence_class }}">
-          {{ item.evidence_class }} <strong>{{ item.count }}</strong>
-        </span>
-        {% endfor %}
-      </div>
-      <p class="muted"><strong>deterministic-fact</strong>: directly recorded bundle, action, geometry, or independent-verifier state.</p>
-      <p class="muted"><strong>model-estimate</strong>: heuristic, policy, persona, memory, scent, rule, or model-dependent interpretation.</p>
-    </section>
-
-    <section class="section" aria-labelledby="failures-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Execution health</p>
-          <h2 id="failures-title">Failed and partial runs</h2>
         </div>
       </div>
-      <div class="table-wrap">
-        <table id="failure-table">
+      <div class="table-wrap run-table-wrap">
+        <table id="comparison-table">
           <thead>
             <tr>
               <th>Run</th>
@@ -111,78 +39,132 @@
               <th>Version</th>
               <th>Persona</th>
               <th>Policy</th>
+              <th>Outcome</th>
               <th>Stage</th>
-              <th>Terminal state</th>
-              <th>Safe reason</th>
+              <th>Verification</th>
+              <th>Failure / evaluation reason</th>
+              <th>Gate</th>
             </tr>
           </thead>
           <tbody>
-          {% for row in failure_rows %}
-            <tr>
-              <td>{{ row.run_id }}</td>
-              <td>{{ row.scenario_id }}</td>
-              <td>{{ row.version_id }}</td>
-              <td>{{ row.persona_id }}</td>
+          {% for row in run_rows %}
+            <tr class="run-row {{ row.status_class }}" data-run-id="{{ row.run_id }}" tabindex="0" role="button" aria-label="Open run {{ row.run_id }}">
+              <td><strong>{{ row.run_id }}</strong><span class="subvalue">{{ row.terminal_state }}</span></td>
+              <td>{{ row.scenario_label }}</td>
+              <td>{{ row.version_label }}</td>
+              <td>{{ row.persona_label }}</td>
               <td>{{ row.policy }}</td>
+              <td><span class="status-pill">{{ row.outcome }}</span></td>
               <td>{{ row.stage }}</td>
-              <td>{{ row.terminal_state }}</td>
+              <td>{{ "verified" if row.verified else "not verified" }}</td>
               <td>{{ row.failure_reason }}</td>
+              <td><strong>{{ row.gate_status }}</strong><span class="subvalue">{{ row.gate_reason }}</span></td>
             </tr>
           {% else %}
-            <tr><td colspan="8">No failed or partial runs recorded.</td></tr>
+            <tr><td colspan="10">No run evidence recorded.</td></tr>
           {% endfor %}
           </tbody>
         </table>
       </div>
+
+      <details class="aggregate-details">
+        <summary>Aggregate comparison and directional gates</summary>
+        <div class="aggregate-grid">
+          <div class="table-wrap">
+            <table id="aggregate-table">
+              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Version</th><th>Runs</th><th>Verified</th><th>Discovery cost</th></tr></thead>
+              <tbody>
+              {% for row in comparison_rows %}
+                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td></tr>
+              {% else %}
+                <tr><td colspan="7">Aggregate metrics unavailable.</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="table-wrap">
+            <table id="gate-table">
+              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Seeds</th><th>Gate</th><th>Reason</th></tr></thead>
+              <tbody>
+              {% for row in gate_rows %}
+                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td>{{ row.paired_seed_count }}</td><td>{{ "unavailable" if not row.available else "pass" if row.passed else "fail" }}</td><td>{{ row.reasons | join("; ") if row.reasons else "All directional checks passed" }}</td></tr>
+              {% else %}
+                <tr><td colspan="6">Directional gates unavailable.</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
     </section>
 
-    <section class="section replay-shell" aria-labelledby="replay-title">
-      <div class="section-heading">
+    <section class="section workspace-shell" id="playback-workspace" aria-labelledby="workspace-title">
+      <div class="workspace-heading">
         <div>
-          <p class="eyebrow">Replay</p>
-          <h2 id="replay-title">Run filters</h2>
+          <p class="eyebrow">Playback</p>
+          <h2 id="workspace-title">Run workspace</h2>
         </div>
-        <div class="filter-row">
-          <label>Search <input id="run-filter" type="search" autocomplete="off"></label>
-          <label>Version <select id="version-filter"><option value="">All versions</option></select></label>
-          <label>Policy <select id="policy-filter"><option value="">All policies</option></select></label>
-          <label>Run <select id="run-select"></select></label>
+        <div class="selector-group">
+          <label>Scenario<select id="scenario-select"><option value="">All scenarios</option></select></label>
+          <label>Run<select id="run-select"></select></label>
         </div>
       </div>
 
-      <div class="replay-grid">
-        <aside class="timeline-panel" aria-labelledby="timeline-title">
-          <div class="panel-heading">
-            <h3 id="timeline-title">Timeline</h3>
-            <span id="timeline-position">0 / 0</span>
+      <div class="playback-toolbar" aria-label="Playback controls">
+        <button id="restart-playback" class="icon-button" type="button" title="Restart playback" aria-label="Restart playback">&#8635;</button>
+        <button id="step-back" class="icon-button" type="button" title="Previous recorded event" aria-label="Previous recorded event">&#8592;</button>
+        <button id="play-pause" class="play-button" type="button" aria-pressed="false"><span class="play-icon" aria-hidden="true">&#9654;</span><span id="play-label">Play</span></button>
+        <button id="step-forward" class="icon-button" type="button" title="Next recorded event" aria-label="Next recorded event">&#8594;</button>
+        <input id="playback-progress" type="range" min="0" max="0" value="0" aria-label="Recorded event progress">
+        <output id="playback-position">Step 0 / 0 | time unavailable</output>
+      </div>
+
+      <div id="run-status-banner" class="run-status-banner status-untrusted" role="status">Run unavailable.</div>
+
+      <div class="workspace-grid">
+        <section class="viewport-pane" aria-labelledby="viewport-title">
+          <div class="pane-heading">
+            <h3 id="viewport-title">Recorded viewport</h3>
+            <span id="viewport-meta">Unavailable</span>
           </div>
-          <div class="timeline-controls">
-            <button id="timeline-prev" type="button" title="Previous timeline event">&#8592;</button>
-            <button id="timeline-next" type="button" title="Next timeline event">&#8594;</button>
+          <div id="viewport-stage" class="viewport-stage"></div>
+        </section>
+
+        <section class="event-pane" aria-labelledby="event-title">
+          <div class="pane-heading">
+            <h3 id="event-title">Current event</h3>
+            <span id="event-kind">Unavailable</span>
           </div>
-          <ol id="timeline-list" class="timeline-list"></ol>
-          <p id="timeline-detail" class="muted">Select run to inspect recorded events.</p>
+          <article id="current-event-card" class="current-event-card"></article>
+        </section>
+
+        <aside id="selected-element-evidence" class="element-pane" aria-labelledby="element-title">
+          <div class="pane-heading">
+            <h3 id="element-title">Element evidence</h3>
+            <span id="element-state">Paused</span>
+          </div>
+          <div id="element-detail"></div>
         </aside>
-        <article id="run-detail" class="run-detail" data-viewport-width="{{ initial_viewport_width }}">
-          <p class="muted">Select run to inspect evidence.</p>
-        </article>
+      </div>
+
+      <div class="timeline-rail" aria-labelledby="timeline-title">
+        <div class="pane-heading">
+          <h3 id="timeline-title">Recorded timeline</h3>
+          <span id="timeline-count">0 events</span>
+        </div>
+        <ol id="timeline-list" class="timeline-list"></ol>
       </div>
     </section>
 
-    <section class="section limitations" aria-labelledby="limitations-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Trust boundary</p>
-          <h2 id="limitations-title">Limitations</h2>
-        </div>
-      </div>
+    <details class="section limitations">
+      <summary>Trust boundaries and limitations</summary>
       <ul>
       {% for limitation in limitations %}
         <li>{{ limitation }}</li>
       {% endfor %}
       </ul>
-      <p class="muted">Unsupported human claims appear only here. They never enter scorecards or findings.</p>
-    </section>
+      <p class="muted"><strong>deterministic-fact</strong> records measured interface, action, geometry, bundle, or verifier state. <strong>model-estimate</strong> depends on configured heuristic, scent, policy, persona, memory, rule, or model behavior. Unsupported human claims never enter scorecards or findings.</p>
+    </details>
   </main>
 
   <script type="application/json" id="report-data">{{ report_json | safe }}</script>
