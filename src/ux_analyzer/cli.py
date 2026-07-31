@@ -34,6 +34,7 @@ from ux_analyzer.application.evaluation import (
 )
 from ux_analyzer.application.experiment import (
     ExperimentContext,
+    ExperimentFailure,
     ExperimentResult,
     ExperimentRunner,
     expand_experiment,
@@ -284,9 +285,8 @@ def _run_experiment_command(
         runtime=matrix.loaded.runtime,
     )
     typer.echo(f"evaluation summary: {summary_path}")
-    if report_path is not None:
-        typer.echo(f"report generated: {report_path}")
-    if result.failures:
+    typer.echo(f"report generated: {report_path}")
+    if result.failures or _evaluation_failures(result.results):
         raise typer.Exit(1)
 
 
@@ -820,7 +820,7 @@ def _complete_experiment(
     *,
     output: Path,
     runtime: RuntimeConfig,
-) -> tuple[Path, Path | None]:
+) -> tuple[Path, Path]:
     del runtime
     completed: list[RunResult] = []
     for item in result.results:
@@ -828,13 +828,21 @@ def _complete_experiment(
             raise TypeError("experiment result contains non-RunResult value")
         completed.append(item)
     run_results = tuple(completed)
-    evaluation = evaluate_experiment_results(run_results)
+    evaluable = tuple(item for item in run_results if item.metrics is not None)
+    evaluation = evaluate_experiment_results(evaluable)
+    failures = [
+        *(_experiment_failure_record(item) for item in result.failures),
+        *(
+            _evaluation_failure_record(item)
+            for item in _evaluation_failures(run_results)
+        ),
+    ]
     summary = {
         "run_metrics": evaluation.run_metrics,
         "cell_aggregates": evaluation.cell_aggregates,
         "variant_comparisons": evaluation.variant_comparisons,
-        "findings": {item.run_id: item.findings for item in run_results},
-        "failures": result.failures,
+        "findings": {item.run_id: item.findings or () for item in run_results},
+        "failures": failures,
     }
     output.mkdir(parents=True, exist_ok=True)
     summary_path = output / "experiment.json"
@@ -850,12 +858,63 @@ def _complete_experiment(
         encoding="utf-8",
     )
     temporary.replace(summary_path)
-    report_path = (
-        render_experiment_report(output, output / "report.html")
-        if run_results
-        else None
-    )
+    report_path = render_experiment_report(output, output / "report.html")
     return summary_path, report_path
+
+
+def _evaluation_failures(results: Sequence[object]) -> tuple[RunResult, ...]:
+    return tuple(
+        item
+        for item in results
+        if isinstance(item, RunResult) and item.evaluation_failure_reason is not None
+    )
+
+
+def _experiment_failure_record(failure: ExperimentFailure) -> dict[str, object]:
+    spec = failure.spec
+    return {
+        "run_id": failure.run_id,
+        "error_type": failure.error_type,
+        "stage": _failure_stage(failure.error_type),
+        "terminal_state": "failed",
+        "reason": _safe_failure_reason(failure.message, spec),
+        "scenario_id": spec.scenario.id,
+        "application_version_id": spec.application_version.id,
+        "persona_id": spec.persona.id,
+        "policy": spec.policy.value,
+        "seed": spec.seed,
+    }
+
+
+def _evaluation_failure_record(result: RunResult) -> dict[str, object]:
+    spec = result.state.spec
+    reason = result.evaluation_failure_reason or "result evaluation failed"
+    return {
+        "run_id": result.run_id,
+        "error_type": "EvaluationFailure",
+        "stage": "evaluation",
+        "terminal_state": "finalized",
+        "reason": _safe_failure_reason(reason, spec),
+        "scenario_id": spec.scenario.id,
+        "application_version_id": spec.application_version.id,
+        "persona_id": spec.persona.id,
+        "policy": spec.policy.value,
+        "seed": spec.seed,
+    }
+
+
+def _failure_stage(error_type: str) -> str:
+    return (
+        "bundle-finalization" if error_type == "RunFinalizationError" else "execution"
+    )
+
+
+def _safe_failure_reason(message: str, spec: RunSpec) -> str:
+    safe = message.strip() or "run failed"
+    for value in spec.scenario.fixture_inputs.values.values():
+        if value:
+            safe = safe.replace(value, "[REDACTED]")
+    return safe
 
 
 def _json_data(value: object) -> object:

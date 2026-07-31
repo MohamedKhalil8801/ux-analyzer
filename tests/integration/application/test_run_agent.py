@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -9,7 +10,11 @@ from typing import Any
 import pytest
 
 from ux_analyzer.adapters.web.verifier import WebVerifier
-from ux_analyzer.application.evaluation import EvaluationTarget, evaluate_run
+from ux_analyzer.application.evaluation import (
+    EvaluationTarget,
+    evaluate_run,
+    evaluation_target_for,
+)
 from ux_analyzer.application.run_agent import RunAgent, RunFinalizationError
 from ux_analyzer.domain.attention import Abandon, ProgressiveObservation
 from ux_analyzer.domain.benchmark import (
@@ -30,7 +35,7 @@ from ux_analyzer.domain.interface import (
     ViewportSnapshot,
 )
 from ux_analyzer.domain.run import VerificationResult
-from ux_analyzer.ports.artifacts import ArtifactReference
+from ux_analyzer.ports.artifacts import ArtifactReference, BundleManifest
 from ux_analyzer.ports.models import (
     ModelCallRecord,
     ModelRole,
@@ -51,6 +56,7 @@ from ux_analyzer.ports.observation import TestAccountId as AccountId
 from ux_analyzer.providers.attention_policy import ObservationSelection
 from ux_analyzer.providers.cognitive import CognitiveDecision
 from ux_analyzer.providers.prominence import ProminenceResult
+from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +262,23 @@ class FakeBundleFactory:
     def start(self, spec: object) -> FakeBundle:
         del spec
         return self.bundle
+
+
+class FilesystemBundleFactory:
+    def __init__(self, output: Path) -> None:
+        self.output = output
+
+    def start(self, spec) -> FilesystemRunBundleWriter:
+        return FilesystemRunBundleWriter.start(
+            self.output,
+            BundleManifest.from_run_spec(
+                spec,
+                endpoint_origin="https://llm.example.test",
+                model_ids={"cognitive": "cognitive-model"},
+                prompt_versions={"cognitive": "cognitive-v1"},
+                package_version="0.1.0",
+            ),
+        )
 
 
 class FakeModelRecordSource:
@@ -924,3 +947,86 @@ async def test_run_evaluation_is_persisted_before_bundle_publication(
     persisted = bundles.bundle.final_result
     assert persisted is not None
     assert persisted.metrics == result.metrics
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ("before-observation", "before-target"))
+async def test_evaluator_failure_still_publishes_closed_immutable_bundle(
+    tmp_path: Path,
+    failure_point: str,
+) -> None:
+    output = tmp_path / failure_point
+    bundles = FilesystemBundleFactory(output)
+    if failure_point == "before-observation":
+        provider = FakeObservationProvider(
+            (_snapshot(),),
+            start_failure=ObservationProviderError("capture unavailable"),
+        )
+        cognitive = FakeCognitiveAgent(())
+    else:
+        provider = FakeObservationProvider(
+            (
+                ViewportSnapshot(
+                    id="viewport-1",
+                    provider_id="fake-observer",
+                    elements=(),
+                ),
+            )
+        )
+        cognitive = FakeCognitiveAgent(())
+
+    def fail_evaluation(result):
+        return replace(
+            result, metrics=evaluate_run(result, evaluation_target_for(result))
+        )
+
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        result_evaluator=fail_evaluation,
+    )
+
+    result = await agent.execute(_spec())
+
+    bundle = output / "runs" / result.run_id
+    assert result.state.is_finalized
+    assert result.outcome.kind == (
+        "provider-failure"
+        if failure_point == "before-observation"
+        else "internal-error"
+    )
+    assert result.metrics is None
+    assert result.findings is None
+    assert result.evaluation_failure_reason == "result evaluation failed: ValueError"
+    assert result.state.events[-1].kind == "run-terminated"
+    assert bundle.is_dir()
+    assert not (output / ".staging" / result.run_id).exists()
+    persisted = json.loads((bundle / "result.json").read_text(encoding="utf-8"))
+    assert persisted["metrics"] is None
+    assert persisted["findings"] is None
+    assert (
+        persisted["evaluation_failure_reason"] == "result evaluation failed: ValueError"
+    )
+    assert result.run_id not in result.evaluation_failure_reason
+    timeline = [
+        json.loads(line)
+        for line in (bundle / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert timeline[-1]["kind"] == "run-terminated"
+    checksums = {
+        path: digest
+        for digest, path in (
+            line.split("  ", maxsplit=1)
+            for line in (bundle / "checksums.sha256")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+    }
+    assert {"manifest.json", "result.json", "timeline.jsonl"}.issubset(checksums)
+    for relative_path, digest in checksums.items():
+        assert (
+            hashlib.sha256((bundle / relative_path).read_bytes()).hexdigest() == digest
+        )

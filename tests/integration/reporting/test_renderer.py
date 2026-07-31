@@ -108,12 +108,15 @@ def _write_run(
         {
             "sequence": 3,
             "kind": "prominence-recorded",
+            "viewport_id": "viewport-1",
             "scores": [
                 {
                     "element_id": "target",
                     "raw_score": 0.2,
                     "normalized_probability": 0.3,
                     "feature_contributions": {"area": 0.1, "contrast": 0.2},
+                    "raw_values": {"area": 7200, "contrast": 4.5},
+                    "normalized_values": {"area": 0.4, "contrast": 0.8},
                 }
             ],
         },
@@ -198,11 +201,19 @@ def _write_run(
                 {
                     "finding_id": f"{run_id}:weak-scent",
                     "category": "weak-scent",
+                    "title": "Target wording gives weak goal cues",
+                    "cause": "Target scent 0.2 is below configured threshold 0.3.",
                     "severity": "medium",
                     "reproducibility": "model-dependent",
                     "evidence_class": "model-estimate",
                     "evidence_ids": [f"{run_id}:discovery-cost"],
                     "limitations": ["simulated benchmark evidence"],
+                    "run_ids": [run_id],
+                    "viewport_ids": ["viewport-1"],
+                    "element_ids": ["target"],
+                    "supporting_metrics": {"target-scent": 0.2},
+                    "action_sequence": ["interact-with-element target: succeeded"],
+                    "replay_links": [f"#run={run_id}&element=target"],
                 }
             ],
             "limitations": ["Simulated benchmark; not human satisfaction evidence."],
@@ -229,6 +240,9 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "Run filters" in html
     assert "Timeline" in html
     assert "Prominence contributions" in html
+    assert "Selected element evidence" in html
+    assert "Observations and notice state" in html
+    assert "Terminal status" in html
     assert "Scent records" in html
     assert "Decisions" in html
     assert "Actions" in html
@@ -245,6 +259,57 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "fetch(" not in html
     assert '<link rel="stylesheet"' not in html
     assert "<script src=" not in html
+
+
+def test_renderer_includes_all_failed_experiment_and_staging_crash(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / ".staging" / "run-crashed"
+    staging.mkdir(parents=True)
+    _write_json(staging / "manifest.json", {"run_id": "run-crashed", "seed": 7})
+    (staging / "timeline.jsonl").write_text(
+        json.dumps({"sequence": 1, "kind": "run-started", "run_id": "run-crashed"})
+        + "\n"
+        + '{"sequence":2,"kind":"viewport-captured"',
+        encoding="utf-8",
+    )
+    _write_json(
+        staging / "crash.marker",
+        {"run_id": "run-crashed", "reason": "browser capture failed"},
+    )
+    _write_json(
+        tmp_path / "experiment.json",
+        {
+            "run_metrics": [],
+            "cell_aggregates": [],
+            "variant_comparisons": [],
+            "findings": {},
+            "failures": [
+                {
+                    "run_id": "run-crashed",
+                    "error_type": "ProviderFailure",
+                    "stage": "execution",
+                    "terminal_state": "crashed",
+                    "reason": "browser capture failed",
+                    "scenario_id": "enable-2fa",
+                    "application_version_id": "fixture-app-improved",
+                    "persona_id": "impatient",
+                    "policy": "progressive-prominence-scent",
+                    "seed": 7,
+                }
+            ],
+        },
+    )
+
+    output = render_experiment_report(tmp_path, tmp_path / "report.html")
+    html = output.read_text(encoding="utf-8")
+
+    assert output.is_file()
+    assert "Failed and partial runs" in html
+    assert "browser capture failed" in html
+    assert "run-crashed" in html
+    assert "enable-2fa" in html
+    assert "progressive-prominence-scent" in html
 
 
 def test_renderer_builds_comparison_and_splits_large_experiment(tmp_path: Path) -> None:

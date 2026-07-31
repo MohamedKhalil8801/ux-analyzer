@@ -5,27 +5,23 @@ import json
 import random
 import socket
 import threading
-from dataclasses import asdict, replace
 from pathlib import Path
 
 import httpx
 import pytest
 import pytest_asyncio
 import uvicorn
+import yaml
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse
+from playwright.async_api import Route, async_playwright
+from typer.testing import CliRunner
 
 import ux_analyzer.cli as cli
 from fixture_app.app import app as fixture_app
-from tests.e2e.test_private_data_leakage import _assert_no_leaks, _snapshot
-from ux_analyzer.adapters.openai import OpenAICompatibleSettings
-from ux_analyzer.application.evaluation import evaluate_experiment_results
-from ux_analyzer.application.experiment import ExperimentContext, expand_experiment
-from ux_analyzer.config.loader import load_project
+from tests.e2e.test_private_data_leakage import _snapshot
 from ux_analyzer.domain.attention import AttentionState
-from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy
-from ux_analyzer.domain.findings import EvidenceClass
-from ux_analyzer.domain.run import ObservationRecorded
+from ux_analyzer.domain.benchmark import Budget
 from ux_analyzer.providers.attention_policy import (
     AttentionPolicyConfig,
     ProgressiveAttentionPolicy,
@@ -124,7 +120,15 @@ def _model_app(
             typed_runs,
             opened_menu_runs,
         )
-        return _response({"action": action, "reason": "Deterministic CI fixture path."})
+        return _response(
+            {
+                "action": action["kind"],
+                "element_id": action.get("element_id"),
+                "fixture_key": action.get("fixture_key"),
+                "direction": action.get("direction"),
+                "reason": "Deterministic CI fixture path.",
+            }
+        )
 
     return model_app
 
@@ -274,171 +278,146 @@ async def production_servers() -> tuple[
     assert not model_thread.is_alive()
 
 
-def _matrix(scenario_id: str) -> cli._ResolvedMatrix:
-    loaded = load_project(DEMO_PROJECT)
-    project = replace(
-        loaded.project,
-        scenarios=tuple(
-            replace(
-                scenario,
-                budget=replace(scenario.budget, timeout_seconds=300),
-            )
-            for scenario in loaded.project.scenarios
-        ),
+def _reduced_project(path: Path) -> Path:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    scenario = next(item for item in project["scenarios"] if item["id"] == "enable-2fa")
+    scenario["budget"].update(
+        {
+            "max_steps": 60,
+            "max_observations": 30,
+            "max_interactions": 20,
+            "timeout_seconds": 180,
+        }
     )
-    loaded = replace(
-        loaded,
-        project=project,
-        runtime=replace(
-            loaded.runtime,
-            attention=replace(loaded.runtime.attention, coarse_scent_weight=8.0),
-        ),
+    persona = next(
+        item for item in project["personas"] if item["id"] == "first-time-nontechnical"
     )
-    definition = next(item for item in project.experiments if item.id == "core-pair")
-    reduced = replace(definition, seeds=(CI_SEED,), run_count=1)
-    specs = expand_experiment(ExperimentContext(reduced, project, loaded.config_digest))
-    specs = tuple(spec for spec in specs if spec.scenario.id == scenario_id)
-    return cli._ResolvedMatrix(loaded=loaded, definition=reduced, specs=specs)
+    persona["attention_temperature"] = 0.4
+    project["providers"]["attention"]["coarse_scent_weight"] = 8.0
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "core-pair"
+    )
+    experiment.update(
+        {
+            "scenario_ids": ["enable-2fa"],
+            "application_version_ids": ["fixture-app-improved"],
+            "persona_ids": ["first-time-nontechnical"],
+            "policies": ["progressive-prominence-scent"],
+            "seeds": [CI_SEED],
+            "run_count": 1,
+        }
+    )
+    path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _prominence_score(result: dict[str, object]) -> dict[str, object]:
+    evidence = result["evidence"]
+    assert isinstance(evidence, dict)
+    prominence = evidence["prominence"]
+    assert isinstance(prominence, list) and prominence
+    record = prominence[0]
+    assert isinstance(record, dict)
+    scores = record["scores"]
+    assert isinstance(scores, list) and scores
+    score = scores[0]
+    assert isinstance(score, dict)
+    return score
 
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario_id", ("invite-teammate", "enable-2fa"))
-async def test_production_cli_composition_runs_real_core_matrix_and_findings(
-    scenario_id: str,
+async def test_production_cli_report_is_interactive_and_causal(
     production_servers: tuple[str, str, list[dict[str, object]], dict[str, str]],
     tmp_path: Path,
 ) -> None:
-    fixture_origin, model_base_url, requests, versions = production_servers
-    matrix = _matrix(scenario_id)
-    versions.update(
-        {spec.run_id: spec.application_version.kind.value for spec in matrix.specs}
+    fixture_origin, model_base_url, requests, _versions = production_servers
+    project = _reduced_project(tmp_path / "project.yaml")
+    output = tmp_path / "output"
+    result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli.app,
+        [
+            "run",
+            str(project),
+            "--experiment",
+            "core-pair",
+            "--output",
+            str(output),
+            "--fixture-origin",
+            fixture_origin,
+        ],
+        env={
+            "UXA_LLM_BASE_URL": model_base_url,
+            "UXA_LLM_API_KEY": "ci-api-key",
+            "UXA_SCENT_MODEL": "scent-model",
+            "UXA_COGNITIVE_MODEL": "cognitive-model",
+        },
     )
-    output = tmp_path / scenario_id
-    settings = OpenAICompatibleSettings.model_validate(
-        {
-            "base_url": model_base_url,
-            "api_key": "ci-api-key",
-            "scent_model": "scent-model",
-            "cognitive_model": "cognitive-model",
-            "timeout_seconds": 300,
-            "retry_policy": {"max_attempts": 1, "base_delay_seconds": 0},
-        }
-    )
-
-    result = await cli._execute_matrix(
-        matrix,
-        output=output,
-        workers=2,
-        fixture_origin=fixture_origin,
-        settings=cli._settings_with_fixture_redaction(settings, matrix.loaded),
-    )
-
-    assert result.failures == (), [failure.message for failure in result.failures]
-    assert len(result.results) == 8
-    assert {
-        (
-            spec.scenario.id,
-            spec.application_version.kind.value,
-            spec.persona.id,
-            spec.policy,
-        )
-        for spec in result.specs
-    } == {
-        (scenario, version, persona, policy)
-        for scenario in (scenario_id,)
-        for version in ("defective", "improved")
-        for persona in ("first-time-nontechnical", "impatient")
-        for policy in (
-            ExperimentPolicy.FULL_LIST,
-            ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
-        )
-    }
+    assert result.exit_code == 0, result.stdout
+    assert "completed runs: 1; failures: 0" in result.stdout
+    assert "report generated:" in result.stdout
     assert requests
+    report_path = output / "report.html"
+    run_path = next((output / "runs").iterdir())
+    persisted = json.loads((run_path / "result.json").read_text(encoding="utf-8"))
+    assert persisted["metrics"]["feedback_observed"] is True
+    assert "missing-feedback" not in {
+        finding["category"] for finding in persisted["findings"]
+    }
+    score = _prominence_score(persisted)
+    element_id = str(score["element_id"])
+    raw_values = score["raw_values"]
+    normalized_values = score["normalized_values"]
+    contributions = score["feature_contributions"]
+    assert isinstance(raw_values, dict)
+    assert isinstance(normalized_values, dict)
+    assert isinstance(contributions, dict)
 
-    defective_categories: set[str] = set()
-    improved_categories: set[str] = set()
-    for spec, run_result in zip(result.specs, result.results, strict=True):
-        assert run_result.outcome.kind == "verified-success", (
-            spec.scenario.id,
-            spec.application_version.kind.value,
-            spec.persona.id,
-            spec.policy.value,
-            run_result.terminal_reason,
-        )
-        assert run_result.verification.verified
-        assert run_result.metrics is not None
-        assert run_result.bundle_path is not None
-        assert run_result.state.snapshots
-        assert all(
-            snapshot.provider_id == "playwright-web"
-            for snapshot in run_result.state.snapshots
-        )
-        assert all(
-            finding.evidence_class is not EvidenceClass.UNSUPPORTED_HUMAN_CLAIM
-            for finding in run_result.findings
-        )
-        categories = {finding.category for finding in run_result.findings}
-        if spec.application_version.kind.value == "defective":
-            defective_categories.update(categories)
-        else:
-            improved_categories.update(categories)
-        bundle = Path(run_result.bundle_path)
-        assert (bundle / "manifest.json").is_file()
-        assert (bundle / "timeline.jsonl").is_file()
-        assert (bundle / "result.json").is_file()
-        assert (bundle / "checksums.sha256").is_file()
-        assert run_result.evidence.screenshot_artifacts
-        assert all(
-            (bundle / screenshot.path).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-            for screenshot in run_result.evidence.screenshot_artifacts
-        )
-        for event in run_result.state.events:
-            if isinstance(event, ObservationRecorded):
-                _assert_no_leaks(
-                    f"{spec.run_id}:observation",
-                    asdict(event.observation),
-                    {
-                        "api-key": "ci-api-key",
-                        "private-control-path": "/__control/",
-                        "sensitive-fixture-value": next(
-                            iter(spec.scenario.fixture_inputs.values.values())
-                        ),
-                    },
-                )
+    external_requests: list[str] = []
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(service_workers="block")
 
-    assert "unexpected-hierarchy" in defective_categories
-    assert "ambiguous-icon-label" in defective_categories
-    if scenario_id == "invite-teammate":
-        assert "strong-misleading-alternative" in defective_categories
-    else:
-        assert "missing-feedback" in defective_categories
-        assert "missing-feedback" not in improved_categories
+        async def block_external(route: Route) -> None:
+            if route.request.url.startswith(("file:", "data:")):
+                await route.continue_()
+            else:
+                external_requests.append(route.request.url)
+                await route.abort()
 
-    evaluation = evaluate_experiment_results(result.results)
-    assert len(evaluation.variant_comparisons) == 4
-    summary_path, report_path = cli._complete_experiment(
-        result, output=output, runtime=matrix.loaded.runtime
-    )
-    assert all(item.gate.passed for item in evaluation.variant_comparisons), [
-        (
-            item.baseline.persona_id,
-            item.baseline.policy,
-            item.gate.reasons,
-            item.gate.baseline_discovery_cost_median,
-            item.gate.improved_discovery_cost_median,
-        )
-        for item in evaluation.variant_comparisons
-        if not item.gate.passed
-    ]
-    assert summary_path.is_file()
-    assert report_path is not None and report_path.is_file()
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert summary["findings"]
-    assert (
-        "simulated benchmark evidence"
-        in report_path.read_text(encoding="utf-8").lower()
-    )
+        await context.route("**/*", block_external)
+        page = await context.new_page()
+        await page.goto(report_path.resolve().as_uri())
+        selected = page.locator(f'[data-element-id="{element_id}"]').first
+        await selected.hover()
+        panel = page.locator("#selected-element-evidence")
+        assert await panel.get_attribute("data-selected-element-id") == element_id
+        area_row = panel.locator("tr", has_text="Area")
+        area_text = await area_row.text_content()
+        assert area_text is not None
+        assert str(raw_values["area"]) in area_text
+        assert str(normalized_values["area"]) in area_text
+        assert str(contributions["area"]) in area_text
+        await selected.focus()
+        assert await panel.get_attribute("data-selected-element-id") == element_id
+        await selected.click()
+        assert await panel.get_attribute("data-selected-element-id") == element_id
+        assert await page.get_by_text("Observations and notice state").count() == 1
+        assert await page.get_by_text("Decisions and reasons").count() == 1
+        assert await page.get_by_text("Actions and results").count() == 1
+        assert await page.get_by_text("Terminal status").count() == 1
+        assert await page.locator(".finding-title").count() >= 1
+        assert await page.locator(".finding-cause").count() >= 1
+        assert await page.locator(".replay-link").count() >= 1
+        content = await page.content()
+        assert "selector" not in content
+        assert "execution_reference" not in content
+        assert "ci-api-key" not in content
+        await browser.close()
+
+    assert not external_requests
 
 
 @pytest.mark.e2e

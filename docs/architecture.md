@@ -69,8 +69,10 @@ One `RunAgent.execute` call performs:
 The experiment runner expands stable `RunSpec` values and executes runs with
 bounded concurrency. Default worker count is one. Each run gets isolated agent
 state and fixture session; partial experiment results retain per-run failures.
-After execution, CLI aggregates cells, runs exact paired-seed directional gates,
-writes `experiment.json`, and renders `<output>/report.html` from persisted bundles.
+After execution, CLI aggregates evaluable cells, runs exact paired-seed directional
+gates, writes `experiment.json` with safe runner/evaluator failure records, and
+renders `<output>/report.html` from finalized, staging, and available experiment
+evidence. Report projections keep private execution fields out.
 
 ## Current POC Choices
 

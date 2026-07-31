@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 
 
 class EvidenceClass(StrEnum):
@@ -16,6 +18,10 @@ class EvidenceClass(StrEnum):
 
 class UnsupportedHumanClaimError(ValueError):
     """Raised when unsupported human claims are promoted to findings."""
+
+
+def _empty_float_mapping() -> dict[str, float]:
+    return {}
 
 
 class FindingSeverity(StrEnum):
@@ -76,6 +82,16 @@ class Finding:
     evidence_ids: tuple[str, ...]
     limitations: tuple[str, ...]
     generated_explanation: str | None = None
+    title: str = ""
+    cause: str = ""
+    run_ids: tuple[str, ...] = ()
+    viewport_ids: tuple[str, ...] = ()
+    element_ids: tuple[str, ...] = ()
+    supporting_metrics: Mapping[str, float] = field(
+        default_factory=_empty_float_mapping
+    )
+    action_sequence: tuple[str, ...] = ()
+    replay_links: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.finding_id or not self.category:
@@ -97,3 +113,28 @@ class Finding:
         object.__setattr__(self, "evidence_class", evidence_class)
         object.__setattr__(self, "evidence_ids", evidence_ids)
         object.__setattr__(self, "limitations", tuple(self.limitations))
+        object.__setattr__(
+            self, "title", self.title or self.category.replace("-", " ").title()
+        )
+        object.__setattr__(
+            self,
+            "cause",
+            self.cause
+            or self.generated_explanation
+            or "Recorded evidence triggered this finding.",
+        )
+        object.__setattr__(self, "run_ids", tuple(self.run_ids))
+        object.__setattr__(self, "viewport_ids", tuple(self.viewport_ids))
+        object.__setattr__(self, "element_ids", tuple(self.element_ids))
+        object.__setattr__(
+            self,
+            "supporting_metrics",
+            MappingProxyType(
+                {
+                    str(name): float(value)
+                    for name, value in self.supporting_metrics.items()
+                }
+            ),
+        )
+        object.__setattr__(self, "action_sequence", tuple(self.action_sequence))
+        object.__setattr__(self, "replay_links", tuple(self.replay_links))

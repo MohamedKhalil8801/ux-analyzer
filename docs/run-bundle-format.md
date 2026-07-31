@@ -135,8 +135,12 @@ keys.
 
 ## Report Input
 
-`uxa report` reads a bundle root containing either one run bundle or a `runs/`
-directory of finalized bundles. It emits one self-contained HTML file when the
+`uxa report` reads a bundle root containing either one run bundle, a `runs/`
+directory of finalized bundles, or an experiment directory with `experiment.json`
+and partial evidence. It includes finalized runs, evaluator failures, runner
+failures, and staging `crash.marker` records. Failed rows retain safe run/spec
+identity, stage, terminal state, reason, and available timeline evidence; they
+are never silently omitted. It emits one self-contained HTML file when the
 encoded report is at most 2,000,000 bytes by default. Larger reports produce an
 index plus `<output-stem>-runs/<run-id>.html` pages. No external requests are
 required to open the report.

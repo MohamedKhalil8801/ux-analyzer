@@ -173,6 +173,11 @@ cython_debug/
 # Local Codebase Memory index
 .codebase-memory/
 
+# Local benchmark and live smoke output
+.uxa-output/
+.uxa-live-smoke/
+.uxa-live-smoke-*/
+
 # PyPI configuration file
 .pypirc
 

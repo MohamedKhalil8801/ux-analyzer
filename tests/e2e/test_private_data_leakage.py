@@ -18,7 +18,7 @@ from ux_analyzer.domain.interface import (
 )
 from ux_analyzer.ports.models import ChatMessage, ModelRole
 from ux_analyzer.providers.cognitive import (
-    CognitiveDecision,
+    CognitiveModelResponse,
     StructuredCognitiveAgent,
 )
 from ux_analyzer.providers.scent import (
@@ -74,7 +74,7 @@ class _RecordingModelClient:
                     ]
                 }
             )
-        if schema is CognitiveDecision:
+        if schema is CognitiveModelResponse:
             return schema.model_validate(recordings["cognitive"])
         raise AssertionError(f"unexpected role schema: {schema!r}")
 
@@ -199,6 +199,7 @@ async def test_model_requests_and_persona_observations_are_leak_free() -> None:
         "scent-model",
         "cognitive-model",
     ]
+    assert client.requests[-1]["schema"] == CognitiveModelResponse.__name__
 
 
 def test_leakage_failure_names_event_and_redacted_field_path() -> None:

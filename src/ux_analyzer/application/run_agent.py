@@ -180,7 +180,8 @@ class RunResult:
     terminal_reason: str | None = None
     evidence: RunEvidence = field(default_factory=RunEvidence)
     metrics: RunMetrics | None = None
-    findings: tuple[Finding, ...] = ()
+    findings: tuple[Finding, ...] | None = ()
+    evaluation_failure_reason: str | None = None
 
     @property
     def claimed_success(self) -> bool:
@@ -770,7 +771,15 @@ class RunAgent:
             ),
         )
         if self.result_evaluator is not None:
-            result = self.result_evaluator(result)
+            try:
+                result = self.result_evaluator(result)
+            except Exception as error:
+                result = replace(
+                    result,
+                    metrics=None,
+                    findings=None,
+                    evaluation_failure_reason=_evaluation_failure_reason(error),
+                )
         try:
             bundle_path = writer.finalize(result)
         except BaseException as error:
@@ -938,6 +947,10 @@ def _outcome_for_error(error: BaseException) -> RunOutcome:
 def _safe_error_message(error: BaseException) -> str:
     message = str(error).strip()
     return message or error.__class__.__name__
+
+
+def _evaluation_failure_reason(error: BaseException) -> str:
+    return f"result evaluation failed: {error.__class__.__name__}"
 
 
 def _timed_out_execution(

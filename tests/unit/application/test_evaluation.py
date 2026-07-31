@@ -21,7 +21,13 @@ from ux_analyzer.application.run_agent import (
     RunResult,
     ScentEvidence,
 )
-from ux_analyzer.domain.attention import Back, FullScent, ProgressiveObservation, Scroll
+from ux_analyzer.domain.attention import (
+    Back,
+    FullScent,
+    InteractWithElement,
+    ProgressiveObservation,
+    Scroll,
+)
 from ux_analyzer.domain.benchmark import (
     ApplicationVersion,
     ApplicationVersionKind,
@@ -327,7 +333,7 @@ def test_production_inputs_derive_scores_and_fold_facts_from_recorded_evidence()
     assert inputs.target_prominence == pytest.approx(0.2)
     assert inputs.scent_scores["target"] == pytest.approx(0.25)
     assert inputs.target_below_fold is False
-    assert inputs.feedback_observed is False
+    assert inputs.feedback_observed is None
     assert inputs.model_dependent is True
 
 
@@ -352,6 +358,57 @@ def test_production_inputs_mark_target_below_fold_after_recorded_scroll() -> Non
     assert evaluation_inputs_for(result).target_below_fold is True
 
 
+@pytest.mark.parametrize(
+    ("persona_id", "policy"),
+    (
+        ("first-time-nontechnical", ExperimentPolicy.FULL_LIST),
+        (
+            "first-time-nontechnical",
+            ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
+        ),
+        ("impatient", ExperimentPolicy.FULL_LIST),
+        ("impatient", ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT),
+    ),
+)
+@pytest.mark.parametrize(
+    ("version_kind", "feedback_label", "expected"),
+    (
+        (ApplicationVersionKind.DEFECTIVE, "Protection enabled.", False),
+        (
+            ApplicationVersionKind.IMPROVED,
+            "Two-factor authentication enabled.",
+            True,
+        ),
+    ),
+)
+def test_feedback_uses_first_post_action_snapshot_across_matrix(
+    persona_id: str,
+    policy: ExperimentPolicy,
+    version_kind: ApplicationVersionKind,
+    feedback_label: str,
+    expected: bool,
+) -> None:
+    result = _feedback_result(
+        persona_id=persona_id,
+        policy=policy,
+        version_kind=version_kind,
+        feedback_label=feedback_label,
+    )
+
+    assert evaluation_inputs_for(result).feedback_observed is expected
+
+
+def test_feedback_is_unknown_when_post_action_capture_failed() -> None:
+    result = _feedback_result(
+        persona_id="first-time-nontechnical",
+        policy=ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
+        version_kind=ApplicationVersionKind.IMPROVED,
+        feedback_label=None,
+    )
+
+    assert evaluation_inputs_for(result).feedback_observed is None
+
+
 def test_scorecard_rejects_unsupported_human_evidence() -> None:
     version = ApplicationVersion(
         id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
@@ -370,6 +427,137 @@ def test_scorecard_rejects_unsupported_human_evidence() -> None:
 
     with pytest.raises(UnsupportedHumanClaimError):
         aggregate_cell((unsupported,))
+
+
+def _feedback_result(
+    *,
+    persona_id: str,
+    policy: ExperimentPolicy,
+    version_kind: ApplicationVersionKind,
+    feedback_label: str | None,
+) -> RunResult:
+    version = ApplicationVersion(
+        id=f"fixture-app-{version_kind.value}",
+        kind=version_kind,
+        label=version_kind.value.title(),
+    )
+    scenario = Scenario(
+        id="enable-2fa",
+        name="Enable two-factor authentication",
+        goal="Enable two-factor authentication",
+        application_version_ids=(version.id,),
+        start_state="settings",
+        fixture_inputs=FixtureInputs(values={"totp_code": "246810"}),
+        budget=Budget(20, 20, 10, 30),
+        verifier=VisibleResultVerifierSpec(
+            type="visible-result", text="Two-factor authentication enabled"
+        ),
+        safeguards=(),
+        eligible_persona_ids=(persona_id,),
+        expected_evidence=(),
+    )
+    spec = RunSpec(
+        run_id=f"run-{version_kind.value}-{persona_id}-{policy.value}",
+        seed=7,
+        scenario=scenario,
+        application_version=version,
+        persona=Persona(
+            id=persona_id,
+            name=persona_id,
+            working_memory_capacity=3,
+            initial_confidence=0.5,
+            initial_frustration=0,
+            abandonment_threshold=0.9,
+            attention_temperature=1,
+        ),
+        policy=policy,
+        config_digest="config-sha",
+    )
+    target = ElementSnapshot(
+        id="viewport-before-target",
+        role="button",
+        label="Enable two-factor authentication",
+        bounds=BoundingBox(x=10, y=10, width=200, height=40),
+        visibility_fraction=1,
+        actionable=True,
+        provider_id="fixture",
+        execution_reference=PrivateExecutionReference(
+            provider_id="fixture",
+            viewport_id="viewport-before",
+            token="target-token",
+        ),
+        lineage_id="two-factor-submit",
+    )
+    before = ViewportSnapshot(
+        id="viewport-before",
+        provider_id="fixture",
+        elements=(target,),
+    )
+    state = RunState.initial(spec).apply(RunStarted(run_id=spec.run_id))
+    state = state.apply(ViewportCaptured(snapshot=before))
+    state = state.apply(
+        ObservationRecorded(
+            observation=ProgressiveObservation.from_snapshot(
+                before, newly_revealed_ids=(target.id,)
+            )
+        )
+    )
+    action = InteractWithElement(element_id=target.id)
+    state = state.apply(ActionProposed(action=action))
+    state = state.apply(
+        ActionExecuted(
+            action=action,
+            viewport_id=before.id,
+            execution_reference=target.execution_reference,
+            succeeded=True,
+            platform_action_kind="click",
+            state_changed=True,
+        )
+    )
+    if feedback_label is not None:
+        feedback = ElementSnapshot(
+            id="viewport-after-feedback",
+            role="text",
+            label=feedback_label,
+            bounds=BoundingBox(x=10, y=10, width=260, height=40),
+            visibility_fraction=1,
+            actionable=False,
+            lineage_id="two-factor-feedback",
+        )
+        state = state.apply(
+            ViewportCaptured(
+                snapshot=ViewportSnapshot(
+                    id="viewport-after",
+                    provider_id="fixture",
+                    elements=(feedback,),
+                )
+            )
+        )
+    verification = VerificationResult(verified=True, evidence_ids=("verify-1",))
+    state = state.apply(
+        RunTerminated(
+            outcome=VerifiedSuccess(),
+            verification=verification,
+            provider_manifests=(
+                ProviderManifest(
+                    provider_id="fixture",
+                    role="observation",
+                    model_id=None,
+                    endpoint_origin="fixture",
+                    version="1",
+                ),
+            ),
+            configuration_digest=spec.config_digest,
+            artifact_checksums=(ArtifactChecksum(path="timeline", sha256="sha"),),
+        )
+    )
+    return RunResult(
+        run_id=spec.run_id,
+        outcome=VerifiedSuccess(),
+        verification=verification,
+        agent_claimed_success=False,
+        state=state,
+    )
 
 
 def test_evaluate_experiment_results_aggregates_cells_and_paired_gate() -> None:

@@ -30,6 +30,7 @@ from ux_analyzer.domain.run import (
     ObservationRecorded,
     RunOutcome,
     RunOutcomeKind,
+    ViewportCaptured,
 )
 
 if TYPE_CHECKING:
@@ -220,6 +221,9 @@ class RunMetrics:
         default_factory=lambda: DiscoveryCostBreakdown(0, 0, 0, 0, 0, 0, 0)
     )
     config_digest: str | None = None
+    viewport_ids: tuple[str, ...] = ()
+    element_ids: tuple[str, ...] = ()
+    action_sequence: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -255,6 +259,9 @@ class RunMetrics:
         )
         object.__setattr__(self, "evidence", tuple(self.evidence))
         object.__setattr__(self, "metrics", tuple(self.metrics))
+        object.__setattr__(self, "viewport_ids", tuple(self.viewport_ids))
+        object.__setattr__(self, "element_ids", tuple(self.element_ids))
+        object.__setattr__(self, "action_sequence", tuple(self.action_sequence))
 
     @property
     def inspected_element_count(self) -> int:
@@ -677,6 +684,9 @@ def evaluate_run(
         metrics=tuple(metric_records),
         discovery_cost=cost,
         config_digest=state.spec.config_digest,
+        viewport_ids=tuple(snapshot.id for snapshot in state.snapshots),
+        element_ids=(selected_target.element_id,),
+        action_sequence=_action_sequence(executed_actions),
     )
 
 
@@ -855,24 +865,43 @@ def _pretarget_interaction_labels(
 
 def _feedback_observed(
     result: RunResult, target_elements: Sequence[ElementSnapshot]
-) -> bool:
+) -> bool | None:
     target_ids = {element.id for element in target_elements}
-    target_executed = False
     goal = result.state.spec.scenario.goal
-    for event in result.state.events:
-        if isinstance(event, ActionExecuted) and isinstance(
-            event.action, InteractWithElement
+    events = result.state.events
+    for index, event in enumerate(events):
+        if not (
+            isinstance(event, ActionExecuted)
+            and isinstance(event.action, InteractWithElement)
+            and event.action.element_id in target_ids
+            and event.succeeded
+            and event.state_changed
         ):
-            target_executed = target_executed or event.action.element_id in target_ids
             continue
-        if target_executed and hasattr(event, "snapshot"):
-            snapshot = getattr(event, "snapshot")
-            if any(
+        for later in events[index + 1 :]:
+            if isinstance(later, ActionExecuted) and later.state_changed:
+                break
+            if not isinstance(later, ViewportCaptured):
+                continue
+            if later.snapshot.id == event.viewport_id:
+                continue
+            return any(
                 _is_success_feedback(element.label, goal)
-                for element in snapshot.elements
-            ):
-                return True
-    return False
+                for element in later.snapshot.elements
+            )
+        return None
+    return None
+
+
+def _action_sequence(actions: Sequence[ActionExecuted]) -> tuple[str, ...]:
+    sequence: list[str] = []
+    for event in actions:
+        action_kind = str(getattr(event.action, "kind", "action"))
+        element_id = getattr(event.action, "element_id", None)
+        target = f" {element_id}" if isinstance(element_id, str) else ""
+        result = "succeeded" if event.succeeded else "failed"
+        sequence.append(f"{action_kind}{target}: {result}")
+    return tuple(sequence)
 
 
 def _is_success_feedback(label: str, goal: str) -> bool:

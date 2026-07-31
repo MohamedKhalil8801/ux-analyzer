@@ -12,12 +12,13 @@ uv run pyright
 git diff --check
 ```
 
-Task 16 acceptance calls bundled `fixture_app` through its ASGI contract and
-uses recorded extracted snapshots for deterministic run orchestration. It uses
-one fixed CI seed per matrix cell and recorded structured scent responses from
-`tests/recordings/ci-model-responses.json`. Run bundles, timelines, checksums,
-independent verification, provider manifests, and evidence classes are
-checked. Browser extraction and fixture-only network safety remain covered by
+Task 16 acceptance starts local fixture and model servers, drives reduced
+production `uxa run`, opens generated report through `file://` with Playwright,
+blocks external report requests, and exercises element hover/focus/click. It
+uses one fixed CI seed and a reduced improved 2FA matrix. Run bundles,
+timelines, checksums, independent verification, provider manifests, exact
+prominence contributions, causal findings, and process cards are checked.
+Browser extraction and fixture-only network safety remain covered by
 `tests/integration/web` and install Chromium before running those suites.
 
 Live endpoint checks stay skipped unless `UXA_RUN_LIVE_TESTS=1` and all four

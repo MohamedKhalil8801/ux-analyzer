@@ -1,9 +1,7 @@
 {
   "scent": 0.5,
   "cognitive": {
-    "action": {
-      "kind": "wait"
-    },
+    "action": "wait",
     "reason": "Use only recorded fixture-safe context."
   }
 }

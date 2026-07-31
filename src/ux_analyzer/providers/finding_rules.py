@@ -109,6 +109,16 @@ class FindingRule:
             generated_explanation=(
                 f"Rule {category.value} triggered for run {metrics.run_id}."
             ),
+            title=_title(category),
+            cause=_cause(category, metrics),
+            run_ids=(metrics.run_id,),
+            viewport_ids=metrics.viewport_ids,
+            element_ids=metrics.element_ids or (metrics.target.element_id,),
+            supporting_metrics=_metric_values(metrics, category.value),
+            action_sequence=metrics.action_sequence,
+            replay_links=(
+                f"#run={metrics.run_id}&element={metrics.target.element_id}",
+            ),
         )
 
 
@@ -284,3 +294,89 @@ def _evidence_ids(metrics: RunMetrics, category: str) -> tuple[str, ...]:
     if related:
         return related
     return (f"{metrics.run_id}:{category}",)
+
+
+def _metric_names(category: str) -> tuple[str, ...]:
+    return {
+        FindingCategory.WEAK_TARGET_PROMINENCE.value: ("target-prominence",),
+        FindingCategory.WEAK_SCENT.value: ("target-scent",),
+        FindingCategory.STRONG_MISLEADING_ALTERNATIVE.value: (
+            "target-scent",
+            "strongest-competing-scent",
+        ),
+        FindingCategory.UNEXPECTED_HIERARCHY.value: ("unexpected-hierarchy",),
+        FindingCategory.AMBIGUOUS_ICON_LABEL.value: ("ambiguous-target",),
+        FindingCategory.EXCESSIVE_DEPTH.value: ("navigation-depth",),
+        FindingCategory.TARGET_BELOW_FOLD.value: ("target-below-fold",),
+        FindingCategory.MISSING_FEEDBACK.value: ("feedback-observed",),
+        FindingCategory.WRONG_ACTION_BURDEN.value: ("wrong-actions",),
+        FindingCategory.POOR_RECOVERY.value: (
+            "recovery-success",
+            "recovery-actions",
+        ),
+    }.get(category, ())
+
+
+def _metric_values(metrics: RunMetrics, category: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for name in _metric_names(category):
+        try:
+            values[name] = metrics.metric(name).value
+        except KeyError:
+            continue
+    return values
+
+
+def _title(category: FindingCategory) -> str:
+    return {
+        FindingCategory.WEAK_TARGET_PROMINENCE: "Target is visually easy to miss",
+        FindingCategory.WEAK_SCENT: "Target wording gives weak goal cues",
+        FindingCategory.STRONG_MISLEADING_ALTERNATIVE: (
+            "Another control looks more relevant than target"
+        ),
+        FindingCategory.UNEXPECTED_HIERARCHY: "Target sits in an unexpected hierarchy",
+        FindingCategory.AMBIGUOUS_ICON_LABEL: "Target label or icon is ambiguous",
+        FindingCategory.EXCESSIVE_DEPTH: "Target requires too many navigation steps",
+        FindingCategory.TARGET_BELOW_FOLD: "Target starts below visible viewport",
+        FindingCategory.MISSING_FEEDBACK: "Action lacks visible success feedback",
+        FindingCategory.WRONG_ACTION_BURDEN: "Task attracts repeated wrong actions",
+        FindingCategory.POOR_RECOVERY: "Task provides weak recovery after errors",
+    }[category]
+
+
+def _cause(category: FindingCategory, metrics: RunMetrics) -> str:
+    values = _metric_values(metrics, category.value)
+    details = ", ".join(f"{name}={value:g}" for name, value in values.items())
+    descriptions = {
+        FindingCategory.WEAK_TARGET_PROMINENCE: (
+            "Recorded target prominence is low relative to configured rule."
+        ),
+        FindingCategory.WEAK_SCENT: (
+            "Model-estimated target scent is weak for configured goal."
+        ),
+        FindingCategory.STRONG_MISLEADING_ALTERNATIVE: (
+            "Recorded competitor scent exceeds target scent by configured margin."
+        ),
+        FindingCategory.UNEXPECTED_HIERARCHY: (
+            "Recorded navigation path places target behind unexpected labels or levels."
+        ),
+        FindingCategory.AMBIGUOUS_ICON_LABEL: (
+            "Recorded target or path labels do not clearly match task goal."
+        ),
+        FindingCategory.EXCESSIVE_DEPTH: (
+            "Recorded successful navigation depth reached configured limit."
+        ),
+        FindingCategory.TARGET_BELOW_FOLD: (
+            "Target first appeared only after recorded scroll action."
+        ),
+        FindingCategory.MISSING_FEEDBACK: (
+            "Post-action snapshot contained no goal-matching visible success message."
+        ),
+        FindingCategory.WRONG_ACTION_BURDEN: (
+            "Recorded run crossed configured wrong-action count."
+        ),
+        FindingCategory.POOR_RECOVERY: (
+            "Recorded recovery actions did not restore verified progress."
+        ),
+    }[category]
+    return f"{descriptions} Supporting metrics: {details}." if details else descriptions

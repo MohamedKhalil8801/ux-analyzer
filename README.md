@@ -50,9 +50,11 @@ Run core benchmark:
 uv run uxa run benchmarks/demo/project.yaml --experiment core-pair --output .uxa-output --workers 1
 ```
 
-Completed execution writes immutable run bundles, `.uxa-output/experiment.json`,
-and `.uxa-output/report.html`. Summary contains per-run metrics/findings,
-per-cell aggregates, and exact paired-seed directional gates.
+Completed or partial execution writes immutable run bundles when available,
+`.uxa-output/experiment.json`, and `.uxa-output/report.html`. Summary contains
+per-run metrics/findings, per-cell aggregates, exact paired-seed directional
+gates, and safe failure records. Report includes failed runs and staging crash
+markers instead of omitting them.
 
 Run policy ablations:
 
@@ -61,7 +63,7 @@ uv run uxa ablate benchmarks/demo/project.yaml --experiment ablations --output .
 uv run uxa ablate benchmarks/demo/project.yaml --experiment ablations --policy prominence-ranked-list --policy progressive-prominence --output .uxa-output --dry-run
 ```
 
-Regenerate filesystem-openable replay and inspect one finalized run:
+Regenerate filesystem-openable replay and inspect one run:
 
 ```powershell
 uv run uxa report .uxa-output --output report.html

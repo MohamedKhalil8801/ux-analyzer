@@ -13,6 +13,7 @@ import ux_analyzer.cli as cli
 from ux_analyzer.adapters.openai import OpenAICompatibleSettings
 from ux_analyzer.application.experiment import (
     ExperimentContext,
+    ExperimentFailure,
     ExperimentResult,
     expand_experiment,
 )
@@ -464,3 +465,46 @@ def test_production_run_completes_evaluation_summary_and_report(
     assert completed["runtime"] is not None
     assert "evaluation summary:" in result.stdout
     assert "report generated:" in result.stdout
+
+
+def test_complete_experiment_always_reports_all_failed_specs(tmp_path: Path) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    definition = next(
+        item for item in loaded.project.experiments if item.id == "core-pair"
+    )
+    spec = expand_experiment(
+        ExperimentContext(definition, loaded.project, loaded.config_digest)
+    )[0]
+    failure = ExperimentFailure(
+        run_id=spec.run_id,
+        error_type="ProviderFailure",
+        message="browser capture failed",
+        spec=spec,
+    )
+
+    summary_path, report_path = cli._complete_experiment(
+        ExperimentResult(specs=(spec,), results=(), failures=(failure,)),
+        output=tmp_path,
+        runtime=loaded.runtime,
+    )
+
+    assert report_path is not None
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    html = report_path.read_text(encoding="utf-8")
+    assert summary["failures"] == [
+        {
+            "application_version_id": spec.application_version.id,
+            "error_type": "ProviderFailure",
+            "persona_id": spec.persona.id,
+            "policy": spec.policy.value,
+            "reason": "browser capture failed",
+            "run_id": spec.run_id,
+            "scenario_id": spec.scenario.id,
+            "seed": spec.seed,
+            "stage": "execution",
+            "terminal_state": "failed",
+        }
+    ]
+    assert report_path.is_file()
+    assert "browser capture failed" in html
+    assert next(iter(spec.scenario.fixture_inputs.values.values())) not in html

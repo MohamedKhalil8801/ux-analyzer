@@ -21,6 +21,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from fixture_app.app import app as fixture_app
+from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
 from ux_analyzer.adapters.web.network_policy import (
     BrowserAllowedOrigins,
     NetworkPolicy,
@@ -47,6 +48,14 @@ from ux_analyzer.ports.verification import VerificationProvider
 @fixture_app.get("/__test-redirect")
 async def _test_redirect(target: str = Query(...)) -> RedirectResponse:
     return RedirectResponse(target, status_code=307)
+
+
+@fixture_app.post("/__test-slow-feedback")
+async def _test_slow_feedback() -> HTMLResponse:
+    await asyncio.sleep(0.2)
+    return HTMLResponse(
+        "<html><body><p role='status'>Two-factor authentication enabled.</p></body></html>"
+    )
 
 
 def _free_port() -> int:
@@ -336,6 +345,58 @@ async def test_fixture_assets_permitted_model_traffic_unaffected(
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{foreign_origin}/model")
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_click_waits_for_post_action_document_before_capture(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+) -> None:
+    fixture_origin, _ = running_servers
+    session_id = "post-action-capture"
+    session = await browser_adapter.start_session(
+        ObservationSessionConfig(
+            session_id=session_id,
+            start_url=f"{fixture_origin}/app/{session_id}/improved/settings",
+            test_account_id=AccountId("test-post-action-capture"),
+            viewport=ViewportSize(width=1024, height=768),
+            trace_path=tmp_path / "post-action.zip",
+        )
+    )
+    page = browser_adapter.page_for_testing(session)
+    await page.set_content(
+        "<form method='post' action='/__test-slow-feedback'>"
+        "<button type='submit'>Enable two-factor authentication</button>"
+        "</form>"
+    )
+    button = page.get_by_role("button", name="Enable two-factor authentication")
+    bounds = await button.bounding_box()
+    assert bounds is not None
+
+    await browser_adapter.execute(
+        session,
+        ClickAction(
+            element_id="enable-two-factor",
+            bounds=type(
+                "Bounds",
+                (),
+                {
+                    "x": bounds["x"],
+                    "y": bounds["y"],
+                    "width": bounds["width"],
+                    "height": bounds["height"],
+                },
+            )(),
+        ),
+    )
+    captured = await browser_adapter.capture(session)
+    snapshot = await capture_snapshot(page, captured.viewport_id)
+
+    assert any(
+        "Two-factor authentication enabled" in element.label
+        for element in snapshot.elements
+    )
 
 
 @pytest.mark.asyncio

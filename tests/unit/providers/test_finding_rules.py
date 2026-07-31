@@ -136,3 +136,30 @@ def test_findings_reference_emitted_metric_evidence() -> None:
     )
 
     assert finding.evidence_ids == ("run-1:target-prominence",)
+
+
+def test_findings_explain_cause_metrics_references_actions_and_replay() -> None:
+    metrics = replace(
+        _metrics(),
+        viewport_ids=("viewport-1", "viewport-2"),
+        element_ids=("target",),
+        action_sequence=("interact-with-element target: failed", "back: succeeded"),
+    )
+
+    finding = next(
+        item
+        for item in findings_for_run(metrics)
+        if item.category == FindingCategory.WEAK_TARGET_PROMINENCE.value
+    )
+
+    assert finding.title == "Target is visually easy to miss"
+    assert "0.1" in finding.cause
+    assert finding.run_ids == ("run-1",)
+    assert finding.viewport_ids == ("viewport-1", "viewport-2")
+    assert finding.element_ids == ("target",)
+    assert finding.supporting_metrics == {"target-prominence": 0.1}
+    assert finding.action_sequence == (
+        "interact-with-element target: failed",
+        "back: succeeded",
+    )
+    assert finding.replay_links == ("#run=run-1&element=target",)

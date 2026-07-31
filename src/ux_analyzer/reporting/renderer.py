@@ -104,18 +104,30 @@ def render_experiment_report(
 
 
 def _load_experiment(root: Path) -> dict[str, Any]:
-    run_directories = _run_directories(root)
-    if not run_directories:
-        raise ValueError(f"no finalized run bundles found under {root}")
-    runs = tuple(_load_run(path) for path in run_directories)
     summary = _read_object(root / "experiment.json", required=False)
+    run_directories = _run_directories(root)
+    runs = [_load_run(path) for path in run_directories]
+    failures = _failure_rows(summary)
+    by_run_id = {run["run_id"]: run for run in runs}
+    for failure in failures:
+        existing = by_run_id.get(failure["run_id"])
+        if existing is None:
+            created = _failed_run(failure)
+            runs.append(created)
+            by_run_id[created["run_id"]] = created
+        else:
+            _merge_failure(existing, failure)
+    if not runs:
+        raise ValueError(f"no run or failure evidence found under {root}")
+    ordered_runs = tuple(sorted(runs, key=lambda item: item["run_id"]))
     return {
-        "runs": runs,
-        "comparison_rows": _comparison_rows(runs),
-        "gate_rows": _gate_rows(summary, runs),
-        "evidence_summary": _evidence_summary(runs),
+        "runs": ordered_runs,
+        "comparison_rows": _comparison_rows(ordered_runs),
+        "gate_rows": _gate_rows(summary, ordered_runs),
+        "failure_rows": [run for run in ordered_runs if run["failed"]],
+        "evidence_summary": _evidence_summary(ordered_runs),
         "limitations": _unique(
-            limitation for run in runs for limitation in run["limitations"]
+            limitation for run in ordered_runs for limitation in run["limitations"]
         ),
     }
 
@@ -123,26 +135,33 @@ def _load_experiment(root: Path) -> dict[str, Any]:
 def _run_directories(root: Path) -> tuple[Path, ...]:
     if (root / "manifest.json").is_file() and (root / "timeline.jsonl").is_file():
         return (root,)
+    candidates: list[Path] = []
     runs_root = root / "runs"
-    if not runs_root.is_dir():
-        return ()
-    return tuple(
-        sorted(
-            (
-                path
-                for path in runs_root.iterdir()
-                if path.is_dir()
-                and (path / "manifest.json").is_file()
-                and (path / "timeline.jsonl").is_file()
-            ),
-            key=lambda path: path.name,
+    if runs_root.is_dir():
+        candidates.extend(
+            path
+            for path in runs_root.iterdir()
+            if path.is_dir()
+            and (path / "manifest.json").is_file()
+            and (path / "timeline.jsonl").is_file()
         )
-    )
+    staging_root = root / ".staging"
+    if staging_root.is_dir():
+        candidates.extend(
+            path
+            for path in staging_root.iterdir()
+            if path.is_dir()
+            and (path / "manifest.json").is_file()
+            and (path / "timeline.jsonl").is_file()
+            and (path / "crash.marker").is_file()
+        )
+    return tuple(sorted(candidates, key=lambda path: path.name))
 
 
 def _load_run(path: Path) -> dict[str, Any]:
     manifest = _read_object(path / "manifest.json")
     result = _read_object(path / "result.json", required=False)
+    crash = _read_object(path / "crash.marker", required=False)
     events = _read_jsonl(path / "timeline.jsonl")
     if not events:
         state = _mapping(result.get("state"))
@@ -180,6 +199,13 @@ def _load_run(path: Path) -> dict[str, Any]:
     limitations = _unique(
         [
             "Outputs describe simulated benchmark evidence, not real-user completion or satisfaction.",
+            *(
+                [
+                    "Post-action feedback could not be evaluated because no post-action snapshot was recorded."
+                ]
+                if metrics and metrics.get("feedback_observed") is None
+                else []
+            ),
             *(_strings(result.get("limitations"))),
             *unsupported_limitations,
             *finding_limitations,
@@ -200,6 +226,27 @@ def _load_run(path: Path) -> dict[str, Any]:
     policy = _first_string(metrics.get("policy"), spec.get("policy"), "unknown")
     run_id = _first_string(manifest.get("run_id"), result.get("run_id"), path.name)
     public_events = [_public_event(event) for event in events]
+    failure_reason = next(
+        (
+            _text(value)
+            for value in (
+                result.get("evaluation_failure_reason"),
+                result.get("terminal_reason"),
+                crash.get("reason"),
+                _mapping(result.get("outcome")).get("reason"),
+            )
+            if value
+        ),
+        "",
+    )
+    terminal_state = (
+        "crashed"
+        if crash
+        else "finalized"
+        if result or (path / "checksums.sha256").is_file()
+        else "partial"
+    )
+    stage = _run_stage(result, crash, outcome)
     return {
         "run_id": run_id,
         "seed": _number(manifest.get("seed"), 0),
@@ -214,9 +261,14 @@ def _load_run(path: Path) -> dict[str, Any]:
         "outcome": outcome,
         "verified": bool(verification.get("verified", False)),
         "claimed": bool(result.get("agent_claimed_success", False)),
+        "terminal_state": terminal_state,
+        "stage": stage,
+        "failure_reason": failure_reason,
+        "failed": stage != "complete",
         "timeline": public_events,
         "snapshots": snapshots,
         "observations": observations,
+        "selections": _selections(events),
         "prominence": _prominence(events),
         "scent_records": _scent_records(events),
         "decisions": _decisions(events),
@@ -258,6 +310,10 @@ def _report_context(
                     "outcome",
                     "verified",
                     "claimed",
+                    "terminal_state",
+                    "stage",
+                    "failure_reason",
+                    "failed",
                     "metrics",
                     "limitations",
                 )
@@ -275,6 +331,7 @@ def _report_context(
         "runs": runs,
         "comparison_rows": experiment["comparison_rows"],
         "gate_rows": experiment["gate_rows"],
+        "failure_rows": experiment["failure_rows"],
         "evidence_summary": experiment["evidence_summary"],
         "limitations": experiment["limitations"],
         "initial_viewport_width": initial_width,
@@ -283,6 +340,7 @@ def _report_context(
                 "runs": runs,
                 "comparison_rows": experiment["comparison_rows"],
                 "gate_rows": experiment["gate_rows"],
+                "failure_rows": experiment["failure_rows"],
                 "evidence_summary": experiment["evidence_summary"],
                 "limitations": experiment["limitations"],
             }
@@ -318,11 +376,17 @@ def _read_object(path: Path, *, required: bool = True) -> dict[str, Any]:
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [
-        _mapping(json.loads(line))
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    events: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(cast(dict[str, Any], value))
+    return events
 
 
 def _snapshots(path: Path, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -441,6 +505,7 @@ def _image_mime(content: bytes) -> str:
 def _observation(event: dict[str, Any]) -> dict[str, Any]:
     raw = _mapping(event.get("observation"))
     return {
+        "sequence": _number(event.get("sequence"), 0),
         "viewport_id": _text(raw.get("viewport_id")),
         "newly_revealed_elements": _public_visible_elements(
             raw.get("newly_revealed_elements")
@@ -503,6 +568,21 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
         )
     elif kind == "model-call-recorded":
         result["record"] = _safe_value(event.get("record"))
+    elif kind == "attention-selection-recorded":
+        result.update(
+            {
+                "viewport_id": _text(event.get("viewport_id")),
+                "selected_ids": _strings(event.get("selected_ids")),
+                "selection_mode": _text(event.get("selection_mode")),
+                "region_id": _optional_text(event.get("region_id")),
+                "element_probabilities": _number_mapping(
+                    event.get("element_probabilities")
+                ),
+                "region_probabilities": _number_mapping(
+                    event.get("region_probabilities")
+                ),
+            }
+        )
     elif kind == "verification-recorded":
         result["verification"] = _public_verification(event.get("result"))
     elif kind == "run-terminated":
@@ -560,6 +640,7 @@ def _prominence(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
             "sequence": _number(event.get("sequence"), 0),
+            "viewport_id": _text(event.get("viewport_id")),
             "scores": _public_scores(event.get("scores"), prominence=True),
         }
         for event in events
@@ -572,6 +653,7 @@ def _scent_records(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {
             "sequence": _number(event.get("sequence"), 0),
             "kind": _kind(event),
+            "viewport_id": _text(event.get("viewport_id")),
             "scores": _public_scores(event.get("scores"), prominence=False),
         }
         for event in events
@@ -582,6 +664,24 @@ def _scent_records(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "full-scent",
             "full-scent-recorded",
         }
+    ]
+
+
+def _selections(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "sequence": _number(event.get("sequence"), 0),
+            "viewport_id": _text(event.get("viewport_id")),
+            "selected_ids": _strings(event.get("selected_ids")),
+            "selection_mode": _text(event.get("selection_mode")),
+            "region_id": _optional_text(event.get("region_id")),
+            "element_probabilities": _number_mapping(
+                event.get("element_probabilities")
+            ),
+            "region_probabilities": _number_mapping(event.get("region_probabilities")),
+        }
+        for event in events
+        if _kind(event) == "attention-selection-recorded"
     ]
 
 
@@ -798,6 +898,17 @@ def _findings(result: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
                 "evidence_ids": _strings(item.get("evidence_ids")),
                 "limitations": _strings(item.get("limitations")),
                 "explanation": _optional_text(item.get("generated_explanation")),
+                "title": _text(item.get("title"), _text(item.get("category"))),
+                "cause": _text(
+                    item.get("cause"),
+                    _text(item.get("generated_explanation"), "Cause unavailable"),
+                ),
+                "run_ids": _strings(item.get("run_ids")),
+                "viewport_ids": _strings(item.get("viewport_ids")),
+                "element_ids": _strings(item.get("element_ids")),
+                "supporting_metrics": _number_mapping(item.get("supporting_metrics")),
+                "action_sequence": _strings(item.get("action_sequence")),
+                "replay_links": _strings(item.get("replay_links")),
             }
         )
     return findings, limitations
@@ -806,6 +917,8 @@ def _findings(result: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
 def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for run in runs:
+        if not run["metrics"]:
+            continue
         groups[
             (
                 run["scenario_id"],
@@ -912,6 +1025,95 @@ def _evidence_summary(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
             "unsupported-human-claim",
         )
     ]
+
+
+def _failure_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    allowed = (
+        "run_id",
+        "error_type",
+        "stage",
+        "terminal_state",
+        "reason",
+        "scenario_id",
+        "application_version_id",
+        "persona_id",
+        "policy",
+        "seed",
+    )
+    return [
+        {key: _safe_value(item.get(key)) for key in allowed if key in item}
+        for item in _list_of_mappings(summary.get("failures"))
+        if item.get("run_id")
+    ]
+
+
+def _merge_failure(run: dict[str, Any], failure: dict[str, Any]) -> None:
+    run["failed"] = True
+    run["stage"] = _text(failure.get("stage"), run["stage"])
+    run["terminal_state"] = _text(failure.get("terminal_state"), run["terminal_state"])
+    run["failure_reason"] = _text(failure.get("reason"), run["failure_reason"])
+    for target, source in (
+        ("scenario_id", "scenario_id"),
+        ("version_id", "application_version_id"),
+        ("persona_id", "persona_id"),
+        ("policy", "policy"),
+        ("seed", "seed"),
+    ):
+        if failure.get(source) is not None:
+            run[target] = failure[source]
+
+
+def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
+    run_id = _text(failure.get("run_id"), "unknown-run")
+    scenario_id = _text(failure.get("scenario_id"), "unknown")
+    version_id = _text(failure.get("application_version_id"), "unknown")
+    persona_id = _text(failure.get("persona_id"), "unknown")
+    return {
+        "run_id": run_id,
+        "seed": _number(failure.get("seed"), 0),
+        "scenario_id": scenario_id,
+        "scenario_label": scenario_id.replace("-", " ").title(),
+        "goal": "Goal unavailable",
+        "version_id": version_id,
+        "version_label": version_id.replace("-", " ").title(),
+        "persona_id": persona_id,
+        "persona_label": persona_id.replace("-", " ").title(),
+        "policy": _text(failure.get("policy"), "unknown"),
+        "outcome": _text(failure.get("error_type"), "failed"),
+        "verified": False,
+        "claimed": False,
+        "terminal_state": _text(failure.get("terminal_state"), "failed"),
+        "stage": _text(failure.get("stage"), "execution"),
+        "failure_reason": _text(failure.get("reason"), "run failed"),
+        "failed": True,
+        "timeline": [],
+        "snapshots": [],
+        "observations": [],
+        "selections": [],
+        "prominence": [],
+        "scent_records": [],
+        "decisions": [],
+        "actions": [],
+        "verification": {"verified": False, "evidence_ids": [], "details": None},
+        "memory": [],
+        "manifests": {"provider_manifests": []},
+        "model_calls": [],
+        "evidence": [],
+        "findings": [],
+        "metrics": [],
+        "limitations": [
+            "Run failed before complete analysis; available safe evidence is shown."
+        ],
+    }
+
+
+def _run_stage(result: dict[str, Any], crash: dict[str, Any], outcome: str) -> str:
+    if result.get("evaluation_failure_reason"):
+        return "evaluation"
+    if crash:
+        reason = _text(crash.get("reason")).lower()
+        return "bundle-finalization" if "finalization" in reason else "execution"
+    return "complete" if outcome == "verified-success" else "terminal"
 
 
 def _safe_json(value: object) -> str:

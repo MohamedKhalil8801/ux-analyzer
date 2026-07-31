@@ -202,3 +202,34 @@ async def test_full_scent_rejects_snapshot_without_current_notice_state() -> Non
 
     with pytest.raises(ValueError, match="current viewport"):
         await provider.evaluate("Find invite", state, snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_action", "expected_kind"),
+    (("click", "interact"), ("type", "type-fixture")),
+)
+async def test_flat_cognitive_provider_response_normalizes_to_domain_action(
+    provider_action: str,
+    expected_kind: str,
+) -> None:
+    class AliasResponseClient(RecordingClient):
+        async def complete(self, schema, messages, model, role):
+            del messages, model, role
+            payload = {
+                "action": provider_action,
+                "element_id": "target",
+                "fixture_key": "invite_email" if provider_action == "type" else None,
+                "reason": "Provider alias response.",
+            }
+            return schema.model_validate(payload)
+
+    observation = ProgressiveObservation.from_snapshot(
+        _snapshot(), newly_revealed_ids=("target",)
+    )
+    decision = await StructuredCognitiveAgent(
+        AliasResponseClient(), model="cognitive-model"
+    ).decide("Find invite", observation)
+
+    assert decision.action.kind == expected_kind
+    assert decision.action.element_id == "target"

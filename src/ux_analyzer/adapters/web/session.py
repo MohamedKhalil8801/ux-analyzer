@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
-from playwright.async_api import Browser, BrowserContext, Page
+from playwright.async_api import Browser, BrowserContext, Page, Request
 from playwright.async_api import Error as PlaywrightError
 
 from ux_analyzer.adapters.web.network_policy import (
@@ -48,6 +48,9 @@ __all__ = [
 
 class ProviderFailure(ObservationProviderError):
     """Raised after a non-safety provider error closes its session."""
+
+
+_NAVIGATION_START_GRACE_SECONDS = 0.1
 
 
 @dataclass(slots=True)
@@ -216,6 +219,16 @@ class PlaywrightSessionAdapter:
         managed = self._active(session)
         started = monotonic()
         initial_url = managed.page.url
+        navigation_started = asyncio.Event()
+
+        def record_navigation(request: Request) -> None:
+            if (
+                request.is_navigation_request()
+                and request.frame == managed.page.main_frame
+            ):
+                navigation_started.set()
+
+        managed.page.on("request", record_navigation)
         try:
             navigation_occurred = False
             if isinstance(action, NavigateAction):
@@ -264,6 +277,7 @@ class PlaywrightSessionAdapter:
                 await managed.page.mouse.down()
                 await managed.page.mouse.move(action.end_x, action.end_y)
                 await managed.page.mouse.up()
+            await _settle_after_action(managed.page, navigation_started)
             return PlatformActionResult(
                 succeeded=True,
                 url=managed.page.url,
@@ -281,6 +295,8 @@ class PlaywrightSessionAdapter:
             if isinstance(error, ProviderFailure):
                 raise
             raise ProviderFailure("browser action failed") from error
+        finally:
+            managed.page.remove_listener("request", record_navigation)
 
     async def reset(self, session: SessionHandle) -> None:
         managed = self._active(session)
@@ -396,3 +412,13 @@ def _scroll_amount(action: ScrollAction) -> int:
 
 def _elapsed_ms(started: float) -> int:
     return int((monotonic() - started) * 1000)
+
+
+async def _settle_after_action(page: Page, navigation_started: asyncio.Event) -> None:
+    try:
+        await asyncio.wait_for(
+            navigation_started.wait(), timeout=_NAVIGATION_START_GRACE_SECONDS
+        )
+    except TimeoutError:
+        return
+    await page.wait_for_load_state("domcontentloaded")
