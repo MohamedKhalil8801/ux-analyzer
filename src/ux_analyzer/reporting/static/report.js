@@ -515,8 +515,8 @@
       addJson(eventCard, "Sanitized response summary", record.response_summary);
     } else if (record.kind === "repeated-fixture-input" || record.kind === "fixture-input-completed") {
       addFields(eventCard, [["Element", record.element_id], ["Fixture key", record.fixture_key], ["Reason", record.reason]]);
-    } else if (record.kind === "repeated-action-detected" || record.kind === "no-progress-recovery" || record.kind === "no-progress-detected") {
-      addFields(eventCard, [["Action", record.action ? actionText(record.action) : null], ["Count", record.count], ["Reason", record.reason]]);
+    } else if (record.kind === "repeated-action-detected" || record.kind === "repeated-action-cycle" || record.kind === "no-progress-recovery" || record.kind === "no-progress-detected") {
+      addFields(eventCard, [["Action", record.action ? actionText(record.action) : null], ["Count", record.count], ["Cycle length", record.cycle_length], ["Reason", record.reason]]);
     } else if (record.kind === "model-call-budget-exhausted") {
       addFields(eventCard, [["Model calls", record.model_calls], ["Limit", record.limit], ["Reason", record.reason]]);
     } else if (record.kind === "verification-recorded" && record.verification) {

@@ -442,6 +442,12 @@ def test_renderer_exposes_safe_model_and_progress_diagnostics(tmp_path: Path) ->
                 "count": 3,
                 "reason": "three consecutive actions produced no state progress",
             },
+            {
+                "kind": "repeated-action-cycle",
+                "cycle_length": 2,
+                "reason": "repeated semantic action cycle detected",
+                "url": "https://fixture.test/invite?token=private-secret",
+            },
         ]
     )
     events.append(terminal)
@@ -475,7 +481,10 @@ def test_renderer_exposes_safe_model_and_progress_diagnostics(tmp_path: Path) ->
         '\"count\":2'
     ) in html
     assert "no-progress-detected" in html
+    assert "repeated-action-cycle" in html
+    assert '\"cycle_length\":2' in html
     assert "provider-secret" not in html
+    assert "private-secret" not in html
 
 
 def test_renderer_includes_all_failed_experiment_and_staging_crash(

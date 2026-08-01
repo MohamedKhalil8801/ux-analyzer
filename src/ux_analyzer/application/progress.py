@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
+from urllib.parse import urlsplit
 
 from ux_analyzer.domain.interface import ElementSnapshot, ViewportSnapshot
 
 SemanticSnapshotSignature = tuple[tuple[object, ...], ...]
+TransitionProgressSignature = tuple[object, ...]
 
 
 def snapshot_progress_signature(
@@ -44,6 +47,36 @@ def made_meaningful_progress(
     )
 
 
+def transition_progress_signature(
+    action_fingerprint: tuple[str, str | None, str | None],
+    before: ViewportSnapshot,
+    after: ViewportSnapshot,
+    current_url: str | None,
+) -> TransitionProgressSignature:
+    """Return a private-data-free signature for one action/UI transition."""
+
+    return (
+        action_fingerprint,
+        snapshot_progress_signature(before),
+        snapshot_progress_signature(after),
+        _safe_url_origin_path(current_url),
+    )
+
+
+def repeated_cycle_length(
+    history: Sequence[TransitionProgressSignature],
+    *,
+    min_length: int = 2,
+    max_length: int = 4,
+) -> int | None:
+    """Return the repeated suffix period when two complete periods match."""
+
+    for length in range(min_length, max_length + 1):
+        if len(history) >= length * 2 and history[-length:] == history[-2 * length : -length]:
+            return length
+    return None
+
+
 def _element_semantics(element: ElementSnapshot) -> tuple[object, ...]:
     return (
         str(element.role),
@@ -61,3 +94,12 @@ def _visibility_bucket(fraction: float) -> str:
     if fraction >= 1:
         return "full"
     return "partial"
+
+
+def _safe_url_origin_path(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlsplit(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"

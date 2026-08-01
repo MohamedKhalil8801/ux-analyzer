@@ -883,6 +883,72 @@ async def test_three_consecutive_semantic_stalls_recover_then_abandon(
 
 
 @pytest.mark.asyncio
+async def test_repeated_semantic_action_cycle_finalizes_after_second_cycle(
+    tmp_path: Path,
+) -> None:
+    snapshots = (
+        _snapshot("main-1", "share", lineage_id="share-lineage"),
+        _snapshot("dialog-1", "close", lineage_id="close-lineage"),
+        _snapshot("main-2", "share", lineage_id="share-lineage"),
+        _snapshot("dialog-2", "close", lineage_id="close-lineage"),
+        _snapshot("main-3", "share", lineage_id="share-lineage"),
+    )
+    provider = FakeObservationProvider(
+        snapshots,
+        results=tuple(
+            PlatformActionResult(
+                True,
+                "https://fixture.test/invite?token=private-secret",
+                1,
+                state_changed=True,
+            )
+            for _ in range(4)
+        ),
+    )
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "share"},
+                    reason="Open sharing.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "close"},
+                    reason="Close sharing.",
+                ),
+            )
+            * 2
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    result = await agent.execute(_spec(max_steps=10, timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.terminal_reason == "repeated semantic action cycle detected"
+    assert len(provider.executed) == 4
+    assert bundles.bundle.finalized
+    cycle_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict) and event.get("kind") == "repeated-action-cycle"
+    ]
+    assert cycle_events == [
+        {
+            "kind": "repeated-action-cycle",
+            "cycle_length": 2,
+            "reason": "repeated semantic action cycle detected",
+        }
+    ]
+    assert "private-secret" not in repr(cycle_events)
+
+
+@pytest.mark.asyncio
 async def test_unlimited_run_awaits_run_and_terminal_verification(
     tmp_path: Path,
 ) -> None:

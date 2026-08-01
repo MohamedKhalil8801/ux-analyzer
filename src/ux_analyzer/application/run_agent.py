@@ -14,7 +14,12 @@ from ux_analyzer.application.action_validation import (
     validate_action,
 )
 from ux_analyzer.application.memory import MemoryPolicy
-from ux_analyzer.application.progress import made_meaningful_progress
+from ux_analyzer.application.progress import (
+    TransitionProgressSignature,
+    made_meaningful_progress,
+    repeated_cycle_length,
+    transition_progress_signature,
+)
 from ux_analyzer.application.state_updates import (
     ApplicationState,
     StateUpdateConfig,
@@ -274,6 +279,9 @@ class _RunContext:
     last_action_fingerprint: tuple[str, str | None, str | None] | None = None
     consecutive_action_count: int = 0
     no_progress_count: int = 0
+    transition_history: list[TransitionProgressSignature] = field(
+        default_factory=lambda: list[TransitionProgressSignature]()
+    )
     previous_action: dict[str, object] | None = None
     previous_action_result: dict[str, object] | None = None
 
@@ -863,6 +871,18 @@ class RunAgent:
                 navigation_occurred=result.navigation_occurred,
                 fixture_completed=fixture_completed,
             )
+            cycle_length = None
+            if result.succeeded:
+                context.transition_history.append(
+                    transition_progress_signature(
+                        action_fingerprint,
+                        snapshot,
+                        current_snapshot,
+                        result.url,
+                    )
+                )
+                context.transition_history = context.transition_history[-8:]
+                cycle_length = repeated_cycle_length(context.transition_history)
             context.previous_action_result = {
                 "succeeded": result.succeeded,
                 "state_changed": result.state_changed,
@@ -892,7 +912,7 @@ class RunAgent:
                             "action": validated.domain_action,
                             "reason": "action succeeded but the recaptured interface did not change semantically",
                         }
-                    )
+                )
 
             if result.succeeded:
                 verification = await self._verify(
@@ -907,6 +927,24 @@ class RunAgent:
                         agent_claimed_success=claimed_success,
                         terminal_reason=None,
                     )
+
+            if cycle_length is not None:
+                writer.append_event(
+                    {
+                        "kind": "repeated-action-cycle",
+                        "cycle_length": cycle_length,
+                        "reason": "repeated semantic action cycle detected",
+                    }
+                )
+                return _Execution(
+                    state=context.state,
+                    outcome=AgentAbandoned(
+                        reason="repeated semantic action cycle detected"
+                    ),
+                    verification=None,
+                    agent_claimed_success=claimed_success,
+                    terminal_reason="repeated semantic action cycle detected",
+                )
 
             stalled_out = (
                 context.consecutive_action_count >= 3

@@ -818,6 +818,7 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     elif kind in {
         "repeated-fixture-input",
         "repeated-action-detected",
+        "repeated-action-cycle",
         "no-progress-recovery",
         "no-progress-detected",
         "fixture-input-completed",
@@ -825,7 +826,15 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     }:
         if event.get("action") is not None:
             result["action"] = _public_action(event.get("action"))
-        for key in ("element_id", "fixture_key", "count", "limit", "model_calls", "reason"):
+        for key in (
+            "element_id",
+            "fixture_key",
+            "count",
+            "cycle_length",
+            "limit",
+            "model_calls",
+            "reason",
+        ):
             if key in event:
                 result[key] = _safe_value(event[key])
     elif kind in {"decision-recorded", "agent-claim", "action-rejected"}:
