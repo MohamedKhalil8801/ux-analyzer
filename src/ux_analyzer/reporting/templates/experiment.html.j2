@@ -35,6 +35,8 @@
           <thead>
             <tr>
               <th>Run</th>
+              <th>Model trial</th>
+              <th>Reproducibility</th>
               <th>Scenario</th>
               <th>Version</th>
               <th>Persona</th>
@@ -57,6 +59,8 @@
           {% for row in run_rows %}
             <tr class="run-row {{ row.status_class }}" data-run-id="{{ row.run_id }}" tabindex="0" role="button" aria-label="Open run {{ row.run_id }}">
               <td><strong>{{ row.run_id }}</strong><span class="subvalue">{{ row.terminal_state }}</span></td>
+              <td data-metric="model-trial">{{ row.model_trial }}</td>
+              <td data-metric="reproducibility">{{ row.reproducibility_label }}</td>
               <td>{{ row.scenario_label }}</td>
               <td>{{ row.version_label }}</td>
               <td>{{ row.persona_label }}</td>
@@ -75,7 +79,7 @@
               <td><strong>{{ row.gate_status }}</strong><span class="subvalue">{{ row.gate_reason }}</span></td>
             </tr>
           {% else %}
-            <tr><td colspan="17">No run evidence recorded.</td></tr>
+            <tr><td colspan="19">No run evidence recorded.</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -87,24 +91,24 @@
         <div class="aggregate-grid">
           <div class="table-wrap">
             <table id="aggregate-table">
-              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Version</th><th>Runs</th><th>Verified</th><th>Discovery cost</th><th>Task seconds</th><th>Model calls</th><th>Latency ms</th><th>Tokens</th></tr></thead>
+              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Model trial</th><th>Reproducibility</th><th>Version</th><th>Runs</th><th>Verified</th><th>Discovery cost</th><th>Task seconds</th><th>Model calls</th><th>Latency ms</th><th>Tokens</th></tr></thead>
               <tbody>
               {% for row in comparison_rows %}
-                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.estimated_task_seconds) if row.estimated_task_seconds is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.model_calls) if row.model_calls is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_latency_ms) if row.analysis_latency_ms is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_tokens) if row.analysis_tokens is not none else "unavailable" }}</td></tr>
+                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td data-metric="model-trial">{{ row.model_trial }}</td><td data-metric="reproducibility">{{ row.reproducibility_label }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.estimated_task_seconds) if row.estimated_task_seconds is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.model_calls) if row.model_calls is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_latency_ms) if row.analysis_latency_ms is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_tokens) if row.analysis_tokens is not none else "unavailable" }}</td></tr>
               {% else %}
-                <tr><td colspan="11">Aggregate metrics unavailable.</td></tr>
+                <tr><td colspan="13">Aggregate metrics unavailable.</td></tr>
               {% endfor %}
               </tbody>
             </table>
           </div>
           <div class="table-wrap">
             <table id="gate-table">
-              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Seeds</th><th>Gate</th><th>Reason</th></tr></thead>
+              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Model trial</th><th>Reproducibility</th><th>Seeds</th><th>Gate</th><th>Reason</th></tr></thead>
               <tbody>
               {% for row in gate_rows %}
-                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td>{{ row.paired_seed_count }}</td><td>{{ "unavailable" if not row.available else "pass" if row.passed else "fail" }}</td><td>{{ row.reasons | join("; ") if row.reasons else "All directional checks passed" }}</td></tr>
+                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td data-metric="model-trial">{{ row.model_trial }}</td><td data-metric="reproducibility">{{ row.reproducibility_label }}</td><td>{{ row.paired_seed_count }}</td><td>{{ "unavailable" if not row.available else "pass" if row.passed else "fail" }}</td><td>{{ row.reasons | join("; ") if row.reasons else "All directional checks passed" }}</td></tr>
               {% else %}
-                <tr><td colspan="6">Directional gates unavailable.</td></tr>
+                <tr><td colspan="8">Directional gates unavailable.</td></tr>
               {% endfor %}
               </tbody>
             </table>

@@ -42,6 +42,7 @@ def _write_run(
     *,
     version: str,
     discovery_cost: float,
+    model_trial: int = 2,
     screenshot: bytes = b"not-an-image",
     outcome: str = "verified-success",
     verified: bool | None = None,
@@ -65,6 +66,7 @@ def _write_run(
         {
             "run_id": run_id,
             "seed": 7,
+            "model_trial": model_trial,
             "config_digest": "config-sha",
             "endpoint_origin": "https://llm.example.test/v1",
             "model_ids": {"cognitive": "model-v1"},
@@ -250,6 +252,8 @@ def _write_run(
                 "application_version_id": version,
                 "persona_id": "persona",
                 "policy": "progressive-prominence-scent",
+                "model_trial": model_trial,
+                "reproducibility": "model-dependent",
                 "verified_completion": is_verified,
                 "wrong_actions": 0 if version == "improved" else 2,
                 "backtracks": 0,
@@ -319,6 +323,8 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "restart-playback" in html
     assert "Prominence contributions" in html
     assert "Element evidence" in html
+    assert 'data-metric="model-trial">2</td>' in html
+    assert "model-dependent (attention seed 7, model trial 2)" in html
     assert "Observation" in html
     assert "Terminal / failure" in html
     assert "Scent" in html
@@ -340,6 +346,32 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "fetch(" not in html
     assert '<link rel="stylesheet"' not in html
     assert "<script src=" not in html
+
+
+def test_renderer_distinguishes_model_trials_in_run_aggregate_and_gate_views(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-defective",
+        version="defective",
+        discovery_cost=8,
+        model_trial=2,
+    )
+    _write_run(
+        tmp_path,
+        "run-improved",
+        version="improved",
+        discovery_cost=3,
+        model_trial=2,
+    )
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert html.count('data-metric="model-trial">2</td>') >= 4
+    assert html.count("model-dependent (attention seed 7, model trial 2)") >= 2
 
 
 def test_overview_counts_executed_actions_and_formats_discovery_cost(
@@ -539,6 +571,7 @@ def test_renderer_includes_all_failed_experiment_and_staging_crash(
                     "persona_id": "impatient",
                     "policy": "progressive-prominence-scent",
                     "seed": 7,
+                    "model_trial": 1,
                 },
             ],
         },
@@ -554,6 +587,7 @@ def test_renderer_includes_all_failed_experiment_and_staging_crash(
     assert "run-crashed" in html
     assert "enable-2fa" in html
     assert "progressive-prominence-scent" in html
+    assert 'data-metric="model-trial">1</td>' in html
     assert "999999" not in html
 
 

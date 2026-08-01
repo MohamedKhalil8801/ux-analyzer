@@ -48,6 +48,7 @@ Manifest is reproducibility metadata. Current fields:
 {
   "run_id": "run-...",
   "seed": 0,
+  "model_trial": 0,
   "config_digest": "sha256...",
   "endpoint_origin": "https://provider.example",
   "model_ids": {
@@ -64,6 +65,11 @@ Manifest is reproducibility metadata. Current fields:
   "provider_manifests": []
 }
 ```
+
+`seed` identifies deterministic attention behavior. `model_trial` identifies
+external model-trial replication and remains independent from attention seed.
+New manifests persist both fields in run identity metadata. Legacy manifests
+without `model_trial` are compatible and read as model trial `0`.
 
 `endpoint_origin` and provider-manifest endpoint values are origin-only. URL
 credentials are rejected and API keys are never manifest fields. Final run

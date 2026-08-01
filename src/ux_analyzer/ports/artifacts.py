@@ -159,6 +159,7 @@ class BundleManifest:
     package_version: str = __version__
     provider_versions: Mapping[str, str] = field(default_factory=_empty_string_mapping)
     provider_manifests: tuple[ProviderManifest, ...] = ()
+    model_trial: int = 0
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -204,6 +205,7 @@ class BundleManifest:
         return cls(
             run_id=run_spec.run_id,
             seed=run_spec.seed,
+            model_trial=run_spec.model_trial,
             config_digest=run_spec.config_digest,
             endpoint_origin=endpoint_origin,
             scenario_id=run_spec.scenario.id,
@@ -223,6 +225,7 @@ class BundleManifest:
         return {
             "run_id": self.run_id,
             "seed": self.seed,
+            "model_trial": self.model_trial,
             "config_digest": self.config_digest,
             "endpoint_origin": self.endpoint_origin,
             "scenario_id": self.scenario_id,

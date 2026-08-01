@@ -100,10 +100,11 @@ def deterministic_run_id(
     policy: ExperimentPolicy,
     seed: int,
     config_digest: str,
+    model_trial: int = 0,
 ) -> str:
     """Hash semantic cell inputs into a stable run identity."""
 
-    payload = {
+    payload: dict[str, object] = {
         "application_version_id": application_version_id,
         "config_digest": config_digest,
         "experiment_id": experiment_id,
@@ -112,6 +113,8 @@ def deterministic_run_id(
         "scenario_id": scenario_id,
         "seed": seed,
     }
+    if model_trial != 0:
+        payload["model_trial"] = model_trial
     canonical = json.dumps(
         payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
@@ -163,6 +166,9 @@ def expand_experiment(
     seeds = selected.seeds or tuple(range(selected.run_count))
     if len(seeds) != len(set(seeds)):
         raise ValueError("experiment seeds must be unique")
+    model_trials = selected.model_trials
+    if len(model_trials) != len(set(model_trials)):
+        raise ValueError("experiment model trials must be unique")
     specs: list[RunSpec] = []
     seen_run_ids: set[str] = set()
     for scenario in chosen_scenarios:
@@ -174,30 +180,35 @@ def expand_experiment(
                     continue
                 for policy in policies:
                     policy_seeds = seeds if policy.uses_seeded_attention else seeds[:1]
-                    for seed in policy_seeds:
-                        run_id = deterministic_run_id(
-                            experiment_id=selected.id,
-                            scenario_id=scenario.id,
-                            application_version_id=version.id,
-                            persona_id=persona.id,
-                            policy=policy,
-                            seed=seed,
-                            config_digest=context.config_digest,
-                        )
-                        if run_id in seen_run_ids:
-                            raise ValueError(f"duplicate generated run ID: {run_id}")
-                        seen_run_ids.add(run_id)
-                        specs.append(
-                            RunSpec(
-                                run_id=run_id,
-                                seed=seed,
-                                scenario=scenario,
-                                application_version=version,
-                                persona=persona,
+                    for model_trial in model_trials:
+                        for seed in policy_seeds:
+                            run_id = deterministic_run_id(
+                                experiment_id=selected.id,
+                                scenario_id=scenario.id,
+                                application_version_id=version.id,
+                                persona_id=persona.id,
                                 policy=policy,
+                                seed=seed,
                                 config_digest=context.config_digest,
+                                model_trial=model_trial,
                             )
-                        )
+                            if run_id in seen_run_ids:
+                                raise ValueError(
+                                    f"duplicate generated run ID: {run_id}"
+                                )
+                            seen_run_ids.add(run_id)
+                            specs.append(
+                                RunSpec(
+                                    run_id=run_id,
+                                    seed=seed,
+                                    scenario=scenario,
+                                    application_version=version,
+                                    persona=persona,
+                                    policy=policy,
+                                    config_digest=context.config_digest,
+                                    model_trial=model_trial,
+                                )
+                            )
     if not specs:
         raise ValueError("experiment expansion produced no eligible run specs")
     return tuple(specs)

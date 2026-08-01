@@ -44,6 +44,7 @@ def bundle_manifest(run_id: str = "run-1") -> BundleManifest:
     return BundleManifest(
         run_id=run_id,
         seed=17,
+        model_trial=2,
         config_digest="config-sha256",
         endpoint_origin="https://llm.example.test/v1",
         model_ids={"scent": "scent-model", "cognitive": "cognitive-model"},
@@ -60,6 +61,17 @@ def bundle_manifest(run_id: str = "run-1") -> BundleManifest:
             ),
         ),
     )
+
+
+def test_manifest_persists_default_model_trial_zero() -> None:
+    manifest = BundleManifest(
+        run_id="run-default-trial",
+        seed=17,
+        config_digest="config-sha256",
+        endpoint_origin="https://llm.example.test/v1",
+    )
+
+    assert manifest.to_dict()["model_trial"] == 0
 
 
 def test_start_uses_atomic_staging_and_finalize_creates_required_files(
@@ -135,6 +147,7 @@ def test_finalize_writes_manifest_result_and_checksums_without_secrets(
     manifest_text = (final_path / "manifest.json").read_text(encoding="utf-8")
     manifest = json.loads(manifest_text)
     assert manifest["seed"] == 17
+    assert manifest["model_trial"] == 2
     assert manifest["config_digest"] == "config-sha256"
     assert manifest["endpoint_origin"] == "https://llm.example.test"
     assert manifest["model_ids"] == {

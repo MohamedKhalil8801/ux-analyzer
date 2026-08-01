@@ -11,6 +11,10 @@ def _empty_int_list() -> list[int]:
     return []
 
 
+def _default_model_trials() -> list[int]:
+    return [0]
+
+
 def _empty_float_mapping() -> dict[str, float]:
     return {}
 
@@ -117,6 +121,7 @@ class ExperimentModel(_ConfigModel):
         ]
     ] = Field(min_length=1)
     seeds: list[int] = Field(default_factory=_empty_int_list)
+    model_trials: list[int] = Field(default_factory=_default_model_trials, min_length=1)
     run_count: int = Field(gt=0)
 
 

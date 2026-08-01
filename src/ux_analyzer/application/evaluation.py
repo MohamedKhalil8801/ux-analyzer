@@ -224,6 +224,7 @@ class RunMetrics:
     claimed_completion: bool
     false_success: bool
     abandoned: bool
+    model_trial: int = 0
     target_prominence: float | None = None
     target_scent: float | None = None
     strongest_competing_scent: float | None = None
@@ -296,6 +297,17 @@ class RunMetrics:
     def completion(self) -> bool:
         return self.verified_completion
 
+    @property
+    def reproducibility_label(self) -> str:
+        """Describe model-dependent evidence with both identity axes."""
+
+        if self.reproducibility is Reproducibility.MODEL_DEPENDENT:
+            return (
+                "model-dependent "
+                f"(attention seed {self.seed}, model trial {self.model_trial})"
+            )
+        return self.reproducibility.value
+
     def metric(self, name: EvaluationMetric | str) -> Metric:
         selected = str(name)
         standard = _standard_metric_values(self).get(selected)
@@ -358,7 +370,7 @@ class MetricSummary:
 
 @dataclass(frozen=True, slots=True)
 class CellAggregate:
-    """Per scenario/version/persona/policy aggregate."""
+    """Per scenario/version/persona/policy/model-trial aggregate."""
 
     scenario_id: str
     application_version_id: str
@@ -370,6 +382,7 @@ class CellAggregate:
     reproducibility: Reproducibility
     reproducibility_summary: Mapping[str, int]
     evidence_ids: tuple[str, ...]
+    model_trial: int = 0
 
     @property
     def run_count(self) -> int:
@@ -413,6 +426,7 @@ class VariantComparison:
     improved: CellAggregate
     paired_seeds: tuple[int, ...]
     gate: DirectionalGateResult
+    paired_model_trials: tuple[int, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -617,11 +631,18 @@ def evaluate_run(
         "Agent claim disagreed with verifier.",
     )
     if target_prominence is not None:
+        prominence_description = (
+            "Model-dependent prominence estimate for target "
+            f"(attention seed {state.spec.seed} and model trial "
+            f"{state.spec.model_trial})."
+            if model_dependent
+            else "Heuristic prominence estimate for target."
+        )
         record(
             EvaluationMetric.TARGET_PROMINENCE,
             target_prominence,
             estimated,
-            "Heuristic prominence estimate for target.",
+            prominence_description,
             prominence_event_ids,
         )
     if target_scent is not None:
@@ -722,6 +743,7 @@ def evaluate_run(
         claimed_completion=claimed,
         false_success=claimed and not verified,
         abandoned=abandoned,
+        model_trial=state.spec.model_trial,
         target_prominence=target_prominence,
         target_scent=target_scent,
         strongest_competing_scent=strongest_competing_scent,
@@ -1037,7 +1059,7 @@ def evaluate_experiment_results(results: Sequence[RunResult]) -> ExperimentEvalu
         raise ValueError("every completed run needs persisted metrics")
     cells = aggregate_cells(metrics)
     grouped: dict[
-        tuple[str, str, str, str | None],
+        tuple[str, str, str, str | None, int],
         dict[ApplicationVersionKind, list[RunMetrics]],
     ] = {}
     by_run_id = {result.run_id: result for result in run_results}
@@ -1048,6 +1070,7 @@ def evaluate_experiment_results(results: Sequence[RunResult]) -> ExperimentEvalu
             metric.persona_id,
             metric.policy,
             metric.config_digest,
+            metric.model_trial,
         )
         grouped.setdefault(key, {}).setdefault(
             result.state.spec.application_version.kind, []
@@ -1078,6 +1101,7 @@ def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
         first.application_version_id,
         first.persona_id,
         first.policy,
+        first.model_trial,
     )
     if any(
         (
@@ -1085,11 +1109,14 @@ def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
             item.application_version_id,
             item.persona_id,
             item.policy,
+            item.model_trial,
         )
         != identity
         for item in ordered
     ):
-        raise ValueError("cell runs must share scenario, version, persona, and policy")
+        raise ValueError(
+            "cell runs must share scenario, version, persona, policy, and model trial"
+        )
     _reject_unsupported_metrics(ordered)
     metric_names = sorted(
         {
@@ -1142,19 +1169,21 @@ def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
         evidence_ids=tuple(
             evidence.evidence_id for run in ordered for evidence in run.evidence
         ),
+        model_trial=first.model_trial,
     )
 
 
 def aggregate_cells(runs: Sequence[RunMetrics]) -> tuple[CellAggregate, ...]:
     """Aggregate all cells in stable identity order."""
 
-    groups: dict[tuple[str, str, str, str], list[RunMetrics]] = {}
+    groups: dict[tuple[str, str, str, str, int], list[RunMetrics]] = {}
     for run in runs:
         key = (
             run.scenario_id,
             run.application_version_id,
             run.persona_id,
             run.policy,
+            run.model_trial,
         )
         groups.setdefault(key, []).append(run)
     return tuple(aggregate_cell(groups[key]) for key in sorted(groups))
@@ -1195,26 +1224,33 @@ def compare_variants(
     improved = tuple(improved_runs)
     if not baseline or not improved:
         raise ValueError("variant comparison needs both baseline and improved runs")
-    baseline_by_seed = _by_seed(baseline)
-    improved_by_seed = _by_seed(improved)
-    if set(baseline_by_seed) != set(improved_by_seed):
-        raise ValueError("variant comparison requires identical paired seeds")
+    baseline_by_assignment = _by_seed_and_model_trial(baseline)
+    improved_by_assignment = _by_seed_and_model_trial(improved)
+    if set(baseline_by_assignment) != set(improved_by_assignment):
+        raise ValueError(
+            "variant comparison requires identical paired attention seeds and "
+            "model trials"
+        )
     _validate_variant_identity(baseline, improved)
-    paired_seeds = tuple(sorted(baseline_by_seed))
+    paired_assignments = tuple(sorted(baseline_by_assignment))
+    paired_seeds = tuple(seed for seed, _ in paired_assignments)
+    paired_model_trials = tuple(trial for _, trial in paired_assignments)
     baseline_cell = aggregate_cell(baseline)
     improved_cell = aggregate_cell(improved)
     cost_deltas = tuple(
-        improved_by_seed[seed].discovery_cost.total
-        - baseline_by_seed[seed].discovery_cost.total
-        for seed in paired_seeds
+        improved_by_assignment[assignment].discovery_cost.total
+        - baseline_by_assignment[assignment].discovery_cost.total
+        for assignment in paired_assignments
     )
     wrong_deltas = tuple(
-        improved_by_seed[seed].wrong_actions - baseline_by_seed[seed].wrong_actions
-        for seed in paired_seeds
+        improved_by_assignment[assignment].wrong_actions
+        - baseline_by_assignment[assignment].wrong_actions
+        for assignment in paired_assignments
     )
     backtrack_deltas = tuple(
-        improved_by_seed[seed].backtracks - baseline_by_seed[seed].backtracks
-        for seed in paired_seeds
+        improved_by_assignment[assignment].backtracks
+        - baseline_by_assignment[assignment].backtracks
+        for assignment in paired_assignments
     )
     baseline_completion = sum(run.verified_completion for run in baseline) / len(
         baseline
@@ -1226,34 +1262,47 @@ def compare_variants(
     wrong_not_increased = _median(wrong_deltas) <= 0
     backtrack_not_increased = _median(backtrack_deltas) <= 0
     completion_not_regressed = improved_completion >= baseline_completion
-    gated_seeds = tuple(
-        seed
-        for seed in paired_seeds
+    gated_assignments = tuple(
+        assignment
+        for assignment in paired_assignments
         if not (
-            not baseline_by_seed[seed].verified_completion
-            and improved_by_seed[seed].verified_completion
+            not baseline_by_assignment[assignment].verified_completion
+            and improved_by_assignment[assignment].verified_completion
         )
     )
-    gated_cost_decreased = not gated_seeds or _median(
-        tuple(
-            improved_by_seed[seed].discovery_cost.total
-            - baseline_by_seed[seed].discovery_cost.total
-            for seed in gated_seeds
+    gated_cost_decreased = (
+        not gated_assignments
+        or _median(
+            tuple(
+                improved_by_assignment[assignment].discovery_cost.total
+                - baseline_by_assignment[assignment].discovery_cost.total
+                for assignment in gated_assignments
+            )
         )
-    ) < 0
-    gated_wrong_not_increased = not gated_seeds or _median(
-        tuple(
-            improved_by_seed[seed].wrong_actions
-            - baseline_by_seed[seed].wrong_actions
-            for seed in gated_seeds
+        < 0
+    )
+    gated_wrong_not_increased = (
+        not gated_assignments
+        or _median(
+            tuple(
+                improved_by_assignment[assignment].wrong_actions
+                - baseline_by_assignment[assignment].wrong_actions
+                for assignment in gated_assignments
+            )
         )
-    ) <= 0
-    gated_backtrack_not_increased = not gated_seeds or _median(
-        tuple(
-            improved_by_seed[seed].backtracks - baseline_by_seed[seed].backtracks
-            for seed in gated_seeds
+        <= 0
+    )
+    gated_backtrack_not_increased = (
+        not gated_assignments
+        or _median(
+            tuple(
+                improved_by_assignment[assignment].backtracks
+                - baseline_by_assignment[assignment].backtracks
+                for assignment in gated_assignments
+            )
         )
-    ) <= 0
+        <= 0
+    )
     reasons = tuple(
         reason
         for reason, passed in (
@@ -1300,6 +1349,7 @@ def compare_variants(
         improved=improved_cell,
         paired_seeds=paired_seeds,
         gate=gate,
+        paired_model_trials=paired_model_trials,
     )
 
 
@@ -1530,12 +1580,18 @@ def _median(values: Sequence[float]) -> float:
     return interval_summary(values).median
 
 
-def _by_seed(runs: Sequence[RunMetrics]) -> dict[int, RunMetrics]:
-    result: dict[int, RunMetrics] = {}
+def _by_seed_and_model_trial(
+    runs: Sequence[RunMetrics],
+) -> dict[tuple[int, int], RunMetrics]:
+    result: dict[tuple[int, int], RunMetrics] = {}
     for run in runs:
-        if run.seed in result:
-            raise ValueError(f"duplicate seed in variant cell: {run.seed}")
-        result[run.seed] = run
+        assignment = (run.seed, run.model_trial)
+        if assignment in result:
+            raise ValueError(
+                "duplicate attention seed and model trial in variant cell: "
+                f"{run.seed}, {run.model_trial}"
+            )
+        result[assignment] = run
     return result
 
 

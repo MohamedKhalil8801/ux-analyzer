@@ -80,7 +80,13 @@ def _write_run(root: Path) -> Path:
     return run
 
 
-def _write_resumable_metrics_bundle(root: Path, spec, *, cost: float) -> None:
+def _write_resumable_metrics_bundle(
+    root: Path,
+    spec,
+    *,
+    cost: float,
+    include_model_trial: bool = True,
+) -> None:
     run = root / "runs" / spec.run_id
     run.mkdir(parents=True)
     metrics = {
@@ -111,10 +117,13 @@ def _write_resumable_metrics_bundle(root: Path, spec, *, cost: float) -> None:
             "abandonment_penalty": 0,
         },
     }
+    if include_model_trial:
+        metrics["model_trial"] = spec.model_trial
+    manifest = {"run_id": spec.run_id, "seed": spec.seed}
+    if include_model_trial:
+        manifest["model_trial"] = spec.model_trial
     contents = {
-        "manifest.json": json.dumps(
-            {"run_id": spec.run_id, "seed": spec.seed}
-        ).encode(),
+        "manifest.json": json.dumps(manifest).encode(),
         "timeline.jsonl": (
             json.dumps(
                 {
@@ -304,6 +313,48 @@ def test_resume_matrix_skips_only_valid_finalized_runs(tmp_path: Path) -> None:
     assert store.state.finalized_run_ids == (completed.run_id,)
 
 
+def test_resume_default_config_reuses_legacy_manifest_without_model_trial(
+    tmp_path: Path,
+) -> None:
+    matrix = cli._resolve_matrix_or_exit(
+        DEMO_PROJECT,
+        "core-pair",
+        run_count=1,
+        policies=(),
+    )
+    spec = matrix.specs[0]
+    legacy_payload = {
+        "application_version_id": spec.application_version.id,
+        "config_digest": spec.config_digest,
+        "experiment_id": "core-pair",
+        "persona_id": spec.persona.id,
+        "policy": spec.policy.value,
+        "scenario_id": spec.scenario.id,
+        "seed": spec.seed,
+    }
+    canonical = json.dumps(
+        legacy_payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    legacy_run_id = f"run-{hashlib.sha256(canonical).hexdigest()}"
+    legacy_spec = replace(spec, run_id=legacy_run_id)
+    _write_resumable_metrics_bundle(
+        tmp_path,
+        legacy_spec,
+        cost=1,
+        include_model_trial=False,
+    )
+
+    resumed, store = cli._prepare_resumed_matrix(matrix, tmp_path)
+
+    assert spec.model_trial == 0
+    assert spec.run_id == legacy_run_id
+    assert spec.run_id not in {item.run_id for item in resumed.specs}
+    assert store.state.finalized_run_ids == (legacy_run_id,)
+
+
 @pytest.mark.parametrize("new_result_count", (0, 1))
 def test_resume_completion_evaluates_all_selected_finalized_bundles(
     tmp_path: Path, new_result_count: int
@@ -347,6 +398,52 @@ def test_resume_completion_evaluates_all_selected_finalized_bundles(
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert {item["run_id"] for item in summary["run_metrics"]} == {
         spec.run_id for spec in selected
+    }
+
+
+def test_resume_completion_keeps_model_trials_separate_for_variant_comparisons(
+    tmp_path: Path,
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["model_trials"] = [0, 1]
+    project_path = tmp_path / "project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    matrix = cli._resolve_matrix_or_exit(
+        project_path,
+        "focused-validation",
+        run_count=1,
+        policies=(),
+    )
+    assert {spec.model_trial for spec in matrix.specs} == {0, 1}
+    for index, spec in enumerate(matrix.specs):
+        _write_resumable_metrics_bundle(tmp_path, spec, cost=float(index + 1))
+
+    resumed, store = cli._prepare_resumed_matrix(matrix, tmp_path)
+    assert resumed.specs == ()
+    assert set(store.state.finalized_run_ids) == {spec.run_id for spec in matrix.specs}
+
+    summary_path, _ = cli._complete_experiment(
+        ExperimentResult(specs=matrix.specs, results=(), failures=()),
+        output=tmp_path,
+        runtime=matrix.loaded.runtime,
+        selected_specs=matrix.specs,
+    )
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    comparisons = summary["variant_comparisons"]
+    assert len(comparisons) == 4
+    assert {comparison["paired_model_trials"][0] for comparison in comparisons} == {
+        0,
+        1,
+    }
+    assert {comparison["baseline"]["model_trial"] for comparison in comparisons} == {
+        0,
+        1,
     }
 
 
@@ -760,6 +857,7 @@ def test_complete_experiment_always_reports_all_failed_specs(tmp_path: Path) -> 
         {
             "application_version_id": spec.application_version.id,
             "error_type": "ProviderFailure",
+            "model_trial": spec.model_trial,
             "persona_id": spec.persona.id,
             "policy": spec.policy.value,
             "reason": "browser capture failed",

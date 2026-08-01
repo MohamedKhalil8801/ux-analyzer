@@ -259,6 +259,7 @@ class ExperimentDefinition:
     policies: tuple[ExperimentPolicy, ...]
     seeds: tuple[int, ...]
     run_count: int
+    model_trials: tuple[int, ...] = (0,)
 
     def __post_init__(self) -> None:
         if self.run_count <= 0:
@@ -270,6 +271,7 @@ class ExperimentDefinition:
         object.__setattr__(self, "persona_ids", tuple(self.persona_ids))
         object.__setattr__(self, "policies", tuple(self.policies))
         object.__setattr__(self, "seeds", tuple(self.seeds))
+        object.__setattr__(self, "model_trials", tuple(self.model_trials))
 
 
 @dataclass(frozen=True, slots=True)

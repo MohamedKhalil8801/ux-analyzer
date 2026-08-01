@@ -76,7 +76,7 @@ class ArtifactChecksum:
 
 @dataclass(frozen=True, slots=True)
 class RunSpec:
-    """One immutable scenario/version/persona/policy/seed assignment."""
+    """One immutable scenario/version/persona/policy/seed/trial assignment."""
 
     run_id: str
     seed: int
@@ -85,6 +85,7 @@ class RunSpec:
     persona: Persona
     policy: ExperimentPolicy
     config_digest: str
+    model_trial: int = 0
 
     def __post_init__(self) -> None:
         if not self.run_id:

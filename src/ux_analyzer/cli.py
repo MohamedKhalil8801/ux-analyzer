@@ -1165,16 +1165,21 @@ def _compare_selected_variants(
 ) -> tuple[object, ...]:
     specs_by_run = {spec.run_id: spec for spec in selected_specs}
     groups: dict[
-        tuple[str, str, str], dict[ApplicationVersionKind, list[RunMetrics]]
+        tuple[str, str, str, int], dict[ApplicationVersionKind, list[RunMetrics]]
     ] = {}
     for metric in metrics:
         spec = specs_by_run.get(metric.run_id)
         if spec is None:
             continue
-        key = (metric.scenario_id, metric.persona_id, metric.policy)
-        groups.setdefault(key, {}).setdefault(
-            spec.application_version.kind, []
-        ).append(metric)
+        key = (
+            metric.scenario_id,
+            metric.persona_id,
+            metric.policy,
+            metric.model_trial,
+        )
+        groups.setdefault(key, {}).setdefault(spec.application_version.kind, []).append(
+            metric
+        )
     comparisons: list[object] = []
     for key in sorted(groups):
         baseline = groups[key].get(ApplicationVersionKind.DEFECTIVE)
@@ -1182,7 +1187,8 @@ def _compare_selected_variants(
         if (
             baseline
             and improved
-            and {item.seed for item in baseline} == {item.seed for item in improved}
+            and {(item.seed, item.model_trial) for item in baseline}
+            == {(item.seed, item.model_trial) for item in improved}
         ):
             comparisons.append(compare_variants(baseline, improved))
     return tuple(comparisons)
@@ -1232,6 +1238,7 @@ def _invalid_ux_sample_record(result: RunResult) -> dict[str, object]:
         "persona_id": spec.persona.id,
         "policy": spec.policy.value,
         "seed": spec.seed,
+        "model_trial": spec.model_trial,
     }
 
 
@@ -1248,6 +1255,7 @@ def _experiment_failure_record(failure: ExperimentFailure) -> dict[str, object]:
         "persona_id": spec.persona.id,
         "policy": spec.policy.value,
         "seed": spec.seed,
+        "model_trial": spec.model_trial,
     }
 
 
@@ -1265,6 +1273,7 @@ def _evaluation_failure_record(result: RunResult) -> dict[str, object]:
         "persona_id": spec.persona.id,
         "policy": spec.policy.value,
         "seed": spec.seed,
+        "model_trial": spec.model_trial,
     }
 
 

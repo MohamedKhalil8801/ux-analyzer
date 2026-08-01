@@ -374,6 +374,7 @@ def _to_experiment(experiment: ExperimentModel) -> ExperimentDefinition:
         policies=tuple(ExperimentPolicy(policy) for policy in experiment.policies),
         seeds=tuple(experiment.seeds),
         run_count=experiment.run_count,
+        model_trials=tuple(experiment.model_trials),
     )
 
 

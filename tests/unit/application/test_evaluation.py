@@ -312,6 +312,27 @@ def test_compare_variants_requires_paired_seeds_and_applies_directional_gate() -
     assert comparison.gate.passed is True
     assert comparison.gate.discovery_cost_decreased is True
     assert comparison.paired_seeds == (7,)
+    assert comparison.paired_model_trials == (0,)
+
+
+def test_model_trials_form_distinct_evaluation_cells() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    first = evaluate_run(_result(version), EvaluationTarget("target"))
+    second = replace(first, run_id="run-trial-1", model_trial=1)
+
+    cells = aggregate_cell((first,))
+    trial_cells = evaluate_experiment_results(
+        (
+            replace(_result(version), metrics=first),
+            replace(_result(version), run_id="run-trial-1", metrics=second),
+        )
+    ).cell_aggregates
+
+    assert cells.model_trial == 0
+    assert len(trial_cells) == 2
+    assert {cell.model_trial for cell in trial_cells} == {0, 1}
 
 
 def test_completion_improvement_dominates_effort_of_early_abandonment() -> None:
@@ -402,13 +423,33 @@ def test_model_dependent_inputs_are_not_reported_as_seed_only() -> None:
         id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
     )
 
+    result = _result(version)
+    result = replace(
+        result,
+        state=replace(
+            result.state,
+            spec=replace(result.state.spec, model_trial=3),
+        ),
+    )
     metrics = evaluate_run(
-        _result(version),
+        result,
         EvaluationTarget("target"),
-        inputs=RunEvaluationInputs(model_dependent=True),
+        inputs=RunEvaluationInputs(
+            prominence_scores={"target": 0.2},
+            model_dependent=True,
+        ),
     )
 
     assert metrics.reproducibility.value == "model-dependent"
+    assert metrics.model_trial == 3
+    assert metrics.reproducibility_label == (
+        "model-dependent (attention seed 7, model trial 3)"
+    )
+    prominence = metrics.metric("target-prominence")
+    evidence = next(
+        item for item in metrics.evidence if item.evidence_id in prominence.evidence_ids
+    )
+    assert "attention seed 7 and model trial 3" in evidence.description
 
 
 def test_production_inputs_derive_scores_and_fold_facts_from_recorded_evidence() -> (

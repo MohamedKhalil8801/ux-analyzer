@@ -6,6 +6,7 @@ import pytest
 
 from ux_analyzer.application.experiment import (
     ExperimentContext,
+    deterministic_run_id,
     expand_experiment,
 )
 from ux_analyzer.domain.attention import AttentionState
@@ -86,7 +87,9 @@ def _project() -> BenchmarkProject:
 
 
 def _definition(
-    policies: tuple[ExperimentPolicy, ...], seeds: tuple[int, ...] = ()
+    policies: tuple[ExperimentPolicy, ...],
+    seeds: tuple[int, ...] = (),
+    model_trials: tuple[int, ...] = (0,),
 ) -> ExperimentDefinition:
     return ExperimentDefinition(
         id="core",
@@ -96,6 +99,7 @@ def _definition(
         persona_ids=("new-user",),
         policies=policies,
         seeds=seeds,
+        model_trials=model_trials,
         run_count=10,
     )
 
@@ -153,6 +157,45 @@ def test_deterministic_policies_use_only_first_explicit_seed() -> None:
 
     assert len(specs) == 4
     assert {spec.seed for spec in specs} == {17}
+
+
+def test_model_trials_expand_independently_from_attention_seeds() -> None:
+    specs = expand_experiment(
+        _definition(
+            (ExperimentPolicy.PROGRESSIVE_PROMINENCE,),
+            seeds=(7,),
+            model_trials=(0, 1, 2),
+        ),
+        project=_project(),
+        config_digest="config-sha",
+    )
+
+    assert {(spec.seed, spec.model_trial) for spec in specs} == {
+        (7, 0),
+        (7, 1),
+        (7, 2),
+    }
+    assert len(specs) == 6
+    assert len({spec.run_id for spec in specs}) == 6
+
+
+def test_zero_model_trial_preserves_legacy_run_id_payload() -> None:
+    kwargs = {
+        "experiment_id": "core",
+        "scenario_id": "invite",
+        "application_version_id": "app-defective",
+        "persona_id": "new-user",
+        "policy": ExperimentPolicy.PROGRESSIVE_PROMINENCE,
+        "seed": 7,
+        "config_digest": "config-sha",
+    }
+
+    assert deterministic_run_id(**kwargs, model_trial=0) == (
+        "run-6efda27bcc2d4245830ceae8ca1c030f42d90153e47ebea15d740593993cfadf"
+    )
+    assert deterministic_run_id(**kwargs, model_trial=1) != deterministic_run_id(
+        **kwargs, model_trial=0
+    )
 
 
 def test_explicit_seed_matrix_replaces_default_run_count_seeds() -> None:

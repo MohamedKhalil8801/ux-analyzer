@@ -53,6 +53,12 @@ def test_load_valid_project_into_frozen_domain_contracts() -> None:
     assert len(loaded.config_digest) == 64
 
 
+def test_missing_model_trials_defaults_to_zero() -> None:
+    loaded = load_project(FIXTURE_PATH)
+
+    assert loaded.project.experiments[0].model_trials == (0,)
+
+
 def test_scenario_timeout_can_be_null_or_omitted(tmp_path: Path) -> None:
     project = _read_project()
     project["scenarios"][0]["budget"]["timeout_seconds"] = None
