@@ -1,0 +1,15 @@
+id: focused-validation
+name: Focused defective versus improved validation
+scenario_ids:
+  - invite-teammate
+application_version_ids:
+  - fixture-app-defective
+  - fixture-app-improved
+persona_ids:
+  - first-time-nontechnical
+policies:
+  - full-list
+  - progressive-prominence-scent
+seeds:
+  - 0
+run_count: 1

@@ -118,20 +118,41 @@ def test_expand_experiment_is_stable_and_preserves_comparison_inputs() -> None:
     first = expand_experiment(context)
     repeat = expand_experiment(context)
 
-    assert len(first) == 40
+    assert len(first) == 22
     assert [spec.run_id for spec in first] == [spec.run_id for spec in repeat]
     assert len({spec.run_id for spec in first}) == len(first)
-    assert [spec.seed for spec in first[:10]] == list(range(10))
-    assert [spec.policy for spec in first[:10]] == [ExperimentPolicy.FULL_LIST] * 10
-    assert first[0].scenario is first[10].scenario
-    assert first[0].persona is first[10].persona
-    assert first[0].scenario.fixture_inputs == first[10].scenario.fixture_inputs
-    assert first[0].config_digest == first[10].config_digest == "config-sha"
+    assert first[0].seed == 0
+    assert first[0].policy is ExperimentPolicy.FULL_LIST
+    assert [spec.seed for spec in first[1:11]] == list(range(10))
+    assert [spec.policy for spec in first[1:11]] == [
+        ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
+    ] * 10
+    assert first[0].scenario is first[1].scenario
+    assert first[0].persona is first[1].persona
+    assert first[0].scenario.fixture_inputs == first[1].scenario.fixture_inputs
+    assert first[0].config_digest == first[1].config_digest == "config-sha"
     assert context.model_config == {
         "cognitive_model": "model-a",
         "scent_model": "model-b",
     }
     assert first[0].run_id != first[10].run_id
+
+
+def test_deterministic_policies_use_only_first_explicit_seed() -> None:
+    specs = expand_experiment(
+        _definition(
+            (
+                ExperimentPolicy.FULL_LIST,
+                ExperimentPolicy.PROMINENCE_RANKED_LIST,
+            ),
+            seeds=(17, 23),
+        ),
+        project=_project(),
+        config_digest="config-sha",
+    )
+
+    assert len(specs) == 4
+    assert {spec.seed for spec in specs} == {17}
 
 
 def test_explicit_seed_matrix_replaces_default_run_count_seeds() -> None:

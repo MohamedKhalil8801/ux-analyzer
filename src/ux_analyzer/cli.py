@@ -518,7 +518,9 @@ def _resolve_single_run(
 
 def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     policy_names = tuple(policy.value for policy in matrix.definition.policies)
-    seeds = tuple(sorted({spec.seed for spec in matrix.specs}))
+    configured_seeds = matrix.definition.seeds or tuple(
+        range(matrix.definition.run_count)
+    )
     calls = sum(_MODEL_CALLS_BY_POLICY[spec.policy.value] for spec in matrix.specs)
     cells = Counter(
         (
@@ -533,8 +535,12 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     typer.echo(f"experiment: {matrix.definition.id}")
     typer.echo(f"policies: {', '.join(policy_names)}")
     typer.echo(f"workers: {workers}")
-    typer.echo(f"seeds per cell: {len(seeds)}")
+    typer.echo(f"configured seeds: {len(configured_seeds)}")
     typer.echo(f"run specs: {len(matrix.specs)}")
+    eligible_cells = len(cells)
+    unsuppressed_specs = eligible_cells * len(configured_seeds)
+    suppressed = unsuppressed_specs - len(matrix.specs)
+    typer.echo(f"deterministic seed repetitions suppressed: {suppressed}")
     typer.echo(f"model calls for one attention cycle: {calls}")
     typer.echo(
         "maximum logical model calls: "

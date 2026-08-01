@@ -173,7 +173,8 @@ def expand_experiment(
                 if persona.id not in scenario.eligible_persona_ids:
                     continue
                 for policy in policies:
-                    for seed in seeds:
+                    policy_seeds = seeds if policy.uses_seeded_attention else seeds[:1]
+                    for seed in policy_seeds:
                         run_id = deterministic_run_id(
                             experiment_id=selected.id,
                             scenario_id=scenario.id,

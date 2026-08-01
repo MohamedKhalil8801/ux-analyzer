@@ -23,6 +23,15 @@ class ExperimentPolicy(StrEnum):
     PROGRESSIVE_PROMINENCE = "progressive-prominence"
     PROGRESSIVE_PROMINENCE_SCENT = "progressive-prominence-scent"
 
+    @property
+    def uses_seeded_attention(self) -> bool:
+        """Whether repeated seeds vary this policy's attention selection."""
+
+        return self in {
+            ExperimentPolicy.PROGRESSIVE_PROMINENCE,
+            ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
+        }
+
 
 class VerifierOperator(StrEnum):
     """Supported comparison operations for fixture-state verification."""

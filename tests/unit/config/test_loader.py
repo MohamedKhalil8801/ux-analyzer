@@ -110,6 +110,23 @@ def test_demo_calibrates_strong_scent_weight_for_progressive_attention() -> None
     assert loaded.runtime.attention.coarse_scent_weight == pytest.approx(1.0)
 
 
+def test_demo_loads_four_cell_focused_validation_experiment() -> None:
+    demo_path = Path(__file__).parents[3] / "benchmarks" / "demo" / "project.yaml"
+
+    loaded = load_project(demo_path)
+    experiment = next(
+        item for item in loaded.project.experiments if item.id == "focused-validation"
+    )
+
+    assert experiment.scenario_ids == ("invite-teammate",)
+    assert experiment.application_version_ids == (
+        "fixture-app-defective",
+        "fixture-app-improved",
+    )
+    assert experiment.persona_ids == ("first-time-nontechnical",)
+    assert experiment.run_count == 1
+
+
 def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     tmp_path: Path,
 ) -> None:
