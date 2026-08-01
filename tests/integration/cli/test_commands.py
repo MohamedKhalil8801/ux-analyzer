@@ -197,9 +197,41 @@ def test_run_one_dry_run_never_expands_other_matrix_cells(tmp_path: Path) -> Non
 
     assert result.exit_code == 0, result.stdout
     assert "run specs: 1" in result.stdout
-    assert "invite-teammate/fixture-app-improved/first-time-nontechnical/" in result.stdout
+    assert (
+        "invite-teammate/fixture-app-improved/first-time-nontechnical/" in result.stdout
+    )
     assert "enable-2fa/" not in result.stdout
     assert "fixture-app-defective/" not in result.stdout
+
+
+def test_resume_matrix_skips_only_valid_finalized_runs(tmp_path: Path) -> None:
+    matrix = cli._resolve_matrix_or_exit(
+        DEMO_PROJECT, "core-pair", run_count=1, policies=()
+    )
+    completed = matrix.specs[0]
+    run = tmp_path / "runs" / completed.run_id
+    run.mkdir(parents=True)
+    contents = {
+        "manifest.json": json.dumps({"run_id": completed.run_id}).encode(),
+        "timeline.jsonl": b'{"kind":"run-terminated"}\n',
+        "result.json": json.dumps({"run_id": completed.run_id}).encode(),
+    }
+    import hashlib
+
+    for name, content in contents.items():
+        (run / name).write_bytes(content)
+    (run / "checksums.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256(content).hexdigest()}  {name}\n"
+            for name, content in contents.items()
+        )
+    )
+
+    resumed, store = cli._prepare_resumed_matrix(matrix, tmp_path)
+
+    assert completed.run_id not in {spec.run_id for spec in resumed.specs}
+    assert len(resumed.specs) == len(matrix.specs) - 1
+    assert store.state.finalized_run_ids == (completed.run_id,)
 
 
 def test_ablate_selects_optional_policies_and_run_count_override(

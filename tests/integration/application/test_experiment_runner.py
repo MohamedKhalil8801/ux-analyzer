@@ -160,6 +160,31 @@ async def test_runner_bounds_concurrency() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_checkpoints_each_result_and_failure_in_input_order() -> None:
+    tracker = {"active": 0, "max_active": 0, "cleaned": 0}
+    specs = (_spec("run-1"), _spec("run-2"), _spec("run-3"))
+    completed: list[tuple[str, str]] = []
+
+    def factory(spec: RunSpec) -> FakeAgent:
+        return FakeAgent(tracker, failing=spec.run_id == "run-2")
+
+    async def on_complete(
+        spec: RunSpec, result: object | None, failure: object | None
+    ) -> None:
+        completed.append(
+            (spec.run_id, "failed" if failure is not None else "finalized")
+        )
+
+    await ExperimentRunner(factory).run(specs, workers=2, on_complete=on_complete)
+
+    assert sorted(completed) == [
+        ("run-1", "finalized"),
+        ("run-2", "failed"),
+        ("run-3", "finalized"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runner_cancellation_cleans_up_active_agents() -> None:
     tracker = {
         "active": 0,

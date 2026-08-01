@@ -26,6 +26,11 @@ from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
 from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
 from ux_analyzer.adapters.web.session import PlaywrightSessionAdapter
 from ux_analyzer.adapters.web.verifier import HttpFixtureStateClient, WebVerifier
+from ux_analyzer.application.checkpoint import (
+    CheckpointError,
+    ExperimentCheckpointStore,
+    finalized_bundle_is_valid,
+)
 from ux_analyzer.application.evaluation import (
     evaluate_experiment_results,
     evaluate_run,
@@ -168,6 +173,7 @@ def run(
     dry_run: bool = typer.Option(False, "--dry-run"),
     check_env: bool = typer.Option(False, "--check-env"),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
+    resume: bool = typer.Option(False, "--resume"),
 ) -> None:
     """Expand and execute one benchmark experiment."""
     _run_experiment_command(
@@ -180,6 +186,7 @@ def run(
         dry_run=dry_run,
         check_env=check_env,
         fixture_origin=fixture_origin,
+        resume=resume,
     )
 
 
@@ -253,6 +260,7 @@ def ablate(
     dry_run: bool = typer.Option(False, "--dry-run"),
     check_env: bool = typer.Option(False, "--check-env"),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
+    resume: bool = typer.Option(False, "--resume"),
 ) -> None:
     """Execute selected attention policy ablations."""
     _run_experiment_command(
@@ -265,6 +273,7 @@ def ablate(
         dry_run=dry_run,
         check_env=check_env,
         fixture_origin=fixture_origin,
+        resume=resume,
     )
 
 
@@ -315,6 +324,7 @@ def _run_experiment_command(
     dry_run: bool,
     check_env: bool,
     fixture_origin: str,
+    resume: bool,
 ) -> None:
     if workers <= 0:
         _exit_with_error("workers must be greater than zero")
@@ -333,6 +343,23 @@ def _run_experiment_command(
     if settings is None:
         _exit_with_error("model settings are required for execution")
     try:
+        if resume:
+            matrix, checkpoint = _prepare_resumed_matrix(matrix, output)
+            state = checkpoint.state
+            typer.echo(
+                "resume: "
+                f"{len(state.finalized_run_ids)} finalized; "
+                f"{len(state.interrupted_run_ids)} interrupted; "
+                f"{len(state.pending_run_ids)} pending"
+            )
+        else:
+            checkpoint = ExperimentCheckpointStore(
+                output, tuple(spec.run_id for spec in matrix.specs)
+            )
+            checkpoint.initialize()
+    except CheckpointError as error:
+        _exit_with_error(f"checkpoint error: {error}")
+    try:
         result = asyncio.run(
             _execute_matrix(
                 matrix,
@@ -340,6 +367,7 @@ def _run_experiment_command(
                 workers=workers,
                 fixture_origin=fixture_origin,
                 settings=_settings_with_fixture_redaction(settings, matrix.loaded),
+                checkpoint=checkpoint,
             )
         )
     except Exception as error:
@@ -358,6 +386,26 @@ def _run_experiment_command(
         or _invalid_ux_samples(result.results)
     ):
         raise typer.Exit(1)
+
+
+def _prepare_resumed_matrix(
+    matrix: _ResolvedMatrix, output: Path
+) -> tuple[_ResolvedMatrix, ExperimentCheckpointStore]:
+    """Reconcile a selected matrix with integrity-valid finalized bundles."""
+
+    store = ExperimentCheckpointStore(
+        output, tuple(spec.run_id for spec in matrix.specs)
+    )
+    state = store.initialize(resume=True)
+    finalized = set(state.finalized_run_ids)
+    store.archive_interrupted_staging()
+    return (
+        replace(
+            matrix,
+            specs=tuple(spec for spec in matrix.specs if spec.run_id not in finalized),
+        ),
+        store,
+    )
 
 
 def _resolve_matrix_or_exit(
@@ -840,6 +888,7 @@ async def _execute_matrix(
     workers: int,
     fixture_origin: str,
     settings: OpenAICompatibleSettings,
+    checkpoint: ExperimentCheckpointStore | None = None,
 ) -> ExperimentResult:
     from playwright.async_api import async_playwright
 
@@ -870,7 +919,23 @@ async def _execute_matrix(
                     fixture_http_client=fixture_http,
                 )
 
-            return await ExperimentRunner(factory).run(matrix.specs, workers=workers)
+            def record_progress(
+                spec: RunSpec, result: object | None, failure: ExperimentFailure | None
+            ) -> None:
+                if checkpoint is None:
+                    return
+                if failure is not None:
+                    checkpoint.record_failure(spec.run_id, failure.error_type)
+                elif result is not None and finalized_bundle_is_valid(
+                    output, spec.run_id
+                ):
+                    checkpoint.record_finalized(spec.run_id)
+                else:
+                    checkpoint.record_failure(spec.run_id, "InvalidFinalizedBundle")
+
+            return await ExperimentRunner(factory).run(
+                matrix.specs, workers=workers, on_complete=record_progress
+            )
         finally:
             await adapter.close()
             await client_http.aclose()
@@ -1041,9 +1106,7 @@ def _invalid_ux_samples(results: Sequence[object]) -> tuple[RunResult, ...]:
 
 
 def _print_result_summary(result: ExperimentResult) -> None:
-    run_results = tuple(
-        item for item in result.results if isinstance(item, RunResult)
-    )
+    run_results = tuple(item for item in result.results if isinstance(item, RunResult))
     invalid = _invalid_ux_samples(run_results)
     outcomes = Counter(item.outcome.kind for item in run_results)
     typer.echo(
@@ -1055,9 +1118,7 @@ def _print_result_summary(result: ExperimentResult) -> None:
     if outcomes:
         typer.echo(
             "outcomes: "
-            + ", ".join(
-                f"{kind}={count}" for kind, count in sorted(outcomes.items())
-            )
+            + ", ".join(f"{kind}={count}" for kind, count in sorted(outcomes.items()))
         )
 
 

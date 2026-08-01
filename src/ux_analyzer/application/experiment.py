@@ -86,6 +86,9 @@ class RunAgentExecutor(Protocol):
 
 
 AgentFactory = Callable[[RunSpec], RunAgentExecutor | Awaitable[RunAgentExecutor]]
+ExperimentProgressCallback = Callable[
+    [RunSpec, object | None, ExperimentFailure | None], Awaitable[None] | None
+]
 
 
 def deterministic_run_id(
@@ -220,7 +223,13 @@ class ExperimentRunner:
             shared_agent = cast(RunAgentExecutor, selected)
             self._agent_factory = lambda _spec: shared_agent
 
-    async def run(self, specs: Sequence[RunSpec], workers: int = 1) -> ExperimentResult:
+    async def run(
+        self,
+        specs: Sequence[RunSpec],
+        workers: int = 1,
+        *,
+        on_complete: ExperimentProgressCallback | None = None,
+    ) -> ExperimentResult:
         """Execute specs in input order with at most ``workers`` active runs."""
 
         if workers <= 0:
@@ -235,6 +244,7 @@ class ExperimentRunner:
         semaphore = asyncio.Semaphore(min(workers, len(ordered_specs)))
         results: dict[int, object] = {}
         failures: dict[int, ExperimentFailure] = {}
+        completion_lock = asyncio.Lock()
 
         async def execute_one(index: int, spec: RunSpec) -> None:
             async with semaphore:
@@ -265,14 +275,21 @@ class ExperimentRunner:
                 if cancellation is not None:
                     raise cancellation
                 if error is not None:
-                    failures[index] = ExperimentFailure(
+                    failure = ExperimentFailure(
                         run_id=spec.run_id,
                         error_type=type(error).__name__,
                         message=str(error) or type(error).__name__,
                         spec=spec,
                     )
+                    failures[index] = failure
+                    if on_complete is not None:
+                        async with completion_lock:
+                            await _await_value(on_complete(spec, None, failure))
                 else:
                     results[index] = result
+                    if on_complete is not None:
+                        async with completion_lock:
+                            await _await_value(on_complete(spec, result, None))
 
         tasks = [
             asyncio.create_task(execute_one(index, spec))
