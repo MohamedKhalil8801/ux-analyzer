@@ -90,6 +90,7 @@ uv run pytest tests/live/test_openai_endpoint.py -m live -q
 | `uxa validate PROJECT --check-env` | Validate project and required model environment names without printing values. |
 | `uxa fixture serve --host HOST --port PORT` | Serve bundled FastAPI fixture. Defaults: `127.0.0.1:8000`. |
 | `uxa run PROJECT --experiment ID --output DIR` | Execute selected experiment. Defaults: `core-pair`, `.uxa-output`, one worker. |
+| `uxa run-one PROJECT --scenario ID --version ID --persona ID --policy ID --seed N --output DIR` | Execute exactly one semantic cell. |
 | `uxa run PROJECT --dry-run` | Print expanded matrix and estimated model calls without browser or model execution. |
 | `uxa ablate PROJECT --experiment ID --policy POLICY` | Execute selected ablation policies. Repeat `--policy`; default experiment is `ablations`. |
 | `uxa report BUNDLE_ROOT --output FILE` | Render finalized bundles into static HTML. |
@@ -99,9 +100,10 @@ Supported policies:
 `full-list`, `prominence-ranked-list`, `progressive-prominence`, and
 `progressive-prominence-scent`.
 
-Useful run options are `--workers`, `--run-count`, `--dry-run`, `--check-env`,
-and `--fixture-origin`. Fixture origin must be an HTTP(S) origin without path,
-query, fragment, or credentials.
+Useful run options are `--workers`, `--run-count`, `--resume`, `--dry-run`,
+`--check-env`, and `--fixture-origin`. Fixture origin must be an HTTP(S) origin
+without path, query, fragment, or credentials. `--resume` skips only selected
+finalized bundles that pass integrity and terminal-structure validation.
 
 ## Configuration
 
@@ -154,16 +156,23 @@ manifest.
 
 ## Demo Matrix
 
-`core-pair` expands:
+`core-pair` currently expands:
 
 ```text
-2 scenarios x 2 application versions x 2 personas
-x 2 policies x 10 seeds = 160 run specs
+8 full-list cells x 1 seed
++ 8 progressive-prominence-scent cells x 10 seeds
+= 88 run specs
 ```
 
 Its policies are `full-list` and `progressive-prominence-scent`. The default
-dry-run estimate is 320 model calls: one cognitive call per `full-list` run and
-three role calls per scent-guided run (coarse scent, full scent, cognitive).
+dry-run estimate is 248 model calls for one attention cycle across the matrix:
+one cognitive call per `full-list` run and three role calls per scent-guided
+run (coarse scent, full scent, cognitive). The CLI also reports the maximum
+logical model-call budget separately.
+
+Deterministic list policies use only the first configured seed. Progressive
+policies retain every configured seed because their attention selection is
+seeded. Provider-side model sampling is not currently controlled by that seed.
 
 `ablations` selects `prominence-ranked-list` and `progressive-prominence`.
 Compared cells keep scenario, persona, seed, configuration, fixture state, and
@@ -178,6 +187,7 @@ the directional gate described in [evaluation docs](docs/domain-model.md).
 - [Model provider](docs/model-provider.md)
 - [Security](docs/security.md)
 - [Roadmap and deferred contracts](docs/roadmap.md)
+- [Original POC plan versus current implementation](docs/poc-plan-vs-current.md)
 - [Testing](docs/testing.md)
 
 ## Verification

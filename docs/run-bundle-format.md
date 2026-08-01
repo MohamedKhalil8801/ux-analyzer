@@ -23,6 +23,9 @@ recovery. A finalized bundle cannot be mutated.
 
 ```text
 <output>/
+  experiment-progress.json
+  experiment.json
+  report.html
   runs/
     <run-id>/
       manifest.json
@@ -104,6 +107,12 @@ domain dataclasses, enums, paths, bytes, and mappings at the storage boundary.
 Experiment execution also writes `<output>/experiment.json` with per-run metrics,
 cell aggregates, paired variant comparisons, directional gates, findings, and
 partial failures. This file feeds the comparison/gate sections in the HTML report.
+
+Long experiment execution writes `<output>/experiment-progress.json`
+atomically after each finalized result or sanitized runner failure. Explicit
+`--resume` validates selected finalized bundles, skips trusted run IDs, marks
+interrupted staging evidence, and rebuilds experiment aggregates from both
+skipped and newly completed selected runs.
 
 ## `checksums.sha256`
 

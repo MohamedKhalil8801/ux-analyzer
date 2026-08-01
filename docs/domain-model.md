@@ -133,24 +133,35 @@ verification. This permits false-success measurement.
 
 ## Experiments and Verifier Independence
 
-Default `core-pair` matrix:
+Current `core-pair` matrix:
 
 ```text
-2 scenarios x 2 versions x 2 personas x 2 policies x 10 seeds = 160 runs
+8 full-list cells x 1 seed
++ 8 progressive-prominence-scent cells x 10 seeds
+= 88 runs
 ```
 
 Policies are `full-list` and `progressive-prominence-scent`. `ablations` uses
-`prominence-ranked-list` and `progressive-prominence`.
+`prominence-ranked-list` and `progressive-prominence`. Deterministic list
+policies use only the first configured seed; progressive policies retain the
+configured seed set.
 
 Run IDs are SHA-256 hashes of experiment ID, scenario ID, application version
 ID, persona ID, policy, seed, and config digest. Matrix order is deterministic.
 Compared variant cells must share scenario, persona, policy, config digest, and
 the exact seed set; only application version changes. The directional gate is:
 
-1. Improved paired-seed median discovery cost decreases.
-2. Median wrong-action burden does not increase.
-3. Median backtrack burden does not increase.
-4. Verified completion rate does not regress.
+1. Verified completion rate does not regress.
+2. For pairs where both variants complete, improved paired-seed median
+   discovery cost decreases.
+3. For those jointly completed pairs, median wrong-action burden does not
+   increase.
+4. For those jointly completed pairs, median backtrack burden does not
+   increase.
+
+When defective does not complete and improved verifies for a paired seed, the
+completion improvement dominates the failed run's lower effort. Otherwise an
+early abandonment could be incorrectly scored as easier than completion.
 
 `WebVerifier` uses the typed scenario verifier. `fixture-state` reads private
 fixture state for the current session. `visible-result` captures a fresh public

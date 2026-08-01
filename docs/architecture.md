@@ -79,8 +79,8 @@ evidence. Report projections keep private execution fields out.
 - Web platform: Playwright Chromium only.
 - Extraction: deterministic DOM/layout/rendered visibility facts.
 - Prominence: `heuristic-prominence-v1`, inspectable feature contributions.
-- Attention: `progressive-attention-v1`, region-first seeded softmax sampling,
-  one to three newly revealed elements.
+- Attention: `progressive-attention-v4`, region-first seeded softmax sampling,
+  default batch size two, and bounded recovery observations after no progress.
 - Unrestricted baselines: `full-list` and `prominence-ranked-list` expose every
   visible persona-safe element in one complete observation.
 - Scent: optional structured coarse and full roles for
@@ -94,3 +94,5 @@ evidence. Report projections keep private execution fields out.
 No pretrained saliency, expectation generator, desktop provider, mobile
 provider, human calibration, production API, or issue-tracker adapter is part of
 current POC. Deferred contracts are recorded in [roadmap](roadmap.md).
+Intentional changes from the original implementation plan are recorded in
+[POC plan versus current implementation](poc-plan-vs-current.md).
