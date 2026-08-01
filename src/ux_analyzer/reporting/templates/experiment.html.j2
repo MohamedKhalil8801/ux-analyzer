@@ -39,6 +39,9 @@
               <th>Version</th>
               <th>Persona</th>
               <th>Policy</th>
+              <th>User actions</th>
+              <th>Observations</th>
+              <th>Discovery cost <span class="subvalue">lower is better</span></th>
               <th>Outcome</th>
               <th>Stage</th>
               <th>Verification</th>
@@ -54,6 +57,9 @@
               <td>{{ row.version_label }}</td>
               <td>{{ row.persona_label }}</td>
               <td>{{ row.policy }}</td>
+              <td data-metric="user-actions">{{ row.user_actions }}</td>
+              <td data-metric="observations">{{ row.observations }}</td>
+              <td data-metric="discovery-cost">{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td>
               <td><span class="status-pill">{{ row.outcome }}</span></td>
               <td>{{ row.stage }}</td>
               <td>{{ "verified" if row.verified else "not verified" }}</td>
@@ -61,7 +67,7 @@
               <td><strong>{{ row.gate_status }}</strong><span class="subvalue">{{ row.gate_reason }}</span></td>
             </tr>
           {% else %}
-            <tr><td colspan="10">No run evidence recorded.</td></tr>
+            <tr><td colspan="13">No run evidence recorded.</td></tr>
           {% endfor %}
           </tbody>
         </table>

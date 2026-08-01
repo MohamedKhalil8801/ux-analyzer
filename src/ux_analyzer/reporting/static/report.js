@@ -505,15 +505,25 @@
     } else if (record.kind === "attention-selection-recorded") {
       addFields(eventCard, [["Viewport", record.viewport_id], ["Mode", record.selection_mode], ["Region", record.region_id]]);
       addValues(eventCard, "Selected elements", record.selected_ids || []);
+      addValues(eventCard, "Recovery-forced elements", record.recovery_selected_ids || []);
       addMapping(eventCard, "Element probabilities", record.element_probabilities);
       addMapping(eventCard, "Region probabilities", record.region_probabilities);
     } else if (record.kind === "model-call-recorded" && record.record) {
       renderModelCall(eventCard, run, record.record);
+    } else if (record.kind === "model-failure") {
+      addFields(eventCard, [["Model role", record.role], ["Failure", record.reason]]);
+      addJson(eventCard, "Sanitized response summary", record.response_summary);
+    } else if (record.kind === "repeated-fixture-input" || record.kind === "fixture-input-completed") {
+      addFields(eventCard, [["Element", record.element_id], ["Fixture key", record.fixture_key], ["Reason", record.reason]]);
+    } else if (record.kind === "repeated-action-detected" || record.kind === "no-progress-recovery" || record.kind === "no-progress-detected") {
+      addFields(eventCard, [["Action", record.action ? actionText(record.action) : null], ["Count", record.count], ["Reason", record.reason]]);
+    } else if (record.kind === "model-call-budget-exhausted") {
+      addFields(eventCard, [["Model calls", record.model_calls], ["Limit", record.limit], ["Reason", record.reason]]);
     } else if (record.kind === "verification-recorded" && record.verification) {
       addFields(eventCard, [["Verified", record.verification.verified], ["Details", record.verification.details]]);
       addValues(eventCard, "Evidence IDs", record.verification.evidence_ids || []);
     } else if (record.kind === "run-terminated") {
-      addFields(eventCard, [["Terminal outcome", record.outcome], ["Stage", run.stage], ["Terminal reason", run.terminal_reason], ["Evaluation failure", run.evaluation_failure_reason]]);
+      addFields(eventCard, [["Terminal outcome", record.outcome], ["Valid UX sample", run.ux_sample_valid], ["Invalid sample reason", run.ux_sample_invalid_reason], ["Stage", run.stage], ["Terminal reason", run.terminal_reason], ["Evaluation failure", run.evaluation_failure_reason]]);
     } else {
       addFields(eventCard, [
         ["Action", record.action ? actionText(record.action) : null],
@@ -558,11 +568,15 @@
       run.run_id,
       "outcome " + run.outcome,
       "stage " + run.stage,
+      run.ux_sample_valid ? "valid UX sample" : "invalid UX sample",
       run.verified ? "verified" : "not verified",
-      "terminal state " + run.terminal_state
+      "terminal state " + run.terminal_state,
+      "integrity " + run.integrity_status,
+      "bundle " + run.bundle_path
     ];
     if (run.terminal_reason) parts.push("terminal reason: " + run.terminal_reason);
     if (run.evaluation_failure_reason) parts.push("evaluation failure: " + run.evaluation_failure_reason);
+    if (run.ux_sample_invalid_reason) parts.push("invalid sample: " + run.ux_sample_invalid_reason);
     if (!run.trusted) parts.push("evidence untrusted");
     statusBanner.textContent = parts.join(" | ");
   }
@@ -588,7 +602,7 @@
     progress.max = String(Math.max(events.length - 1, 0));
     progress.value = String(state.eventIndex);
     progress.disabled = !events.length;
-    position.textContent = events.length ? "Step " + (state.eventIndex + 1) + " / " + events.length + " | " + recordedTime(record) : "Step 0 / 0 | time unavailable";
+    position.textContent = events.length ? "Event " + (state.eventIndex + 1) + " / " + events.length + " | " + recordedTime(record) : "Event 0 / 0 | time unavailable";
     runSelect.value = state.runId;
     updateHash(run, record);
   }

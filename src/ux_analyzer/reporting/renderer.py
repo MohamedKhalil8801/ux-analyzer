@@ -303,11 +303,22 @@ def _load_run(path: Path) -> dict[str, Any]:
         _mapping(result.get("outcome")).get("reason"),
     )
     evaluation_failure_reason = _optional_text(result.get("evaluation_failure_reason"))
+    explicit_validity = result.get("ux_sample_valid")
+    ux_sample_valid = (
+        explicit_validity
+        if isinstance(explicit_validity, bool)
+        else outcome in {"verified-success", "agent-abandoned", "budget-exhausted"}
+        and not evaluation_failure_reason
+    )
+    ux_sample_invalid_reason = _optional_text(
+        result.get("ux_sample_invalid_reason")
+    )
     failure_reason = "; ".join(
         item
         for item in (
             terminal_reason,
             evaluation_failure_reason,
+            ux_sample_invalid_reason,
             *integrity_failures,
         )
         if item
@@ -326,6 +337,8 @@ def _load_run(path: Path) -> dict[str, Any]:
     stage = _run_stage(result, crash, outcome, integrity_failures)
     return {
         "run_id": run_id,
+        "bundle_path": f"{path.parent.name}/{path.name}",
+        "integrity_status": "trusted" if trusted else "failed",
         "seed": _number(manifest.get("seed"), 0),
         "scenario_id": scenario_id,
         "scenario_label": _first_string(scenario.get("name"), scenario_id.title()),
@@ -342,6 +355,8 @@ def _load_run(path: Path) -> dict[str, Any]:
         "stage": stage,
         "terminal_reason": terminal_reason,
         "evaluation_failure_reason": evaluation_failure_reason,
+        "ux_sample_valid": ux_sample_valid,
+        "ux_sample_invalid_reason": ux_sample_invalid_reason,
         "failure_reason": failure_reason,
         "status_class": _status_class(outcome, stage, terminal_state, trusted),
         "failed": not trusted or stage != "complete",
@@ -381,6 +396,8 @@ def _report_context(
                 key: source[key]
                 for key in (
                     "run_id",
+                    "bundle_path",
+                    "integrity_status",
                     "seed",
                     "scenario_id",
                     "scenario_label",
@@ -781,12 +798,36 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
                 "region_probabilities": _number_mapping(
                     event.get("region_probabilities")
                 ),
+                "recovery_selected_ids": _strings(
+                    event.get("recovery_selected_ids")
+                ),
             }
         )
     elif kind == "verification-recorded":
         result["verification"] = _public_verification(event.get("result"))
     elif kind == "run-terminated":
         result["outcome"] = _public_outcome(event.get("outcome"))
+    elif kind == "model-failure":
+        result.update(
+            {
+                "role": _text(event.get("role"), "unknown"),
+                "reason": _optional_text(event.get("reason")),
+                "response_summary": _safe_value(event.get("response_summary")),
+            }
+        )
+    elif kind in {
+        "repeated-fixture-input",
+        "repeated-action-detected",
+        "no-progress-recovery",
+        "no-progress-detected",
+        "fixture-input-completed",
+        "model-call-budget-exhausted",
+    }:
+        if event.get("action") is not None:
+            result["action"] = _public_action(event.get("action"))
+        for key in ("element_id", "fixture_key", "count", "limit", "model_calls", "reason"):
+            if key in event:
+                result[key] = _safe_value(event[key])
     elif kind in {"decision-recorded", "agent-claim", "action-rejected"}:
         if event.get("action") is not None:
             result["action"] = _public_action(event.get("action"))
@@ -1234,6 +1275,11 @@ def _run_overview_rows(
                 "persona_id": run["persona_id"],
                 "persona_label": run["persona_label"],
                 "policy": run["policy"],
+                "user_actions": len(run["actions"]),
+                "observations": len(run["observations"]),
+                "discovery_cost": _format_overview_cost(
+                    _median_metric([run], "discovery-cost")
+                ),
                 "outcome": run["outcome"],
                 "stage": run["stage"],
                 "terminal_state": run["terminal_state"],
@@ -1369,6 +1415,10 @@ def _median_metric(runs: list[dict[str, Any]], name: str) -> float | None:
     if len(values) % 2:
         return values[middle]
     return (values[middle - 1] + values[middle]) / 2
+
+
+def _format_overview_cost(value: float | None) -> str | None:
+    return f"{value:.1f}" if value is not None else None
 
 
 def _evidence_summary(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:

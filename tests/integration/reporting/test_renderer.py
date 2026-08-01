@@ -47,8 +47,16 @@ def _write_run(
     verified: bool | None = None,
     terminal_reason: str | None = None,
     evaluation_failure_reason: str | None = None,
+    ux_sample_valid: bool | None = None,
+    ux_sample_invalid_reason: str | None = None,
 ) -> None:
     is_verified = outcome == "verified-success" if verified is None else verified
+    is_valid_sample = (
+        outcome in {"verified-success", "agent-abandoned", "budget-exhausted"}
+        and evaluation_failure_reason is None
+        if ux_sample_valid is None
+        else ux_sample_valid
+    )
     run = root / "runs" / run_id
     (run / "artifacts").mkdir(parents=True)
     (run / "artifacts" / "screenshot.png").write_bytes(screenshot)
@@ -227,6 +235,8 @@ def _write_run(
             "outcome": {"kind": outcome},
             "terminal_reason": terminal_reason,
             "evaluation_failure_reason": evaluation_failure_reason,
+            "ux_sample_valid": is_valid_sample,
+            "ux_sample_invalid_reason": ux_sample_invalid_reason,
             "evidence": {
                 "prominence": [],
                 "scent": [],
@@ -295,6 +305,9 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     html = output.read_text(encoding="utf-8")
     assert output == tmp_path / "report.html"
     assert "Comparison overview" in html
+    assert "User actions" in html
+    assert "Observations" in html
+    assert "Discovery cost" in html
     assert "deterministic-fact" in html
     assert "model-estimate" in html
     assert "unsupported-human-claim" in html
@@ -316,6 +329,8 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "Prompt version" in html
     assert "Schema version" in html
     assert "Sanitized request summary" in html
+    assert '\"bundle_path\":\"runs\\u002frun-1\"' in html
+    assert '\"integrity_status\":\"trusted\"' in html
     assert "Trust boundaries and limitations" in html
     assert "Seeded discovery cost." in html
     assert '"width":800' in html
@@ -325,6 +340,142 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "fetch(" not in html
     assert '<link rel="stylesheet"' not in html
     assert "<script src=" not in html
+
+
+def test_overview_counts_executed_actions_and_formats_discovery_cost(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-effort",
+        version="improved",
+        discovery_cost=4.199999999999999,
+    )
+    run = tmp_path / "runs" / "run-effort"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    events.insert(
+        -1,
+        {
+            "sequence": 10,
+            "kind": "decision-recorded",
+            "action": {"kind": "interact-with-element", "element_id": "target"},
+            "reason": "Duplicate representation of the proposed action.",
+        },
+    )
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    _write_checksums(run)
+
+    output = render_experiment_report(tmp_path, tmp_path / "report.html")
+    html = output.read_text(encoding="utf-8")
+
+    assert 'data-metric="user-actions">1</td>' in html
+    assert 'data-metric="observations">1</td>' in html
+    assert 'data-metric="discovery-cost">4.2</td>' in html
+
+
+def test_renderer_exposes_safe_model_and_progress_diagnostics(tmp_path: Path) -> None:
+    _write_run(
+        tmp_path,
+        "run-diagnostics",
+        version="improved",
+        discovery_cost=3,
+        outcome="model-failure",
+        verified=False,
+        terminal_reason="cognitive: inspect action requires element_id",
+        ux_sample_valid=False,
+        ux_sample_invalid_reason="model-failure: invalid cognitive response",
+    )
+    run = tmp_path / "runs" / "run-diagnostics"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    terminal = events.pop()
+    events.extend(
+        [
+            {
+                "kind": "attention-selection-recorded",
+                "viewport_id": "viewport-2",
+                "selected_ids": ["email", "submit"],
+                "recovery_selected_ids": ["submit"],
+                "selection_mode": "recovery-forced",
+                "region_id": None,
+                "element_probabilities": {"email": 0.4, "submit": 0.1},
+                "region_probabilities": {"form": 0.4, "actions": 0.1},
+            },
+            {
+                "kind": "model-failure",
+                "role": "cognitive",
+                "reason": "inspect action requires element_id",
+                "response_summary": {
+                    "action": "inspect",
+                    "element_id": None,
+                    "api_key": "provider-secret",
+                },
+            },
+            {
+                "kind": "repeated-fixture-input",
+                "element_id": "target",
+                "fixture_key": "invite_email",
+                "reason": "fixture input was already entered successfully",
+            },
+            {
+                "kind": "repeated-action-detected",
+                "action": {"kind": "interact-with-element", "element_id": "target"},
+                "count": 3,
+                "reason": "identical action repeated without sufficient progress",
+            },
+            {
+                "kind": "no-progress-recovery",
+                "action": {"kind": "scroll", "direction": "down"},
+                "count": 2,
+                "reason": "action succeeded but the recaptured interface did not change semantically",
+            },
+            {
+                "kind": "no-progress-detected",
+                "count": 3,
+                "reason": "three consecutive actions produced no state progress",
+            },
+        ]
+    )
+    events.append(terminal)
+    for sequence, event in enumerate(events, start=1):
+        event["sequence"] = sequence
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    _write_checksums(run)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "inspect action requires element_id" in html
+    assert '"ux_sample_valid":false' in html
+    assert "model-failure: invalid cognitive response" in html
+    assert '"recovery_selected_ids":["submit"]' in html
+    assert "recovery-forced" in html
+    assert '\"role\":\"cognitive\"' in html
+    assert '\"response_summary\":{\"action\":\"inspect\",\"element_id\":null}' in html
+    assert "repeated-fixture-input" in html
+    assert "invite_email" in html
+    assert "repeated-action-detected" in html
+    assert '\"count\":3' in html
+    assert "no-progress-recovery" in html
+    assert (
+        '\"kind\":\"no-progress-recovery\",'
+        '\"action\":{\"kind\":\"scroll\",\"direction\":\"down\"},'
+        '\"count\":2'
+    ) in html
+    assert "no-progress-detected" in html
+    assert "provider-secret" not in html
 
 
 def test_renderer_includes_all_failed_experiment_and_staging_crash(
@@ -827,7 +978,11 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         page = await context.new_page()
         await page.goto(report_path.resolve().as_uri())
 
-        await page.locator('tr[data-run-id="run-evaluation"]').click()
+        overview_row = page.locator('tr[data-run-id="run-evaluation"]')
+        assert await overview_row.locator('[data-metric="user-actions"]').text_content() == "1"
+        assert await overview_row.locator('[data-metric="observations"]').text_content() == "1"
+        assert await overview_row.locator('[data-metric="discovery-cost"]').text_content() == "4.0"
+        await overview_row.click()
         assert "run=run-evaluation" in page.url
         event_ids = await page.locator(".timeline-event").evaluate_all(
             "nodes => nodes.map(node => node.dataset.eventId)"
@@ -847,11 +1002,11 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
             await page.locator("#play-pause").get_attribute("aria-pressed") == "false"
         )
         await page.locator("#step-forward").click()
-        assert "Step 2 /" in (
+        assert "Event 2 /" in (
             await page.locator("#playback-position").text_content() or ""
         )
         await page.locator("#restart-playback").click()
-        assert "Step 1 /" in (
+        assert "Event 1 /" in (
             await page.locator("#playback-position").text_content() or ""
         )
         assert "time unavailable" in (
