@@ -137,3 +137,18 @@ def test_transition_signature_preserves_semantic_state_changes_without_url_queri
     assert changed != unchanged
     assert changed[-1] == "https://example.test/settings"
     assert "private-secret" not in repr(changed)
+
+
+def test_transition_signature_strips_url_user_info() -> None:
+    snapshot = _snapshot("viewport-1")
+
+    signature = transition_progress_signature(
+        ("interact-with-element", "share", None),
+        snapshot,
+        snapshot,
+        "https://private-user:private-password@example.test:8443/settings",
+    )
+
+    assert signature[-1] == "https://example.test:8443/settings"
+    assert "private-user" not in repr(signature)
+    assert "private-password" not in repr(signature)

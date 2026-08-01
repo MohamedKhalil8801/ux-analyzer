@@ -100,6 +100,13 @@ def _safe_url_origin_path(url: str | None) -> str | None:
     if not url:
         return None
     parsed = urlsplit(url)
-    if not parsed.scheme or not parsed.netloc:
+    hostname = parsed.hostname
+    if not parsed.scheme or not hostname:
         return None
-    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    authority = f"{host}:{port}" if port is not None else host
+    return f"{parsed.scheme}://{authority}{parsed.path}"
