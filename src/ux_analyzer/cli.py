@@ -14,6 +14,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 import typer
+from pydantic import TypeAdapter
 
 from ux_analyzer import __version__
 from ux_analyzer.adapters.openai import (
@@ -32,6 +33,9 @@ from ux_analyzer.application.checkpoint import (
     finalized_bundle_is_valid,
 )
 from ux_analyzer.application.evaluation import (
+    RunMetrics,
+    aggregate_cells,
+    compare_variants,
     evaluate_experiment_results,
     evaluate_run,
     evaluation_inputs_for,
@@ -58,7 +62,11 @@ from ux_analyzer.config.loader import (
     load_project,
 )
 from ux_analyzer.domain.attention import CompleteObservation, ProgressiveObservation
-from ux_analyzer.domain.benchmark import ExperimentDefinition, ExperimentPolicy
+from ux_analyzer.domain.benchmark import (
+    ApplicationVersionKind,
+    ExperimentDefinition,
+    ExperimentPolicy,
+)
 from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
 from ux_analyzer.ports.artifacts import (
@@ -342,6 +350,7 @@ def _run_experiment_command(
         return
     if settings is None:
         _exit_with_error("model settings are required for execution")
+    selected_specs = matrix.specs
     try:
         if resume:
             matrix, checkpoint = _prepare_resumed_matrix(matrix, output)
@@ -377,6 +386,7 @@ def _run_experiment_command(
         result,
         output=output,
         runtime=matrix.loaded.runtime,
+        selected_specs=selected_specs,
     )
     typer.echo(f"evaluation summary: {summary_path}")
     typer.echo(f"report generated: {report_path}")
@@ -1047,6 +1057,7 @@ def _complete_experiment(
     *,
     output: Path,
     runtime: RuntimeConfig,
+    selected_specs: Sequence[RunSpec] | None = None,
 ) -> tuple[Path, Path]:
     del runtime
     completed: list[RunResult] = []
@@ -1055,8 +1066,21 @@ def _complete_experiment(
             raise TypeError("experiment result contains non-RunResult value")
         completed.append(item)
     run_results = tuple(completed)
-    evaluable = tuple(item for item in run_results if item.metrics is not None)
-    evaluation = evaluate_experiment_results(evaluable)
+    if selected_specs is None:
+        evaluable = tuple(item for item in run_results if item.metrics is not None)
+        evaluation = evaluate_experiment_results(evaluable)
+        run_metrics = evaluation.run_metrics
+        cell_aggregates = evaluation.cell_aggregates
+        variant_comparisons = evaluation.variant_comparisons
+        findings_by_run: dict[str, object] = {
+            item.run_id: item.findings or () for item in run_results
+        }
+    else:
+        run_metrics, findings_by_run = _selected_finalized_evidence(
+            output, selected_specs, run_results
+        )
+        cell_aggregates = aggregate_cells(run_metrics) if run_metrics else ()
+        variant_comparisons = _compare_selected_variants(run_metrics, selected_specs)
     failures = [
         *(_experiment_failure_record(item) for item in result.failures),
         *(
@@ -1070,10 +1094,10 @@ def _complete_experiment(
         if not item.ux_sample_valid
     ]
     summary = {
-        "run_metrics": evaluation.run_metrics,
-        "cell_aggregates": evaluation.cell_aggregates,
-        "variant_comparisons": evaluation.variant_comparisons,
-        "findings": {item.run_id: item.findings or () for item in run_results},
+        "run_metrics": run_metrics,
+        "cell_aggregates": cell_aggregates,
+        "variant_comparisons": variant_comparisons,
+        "findings": findings_by_run,
         "failures": failures,
         "invalid_runs": invalid_runs,
     }
@@ -1093,6 +1117,75 @@ def _complete_experiment(
     temporary.replace(summary_path)
     report_path = render_experiment_report(output, output / "report.html")
     return summary_path, report_path
+
+
+def _selected_finalized_evidence(
+    output: Path,
+    selected_specs: Sequence[RunSpec],
+    returned_results: Sequence[RunResult],
+) -> tuple[tuple[RunMetrics, ...], dict[str, object]]:
+    metrics_by_run = {
+        result.run_id: result.metrics
+        for result in returned_results
+        if result.metrics is not None
+    }
+    findings_by_run: dict[str, object] = {
+        result.run_id: result.findings or () for result in returned_results
+    }
+    adapter = TypeAdapter(RunMetrics)
+    for spec in selected_specs:
+        if spec.run_id in metrics_by_run:
+            continue
+        if not finalized_bundle_is_valid(output, spec.run_id):
+            continue
+        result_path = output / "runs" / spec.run_id / "result.json"
+        try:
+            persisted = json.loads(result_path.read_text(encoding="utf-8"))
+            if not isinstance(persisted, dict):
+                raise ValueError("result must contain an object")
+            persisted_object = cast(dict[str, object], persisted)
+            raw_metrics = persisted_object.get("metrics")
+            if raw_metrics is not None:
+                metrics_by_run[spec.run_id] = adapter.validate_python(raw_metrics)
+            findings_by_run[spec.run_id] = persisted_object.get("findings") or ()
+        except (OSError, UnicodeError, ValueError) as error:
+            raise CheckpointError(
+                f"invalid finalized evaluation for {spec.run_id}: {type(error).__name__}"
+            ) from error
+    ordered_metrics = tuple(
+        metrics_by_run[spec.run_id]
+        for spec in selected_specs
+        if spec.run_id in metrics_by_run
+    )
+    return ordered_metrics, findings_by_run
+
+
+def _compare_selected_variants(
+    metrics: Sequence[RunMetrics], selected_specs: Sequence[RunSpec]
+) -> tuple[object, ...]:
+    specs_by_run = {spec.run_id: spec for spec in selected_specs}
+    groups: dict[
+        tuple[str, str, str], dict[ApplicationVersionKind, list[RunMetrics]]
+    ] = {}
+    for metric in metrics:
+        spec = specs_by_run.get(metric.run_id)
+        if spec is None:
+            continue
+        key = (metric.scenario_id, metric.persona_id, metric.policy)
+        groups.setdefault(key, {}).setdefault(
+            spec.application_version.kind, []
+        ).append(metric)
+    comparisons: list[object] = []
+    for key in sorted(groups):
+        baseline = groups[key].get(ApplicationVersionKind.DEFECTIVE)
+        improved = groups[key].get(ApplicationVersionKind.IMPROVED)
+        if (
+            baseline
+            and improved
+            and {item.seed for item in baseline} == {item.seed for item in improved}
+        ):
+            comparisons.append(compare_variants(baseline, improved))
+    return tuple(comparisons)
 
 
 def _evaluation_failures(results: Sequence[object]) -> tuple[RunResult, ...]:

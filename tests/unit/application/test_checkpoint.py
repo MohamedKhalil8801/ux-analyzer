@@ -11,6 +11,48 @@ from ux_analyzer.application.checkpoint import (
 )
 
 
+def _write_finalized_bundle(
+    root: Path,
+    run_id: str,
+    *,
+    manifest_run_id: str | None = None,
+    result_run_id: str | None = None,
+    terminal: bool = True,
+    outcome: bool = True,
+) -> Path:
+    run_path = root / "runs" / run_id
+    run_path.mkdir(parents=True)
+    content = {
+        "manifest.json": json.dumps(
+            {"run_id": manifest_run_id or run_id, "seed": 0}
+        ).encode(),
+        "timeline.jsonl": (
+            json.dumps(
+                {
+                    "kind": "run-terminated" if terminal else "run-started",
+                    "outcome": {"kind": "verified-success"} if terminal else None,
+                }
+            ).encode()
+            + b"\n"
+        ),
+        "result.json": json.dumps(
+            {
+                "run_id": result_run_id or run_id,
+                **({"outcome": {"kind": "verified-success"}} if outcome else {}),
+            }
+        ).encode(),
+    }
+    for name, value in content.items():
+        (run_path / name).write_bytes(value)
+    (run_path / "checksums.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256(value).hexdigest()}  {name}\n"
+            for name, value in content.items()
+        )
+    )
+    return run_path
+
+
 def test_checkpoint_updates_statuses_atomically(tmp_path: Path) -> None:
     store = ExperimentCheckpointStore(tmp_path, ("run-1", "run-2"))
 
@@ -41,21 +83,7 @@ def test_checkpoint_rejects_malformed_existing_state(tmp_path: Path) -> None:
 
 
 def test_resume_marks_staging_and_validates_finalized_bundle(tmp_path: Path) -> None:
-    run_path = tmp_path / "runs" / "run-1"
-    run_path.mkdir(parents=True)
-    content = {
-        "manifest.json": b"{}\n",
-        "timeline.jsonl": b'{"kind":"run-terminated"}\n',
-        "result.json": b"{}\n",
-    }
-    for name, value in content.items():
-        (run_path / name).write_bytes(value)
-    (run_path / "checksums.sha256").write_text(
-        "".join(
-            f"{hashlib.sha256(value).hexdigest()}  {name}\n"
-            for name, value in content.items()
-        )
-    )
+    _write_finalized_bundle(tmp_path, "run-1")
     staging = tmp_path / ".staging" / "run-2"
     staging.mkdir(parents=True)
 
@@ -66,6 +94,39 @@ def test_resume_marks_staging_and_validates_finalized_bundle(tmp_path: Path) -> 
     assert state.finalized_run_ids == ("run-1",)
     assert state.interrupted_run_ids == ("run-2",)
     assert state.pending_run_ids == ("run-2",)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "run_id"),
+    (
+        (lambda run: (run / "unchecksummed.json").write_text("{}"), "run-1"),
+        (lambda run: None, "different-run"),
+    ),
+)
+def test_resume_rejects_incomplete_bundle_coverage_or_wrong_selected_run(
+    tmp_path: Path, mutation, run_id: str
+) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-1")
+    mutation(run)
+
+    assert not finalized_bundle_is_valid(tmp_path, run_id)
+
+
+@pytest.mark.parametrize(
+    "bundle_options",
+    (
+        {"manifest_run_id": "other-run"},
+        {"result_run_id": "other-run"},
+        {"terminal": False},
+        {"outcome": False},
+    ),
+)
+def test_resume_rejects_structurally_invalid_or_mismatched_bundle(
+    tmp_path: Path, bundle_options: dict[str, object]
+) -> None:
+    _write_finalized_bundle(tmp_path, "run-1", **bundle_options)
+
+    assert not finalized_bundle_is_valid(tmp_path, "run-1")
 
 
 def test_invalid_checksum_is_not_resumable(tmp_path: Path) -> None:

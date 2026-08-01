@@ -1226,12 +1226,46 @@ def compare_variants(
     wrong_not_increased = _median(wrong_deltas) <= 0
     backtrack_not_increased = _median(backtrack_deltas) <= 0
     completion_not_regressed = improved_completion >= baseline_completion
+    gated_seeds = tuple(
+        seed
+        for seed in paired_seeds
+        if not (
+            not baseline_by_seed[seed].verified_completion
+            and improved_by_seed[seed].verified_completion
+        )
+    )
+    gated_cost_decreased = not gated_seeds or _median(
+        tuple(
+            improved_by_seed[seed].discovery_cost.total
+            - baseline_by_seed[seed].discovery_cost.total
+            for seed in gated_seeds
+        )
+    ) < 0
+    gated_wrong_not_increased = not gated_seeds or _median(
+        tuple(
+            improved_by_seed[seed].wrong_actions
+            - baseline_by_seed[seed].wrong_actions
+            for seed in gated_seeds
+        )
+    ) <= 0
+    gated_backtrack_not_increased = not gated_seeds or _median(
+        tuple(
+            improved_by_seed[seed].backtracks - baseline_by_seed[seed].backtracks
+            for seed in gated_seeds
+        )
+    ) <= 0
     reasons = tuple(
         reason
         for reason, passed in (
-            ("paired median discovery cost did not decrease", cost_decreased),
-            ("paired median wrong-action burden increased", wrong_not_increased),
-            ("paired median backtrack burden increased", backtrack_not_increased),
+            ("paired median discovery cost did not decrease", gated_cost_decreased),
+            (
+                "paired median wrong-action burden increased",
+                gated_wrong_not_increased,
+            ),
+            (
+                "paired median backtrack burden increased",
+                gated_backtrack_not_increased,
+            ),
             ("verified completion rate regressed", completion_not_regressed),
         )
         if not passed

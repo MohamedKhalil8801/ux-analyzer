@@ -213,22 +213,35 @@ class ExperimentCheckpointStore:
 
 
 def finalized_bundle_is_valid(output: Path, run_id: str) -> bool:
-    """Return whether a selected finalized bundle passes checksum integrity."""
+    """Return whether a selected finalized bundle is complete and trustworthy."""
 
     if not run_id or Path(run_id).name != run_id:
         return False
     bundle = Path(output) / "runs" / run_id
+    return not finalized_bundle_failures(bundle, expected_run_id=run_id)
+
+
+def finalized_bundle_failures(
+    bundle: Path, *, expected_run_id: str | None = None
+) -> list[str]:
+    """Return integrity and terminal-structure failures for a finalized bundle."""
+
+    bundle = Path(bundle)
     checksum_path = bundle / "checksums.sha256"
     if not bundle.is_dir() or not checksum_path.is_file():
-        return False
+        return ["missing checksum file: checksums.sha256"]
     try:
         lines = checksum_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
+    except (OSError, UnicodeError):
+        return ["unreadable checksum file: checksums.sha256"]
+    failures: list[str] = []
     checksums: dict[str, str] = {}
-    for line in lines:
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
         if "  " not in line:
-            return False
+            failures.append(f"invalid checksum entry at line {line_number}")
+            continue
         digest, relative = line.split("  ", maxsplit=1)
         path = PurePosixPath(relative)
         if (
@@ -239,18 +252,114 @@ def finalized_bundle_is_valid(output: Path, run_id: str) -> bool:
             or "\\" in relative
             or relative in checksums
         ):
-            return False
+            failures.append(f"invalid checksum entry at line {line_number}")
+            continue
         checksums[relative] = digest
-    if not _REQUIRED_BUNDLE_FILES.issubset(checksums):
-        return False
-    for relative, expected in checksums.items():
+
+    actual_files = {
+        candidate.relative_to(bundle).as_posix()
+        for candidate in bundle.rglob("*")
+        if candidate.is_file() and candidate.name != "checksums.sha256"
+    }
+    for required in sorted(_REQUIRED_BUNDLE_FILES):
+        if required not in actual_files:
+            failures.append(f"missing required bundle file: {required}")
+        elif required not in checksums:
+            failures.append(f"required file missing checksum: {required}")
+    for relative in sorted(actual_files - checksums.keys()):
+        failures.append(f"checksum entry missing: {relative}")
+    for relative in sorted(checksums.keys() - actual_files):
+        failures.append(f"checksummed file missing: {relative}")
+    for relative in sorted(actual_files & checksums.keys()):
         path = bundle.joinpath(*PurePosixPath(relative).parts)
-        if not path.is_file():
-            return False
         try:
-            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+            actual = digest.hexdigest()
         except OSError:
-            return False
-        if actual != expected:
-            return False
-    return True
+            failures.append(f"unreadable checksummed file: {relative}")
+            continue
+        if actual != checksums[relative]:
+            failures.append(f"checksum mismatch: {relative}")
+
+    manifest = _read_json_object(bundle / "manifest.json", "manifest.json", failures)
+    result = _read_json_object(bundle / "result.json", "result.json", failures)
+    events = _read_json_lines(bundle / "timeline.jsonl", failures)
+    embedded_ids = [
+        value
+        for value in (
+            manifest.get("run_id"),
+            result.get("run_id"),
+            cast(dict[str, object], result.get("metrics", {})).get("run_id")
+            if isinstance(result.get("metrics"), dict)
+            else None,
+        )
+        if value is not None
+    ]
+    selected_id = expected_run_id or (
+        manifest.get("run_id") if isinstance(manifest.get("run_id"), str) else None
+    )
+    if (
+        selected_id is None
+        or not embedded_ids
+        or any(value != selected_id for value in embedded_ids)
+    ):
+        failures.append("embedded run IDs do not match bundle")
+    outcome = result.get("outcome")
+    if not isinstance(outcome, dict) or not isinstance(
+        cast(dict[object, object], outcome).get("kind"), str
+    ):
+        failures.append("result.json missing terminal outcome")
+    terminal = next(
+        (event for event in reversed(events) if event.get("kind") == "run-terminated"),
+        None,
+    )
+    if terminal is None:
+        failures.append("missing terminal run event")
+    else:
+        terminal_outcome = terminal.get("outcome")
+        if not isinstance(terminal_outcome, dict) or not isinstance(
+            cast(dict[object, object], terminal_outcome).get("kind"), str
+        ):
+            failures.append("terminal run event missing outcome")
+    return list(dict.fromkeys(failures))
+
+
+def _read_json_object(
+    path: Path, name: str, failures: list[str]
+) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        failures.append(f"invalid JSON bundle file: {name}")
+        return {}
+    if not isinstance(value, dict):
+        failures.append(f"bundle file must contain object: {name}")
+        return {}
+    return cast(dict[str, object], value)
+
+
+def _read_json_lines(path: Path, failures: list[str]) -> list[dict[str, object]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        failures.append("unreadable bundle file: timeline.jsonl")
+        return []
+    events: list[dict[str, object]] = []
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            failures.append(f"invalid timeline JSON at line {line_number}")
+            continue
+        if not isinstance(value, dict):
+            failures.append(f"timeline entry is not object at line {line_number}")
+            continue
+        events.append(cast(dict[str, object], value))
+    if not events:
+        failures.append("timeline.jsonl contains no events")
+    return events

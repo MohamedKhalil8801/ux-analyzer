@@ -314,6 +314,89 @@ def test_compare_variants_requires_paired_seeds_and_applies_directional_gate() -
     assert comparison.paired_seeds == (7,)
 
 
+def test_completion_improvement_dominates_effort_of_early_abandonment() -> None:
+    defective = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    improved = ApplicationVersion(
+        id="improved", kind=ApplicationVersionKind.IMPROVED, label="Improved"
+    )
+    baseline = replace(
+        evaluate_run(_result(defective), EvaluationTarget("target")),
+        verified_completion=False,
+        abandoned=True,
+        outcome="agent-abandoned",
+        wrong_actions=0,
+        backtracks=0,
+        discovery_cost=DiscoveryCostBreakdown(0, 0, 0, 0, 0, 0, 1),
+    )
+    candidate = replace(
+        evaluate_run(_result(improved), EvaluationTarget("target")),
+        run_id="run-improved",
+        verified_completion=True,
+        wrong_actions=2,
+        backtracks=1,
+        discovery_cost=DiscoveryCostBreakdown(1, 1, 0, 2, 1, 0, 0),
+    )
+
+    comparison = compare_variants((baseline,), (candidate,))
+
+    assert comparison.gate.passed
+    assert comparison.gate.verified_completion_rate_not_regressed
+    assert not comparison.gate.discovery_cost_decreased
+    assert not comparison.gate.wrong_action_burden_not_increased
+    assert not comparison.gate.backtrack_burden_not_increased
+    assert comparison.gate.reasons == ()
+
+
+def test_completion_dominance_does_not_hide_jointly_completed_regression() -> None:
+    defective = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    improved = ApplicationVersion(
+        id="improved", kind=ApplicationVersionKind.IMPROVED, label="Improved"
+    )
+    baseline_abandoned = replace(
+        evaluate_run(_result(defective), EvaluationTarget("target")),
+        verified_completion=False,
+        abandoned=True,
+        outcome="agent-abandoned",
+        discovery_cost=DiscoveryCostBreakdown(0, 0, 0, 0, 0, 0, 1),
+    )
+    improved_completed = replace(
+        evaluate_run(_result(improved), EvaluationTarget("target")),
+        run_id="improved-seed-7",
+        discovery_cost=DiscoveryCostBreakdown(2, 0, 0, 0, 0, 0, 0),
+    )
+    baseline_completed = replace(
+        evaluate_run(_result(defective), EvaluationTarget("target")),
+        run_id="baseline-seed-8",
+        seed=8,
+        backtracks=0,
+        discovery_cost=DiscoveryCostBreakdown(1, 0, 0, 0, 0, 0, 0),
+    )
+    improved_regressed = replace(
+        evaluate_run(_result(improved), EvaluationTarget("target")),
+        run_id="improved-seed-8",
+        seed=8,
+        wrong_actions=1,
+        backtracks=1,
+        discovery_cost=DiscoveryCostBreakdown(2, 0, 0, 1, 1, 0, 0),
+    )
+
+    comparison = compare_variants(
+        (baseline_abandoned, baseline_completed),
+        (improved_completed, improved_regressed),
+    )
+
+    assert not comparison.gate.passed
+    assert comparison.gate.reasons == (
+        "paired median discovery cost did not decrease",
+        "paired median wrong-action burden increased",
+        "paired median backtrack burden increased",
+    )
+
+
 def test_model_dependent_inputs_are_not_reported_as_seed_only() -> None:
     version = ApplicationVersion(
         id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"

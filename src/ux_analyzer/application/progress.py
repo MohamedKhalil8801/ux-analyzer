@@ -17,15 +17,53 @@ def snapshot_progress_signature(
 ) -> SemanticSnapshotSignature:
     """Return a stable, private-data-free signature of meaningful UI state."""
 
+    region_labels = {region.id: region.label for region in snapshot.regions}
     occurrences: Counter[tuple[object, ...]] = Counter()
     signature: list[tuple[object, ...]] = []
     for element in snapshot.elements:
-        semantic = _element_semantics(element)
+        region_label = (
+            region_labels.get(element.region_id)
+            if element.region_id is not None
+            else None
+        )
+        semantic = _element_semantics(element, region_label)
         occurrence = occurrences[semantic]
         occurrences[semantic] += 1
-        identity = element.lineage_id or ("semantic", semantic, occurrence)
+        identity = ("semantic", semantic, occurrence)
         signature.append((identity, *semantic))
     return tuple(sorted(signature, key=repr))
+
+
+def element_progress_identity(
+    snapshot: ViewportSnapshot, element: ElementSnapshot
+) -> object:
+    """Return stable safe identity for an action target across recaptures."""
+
+    region_labels = {region.id: region.label for region in snapshot.regions}
+    region_label = (
+        region_labels.get(element.region_id) if element.region_id is not None else None
+    )
+    semantic = _element_semantics(element, region_label)
+    occurrence = next(
+        index
+        for index, candidate in enumerate(
+            candidate
+            for candidate in snapshot.elements
+            if _element_semantics(
+                candidate,
+                region_labels.get(candidate.region_id)
+                if candidate.region_id is not None
+                else None,
+            )
+            == semantic
+        )
+        if candidate is element
+    )
+    return (
+        "semantic-target",
+        *semantic,
+        occurrence,
+    )
 
 
 def made_meaningful_progress(
@@ -48,16 +86,14 @@ def made_meaningful_progress(
 
 
 def transition_progress_signature(
-    action_fingerprint: tuple[str, str | None, str | None],
-    before: ViewportSnapshot,
+    action_fingerprint: tuple[object, ...],
     after: ViewportSnapshot,
     current_url: str | None,
 ) -> TransitionProgressSignature:
-    """Return a private-data-free signature for one action/UI transition."""
+    """Return a safe signature for an action and the state it produced."""
 
     return (
         action_fingerprint,
-        snapshot_progress_signature(before),
         snapshot_progress_signature(after),
         _safe_url_origin_path(current_url),
     )
@@ -77,15 +113,21 @@ def repeated_cycle_length(
     return None
 
 
-def _element_semantics(element: ElementSnapshot) -> tuple[object, ...]:
+def _element_semantics(
+    element: ElementSnapshot, region_label: str | None
+) -> tuple[object, ...]:
     return (
         str(element.role),
         element.label,
-        element.region_id,
+        _normalized_region_label(region_label),
         _visibility_bucket(element.visibility_fraction),
         element.actionable,
         element.disabled,
     )
+
+
+def _normalized_region_label(label: str | None) -> str | None:
+    return " ".join(label.split()).casefold() if label else None
 
 
 def _visibility_bucket(fraction: float) -> str:

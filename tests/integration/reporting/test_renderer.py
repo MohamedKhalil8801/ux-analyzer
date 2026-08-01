@@ -539,7 +539,7 @@ def test_renderer_includes_all_failed_experiment_and_staging_crash(
                     "persona_id": "impatient",
                     "policy": "progressive-prominence-scent",
                     "seed": 7,
-                }
+                },
             ],
         },
     )
@@ -944,6 +944,99 @@ def test_renderer_overview_keeps_every_run_and_preserves_outcome_from_failure_st
     assert "agent-abandoned" in html
     assert "evaluation evidence unavailable: target absent" in html
     assert "Gate unavailable" in html
+
+
+def test_split_report_renders_execution_failure_without_run_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_json(
+        tmp_path / "experiment.json",
+        {
+            "failures": [
+                {
+                    "run_id": "run-execution-failure",
+                    "error_type": "ProviderFailure",
+                    "stage": "execution",
+                    "terminal_state": "failed",
+                    "reason": "browser capture failed",
+                    "scenario_id": "invite",
+                    "application_version_id": "defective",
+                    "persona_id": "persona",
+                    "policy": "full-list",
+                    "seed": 7,
+                },
+                {
+                    "run_id": "run-second-execution-failure",
+                    "error_type": "ProviderFailure",
+                    "stage": "execution",
+                    "terminal_state": "failed",
+                    "reason": "browser startup failed",
+                    "scenario_id": "invite",
+                    "application_version_id": "improved",
+                    "persona_id": "persona",
+                    "policy": "full-list",
+                    "seed": 7,
+                },
+            ]
+        },
+    )
+
+    monkeypatch.setattr(renderer, "_estimated_full_report_bytes", lambda _: 2_000_001)
+    report = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    html = report.read_text(encoding="utf-8")
+    run_pages = tuple((tmp_path / "report-runs").glob("*.html"))
+    assert 'data-run-id="run-execution-failure"' in html
+    assert len(run_pages) == 2
+    assert any(
+        "browser capture failed" in page.read_text(encoding="utf-8")
+        for page in run_pages
+    )
+
+
+def test_renderer_gate_does_not_hide_jointly_completed_regression() -> None:
+    def run(
+        seed: int,
+        version: str,
+        *,
+        verified: bool,
+        cost: float,
+        wrong: float = 0,
+        backtracks: float = 0,
+    ) -> dict[str, object]:
+        return {
+            "seed": seed,
+            "scenario_id": "invite",
+            "scenario_label": "Invite",
+            "persona_id": "persona",
+            "persona_label": "Persona",
+            "policy": "progressive-prominence-scent",
+            "version_id": version,
+            "version_label": version.title(),
+            "verified": verified,
+            "metrics": [
+                {"name": "discovery-cost", "value": cost},
+                {"name": "wrong-actions", "value": wrong},
+                {"name": "backtracks", "value": backtracks},
+            ],
+        }
+
+    gate = renderer._derived_gate_row(
+        [
+            run(7, "defective", verified=False, cost=1),
+            run(7, "improved", verified=True, cost=2),
+            run(8, "defective", verified=True, cost=1),
+            run(8, "improved", verified=True, cost=4, wrong=1, backtracks=1),
+        ]
+    )
+
+    assert gate is not None
+    assert not gate["passed"]
+    assert gate["reasons"] == [
+        "paired median discovery cost did not decrease",
+        "paired median wrong-action burden increased",
+        "paired median backtrack burden increased",
+    ]
 
 
 @pytest.mark.e2e

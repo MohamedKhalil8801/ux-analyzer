@@ -187,6 +187,12 @@ class FakeAttentionPolicy:
         )
 
 
+class ExhaustedAttentionPolicy:
+    def next_observation(self, *args: object, **kwargs: object) -> ObservationSelection:
+        del args, kwargs
+        raise ValueError("no unobserved visible elements remain")
+
+
 class RepeatingAttentionPolicy:
     def __init__(self) -> None:
         self.recovery_levels: list[int] = []
@@ -362,12 +368,13 @@ def _snapshot(
     *,
     lineage_id: str | None = None,
     second_lineage_id: str | None = None,
+    label: str = "Invite teammate",
 ) -> ViewportSnapshot:
     elements = [
         ElementSnapshot(
             id=element_id,
             role="button",
-            label="Invite teammate",
+            label=label,
             bounds=BoundingBox(x=10, y=10, width=100, height=30),
             visibility_fraction=1,
             actionable=True,
@@ -493,6 +500,32 @@ def _agent(
         session_config_factory=lambda _: _config(spec, tmp_path),
         model_record_source=model_record_source,
         result_evaluator=result_evaluator,
+    )
+
+
+@pytest.mark.asyncio
+async def test_exhausted_visible_attention_finalizes_as_agent_abandoned(
+    tmp_path: Path,
+) -> None:
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(()),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        attention_policy=ExhaustedAttentionPolicy(),
+    )
+
+    result = await agent.execute(_spec())
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.terminal_reason == "all visible elements examined without progress"
+    assert result.verification.verified is False
+    assert bundles.bundle.finalized
+    assert any(
+        isinstance(event, dict) and event.get("kind") == "attention-exhausted"
+        for event in bundles.bundle.events
     )
 
 
@@ -816,7 +849,7 @@ async def test_meaningful_fixture_progress_resets_scroll_repetition(
 
     result = await agent.execute(_spec(max_steps=10, timeout_seconds=None))
 
-    assert result.outcome.kind == "agent-abandoned"
+    assert result.outcome.kind == "agent-abandoned", result.terminal_reason
     assert result.terminal_reason == "Test complete."
     assert attention.recovery_levels == [0, 1, 0, 1, 2]
     assert not any(
@@ -887,11 +920,11 @@ async def test_repeated_semantic_action_cycle_finalizes_after_second_cycle(
     tmp_path: Path,
 ) -> None:
     snapshots = (
-        _snapshot("main-1", "share", lineage_id="share-lineage"),
-        _snapshot("dialog-1", "close", lineage_id="close-lineage"),
-        _snapshot("main-2", "share", lineage_id="share-lineage"),
-        _snapshot("dialog-2", "close", lineage_id="close-lineage"),
-        _snapshot("main-3", "share", lineage_id="share-lineage"),
+        _snapshot("main-1", "share-1", label="Share"),
+        _snapshot("dialog-1", "close-1", label="Close"),
+        _snapshot("main-2", "share-2", label="Share"),
+        _snapshot("dialog-2", "close-2", label="Close"),
+        _snapshot("main-3", "share-3", label="Share"),
     )
     provider = FakeObservationProvider(
         snapshots,
@@ -912,15 +945,22 @@ async def test_repeated_semantic_action_cycle_finalizes_after_second_cycle(
         FakeCognitiveAgent(
             (
                 CognitiveDecision(
-                    action={"kind": "interact", "element_id": "share"},
+                    action={"kind": "interact", "element_id": "share-1"},
                     reason="Open sharing.",
                 ),
                 CognitiveDecision(
-                    action={"kind": "interact", "element_id": "close"},
+                    action={"kind": "interact", "element_id": "close-1"},
                     reason="Close sharing.",
                 ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "share-2"},
+                    reason="Open sharing again.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "close-2"},
+                    reason="Close sharing again.",
+                ),
             )
-            * 2
         ),
         FakeVerifier((VerificationResult(verified=False),)),
         bundles,
@@ -929,7 +969,7 @@ async def test_repeated_semantic_action_cycle_finalizes_after_second_cycle(
 
     result = await agent.execute(_spec(max_steps=10, timeout_seconds=None))
 
-    assert result.outcome.kind == "agent-abandoned"
+    assert result.outcome.kind == "agent-abandoned", result.terminal_reason
     assert result.terminal_reason == "repeated semantic action cycle detected"
     assert len(provider.executed) == 4
     assert bundles.bundle.finalized
@@ -946,6 +986,69 @@ async def test_repeated_semantic_action_cycle_finalizes_after_second_cycle(
         }
     ]
     assert "private-secret" not in repr(cycle_events)
+
+
+@pytest.mark.asyncio
+async def test_failed_action_breaks_semantic_cycle_history(tmp_path: Path) -> None:
+    snapshots = (
+        _snapshot("state-a-1", "action-a-1", label="Action A"),
+        _snapshot("state-b-1", "action-b-1", label="Action B"),
+        _snapshot("state-c-1", "action-c-1", label="Action C"),
+        _snapshot("state-a-2", "action-a-2", label="Action A"),
+        _snapshot("state-b-2", "action-b-2", label="Action B"),
+        _snapshot("state-c-2", "action-c-2", label="Action C"),
+    )
+    provider = FakeObservationProvider(
+        snapshots,
+        results=(
+            PlatformActionResult(True, "https://fixture.test/a", 1),
+            PlatformActionResult(True, "https://fixture.test/b", 1),
+            PlatformActionResult(False, "https://fixture.test/c", 1, error="blocked"),
+            PlatformActionResult(True, "https://fixture.test/a", 1),
+            PlatformActionResult(True, "https://fixture.test/b", 1),
+        ),
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "action-a-1"},
+                    reason="A.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "action-b-1"},
+                    reason="B.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "action-c-1"},
+                    reason="C fails.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "action-a-2"},
+                    reason="A again.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "action-b-2"},
+                    reason="B again.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "done checking"},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    result = await agent.execute(_spec(max_steps=10, timeout_seconds=None))
+
+    assert result.terminal_reason != "repeated semantic action cycle detected"
+    assert len(provider.executed) == 5
+    assert not any(event.kind == "repeated-action-cycle" for event in result.state.events)
 
 
 @pytest.mark.asyncio

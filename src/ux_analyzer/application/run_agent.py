@@ -16,6 +16,7 @@ from ux_analyzer.application.action_validation import (
 from ux_analyzer.application.memory import MemoryPolicy
 from ux_analyzer.application.progress import (
     TransitionProgressSignature,
+    element_progress_identity,
     made_meaningful_progress,
     repeated_cycle_length,
     transition_progress_signature,
@@ -84,6 +85,9 @@ from ux_analyzer.ports.verification import VerificationProvider
 
 if TYPE_CHECKING:
     from ux_analyzer.application.evaluation import RunMetrics
+
+_ATTENTION_EXHAUSTED_MESSAGE = "no unobserved visible elements remain"
+_ATTENTION_EXHAUSTED_REASON = "all visible elements examined without progress"
 
 
 class ProminenceResult(Protocol):
@@ -276,7 +280,7 @@ class _RunContext:
     completed_fixture_inputs: set[tuple[str, str]] = field(
         default_factory=lambda: set[tuple[str, str]]()
     )
-    last_action_fingerprint: tuple[str, str | None, str | None] | None = None
+    last_action_fingerprint: tuple[object, ...] | None = None
     consecutive_action_count: int = 0
     no_progress_count: int = 0
     transition_history: list[TransitionProgressSignature] = field(
@@ -553,14 +557,31 @@ class RunAgent:
                     )
                 )
 
-            selection = self.attention_policy.next_observation(
-                application_state.attention,
-                snapshot,
-                scores,
-                coarse_scent,
-                rng,
-                recovery_level=context.no_progress_count,
-            )
+            try:
+                selection = self.attention_policy.next_observation(
+                    application_state.attention,
+                    snapshot,
+                    scores,
+                    coarse_scent,
+                    rng,
+                    recovery_level=context.no_progress_count,
+                )
+            except ValueError as error:
+                if str(error) != _ATTENTION_EXHAUSTED_MESSAGE:
+                    raise
+                writer.append_event(
+                    {
+                        "kind": "attention-exhausted",
+                        "reason": _ATTENTION_EXHAUSTED_REASON,
+                    }
+                )
+                return _Execution(
+                    state=context.state,
+                    outcome=AgentAbandoned(reason=_ATTENTION_EXHAUSTED_REASON),
+                    verification=None,
+                    agent_claimed_success=claimed_success,
+                    terminal_reason=_ATTENTION_EXHAUSTED_REASON,
+                )
             observation = selection.observation
             selection_record = SelectionEvidence(
                 viewport_id=snapshot.id,
@@ -876,13 +897,14 @@ class RunAgent:
                 context.transition_history.append(
                     transition_progress_signature(
                         action_fingerprint,
-                        snapshot,
                         current_snapshot,
                         result.url,
                     )
                 )
                 context.transition_history = context.transition_history[-8:]
                 cycle_length = repeated_cycle_length(context.transition_history)
+            else:
+                context.transition_history.clear()
             context.previous_action_result = {
                 "succeeded": result.succeeded,
                 "state_changed": result.state_changed,
@@ -1322,15 +1344,20 @@ def _interaction_element_id(validated: ValidatedAction) -> str | None:
 
 def _action_fingerprint(
     validated: ValidatedAction, snapshot: ViewportSnapshot
-) -> tuple[str, str | None, str | None]:
+) -> tuple[object, ...]:
     action = validated.domain_action
     element_id = getattr(action, "element_id", None)
     if isinstance(element_id, str):
         element = snapshot.element(element_id)
-        element_id = element.lineage_id or element.id
+        target: object = element_progress_identity(snapshot, element)
     else:
-        element_id = None
-    return (str(getattr(action, "kind", type(action).__name__)), element_id, validated.fixture_key)
+        target = None
+    return (
+        str(getattr(action, "kind", type(action).__name__)),
+        target,
+        validated.fixture_key,
+        getattr(action, "direction", None),
+    )
 
 
 def _safe_action(validated: ValidatedAction) -> dict[str, object]:

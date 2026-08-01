@@ -8,16 +8,15 @@ import html
 import json
 import math
 import mimetypes
-import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
+from ux_analyzer.application.checkpoint import finalized_bundle_failures
+
 DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
-_HASH_CHUNK_BYTES = 1024 * 1024
-_CHECKSUM_PATTERN = re.compile(r"[0-9a-f]{64}")
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
 _PRIVATE_KEYS = frozenset(
     {
@@ -546,66 +545,7 @@ def _read_jsonl_safely(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def _bundle_integrity_failures(path: Path) -> list[str]:
-    failures: list[str] = []
-    checksum_path = path / "checksums.sha256"
-    if not checksum_path.is_file():
-        return ["missing checksum file: checksums.sha256"]
-    try:
-        lines = checksum_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        return ["unreadable checksum file: checksums.sha256"]
-
-    checksums: dict[str, str] = {}
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        parts = line.split("  ", maxsplit=1)
-        if len(parts) != 2 or _CHECKSUM_PATTERN.fullmatch(parts[0]) is None:
-            failures.append(f"invalid checksum entry at line {line_number}")
-            continue
-        digest, relative_path = parts
-        relative = Path(relative_path)
-        if (
-            not relative_path
-            or relative.is_absolute()
-            or ".." in relative.parts
-            or relative_path == "checksums.sha256"
-        ):
-            failures.append(f"invalid checksum path at line {line_number}")
-            continue
-        normalized = relative.as_posix()
-        if normalized in checksums:
-            failures.append(f"duplicate checksum entry: {normalized}")
-            continue
-        checksums[normalized] = digest
-
-    actual_files = {
-        candidate.relative_to(path).as_posix()
-        for candidate in path.rglob("*")
-        if candidate.is_file() and candidate.name not in {"checksums.sha256", ".active"}
-    }
-    for required in sorted(_REQUIRED_BUNDLE_FILES):
-        if required not in actual_files:
-            failures.append(f"missing required bundle file: {required}")
-        elif required not in checksums:
-            failures.append(f"required file missing checksum: {required}")
-    for relative_path in sorted(actual_files - checksums.keys()):
-        failures.append(f"checksum entry missing: {relative_path}")
-    for relative_path in sorted(checksums.keys() - actual_files):
-        failures.append(f"checksummed file missing: {relative_path}")
-    for relative_path in sorted(actual_files & checksums.keys()):
-        digest = _file_sha256(path / relative_path)
-        if digest != checksums[relative_path]:
-            failures.append(f"checksum mismatch: {relative_path}")
-    return _unique(failures)
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(_HASH_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return finalized_bundle_failures(path)
 
 
 def _snapshots(path: Path, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1290,6 +1230,8 @@ def _run_overview_rows(
     rows: list[dict[str, Any]] = []
     for run in runs:
         gate = _gate_for_run(run, gate_rows)
+        user_effort = _mapping(run.get("user_effort"))
+        analysis_cost = _mapping(run.get("analysis_cost"))
         rows.append(
             {
                 "run_id": run["run_id"],
@@ -1306,14 +1248,14 @@ def _run_overview_rows(
                     _median_metric([run], "discovery-cost")
                 ),
                 "estimated_task_seconds": _format_seconds(
-                    _number(run["user_effort"].get("estimated_task_seconds"), 0)
+                    _number(user_effort.get("estimated_task_seconds"), 0)
                 ),
-                "model_calls": int(_number(run["analysis_cost"].get("model_calls"), 0)),
+                "model_calls": int(_number(analysis_cost.get("model_calls"), 0)),
                 "analysis_latency": _format_milliseconds(
-                    _number(run["analysis_cost"].get("latency_ms"), 0)
+                    _number(analysis_cost.get("latency_ms"), 0)
                 ),
                 "analysis_tokens": int(
-                    _number(run["analysis_cost"].get("total_tokens"), 0)
+                    _number(analysis_cost.get("total_tokens"), 0)
                 ),
                 "outcome": run["outcome"],
                 "stage": run["stage"],
@@ -1414,16 +1356,19 @@ def _gate_rows(
                 ),
             }
         )
-    existing = {(row["scenario_id"], row["persona_id"], row["policy"]) for row in rows}
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for run in runs:
         if run["trusted"] and run["ux_sample_valid"] and run["metrics"]:
             groups[(run["scenario_id"], run["persona_id"], run["policy"])].append(run)
     for identity in sorted(groups):
-        if identity in existing:
-            continue
         derived = _derived_gate_row(groups[identity])
         if derived is not None:
+            rows = [
+                row
+                for row in rows
+                if (row["scenario_id"], row["persona_id"], row["policy"])
+                != identity
+            ]
             rows.append(derived)
     return rows
 
@@ -1445,18 +1390,41 @@ def _derived_gate_row(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
     baseline_completion = sum(baseline[seed]["verified"] for seed in seeds) / len(seeds)
     improved_completion = sum(improved[seed]["verified"] for seed in seeds) / len(seeds)
+    gated_seeds = tuple(
+        seed
+        for seed in seeds
+        if not (not baseline[seed]["verified"] and improved[seed]["verified"])
+    )
+    gated_cost_deltas = _paired_metric_deltas(
+        baseline, improved, gated_seeds, "discovery-cost"
+    )
+    gated_wrong_deltas = _paired_metric_deltas(
+        baseline, improved, gated_seeds, "wrong-actions"
+    )
+    gated_backtrack_deltas = _paired_metric_deltas(
+        baseline, improved, gated_seeds, "backtracks"
+    )
     checks = (
         (
             "paired median discovery cost did not decrease",
-            _median_values(cost_deltas) < 0,
+            not gated_seeds
+            or (gated_cost_deltas is not None and _median_values(gated_cost_deltas) < 0),
         ),
         (
             "paired median wrong-action burden increased",
-            _median_values(wrong_deltas) <= 0,
+            not gated_seeds
+            or (
+                gated_wrong_deltas is not None
+                and _median_values(gated_wrong_deltas) <= 0
+            ),
         ),
         (
             "paired median backtrack burden increased",
-            _median_values(backtrack_deltas) <= 0,
+            not gated_seeds
+            or (
+                gated_backtrack_deltas is not None
+                and _median_values(gated_backtrack_deltas) <= 0
+            ),
         ),
         (
             "verified completion rate regressed",
@@ -1697,6 +1665,8 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
     persona_id = _text(failure.get("persona_id"), "unknown")
     return {
         "run_id": run_id,
+        "bundle_path": "",
+        "integrity_status": "failed",
         "seed": _number(failure.get("seed"), 0),
         "scenario_id": scenario_id,
         "scenario_label": scenario_id.replace("-", " ").title(),
@@ -1721,6 +1691,8 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
             if _text(failure.get("stage"), "execution") == "evaluation"
             else None
         ),
+        "ux_sample_valid": False,
+        "ux_sample_invalid_reason": "execution-failure",
         "failure_reason": _text(failure.get("reason"), "run failed"),
         "status_class": "status-untrusted",
         "failed": True,
@@ -1738,6 +1710,8 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
         "memory": [],
         "manifests": {"provider_manifests": []},
         "model_calls": [],
+        "user_effort": {},
+        "analysis_cost": {},
         "evidence": [],
         "findings": [],
         "metrics": [],

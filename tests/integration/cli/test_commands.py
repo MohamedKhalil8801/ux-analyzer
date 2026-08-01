@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -77,6 +78,71 @@ def _write_run(root: Path) -> Path:
         },
     )
     return run
+
+
+def _write_resumable_metrics_bundle(root: Path, spec, *, cost: float) -> None:
+    run = root / "runs" / spec.run_id
+    run.mkdir(parents=True)
+    metrics = {
+        "run_id": spec.run_id,
+        "seed": spec.seed,
+        "scenario_id": spec.scenario.id,
+        "application_version_id": spec.application_version.id,
+        "persona_id": spec.persona.id,
+        "policy": spec.policy.value,
+        "target": {"element_id": "target"},
+        "target_discovery_rank": 1,
+        "inspected_elements": 1,
+        "inspected_regions": 1,
+        "scrolls": 0,
+        "wrong_actions": 0,
+        "backtracks": 0,
+        "verified_completion": True,
+        "claimed_completion": True,
+        "false_success": False,
+        "abandoned": False,
+        "discovery_cost": {
+            "inspection_cost": cost,
+            "region_cost": 0,
+            "scroll_cost": 0,
+            "wrong_action_cost": 0,
+            "backtrack_cost": 0,
+            "uncertainty_cost": 0,
+            "abandonment_penalty": 0,
+        },
+    }
+    contents = {
+        "manifest.json": json.dumps(
+            {"run_id": spec.run_id, "seed": spec.seed}
+        ).encode(),
+        "timeline.jsonl": (
+            json.dumps(
+                {
+                    "kind": "run-terminated",
+                    "outcome": {"kind": "verified-success"},
+                }
+            ).encode()
+            + b"\n"
+        ),
+        "result.json": json.dumps(
+            {
+                "run_id": spec.run_id,
+                "outcome": {"kind": "verified-success"},
+                "verification": {"verified": True},
+                "agent_claimed_success": True,
+                "metrics": metrics,
+                "findings": [],
+            }
+        ).encode(),
+    }
+    for name, content in contents.items():
+        (run / name).write_bytes(content)
+    (run / "checksums.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256(content).hexdigest()}  {name}\n"
+            for name, content in contents.items()
+        )
+    )
 
 
 def test_validate_reports_actionable_config_error(tmp_path: Path) -> None:
@@ -214,11 +280,14 @@ def test_resume_matrix_skips_only_valid_finalized_runs(tmp_path: Path) -> None:
     run.mkdir(parents=True)
     contents = {
         "manifest.json": json.dumps({"run_id": completed.run_id}).encode(),
-        "timeline.jsonl": b'{"kind":"run-terminated"}\n',
-        "result.json": json.dumps({"run_id": completed.run_id}).encode(),
+        "timeline.jsonl": b'{"kind":"run-terminated","outcome":{"kind":"verified-success"}}\n',
+        "result.json": json.dumps(
+            {
+                "run_id": completed.run_id,
+                "outcome": {"kind": "verified-success"},
+            }
+        ).encode(),
     }
-    import hashlib
-
     for name, content in contents.items():
         (run / name).write_bytes(content)
     (run / "checksums.sha256").write_text(
@@ -233,6 +302,52 @@ def test_resume_matrix_skips_only_valid_finalized_runs(tmp_path: Path) -> None:
     assert completed.run_id not in {spec.run_id for spec in resumed.specs}
     assert len(resumed.specs) == len(matrix.specs) - 1
     assert store.state.finalized_run_ids == (completed.run_id,)
+
+
+@pytest.mark.parametrize("new_result_count", (0, 1))
+def test_resume_completion_evaluates_all_selected_finalized_bundles(
+    tmp_path: Path, new_result_count: int
+) -> None:
+    matrix = cli._resolve_matrix_or_exit(
+        DEMO_PROJECT, "core-pair", run_count=1, policies=()
+    )
+    selected = matrix.specs[:2]
+    for index, spec in enumerate(selected):
+        _write_resumable_metrics_bundle(tmp_path, spec, cost=float(index + 1))
+    returned = ()
+    if new_result_count:
+        from pydantic import TypeAdapter
+
+        from ux_analyzer.application.evaluation import RunMetrics
+        from ux_analyzer.application.run_agent import RunResult
+        from ux_analyzer.domain.run import VerifiedSuccess
+        from ux_analyzer.ports.verification import VerificationResult
+
+        persisted = json.loads(
+            (tmp_path / "runs" / selected[-1].run_id / "result.json").read_text()
+        )
+        returned = (
+            RunResult(
+                run_id=selected[-1].run_id,
+                outcome=VerifiedSuccess(),
+                verification=VerificationResult(verified=True),
+                agent_claimed_success=True,
+                state=None,  # type: ignore[arg-type]
+                metrics=TypeAdapter(RunMetrics).validate_python(persisted["metrics"]),
+            ),
+        )
+
+    summary_path, _ = cli._complete_experiment(
+        ExperimentResult(specs=selected, results=returned, failures=()),
+        output=tmp_path,
+        runtime=matrix.loaded.runtime,
+        selected_specs=selected,
+    )
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert {item["run_id"] for item in summary["run_metrics"]} == {
+        spec.run_id for spec in selected
+    }
 
 
 def test_ablate_selects_optional_policies_and_run_count_override(
@@ -573,9 +688,18 @@ def test_production_run_completes_evaluation_summary_and_report(
         return ExperimentResult(specs=(), results=(), failures=())
 
     def fake_complete(
-        result: ExperimentResult, *, output: Path, runtime: object
+        result: ExperimentResult,
+        *,
+        output: Path,
+        runtime: object,
+        selected_specs: object,
     ) -> tuple[Path, Path]:
-        completed.update(result=result, output=output, runtime=runtime)
+        completed.update(
+            result=result,
+            output=output,
+            runtime=runtime,
+            selected_specs=selected_specs,
+        )
         summary = output / "experiment.json"
         report = output / "report.html"
         summary.parent.mkdir(parents=True, exist_ok=True)
@@ -603,6 +727,7 @@ def test_production_run_completes_evaluation_summary_and_report(
     assert result.exit_code == 0
     assert completed["output"] == tmp_path
     assert completed["runtime"] is not None
+    assert completed["selected_specs"]
     assert "evaluation summary:" in result.stdout
     assert "report generated:" in result.stdout
 
