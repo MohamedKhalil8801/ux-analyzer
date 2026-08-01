@@ -137,6 +137,28 @@ def run_spec() -> RunSpec:
     )
 
 
+def test_evaluation_target_resolves_label_and_role_per_version() -> None:
+    target = ScenarioEvaluationTarget(
+        labels_by_version={"defective": "Share", "improved": "Invite teammate"},
+        roles_by_version={"defective": "button", "improved": "link"},
+    )
+    defective = ApplicationVersion(
+        id="app-defective",
+        kind=ApplicationVersionKind.DEFECTIVE,
+        label="Defective",
+    )
+    improved = ApplicationVersion(
+        id="app-improved",
+        kind=ApplicationVersionKind.IMPROVED,
+        label="Improved",
+    )
+
+    assert target.label_for(defective) == "Share"
+    assert target.role_for(defective) == "button"
+    assert target.label_for(improved) == "Invite teammate"
+    assert target.role_for(improved) == "link"
+
+
 def terminal_event(
     *,
     verification: VerificationResult | None = None,

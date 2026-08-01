@@ -14,6 +14,7 @@ from ux_analyzer.application.action_validation import (
     validate_action,
 )
 from ux_analyzer.application.memory import MemoryPolicy
+from ux_analyzer.application.progress import made_meaningful_progress
 from ux_analyzer.application.state_updates import (
     ApplicationState,
     StateUpdateConfig,
@@ -61,8 +62,10 @@ from ux_analyzer.domain.run import (
 from ux_analyzer.ports.artifacts import ArtifactReference, RunBundleWriter
 from ux_analyzer.ports.models import (
     CoarseScentEvaluator,
+    CognitiveRunContext,
     FullScentEvaluator,
     ModelCallRecord,
+    ModelResponseValidationError,
 )
 from ux_analyzer.ports.observation import (
     ObservationCapture,
@@ -99,6 +102,8 @@ class ObservationSelection(Protocol):
     element_probabilities: object
     region_probabilities: object
     selection_mode: str
+    recovery_selected_ids: Sequence[str]
+    next_recovery_state: object
 
     @property
     def selected_ids(self) -> Sequence[str]: ...
@@ -120,6 +125,8 @@ class AttentionPolicy(Protocol):
         scores: Sequence[ProminenceResult],
         coarse_scent: object,
         rng: random.Random,
+        *,
+        recovery_level: int = 0,
     ) -> ObservationSelection: ...
 
 
@@ -179,6 +186,7 @@ class SelectionEvidence:
     region_id: str | None
     element_probabilities: object
     region_probabilities: object
+    recovery_selected_ids: tuple[str, ...] = ()
     source_event_id: str | None = None
 
 
@@ -215,6 +223,8 @@ class RunResult:
     metrics: RunMetrics | None = None
     findings: tuple[Finding, ...] | None = ()
     evaluation_failure_reason: str | None = None
+    ux_sample_valid: bool = True
+    ux_sample_invalid_reason: str | None = None
 
     @property
     def claimed_success(self) -> bool:
@@ -257,6 +267,15 @@ class _RunContext:
     )
     state_event_ids: list[str] = field(default_factory=lambda: list[str]())
     model_record_cursor: int = 0
+    model_call_count: int = 0
+    completed_fixture_inputs: set[tuple[str, str]] = field(
+        default_factory=lambda: set[tuple[str, str]]()
+    )
+    last_action_fingerprint: tuple[str, str | None, str | None] | None = None
+    consecutive_action_count: int = 0
+    no_progress_count: int = 0
+    previous_action: dict[str, object] | None = None
+    previous_action_result: dict[str, object] | None = None
 
 
 class RunAgent:
@@ -438,6 +457,21 @@ class RunAgent:
 
         while True:
             application_state = context.application_state
+            if context.model_call_count >= spec.scenario.budget.max_model_calls:
+                writer.append_event(
+                    {
+                        "kind": "model-call-budget-exhausted",
+                        "model_calls": context.model_call_count,
+                        "limit": spec.scenario.budget.max_model_calls,
+                    }
+                )
+                return _Execution(
+                    state=context.state,
+                    outcome=BudgetExhausted(),
+                    verification=None,
+                    agent_claimed_success=claimed_success,
+                    terminal_reason="model call budget exhausted",
+                )
             if application_state.budgets.steps <= 0 or (
                 application_state.budgets.observations <= 0
             ):
@@ -468,11 +502,31 @@ class RunAgent:
             coarse_scent: object = ()
             if self.coarse_scent_evaluator is not None:
                 try:
+                    context.model_call_count += 1
                     coarse_scent = await self.coarse_scent_evaluator.evaluate(
                         spec.scenario.goal, snapshot
                     )
+                except ModelResponseValidationError as error:
+                    return self._model_failure(
+                        context, writer, error, claimed_success=claimed_success
+                    )
                 finally:
                     self._record_model_calls(context, writer)
+                if context.model_call_count >= spec.scenario.budget.max_model_calls:
+                    writer.append_event(
+                        {
+                            "kind": "model-call-budget-exhausted",
+                            "model_calls": context.model_call_count,
+                            "limit": spec.scenario.budget.max_model_calls,
+                        }
+                    )
+                    return _Execution(
+                        state=context.state,
+                        outcome=BudgetExhausted(),
+                        verification=None,
+                        agent_claimed_success=claimed_success,
+                        terminal_reason="model call budget exhausted",
+                    )
                 coarse_sequence = writer.append_event(
                     {
                         "kind": "coarse-scent-recorded",
@@ -497,6 +551,7 @@ class RunAgent:
                 scores,
                 coarse_scent,
                 rng,
+                recovery_level=context.no_progress_count,
             )
             observation = selection.observation
             selection_record = SelectionEvidence(
@@ -506,6 +561,9 @@ class RunAgent:
                 region_id=getattr(selection, "region_id", None),
                 element_probabilities=getattr(selection, "element_probabilities", {}),
                 region_probabilities=getattr(selection, "region_probabilities", {}),
+                recovery_selected_ids=tuple(
+                    getattr(selection, "recovery_selected_ids", ())
+                ),
             )
             selection_sequence = writer.append_event(
                 {
@@ -516,6 +574,7 @@ class RunAgent:
                     "region_id": selection_record.region_id,
                     "element_probabilities": selection_record.element_probabilities,
                     "region_probabilities": selection_record.region_probabilities,
+                    "recovery_selected_ids": selection_record.recovery_selected_ids,
                 }
             )
             context.selections.append(
@@ -536,6 +595,7 @@ class RunAgent:
                     observation,
                     snapshot=snapshot,
                     memory_policy=self.memory_policy,
+                    recovery_state=getattr(selection, "next_recovery_state", None),
                 )
             )
             _sync_run_attention(context)
@@ -551,13 +611,33 @@ class RunAgent:
 
             if self.full_scent_evaluator is not None:
                 try:
+                    context.model_call_count += 1
                     full_scent = await self.full_scent_evaluator.evaluate(
                         spec.scenario.goal,
                         context.application_state.attention,
                         snapshot,
                     )
+                except ModelResponseValidationError as error:
+                    return self._model_failure(
+                        context, writer, error, claimed_success=claimed_success
+                    )
                 finally:
                     self._record_model_calls(context, writer)
+                if context.model_call_count >= spec.scenario.budget.max_model_calls:
+                    writer.append_event(
+                        {
+                            "kind": "model-call-budget-exhausted",
+                            "model_calls": context.model_call_count,
+                            "limit": spec.scenario.budget.max_model_calls,
+                        }
+                    )
+                    return _Execution(
+                        state=context.state,
+                        outcome=BudgetExhausted(),
+                        verification=None,
+                        agent_claimed_success=claimed_success,
+                        terminal_reason="model call budget exhausted",
+                    )
                 full_sequence = writer.append_event(
                     {
                         "kind": "full-scent-recorded",
@@ -576,9 +656,35 @@ class RunAgent:
                     )
                 )
 
+            update_context = getattr(self.cognitive_agent, "update_context", None)
+            if callable(update_context):
+                update_context(
+                    CognitiveRunContext(
+                        viewport_id=snapshot.id,
+                        previous_action=context.previous_action,
+                        previous_action_result=context.previous_action_result,
+                        completed_fixture_keys=tuple(
+                            sorted(
+                                fixture_key
+                                for _, fixture_key in context.completed_fixture_inputs
+                            )
+                        ),
+                        fixture_input_complete=bool(context.completed_fixture_inputs),
+                        working_memory_capacity=spec.persona.working_memory_capacity,
+                        confidence=context.application_state.confidence,
+                        frustration=context.application_state.frustration,
+                        abandonment_threshold=spec.persona.abandonment_threshold,
+                        attention_temperature=spec.persona.attention_temperature,
+                    )
+                )
             try:
+                context.model_call_count += 1
                 decision = await self.cognitive_agent.decide(
                     spec.scenario.goal, observation
+                )
+            except ModelResponseValidationError as error:
+                return self._model_failure(
+                    context, writer, error, claimed_success=claimed_success
                 )
             finally:
                 self._record_model_calls(context, writer)
@@ -635,6 +741,28 @@ class RunAgent:
                     )
                 continue
 
+            action_fingerprint = _action_fingerprint(validated, snapshot)
+            fixture_identity = _fixture_identity(validated, snapshot)
+            action_element_id = _interaction_element_id(validated)
+            if (
+                fixture_identity is not None
+                and fixture_identity in context.completed_fixture_inputs
+            ):
+                writer.append_event(
+                    {
+                        "kind": "repeated-fixture-input",
+                        "element_id": action_element_id,
+                        "fixture_key": validated.fixture_key,
+                        "reason": "fixture input was already entered successfully",
+                    }
+                )
+                return _Execution(
+                    state=context.state,
+                    outcome=BudgetExhausted(),
+                    verification=None,
+                    agent_claimed_success=claimed_success,
+                    terminal_reason="repeated successful fixture input detected",
+                )
             context.state = _record(
                 context.state,
                 ActionProposed(action=validated.domain_action),
@@ -672,6 +800,15 @@ class RunAgent:
                     )
                 )
                 _sync_run_attention(context)
+                context.previous_action = _safe_action(validated)
+                context.previous_action_result = {
+                    "succeeded": True,
+                    "state_changed": False,
+                    "meaningful_progress": True,
+                }
+                context.no_progress_count = 0
+                context.last_action_fingerprint = None
+                context.consecutive_action_count = 0
                 continue
 
             result = await self.observation_provider.execute(
@@ -703,20 +840,61 @@ class RunAgent:
                 )
             )
             _sync_run_attention(context)
-            if context.application_state.abandoned:
-                return _Execution(
-                    state=context.state,
-                    outcome=AgentAbandoned(
-                        reason=context.application_state.abandonment_reason
-                        or "abandonment threshold crossed"
-                    ),
-                    verification=None,
-                    agent_claimed_success=claimed_success,
-                    terminal_reason=context.application_state.abandonment_reason,
+            context.previous_action = _safe_action(validated)
+            fixture_completed = False
+            if result.succeeded and fixture_identity is not None:
+                context.completed_fixture_inputs.add(fixture_identity)
+                fixture_completed = True
+                writer.append_event(
+                    {
+                        "kind": "fixture-input-completed",
+                        "element_id": action_element_id,
+                        "fixture_key": validated.fixture_key,
+                    }
                 )
+            await self._capture(context, writer, artifact_checksums)
+            current_snapshot = context.state.current_snapshot
+            if current_snapshot is None:
+                raise RuntimeError("recapture did not produce a current snapshot")
+            meaningful_progress = made_meaningful_progress(
+                snapshot,
+                current_snapshot,
+                succeeded=result.succeeded,
+                navigation_occurred=result.navigation_occurred,
+                fixture_completed=fixture_completed,
+            )
+            context.previous_action_result = {
+                "succeeded": result.succeeded,
+                "state_changed": result.state_changed,
+                "navigation_occurred": result.navigation_occurred,
+                "meaningful_progress": meaningful_progress,
+                "error": result.error,
+            }
+            if meaningful_progress:
+                context.no_progress_count = 0
+                context.last_action_fingerprint = None
+                context.consecutive_action_count = 0
+            else:
+                context.no_progress_count += 1
+                if context.last_action_fingerprint == action_fingerprint:
+                    context.consecutive_action_count += 1
+                else:
+                    context.last_action_fingerprint = action_fingerprint
+                    context.consecutive_action_count = 1
+                if (
+                    context.consecutive_action_count < 3
+                    and context.no_progress_count < 5
+                ):
+                    writer.append_event(
+                        {
+                            "kind": "no-progress-recovery",
+                            "count": context.no_progress_count,
+                            "action": validated.domain_action,
+                            "reason": "action succeeded but the recaptured interface did not change semantically",
+                        }
+                    )
 
-            if result.state_changed:
-                await self._capture(context, writer, artifact_checksums)
+            if result.succeeded:
                 verification = await self._verify(
                     context.state, writer, session, context.state_event_ids
                 )
@@ -730,8 +908,48 @@ class RunAgent:
                         terminal_reason=None,
                     )
 
-            if not result.state_changed:
-                await self._capture(context, writer, artifact_checksums)
+            stalled_out = (
+                context.consecutive_action_count >= 3
+                or context.no_progress_count >= 5
+            )
+            if not meaningful_progress and stalled_out:
+                if context.consecutive_action_count >= 3:
+                    writer.append_event(
+                        {
+                            "kind": "repeated-action-detected",
+                            "action": validated.domain_action,
+                            "count": context.consecutive_action_count,
+                            "reason": "identical action repeated without semantic progress",
+                        }
+                    )
+                writer.append_event(
+                    {
+                        "kind": "no-progress-detected",
+                        "count": context.no_progress_count,
+                        "reason": "consecutive actions exhausted semantic progress recovery",
+                    }
+                )
+                return _Execution(
+                    state=context.state,
+                    outcome=AgentAbandoned(
+                        reason="repeated actions produced no progress"
+                    ),
+                    verification=None,
+                    agent_claimed_success=claimed_success,
+                    terminal_reason="repeated actions produced no progress",
+                )
+            if context.application_state.abandoned:
+                return _Execution(
+                    state=context.state,
+                    outcome=AgentAbandoned(
+                        reason=context.application_state.abandonment_reason
+                        or "abandonment threshold crossed"
+                    ),
+                    verification=None,
+                    agent_claimed_success=claimed_success,
+                    terminal_reason=context.application_state.abandonment_reason,
+                )
+
 
     async def _capture(
         self,
@@ -879,6 +1097,10 @@ class RunAgent:
             )
             raise
 
+        ux_sample_valid, ux_sample_invalid_reason = _ux_sample_validity(
+            execution.outcome,
+            execution.terminal_reason,
+        )
         result = RunResult(
             run_id=spec.run_id,
             outcome=execution.outcome,
@@ -886,6 +1108,9 @@ class RunAgent:
             agent_claimed_success=execution.agent_claimed_success,
             state=final_state,
             terminal_reason=execution.terminal_reason,
+            ux_sample_valid=ux_sample_valid,
+            ux_sample_invalid_reason=ux_sample_invalid_reason,
+            findings=() if ux_sample_valid else None,
             evidence=RunEvidence(
                 prominence=tuple(context.prominence),
                 scent=tuple(context.scent),
@@ -896,15 +1121,18 @@ class RunAgent:
                 state_event_ids=tuple(context.state_event_ids),
             ),
         )
-        if self.result_evaluator is not None:
+        if self.result_evaluator is not None and result.ux_sample_valid:
             try:
                 result = self.result_evaluator(result)
             except Exception as error:
+                evaluation_reason = _evaluation_failure_reason(error)
                 result = replace(
                     result,
                     metrics=None,
                     findings=None,
-                    evaluation_failure_reason=_evaluation_failure_reason(error),
+                    evaluation_failure_reason=evaluation_reason,
+                    ux_sample_valid=False,
+                    ux_sample_invalid_reason=f"evaluation-failure: {evaluation_reason}",
                 )
         try:
             bundle_path = writer.finalize(result)
@@ -928,6 +1156,30 @@ class RunAgent:
             context.model_calls.append(record)
             writer.append_event({"kind": "model-call-recorded", "record": record})
         context.model_record_cursor = len(records)
+
+    def _model_failure(
+        self,
+        context: _RunContext,
+        writer: RunBundleWriter,
+        error: ModelResponseValidationError,
+        *,
+        claimed_success: bool,
+    ) -> _Execution:
+        writer.append_event(
+            {
+                "kind": "model-failure",
+                "role": error.role.value,
+                "reason": error.reason,
+                "response_summary": error.response_summary,
+            }
+        )
+        return _Execution(
+            state=context.state,
+            outcome=ModelFailure(reason=error.reason),
+            verification=None,
+            agent_claimed_success=claimed_success,
+            terminal_reason=f"{error.role.value}: {error.reason}",
+        )
 
     def _provider_manifests(self, spec: RunSpec) -> tuple[ProviderManifest, ...]:
         if self.provider_manifest_factory is not None:
@@ -1014,6 +1266,51 @@ def _execution_reference(
     return snapshot.element(validated.domain_action.element_id).execution_reference
 
 
+def _fixture_identity(
+    validated: ValidatedAction, snapshot: ViewportSnapshot
+) -> tuple[str, str] | None:
+    if validated.fixture_key is None or not isinstance(
+        validated.domain_action, InteractWithElement
+    ):
+        return None
+    element = snapshot.element(validated.domain_action.element_id)
+    return (element.lineage_id or element.id, validated.fixture_key)
+
+
+def _interaction_element_id(validated: ValidatedAction) -> str | None:
+    action = validated.domain_action
+    return action.element_id if isinstance(action, InteractWithElement) else None
+
+
+def _action_fingerprint(
+    validated: ValidatedAction, snapshot: ViewportSnapshot
+) -> tuple[str, str | None, str | None]:
+    action = validated.domain_action
+    element_id = getattr(action, "element_id", None)
+    if isinstance(element_id, str):
+        element = snapshot.element(element_id)
+        element_id = element.lineage_id or element.id
+    else:
+        element_id = None
+    return (str(getattr(action, "kind", type(action).__name__)), element_id, validated.fixture_key)
+
+
+def _safe_action(validated: ValidatedAction) -> dict[str, object]:
+    action = validated.domain_action
+    result: dict[str, object] = {
+        "kind": str(getattr(action, "kind", type(action).__name__))
+    }
+    element_id = getattr(action, "element_id", None)
+    if isinstance(element_id, str):
+        result["element_id"] = element_id
+    if validated.fixture_key is not None:
+        result["fixture_key"] = validated.fixture_key
+    direction = getattr(action, "direction", None)
+    if isinstance(direction, str):
+        result["direction"] = direction
+    return result
+
+
 def _agent_claim(decision: object) -> bool:
     return bool(
         getattr(
@@ -1066,6 +1363,7 @@ def _outcome_for_error(error: BaseException) -> RunOutcome:
     if error.__class__.__name__ in {
         "ModelFailureError",
         "ModelProviderError",
+        "ModelResponseValidationError",
     }:
         return ModelFailure(reason=_safe_error_message(error))
     if error.__class__.__name__ in {
@@ -1086,6 +1384,17 @@ def _evaluation_failure_reason(error: BaseException) -> str:
     if isinstance(safe_reason, str) and safe_reason:
         return safe_reason
     return f"result evaluation failed: {error.__class__.__name__}"
+
+
+def _ux_sample_validity(
+    outcome: RunOutcome,
+    terminal_reason: str | None,
+) -> tuple[bool, str | None]:
+    kind = str(getattr(outcome, "kind", "internal-error"))
+    if kind in {"verified-success", "agent-abandoned", "budget-exhausted"}:
+        return True, None
+    reason = terminal_reason or getattr(outcome, "reason", None) or "run unavailable"
+    return False, f"{kind}: {reason}"
 
 
 async def _shielded_await(awaitable: Awaitable[None]) -> None:

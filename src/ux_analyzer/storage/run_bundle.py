@@ -134,6 +134,12 @@ def _coerce_manifest(value: BundleManifest | Mapping[str, object]) -> BundleMani
         seed=seed_value,
         config_digest=str(value["config_digest"]),
         endpoint_origin=str(value["endpoint_origin"]),
+        scenario_id=cast(str | None, value.get("scenario_id")),
+        application_version_id=cast(
+            str | None, value.get("application_version_id")
+        ),
+        persona_id=cast(str | None, value.get("persona_id")),
+        policy=cast(str | None, value.get("policy")),
         model_ids=cast(Mapping[str, str], value.get("model_ids", {})),
         prompt_versions=cast(Mapping[str, str], value.get("prompt_versions", {})),
         package_version=str(value.get("package_version", "unknown")),

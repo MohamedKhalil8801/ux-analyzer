@@ -31,7 +31,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ux_analyzer"]
+packages = ["src/ux_analyzer", "fixture_app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

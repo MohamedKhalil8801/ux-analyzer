@@ -6,13 +6,15 @@ import json
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ux_analyzer.domain.attention import PersonaObservation
 from ux_analyzer.domain.interface import PersonaVisibleElement
 from ux_analyzer.ports.models import (
     ChatMessage,
+    CognitiveRunContext,
     ModelManifest,
+    ModelResponseValidationError,
     ModelRole,
     StructuredModelClient,
 )
@@ -39,6 +41,13 @@ class CognitiveObservation(_RoleSchema):
     newly_revealed_elements: tuple[CognitiveElement, ...]
     remembered_elements: tuple[CognitiveElement, ...]
     region_label: str | None = None
+    current_viewport_id: str | None = None
+    previous_action: dict[str, object] | None = None
+    previous_action_result: dict[str, object] | None = None
+    completed_fixture_keys: tuple[str, ...] = ()
+    fixture_input_complete: bool = False
+    available_controls: tuple[CognitiveElement, ...] = ()
+    persona_behavior: dict[str, float | int] = Field(default_factory=dict)
 
 
 class InspectAction(_RoleSchema):
@@ -107,7 +116,7 @@ class CognitiveModelResponse(_RoleSchema):
 
 
 def _prompt() -> str:
-    path = Path(__file__).resolve().parents[1] / "prompts" / "cognitive-v1.txt"
+    path = Path(__file__).resolve().parents[1] / "prompts" / "cognitive-v2.txt"
     return path.read_text(encoding="utf-8").strip()
 
 
@@ -145,7 +154,26 @@ def _normalize_model_response(response: CognitiveModelResponse) -> CognitiveDeci
         action_data["reason"] = response.reason
 
     reason = response.reason or "Provider-compatible cognitive decision"
-    return CognitiveDecision.model_validate({"action": action_data, "reason": reason})
+    try:
+        return CognitiveDecision.model_validate(
+            {"action": action_data, "reason": reason}
+        )
+    except ValidationError as error:
+        if action_name in {"inspect", "interact"} and response.element_id is None:
+            failure = f"{action_name} action requires element_id"
+        elif action_name == "type-fixture" and response.element_id is None:
+            failure = "type-fixture action requires element_id"
+        elif action_name == "type-fixture" and response.fixture_key is None:
+            failure = "type-fixture action requires fixture_key"
+        elif not action_name:
+            failure = "response requires a valid action kind"
+        else:
+            failure = "response action is incomplete or invalid"
+        raise ModelResponseValidationError(
+            ModelRole.COGNITIVE,
+            failure,
+            response_summary=response.model_dump(mode="json"),
+        ) from error
 
 
 def _manifest(client: StructuredModelClient, model: str) -> ModelManifest:
@@ -154,7 +182,7 @@ def _manifest(client: StructuredModelClient, model: str) -> ModelManifest:
         role=ModelRole.COGNITIVE,
         model_id=model,
         endpoint_origin=client.endpoint_origin,
-        prompt_version="cognitive-v1",
+        prompt_version="cognitive-v2",
         schema_version=CognitiveDecision.schema_version,
     )
 
@@ -163,7 +191,7 @@ class StructuredCognitiveAgent:
     """Choose one qualitative action from persona-visible observations."""
 
     role = ModelRole.COGNITIVE
-    prompt_version = "cognitive-v1"
+    prompt_version = "cognitive-v2"
 
     def __init__(
         self,
@@ -178,6 +206,10 @@ class StructuredCognitiveAgent:
         if any(not key for key in keys) or len(keys) != len(set(keys)):
             raise ValueError("fixture keys must be unique non-empty names")
         self.fixture_keys = keys
+        self._run_context: CognitiveRunContext | None = None
+
+    def update_context(self, context: CognitiveRunContext) -> None:
+        self._run_context = context
 
     @property
     def manifest(self) -> ModelManifest:
@@ -203,6 +235,50 @@ class StructuredCognitiveAgent:
                 for element in observation.remembered_elements
             ),
             region_label=region_label,
+            current_viewport_id=(
+                self._run_context.viewport_id if self._run_context is not None else None
+            ),
+            previous_action=(
+                dict(self._run_context.previous_action)
+                if self._run_context is not None
+                and self._run_context.previous_action is not None
+                else None
+            ),
+            previous_action_result=(
+                dict(self._run_context.previous_action_result)
+                if self._run_context is not None
+                and self._run_context.previous_action_result is not None
+                else None
+            ),
+            completed_fixture_keys=(
+                self._run_context.completed_fixture_keys
+                if self._run_context is not None
+                else ()
+            ),
+            fixture_input_complete=(
+                self._run_context.fixture_input_complete
+                if self._run_context is not None
+                else False
+            ),
+            available_controls=tuple(
+                _element_payload(element, region_label)
+                for element in (
+                    *observation.newly_revealed_elements,
+                    *observation.remembered_elements,
+                )
+                if element.actionable and not element.disabled
+            ),
+            persona_behavior=(
+                {
+                    "working_memory_capacity": self._run_context.working_memory_capacity,
+                    "confidence": self._run_context.confidence,
+                    "frustration": self._run_context.frustration,
+                    "abandonment_threshold": self._run_context.abandonment_threshold,
+                    "attention_temperature": self._run_context.attention_temperature,
+                }
+                if self._run_context is not None
+                else {}
+            ),
         )
         messages = (
             ChatMessage(role="system", content=_prompt()),
@@ -222,4 +298,26 @@ class StructuredCognitiveAgent:
             model=self.model,
             role=self.role,
         )
-        return _normalize_model_response(response)
+        decision = _normalize_model_response(response)
+        visible_ids = {
+            element.id
+            for element in (
+                *observation.newly_revealed_elements,
+                *observation.remembered_elements,
+            )
+        }
+        element_id = getattr(decision.action, "element_id", None)
+        if isinstance(element_id, str) and element_id not in visible_ids:
+            raise ModelResponseValidationError(
+                ModelRole.COGNITIVE,
+                f"response references unknown element ID {element_id!r}",
+                response_summary=response.model_dump(mode="json"),
+            )
+        fixture_key = getattr(decision.action, "fixture_key", None)
+        if isinstance(fixture_key, str) and fixture_key not in self.fixture_keys:
+            raise ModelResponseValidationError(
+                ModelRole.COGNITIVE,
+                f"response references unconfigured fixture key {fixture_key!r}",
+                response_summary=response.model_dump(mode="json"),
+            )
+        return decision

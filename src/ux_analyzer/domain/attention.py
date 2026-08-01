@@ -193,6 +193,27 @@ type PersonaObservation = ProgressiveObservation | CompleteObservation
 
 
 @dataclass(frozen=True, slots=True)
+class AttentionRecoveryMiss:
+    """Bounded miss count for one provider-stable element lineage."""
+
+    provider_id: str
+    lineage_id: str
+    consecutive_misses: int
+
+    def __post_init__(self) -> None:
+        if not self.provider_id:
+            raise ValueError("recovery provider_id must not be empty")
+        if not self.lineage_id:
+            raise ValueError("recovery lineage_id must not be empty")
+        if self.consecutive_misses < 1:
+            raise ValueError("recovery misses must be positive")
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.provider_id, self.lineage_id
+
+
+@dataclass(frozen=True, slots=True)
 class AttentionState:
     """All mutable-looking runtime attention state represented immutably."""
 
@@ -208,6 +229,7 @@ class AttentionState:
     current_subgoal: str | None
     current_viewport_id: str | None
     current_observation_ids: frozenset[str] = frozenset()
+    recovery_misses: tuple[AttentionRecoveryMiss, ...] = ()
 
     def __post_init__(self) -> None:
         if self.memory_capacity <= 0:
@@ -225,6 +247,11 @@ class AttentionState:
         object.__setattr__(
             self, "current_observation_ids", frozenset(self.current_observation_ids)
         )
+        recovery_misses = tuple(self.recovery_misses)
+        recovery_keys = [miss.key for miss in recovery_misses]
+        if len(recovery_keys) != len(set(recovery_keys)):
+            raise ValueError("attention recovery contains duplicate lineage keys")
+        object.__setattr__(self, "recovery_misses", recovery_misses)
         if len(self.memory) > self.memory_capacity:
             raise ValueError("memory exceeds configured capacity")
 
@@ -255,6 +282,7 @@ class AttentionState:
             current_subgoal=current_subgoal,
             current_viewport_id=None,
             current_observation_ids=frozenset(),
+            recovery_misses=(),
         )
 
     @property
@@ -299,6 +327,7 @@ class AttentionState:
             current_subgoal=self.current_subgoal,
             current_viewport_id=observation.viewport_id,
             current_observation_ids=frozenset(element.id for element in new_elements),
+            recovery_misses=self.recovery_misses,
         )
 
     def after_action(self, action: AttentionAction) -> AttentionState:
@@ -327,6 +356,7 @@ class AttentionState:
             current_subgoal=self.current_subgoal,
             current_viewport_id=self.current_viewport_id,
             current_observation_ids=self.current_observation_ids,
+            recovery_misses=self.recovery_misses,
         )
 
     def validate_action(
@@ -367,6 +397,7 @@ class AttentionState:
             current_subgoal=self.current_subgoal,
             current_viewport_id=self.current_viewport_id,
             current_observation_ids=self.current_observation_ids,
+            recovery_misses=self.recovery_misses,
         )
 
 

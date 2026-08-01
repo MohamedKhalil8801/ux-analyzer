@@ -21,6 +21,38 @@ class ModelRole(StrEnum):
     COGNITIVE = "cognitive"
 
 
+class ModelResponseValidationError(ValueError):
+    """Sanitized role-output validation failure safe for run evidence."""
+
+    def __init__(
+        self,
+        role: ModelRole,
+        reason: str,
+        *,
+        response_summary: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.role = ModelRole(role)
+        self.reason = reason
+        self.response_summary = dict(response_summary or {})
+        super().__init__(f"{self.role.value}: {reason}")
+
+
+@dataclass(frozen=True, slots=True)
+class CognitiveRunContext:
+    """Safe run state supplied to the cognitive role between decisions."""
+
+    viewport_id: str
+    previous_action: Mapping[str, Any] | None = None
+    previous_action_result: Mapping[str, Any] | None = None
+    completed_fixture_keys: tuple[str, ...] = ()
+    fixture_input_complete: bool = False
+    working_memory_capacity: int = 0
+    confidence: float = 0.0
+    frustration: float = 0.0
+    abandonment_threshold: float = 0.0
+    attention_temperature: float = 1.0
+
+
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
     """Provider-neutral chat message."""

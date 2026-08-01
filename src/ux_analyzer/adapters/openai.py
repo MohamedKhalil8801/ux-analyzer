@@ -328,6 +328,28 @@ def _is_safety_rejection(status_code: int, body: object) -> bool:
     )
 
 
+def _transport_error_category(error: httpx.TransportError) -> str:
+    """Return a stable category without persisting endpoint exception text."""
+
+    categories: tuple[tuple[type[BaseException], str], ...] = (
+        (httpx.ConnectTimeout, "connect-timeout"),
+        (httpx.ReadTimeout, "read-timeout"),
+        (httpx.WriteTimeout, "write-timeout"),
+        (httpx.PoolTimeout, "pool-timeout"),
+        (httpx.ConnectError, "connect-error"),
+        (httpx.RemoteProtocolError, "protocol-error"),
+        (httpx.ReadError, "read-error"),
+        (httpx.WriteError, "write-error"),
+        (httpx.CloseError, "close-error"),
+    )
+    for error_type, category in categories:
+        if isinstance(error, error_type):
+            return category
+    if isinstance(error, httpx.TimeoutException):
+        return "transport-timeout"
+    return "transport-error"
+
+
 def _structured_content(body: object) -> object:
     if not isinstance(body, Mapping):
         raise ValueError("response body is not an object")
@@ -445,8 +467,8 @@ class OpenAICompatibleStructuredClient:
                     json=request_payload,
                 )
                 response_payload = _response_body(response)
-            except httpx.TransportError:
-                last_reason = "transport-error"
+            except httpx.TransportError as error:
+                last_reason = _transport_error_category(error)
                 if attempts >= retry_policy.max_attempts:
                     break
                 retries.append(

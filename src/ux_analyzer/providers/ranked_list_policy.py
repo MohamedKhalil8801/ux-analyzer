@@ -64,8 +64,10 @@ class ProminenceRankedListPolicy(FullListPolicy):
         scores: object = (),
         coarse_scent: object = (),
         rng: random.Random | None = None,
+        *,
+        recovery_level: int = 0,
     ) -> ListObservationSelection:
-        del state, coarse_scent, rng
+        del state, coarse_scent, rng, recovery_level
         return self.select(snapshot, _score_sequence(scores))
 
     @staticmethod

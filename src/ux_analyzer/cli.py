@@ -183,6 +183,65 @@ def run(
     )
 
 
+@app.command("run-one")
+def run_one(
+    project: Path,
+    scenario: str = typer.Option(..., "--scenario"),
+    version: str = typer.Option(..., "--version"),
+    persona: str = typer.Option(..., "--persona"),
+    policy: str = typer.Option(..., "--policy"),
+    seed: int = typer.Option(..., "--seed"),
+    output: Path = typer.Option(Path(".uxa-output"), "--output"),
+    fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    check_env: bool = typer.Option(False, "--check-env"),
+) -> None:
+    """Execute exactly one semantically selected benchmark run."""
+
+    matrix = _resolve_single_run(
+        project,
+        scenario_id=scenario,
+        version_id=version,
+        persona_id=persona,
+        policy=policy,
+        seed=seed,
+    )
+    settings: OpenAICompatibleSettings | None = None
+    if check_env or not dry_run:
+        settings = _model_settings_or_exit()
+    _print_matrix(matrix, workers=1)
+    if dry_run:
+        return
+    if settings is None:
+        _exit_with_error("model settings are required for execution")
+    try:
+        result = asyncio.run(
+            _execute_matrix(
+                matrix,
+                output=output,
+                workers=1,
+                fixture_origin=fixture_origin,
+                settings=_settings_with_fixture_redaction(settings, matrix.loaded),
+            )
+        )
+    except Exception as error:
+        _exit_with_error(f"run failed: {error}")
+    _print_result_summary(result)
+    summary_path, report_path = _complete_experiment(
+        result,
+        output=output,
+        runtime=matrix.loaded.runtime,
+    )
+    typer.echo(f"evaluation summary: {summary_path}")
+    typer.echo(f"report generated: {report_path}")
+    if (
+        result.failures
+        or _evaluation_failures(result.results)
+        or _invalid_ux_samples(result.results)
+    ):
+        raise typer.Exit(1)
+
+
 @app.command()
 def ablate(
     project: Path,
@@ -285,9 +344,7 @@ def _run_experiment_command(
         )
     except Exception as error:
         _exit_with_error(f"run failed: {error}")
-    typer.echo(
-        f"completed runs: {len(result.results)}; failures: {len(result.failures)}"
-    )
+    _print_result_summary(result)
     summary_path, report_path = _complete_experiment(
         result,
         output=output,
@@ -295,7 +352,11 @@ def _run_experiment_command(
     )
     typer.echo(f"evaluation summary: {summary_path}")
     typer.echo(f"report generated: {report_path}")
-    if result.failures or _evaluation_failures(result.results):
+    if (
+        result.failures
+        or _evaluation_failures(result.results)
+        or _invalid_ux_samples(result.results)
+    ):
         raise typer.Exit(1)
 
 
@@ -344,6 +405,69 @@ def _resolve_matrix_or_exit(
     return _ResolvedMatrix(loaded=loaded, definition=definition, specs=specs)
 
 
+def _resolve_single_run(
+    project_path: Path,
+    *,
+    scenario_id: str,
+    version_id: str,
+    persona_id: str,
+    policy: str,
+    seed: int,
+) -> _ResolvedMatrix:
+    """Resolve semantic identifiers into one deterministic run specification."""
+
+    loaded = load_project(project_path)
+    scenario = next(
+        (item for item in loaded.project.scenarios if item.id == scenario_id), None
+    )
+    if scenario is None:
+        raise ValueError(f"unknown scenario {scenario_id!r}")
+    versions = tuple(
+        version
+        for application in loaded.project.applications
+        for version in application.versions
+    )
+    version = next(
+        (
+            item
+            for item in versions
+            if item.id == version_id or item.kind.value == version_id
+        ),
+        None,
+    )
+    if version is None:
+        raise ValueError(f"unknown application version {version_id!r}")
+    persona = next(
+        (item for item in loaded.project.personas if item.id == persona_id), None
+    )
+    if persona is None:
+        raise ValueError(f"unknown persona {persona_id!r}")
+    try:
+        selected_policy = ExperimentPolicy(policy)
+    except ValueError as error:
+        raise ValueError(f"unsupported policy {policy!r}") from error
+    definition = ExperimentDefinition(
+        id="single-run",
+        name="Single selected run",
+        scenario_ids=(scenario.id,),
+        application_version_ids=(version.id,),
+        persona_ids=(persona.id,),
+        policies=(selected_policy,),
+        seeds=(seed,),
+        run_count=1,
+    )
+    specs = expand_experiment(
+        ExperimentContext(
+            definition=definition,
+            project=loaded.project,
+            config_digest=loaded.config_digest,
+        )
+    )
+    if len(specs) != 1:
+        raise ValueError(f"single-run expansion produced {len(specs)} specs")
+    return _ResolvedMatrix(loaded=loaded, definition=definition, specs=specs)
+
+
 def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     policy_names = tuple(policy.value for policy in matrix.definition.policies)
     seeds = tuple(sorted({spec.seed for spec in matrix.specs}))
@@ -363,7 +487,11 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     typer.echo(f"workers: {workers}")
     typer.echo(f"seeds per cell: {len(seeds)}")
     typer.echo(f"run specs: {len(matrix.specs)}")
-    typer.echo(f"estimated model calls: {calls}")
+    typer.echo(f"model calls for one attention cycle: {calls}")
+    typer.echo(
+        "maximum logical model calls: "
+        f"{sum(spec.scenario.budget.max_model_calls for spec in matrix.specs)}"
+    )
     timeouts = {spec.scenario.budget.timeout_seconds for spec in matrix.specs}
     if timeouts == {None}:
         timeout_summary = "none"
@@ -577,9 +705,18 @@ class _AttentionPolicyAdapter:
         scores: Sequence[object],
         coarse_scent: object,
         rng: Any,
+        *,
+        recovery_level: int = 0,
     ) -> ObservationSelection:
         method = getattr(self._policy, "next_observation")
-        selected = method(state, snapshot, scores, coarse_scent, rng)
+        selected = method(
+            state,
+            snapshot,
+            scores,
+            coarse_scent,
+            rng,
+            recovery_level=recovery_level,
+        )
         observation = getattr(selected, "observation", None)
         if isinstance(observation, (ProgressiveObservation, CompleteObservation)):
             return cast(ObservationSelection, selected)
@@ -856,12 +993,18 @@ def _complete_experiment(
             for item in _evaluation_failures(run_results)
         ),
     ]
+    invalid_runs = [
+        _invalid_ux_sample_record(item)
+        for item in run_results
+        if not item.ux_sample_valid
+    ]
     summary = {
         "run_metrics": evaluation.run_metrics,
         "cell_aggregates": evaluation.cell_aggregates,
         "variant_comparisons": evaluation.variant_comparisons,
         "findings": {item.run_id: item.findings or () for item in run_results},
         "failures": failures,
+        "invalid_runs": invalid_runs,
     }
     output.mkdir(parents=True, exist_ok=True)
     summary_path = output / "experiment.json"
@@ -887,6 +1030,49 @@ def _evaluation_failures(results: Sequence[object]) -> tuple[RunResult, ...]:
         for item in results
         if isinstance(item, RunResult) and item.evaluation_failure_reason is not None
     )
+
+
+def _invalid_ux_samples(results: Sequence[object]) -> tuple[RunResult, ...]:
+    return tuple(
+        item
+        for item in results
+        if isinstance(item, RunResult) and not item.ux_sample_valid
+    )
+
+
+def _print_result_summary(result: ExperimentResult) -> None:
+    run_results = tuple(
+        item for item in result.results if isinstance(item, RunResult)
+    )
+    invalid = _invalid_ux_samples(run_results)
+    outcomes = Counter(item.outcome.kind for item in run_results)
+    typer.echo(
+        f"finalized runs: {len(run_results)}; execution failures: {len(result.failures)}"
+    )
+    typer.echo(
+        f"UX samples: {len(run_results) - len(invalid)} valid; {len(invalid)} invalid"
+    )
+    if outcomes:
+        typer.echo(
+            "outcomes: "
+            + ", ".join(
+                f"{kind}={count}" for kind, count in sorted(outcomes.items())
+            )
+        )
+
+
+def _invalid_ux_sample_record(result: RunResult) -> dict[str, object]:
+    spec = result.state.spec
+    return {
+        "run_id": result.run_id,
+        "outcome": result.outcome.kind,
+        "reason": result.ux_sample_invalid_reason or "invalid UX sample",
+        "scenario_id": spec.scenario.id,
+        "application_version_id": spec.application_version.id,
+        "persona_id": spec.persona.id,
+        "policy": spec.policy.value,
+        "seed": spec.seed,
+    }
 
 
 def _experiment_failure_record(failure: ExperimentFailure) -> dict[str, object]:

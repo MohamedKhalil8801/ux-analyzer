@@ -11,6 +11,7 @@ from ux_analyzer.application.state_updates import (
     reconcile_snapshot_state,
 )
 from ux_analyzer.domain.attention import (
+    AttentionRecoveryMiss,
     AttentionState,
     InspectElement,
     InteractWithElement,
@@ -290,3 +291,88 @@ def test_recapture_reconciles_attention_and_memory_through_safe_lineage() -> Non
     assert reconciled.memory.working[0].viewport_id == "viewport-new"
     assert reconciled.memory.episodic[0].key == "target-new"
     assert reconciled.memory.episodic[0].viewport_id == "viewport-new"
+
+
+def test_reconcile_snapshot_keeps_recovery_only_for_unique_provider_lineage() -> None:
+    previous = ViewportSnapshot(
+        id="viewport-old",
+        provider_id="fixture",
+        elements=(
+            ElementSnapshot(
+                id="target-old",
+                role="button",
+                label="Send invitation",
+                bounds=BoundingBox(x=10, y=10, width=100, height=30),
+                visibility_fraction=1,
+                actionable=True,
+                provider_id="fixture",
+                lineage_id="target",
+            ),
+        ),
+    )
+    current = ViewportSnapshot(
+        id="viewport-new",
+        provider_id="fixture",
+        elements=(
+            ElementSnapshot(
+                id="target-new",
+                role="button",
+                label="Send invitation",
+                bounds=BoundingBox(x=10, y=10, width=100, height=30),
+                visibility_fraction=1,
+                actionable=True,
+                provider_id="fixture",
+                lineage_id="target",
+            ),
+        ),
+    )
+    recovery = AttentionRecoveryMiss("fixture", "target", 1)
+    state = replace(_attention(), recovery_misses=(recovery,))
+
+    reconciled = reconcile_snapshot_state(state, previous, current)
+
+    assert reconciled.recovery_misses == (recovery,)
+
+
+def test_reconcile_snapshot_drops_recovery_without_unique_lineage() -> None:
+    previous = ViewportSnapshot(
+        id="viewport-old",
+        provider_id="fixture",
+        elements=(
+            ElementSnapshot(
+                id="target-old",
+                role="button",
+                label="Send invitation",
+                bounds=BoundingBox(x=10, y=10, width=100, height=30),
+                visibility_fraction=1,
+                actionable=True,
+                provider_id="fixture",
+                lineage_id="target",
+            ),
+        ),
+    )
+    current = ViewportSnapshot(
+        id="viewport-new",
+        provider_id="fixture",
+        elements=tuple(
+            ElementSnapshot(
+                id=f"target-{index}",
+                role="button",
+                label="Send invitation",
+                bounds=BoundingBox(x=index * 100, y=10, width=100, height=30),
+                visibility_fraction=1,
+                actionable=True,
+                provider_id="fixture",
+                lineage_id="target",
+            )
+            for index in range(2)
+        ),
+    )
+    state = replace(
+        _attention(),
+        recovery_misses=(AttentionRecoveryMiss("fixture", "target", 1),),
+    )
+
+    reconciled = reconcile_snapshot_state(state, previous, current)
+
+    assert reconciled.recovery_misses == ()

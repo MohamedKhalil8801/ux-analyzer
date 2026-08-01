@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -137,9 +139,67 @@ def test_run_dry_run_prints_matrix_model_calls_and_serial_default(
     assert "policies: full-list, progressive-prominence-scent" in result.stdout
     assert "workers: 1" in result.stdout
     assert "run specs: 160" in result.stdout
-    assert "estimated model calls: 320" in result.stdout
+    assert "model calls for one attention cycle: 320" in result.stdout
+    assert "maximum logical model calls: 10240" in result.stdout
     assert "overall run timeout: none" in result.stdout
     assert "super-secret-api-key" not in result.stdout
+
+
+def test_single_run_resolver_selects_one_stable_semantic_spec() -> None:
+    first = cli._resolve_single_run(
+        DEMO_PROJECT,
+        scenario_id="invite-teammate",
+        version_id="fixture-app-improved",
+        persona_id="first-time-nontechnical",
+        policy="progressive-prominence-scent",
+        seed=0,
+    )
+    repeat = cli._resolve_single_run(
+        DEMO_PROJECT,
+        scenario_id="invite-teammate",
+        version_id="fixture-app-improved",
+        persona_id="first-time-nontechnical",
+        policy="progressive-prominence-scent",
+        seed=0,
+    )
+
+    assert len(first.specs) == 1
+    spec = first.specs[0]
+    assert spec.scenario.id == "invite-teammate"
+    assert spec.application_version.id == "fixture-app-improved"
+    assert spec.persona.id == "first-time-nontechnical"
+    assert spec.policy.value == "progressive-prominence-scent"
+    assert spec.seed == 0
+    assert spec.run_id == repeat.specs[0].run_id
+
+
+def test_run_one_dry_run_never_expands_other_matrix_cells(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run-one",
+            str(DEMO_PROJECT),
+            "--scenario",
+            "invite-teammate",
+            "--version",
+            "fixture-app-improved",
+            "--persona",
+            "first-time-nontechnical",
+            "--policy",
+            "progressive-prominence-scent",
+            "--seed",
+            "0",
+            "--output",
+            str(tmp_path),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "run specs: 1" in result.stdout
+    assert "invite-teammate/fixture-app-improved/first-time-nontechnical/" in result.stdout
+    assert "enable-2fa/" not in result.stdout
+    assert "fixture-app-defective/" not in result.stdout
 
 
 def test_ablate_selects_optional_policies_and_run_count_override(
@@ -418,6 +478,18 @@ def test_fixture_serve_delegates_to_uvicorn(monkeypatch) -> None:
         "host": "127.0.0.1",
         "port": 8765,
     }
+
+
+def test_installed_fixture_app_imports_outside_repository(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", "import fixture_app.app"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_fixture_serve_rejects_external_bind_host(monkeypatch) -> None:

@@ -756,17 +756,24 @@ def evaluation_target_for(result: RunResult) -> EvaluationTarget:
     spec = result.state.spec
     contract = spec.scenario.evaluation_target
     expected_label = contract.label_for(spec.application_version)
+    expected_role = contract.role_for(spec.application_version)
     for snapshot in reversed(result.state.snapshots):
         regions = {region.id: region.label for region in snapshot.regions}
         for element in reversed(snapshot.elements):
-            if _matches_target(element, regions, contract, expected_label):
+            if _matches_target(
+                element,
+                regions,
+                contract,
+                expected_label,
+                expected_role,
+            ):
                 return EvaluationTarget(
                     element_id=element.id,
                     region_id=element.region_id,
                     expected_label=expected_label,
-                    role=contract.role,
+                    role=expected_role,
                 )
-    role = f" role {contract.role!r}" if contract.role is not None else ""
+    role = f" role {expected_role!r}" if expected_role is not None else ""
     region = (
         f" region {contract.region_label!r}"
         if contract.region_label is not None
@@ -1281,12 +1288,13 @@ def _matches_target(
     region_labels: Mapping[str, str],
     contract: ScenarioEvaluationTarget,
     expected_label: str,
+    expected_role: str | None,
 ) -> bool:
     if element.label.strip().casefold() != expected_label.strip().casefold():
         return False
     if (
-        contract.role is not None
-        and str(getattr(element.role, "value", element.role)) != contract.role
+        expected_role is not None
+        and str(getattr(element.role, "value", element.role)) != expected_role
     ):
         return False
     if contract.region_label is None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 
@@ -58,6 +58,7 @@ class Budget:
     max_observations: int
     max_interactions: int
     timeout_seconds: float | None = None
+    max_model_calls: int = 64
 
     def __post_init__(self) -> None:
         if self.max_steps <= 0:
@@ -66,6 +67,8 @@ class Budget:
             raise ValueError("max_observations must be greater than zero")
         if self.max_interactions <= 0:
             raise ValueError("max_interactions must be greater than zero")
+        if self.max_model_calls <= 0:
+            raise ValueError("max_model_calls must be greater than zero")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
 
@@ -104,6 +107,9 @@ class ScenarioEvaluationTarget:
 
     labels_by_version: Mapping[str, str]
     role: str | None = None
+    roles_by_version: Mapping[str, str] = field(
+        default_factory=lambda: dict[str, str]()
+    )
     region_label: str | None = None
 
     def __post_init__(self) -> None:
@@ -112,9 +118,13 @@ class ScenarioEvaluationTarget:
             raise ValueError("evaluation target needs non-empty version labels")
         if self.role is not None and not self.role:
             raise ValueError("evaluation target role must not be empty")
+        roles = dict(self.roles_by_version)
+        if any(not key or not role for key, role in roles.items()):
+            raise ValueError("evaluation target needs non-empty version roles")
         if self.region_label is not None and not self.region_label:
             raise ValueError("evaluation target region label must not be empty")
         object.__setattr__(self, "labels_by_version", MappingProxyType(labels))
+        object.__setattr__(self, "roles_by_version", MappingProxyType(roles))
 
     def label_for(self, version: ApplicationVersion) -> str:
         """Resolve target label by exact version ID, then version kind."""
@@ -127,6 +137,15 @@ class ScenarioEvaluationTarget:
                 f"evaluation target has no label for application version {version.id!r}"
             )
         return label
+
+    def role_for(self, version: ApplicationVersion) -> str | None:
+        """Resolve an optional role override by exact version ID, then kind."""
+
+        return (
+            self.roles_by_version.get(version.id)
+            or self.roles_by_version.get(version.kind.value)
+            or self.role
+        )
 
 
 @dataclass(frozen=True, slots=True)

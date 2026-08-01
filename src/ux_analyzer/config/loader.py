@@ -124,11 +124,14 @@ def _to_runtime(config: ProjectModel) -> RuntimeConfig:
         attention=AttentionPolicyConfig(
             version=attention.version,
             batch_size=attention.batch_size,
+            cross_region_exploration=attention.cross_region_exploration,
             temperature=1.0,
             prominence_weight=attention.prominence_weight,
             coarse_scent_weight=attention.coarse_scent_weight,
             novelty_penalty=attention.novelty_penalty,
             failure_penalty=attention.failure_penalty,
+            recovery_scent_threshold=attention.recovery_scent_threshold,
+            recovery_after_misses=attention.recovery_after_misses,
         ),
         discovery_cost=DiscoveryCostConfig(
             version=discovery.version,
@@ -344,6 +347,7 @@ def _to_scenario(scenario: ScenarioModel) -> Scenario:
             max_observations=scenario.budget.max_observations,
             max_interactions=scenario.budget.max_interactions,
             timeout_seconds=scenario.budget.timeout_seconds,
+            max_model_calls=scenario.budget.max_model_calls,
         ),
         verifier=verifier,
         safeguards=tuple(scenario.safeguards),
@@ -352,6 +356,7 @@ def _to_scenario(scenario: ScenarioModel) -> Scenario:
         evaluation_target=ScenarioEvaluationTarget(
             labels_by_version=scenario.evaluation_target.labels_by_version,
             role=scenario.evaluation_target.role,
+            roles_by_version=scenario.evaluation_target.roles_by_version,
             region_label=scenario.evaluation_target.region_label,
         ),
         viewport_width=scenario.viewport.width,

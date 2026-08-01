@@ -163,8 +163,10 @@ class FakeAttentionPolicy:
         scores: tuple[ProminenceResult, ...],
         coarse_scent: object,
         rng: object,
+        *,
+        recovery_level: int = 0,
     ) -> ObservationSelection:
-        del scores, coarse_scent, rng
+        del scores, coarse_scent, rng, recovery_level
         element = next(
             (item for item in snapshot.elements if item.id not in state.noticed_ids),
             None,
@@ -182,6 +184,34 @@ class FakeAttentionPolicy:
             element_probabilities={element.id: 1.0},
             region_probabilities={None: 1.0},
             selection_mode="fake",
+        )
+
+
+class RepeatingAttentionPolicy:
+    def __init__(self) -> None:
+        self.recovery_levels: list[int] = []
+
+    def next_observation(
+        self,
+        state: Any,
+        snapshot: ViewportSnapshot,
+        scores: tuple[ProminenceResult, ...],
+        coarse_scent: object,
+        rng: object,
+        *,
+        recovery_level: int = 0,
+    ) -> ObservationSelection:
+        del state, scores, coarse_scent, rng
+        self.recovery_levels.append(recovery_level)
+        element = snapshot.elements[0]
+        return ObservationSelection(
+            observation=ProgressiveObservation.from_snapshot(
+                snapshot, newly_revealed_ids=(element.id,)
+            ),
+            region_id=None,
+            element_probabilities={element.id: 1.0},
+            region_probabilities={None: 1.0},
+            selection_mode="repeating-fake",
         )
 
 
@@ -284,6 +314,19 @@ class FilesystemBundleFactory:
         )
 
 
+def test_bundle_manifest_preserves_selected_run_semantics() -> None:
+    manifest = BundleManifest.from_run_spec(
+        _spec(),
+        endpoint_origin="https://llm.example.test/v1",
+    ).to_dict()
+
+    assert manifest["scenario_id"] == "invite"
+    assert manifest["application_version_id"] == "improved"
+    assert manifest["persona_id"] == "persona"
+    assert manifest["policy"] == "progressive-prominence-scent"
+    assert manifest["seed"] == 7
+
+
 class FakeModelRecordSource:
     def __init__(self) -> None:
         self.records = (
@@ -362,7 +405,12 @@ def _snapshot(
     )
 
 
-def _spec(*, max_steps: int = 6, timeout_seconds: float | None = 1) -> object:
+def _spec(
+    *,
+    max_steps: int = 6,
+    max_model_calls: int = 64,
+    timeout_seconds: float | None = 1,
+) -> object:
     version = ApplicationVersion(
         id="improved",
         kind=ApplicationVersionKind.IMPROVED,
@@ -379,6 +427,7 @@ def _spec(*, max_steps: int = 6, timeout_seconds: float | None = 1) -> object:
             max_steps=max_steps,
             max_observations=max_steps,
             max_interactions=max_steps,
+            max_model_calls=max_model_calls,
             timeout_seconds=timeout_seconds,
         ),
         verifier=VisibleResultVerifierSpec(type="visible-result", text="sent"),
@@ -431,12 +480,13 @@ def _agent(
     timeout_seconds: float | None = 1,
     model_record_source: FakeModelRecordSource | None = None,
     result_evaluator=None,
+    attention_policy: object | None = None,
 ) -> RunAgent:
     spec = _spec(timeout_seconds=timeout_seconds)
     return RunAgent(
         observation_provider=provider,
         prominence_provider=FakeProminenceProvider(),
-        attention_policy=FakeAttentionPolicy(),
+        attention_policy=attention_policy or FakeAttentionPolicy(),
         cognitive_agent=cognitive,
         verifier=verifier,
         bundle_factory=bundles,
@@ -544,6 +594,8 @@ async def test_terminal_failures_finalize_and_cleanup(
     result = await agent.execute(_spec())
 
     assert result.outcome.kind == outcome
+    assert result.ux_sample_valid is False
+    assert result.ux_sample_invalid_reason == f"{outcome}: {result.terminal_reason}"
     assert bundles.bundle.finalized
     assert bundles.bundle.events[-1].kind == "run-terminated"
     assert provider.ended == 0 or provider.started == 1
@@ -566,6 +618,7 @@ async def test_model_failure_timeout_and_budget_exhaustion_are_closed_outcomes(
     )
     timeout_result = await timeout_agent.execute(_spec(timeout_seconds=0.01))
     assert timeout_result.outcome.kind == "timed-out"
+    assert timeout_result.ux_sample_valid is False
 
     model_bundles = FakeBundleFactory()
     model_agent = _agent(
@@ -577,6 +630,7 @@ async def test_model_failure_timeout_and_budget_exhaustion_are_closed_outcomes(
     )
     model_result = await model_agent.execute(_spec())
     assert model_result.outcome.kind == "model-failure"
+    assert model_result.ux_sample_valid is False
 
     budget_bundles = FakeBundleFactory()
     budget_agent = _agent(
@@ -595,6 +649,237 @@ async def test_model_failure_timeout_and_budget_exhaustion_are_closed_outcomes(
     )
     budget_result = await budget_agent.execute(_spec(max_steps=1))
     assert budget_result.outcome.kind == "budget-exhausted"
+    assert budget_result.ux_sample_valid is True
+
+
+@pytest.mark.asyncio
+async def test_repeated_fixture_input_terminates_with_diagnostic_and_finalizes(
+    tmp_path: Path,
+) -> None:
+    provider = FakeObservationProvider(
+        (
+            _snapshot(
+                second_element_id="submit",
+                lineage_id="target-lineage",
+                second_lineage_id="submit-lineage",
+            ),
+            _snapshot(
+                "viewport-2",
+                second_element_id="submit",
+                lineage_id="target-lineage",
+                second_lineage_id="submit-lineage",
+            ),
+        )
+    )
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={
+                        "kind": "type-fixture",
+                        "element_id": "target",
+                        "fixture_key": "invite_email",
+                    },
+                    reason="Enter the invite value.",
+                ),
+                CognitiveDecision(
+                    action={
+                        "kind": "type-fixture",
+                        "element_id": "target",
+                        "fixture_key": "invite_email",
+                    },
+                    reason="Repeat the invite value.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind in {"budget-exhausted", "agent-abandoned"}
+    assert "fixture" in (result.terminal_reason or "").lower()
+    assert bundles.bundle.finalized
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") in {"repeated-fixture-input", "repeated-action-detected"}
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_call_budget_counts_calls_without_an_audit_source(
+    tmp_path: Path,
+) -> None:
+    bundles = FakeBundleFactory()
+    cognitive = FakeCognitiveAgent(
+        (
+            CognitiveDecision(
+                action={"kind": "inspect", "element_id": "target"},
+                reason="Inspect the only visible control.",
+            ),
+        )
+    )
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+    )
+
+    result = await agent.execute(
+        _spec(max_model_calls=1, timeout_seconds=None)
+    )
+
+    assert result.outcome.kind == "budget-exhausted"
+    assert result.terminal_reason == "model call budget exhausted"
+    assert len(cognitive.observations) == 1
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "model-call-budget-exhausted"
+        and event.get("model_calls") == 1
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_meaningful_fixture_progress_resets_scroll_repetition(
+    tmp_path: Path,
+) -> None:
+    snapshots = tuple(
+        _snapshot(
+            f"viewport-{index}",
+            f"target-{index}",
+            lineage_id="target-lineage",
+        )
+        for index in range(1, 6)
+    )
+    provider = FakeObservationProvider(
+        snapshots,
+        results=(
+            PlatformActionResult(
+                True, "http://fixture.test", 1, state_changed=True
+            ),
+            PlatformActionResult(
+                True, "http://fixture.test", 1, state_changed=True
+            ),
+            PlatformActionResult(
+                True, "http://fixture.test", 1, state_changed=True
+            ),
+            PlatformActionResult(
+                True, "http://fixture.test", 1, state_changed=True
+            ),
+        ),
+    )
+    attention = RepeatingAttentionPolicy()
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "scroll", "direction": "down"},
+                    reason="Look below.",
+                ),
+                CognitiveDecision(
+                    action={
+                        "kind": "type-fixture",
+                        "element_id": "target-2",
+                        "fixture_key": "invite_email",
+                    },
+                    reason="Complete the field.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "scroll", "direction": "down"},
+                    reason="Look below again.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "scroll", "direction": "down"},
+                    reason="Continue looking.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Test complete."},
+                    reason="Test complete.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        attention_policy=attention,
+    )
+
+    result = await agent.execute(_spec(max_steps=10, timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.terminal_reason == "Test complete."
+    assert attention.recovery_levels == [0, 1, 0, 1, 2]
+    assert not any(
+        isinstance(event, dict)
+        and event.get("kind") == "repeated-action-detected"
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_three_consecutive_semantic_stalls_recover_then_abandon(
+    tmp_path: Path,
+) -> None:
+    snapshots = tuple(
+        _snapshot(
+            f"viewport-{index}",
+            f"target-{index}",
+            lineage_id="target-lineage",
+        )
+        for index in range(1, 5)
+    )
+    provider = FakeObservationProvider(
+        snapshots,
+        results=tuple(
+            PlatformActionResult(
+                True, "http://fixture.test", 1, state_changed=True
+            )
+            for _ in range(3)
+        ),
+    )
+    attention = RepeatingAttentionPolicy()
+    bundles = FakeBundleFactory()
+    scroll = CognitiveDecision(
+        action={"kind": "scroll", "direction": "down"},
+        reason="Look below.",
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent((scroll, scroll, scroll)),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        attention_policy=attention,
+    )
+
+    result = await agent.execute(_spec(max_steps=10, timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.terminal_reason == "repeated actions produced no progress"
+    assert attention.recovery_levels == [0, 1, 2]
+    assert len(provider.executed) == 3
+    recovery_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict) and event.get("kind") == "no-progress-recovery"
+    ]
+    assert [event["count"] for event in recovery_events] == [1, 2]
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "repeated-action-detected"
+        and event.get("count") == 3
+        for event in bundles.bundle.events
+    )
 
 
 @pytest.mark.asyncio
@@ -1157,6 +1442,7 @@ async def test_run_evaluation_is_persisted_before_bundle_publication(
     result = await agent.execute(_spec())
 
     assert result.metrics is not None
+    assert result.ux_sample_valid is True
     assert result.metrics.run_id == result.run_id
     persisted = bundles.bundle.final_result
     assert persisted is not None
@@ -1178,16 +1464,15 @@ async def test_evaluator_failure_still_publishes_closed_immutable_bundle(
         )
         cognitive = FakeCognitiveAgent(())
     else:
-        provider = FakeObservationProvider(
+        provider = FakeObservationProvider((_snapshot(),))
+        cognitive = FakeCognitiveAgent(
             (
-                ViewportSnapshot(
-                    id="viewport-1",
-                    provider_id="fake-observer",
-                    elements=(),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "No target."},
+                    reason="No target.",
                 ),
             )
         )
-        cognitive = FakeCognitiveAgent(())
 
     def fail_evaluation(result):
         return replace(
@@ -1208,26 +1493,34 @@ async def test_evaluator_failure_still_publishes_closed_immutable_bundle(
     bundle = output / "runs" / result.run_id
     assert result.state.is_finalized
     assert result.outcome.kind == (
-        "provider-failure"
-        if failure_point == "before-observation"
-        else "internal-error"
+        "provider-failure" if failure_point == "before-observation" else "agent-abandoned"
     )
+    assert result.ux_sample_valid is False
     assert result.metrics is None
     assert result.findings is None
-    assert result.evaluation_failure_reason is not None
-    assert result.evaluation_failure_reason.startswith(
-        "evaluation evidence unavailable:"
-    )
+    if failure_point == "before-observation":
+        assert result.evaluation_failure_reason is None
+        assert result.ux_sample_invalid_reason.startswith("provider-failure:")
+    else:
+        assert result.evaluation_failure_reason is not None
+        assert result.evaluation_failure_reason.startswith(
+            "evaluation evidence unavailable:"
+        )
+        assert result.ux_sample_invalid_reason.startswith("evaluation-failure:")
     assert result.state.events[-1].kind == "run-terminated"
     assert bundle.is_dir()
     assert not (output / ".staging" / result.run_id).exists()
     persisted = json.loads((bundle / "result.json").read_text(encoding="utf-8"))
     assert persisted["metrics"] is None
     assert persisted["findings"] is None
-    assert persisted["evaluation_failure_reason"].startswith(
-        "evaluation evidence unavailable:"
-    )
-    assert result.run_id not in result.evaluation_failure_reason
+    if failure_point == "before-observation":
+        assert persisted["evaluation_failure_reason"] is None
+    else:
+        assert persisted["evaluation_failure_reason"].startswith(
+            "evaluation evidence unavailable:"
+        )
+        assert result.run_id not in result.evaluation_failure_reason
+    assert persisted["ux_sample_valid"] is False
     timeline = [
         json.loads(line)
         for line in (bundle / "timeline.jsonl").read_text(encoding="utf-8").splitlines()

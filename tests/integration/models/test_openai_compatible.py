@@ -190,6 +190,42 @@ async def test_invalid_structured_output_retries_only_within_bound() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    (
+        (httpx.ConnectTimeout("connect timed out"), "connect-timeout"),
+        (httpx.ReadTimeout("read timed out"), "read-timeout"),
+        (httpx.ConnectError("connection failed"), "connect-error"),
+        (httpx.RemoteProtocolError("server disconnected"), "protocol-error"),
+    ),
+)
+async def test_transport_failures_record_safe_specific_category(
+    error: httpx.TransportError,
+    reason: str,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        raise error
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 1, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    with pytest.raises(ModelFailureError, match=reason):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="{}"),),
+            model="scent-model",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    assert client.records[0].attempts == 1
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_authentication_failure_is_terminal_without_retry() -> None:
     calls = 0
 

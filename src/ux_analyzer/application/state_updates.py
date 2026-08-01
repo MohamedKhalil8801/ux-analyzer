@@ -14,6 +14,7 @@ from ux_analyzer.application.memory import (
 from ux_analyzer.domain.attention import (
     Abandon,
     AttentionAction,
+    AttentionRecoveryMiss,
     AttentionState,
     Back,
     InspectElement,
@@ -120,6 +121,7 @@ def apply_observation(
     *,
     snapshot: ViewportSnapshot | None = None,
     memory_policy: MemoryPolicy | None = None,
+    recovery_state: tuple[AttentionRecoveryMiss, ...] | None = None,
 ) -> StateLike:
     """Consume observation budget and update bounded working memory."""
 
@@ -127,6 +129,8 @@ def apply_observation(
     if snapshot is not None and snapshot.id != observation.viewport_id:
         raise ValueError("observation references stale viewport")
     next_attention = attention.after_observation(observation)
+    if recovery_state is not None:
+        next_attention = replace(next_attention, recovery_misses=recovery_state)
     policy = memory_policy or MemoryPolicy(
         config=MemoryPolicyConfig(working_capacity=attention.memory_capacity)
     )
@@ -248,6 +252,11 @@ def reconcile_snapshot_state(
             for element_id in attention.current_observation_ids
             if element_id in id_map
         ),
+        recovery_misses=_reconciled_recovery_misses(
+            attention.recovery_misses,
+            previous_snapshot,
+            current_snapshot,
+        ),
     )
     next_attention = _sync_working_memory(next_attention, next_memory)
     return _build(state, next_attention, next_memory, abandoned, reason)
@@ -326,6 +335,40 @@ def _lineage_id_map(
         for lineage_id, previous_ids in previous_by_lineage.items()
         if len(previous_ids) == 1 and len(current_by_lineage.get(lineage_id, ())) == 1
     }
+
+
+def _reconciled_recovery_misses(
+    misses: tuple[AttentionRecoveryMiss, ...],
+    previous_snapshot: ViewportSnapshot,
+    current_snapshot: ViewportSnapshot,
+) -> tuple[AttentionRecoveryMiss, ...]:
+    previous_keys = _unique_recovery_lineage_keys(previous_snapshot)
+    current_keys = _unique_recovery_lineage_keys(current_snapshot)
+    return tuple(
+        miss
+        for miss in misses
+        if miss.key in previous_keys and miss.key in current_keys
+    )
+
+
+def _unique_recovery_lineage_keys(
+    snapshot: ViewportSnapshot,
+) -> frozenset[tuple[str, str]]:
+    counts: dict[tuple[str, str], int] = {}
+    for element in snapshot.elements:
+        provider_id = element.provider_id or snapshot.provider_id
+        if (
+            provider_id is None
+            or element.lineage_id is None
+            or (
+                snapshot.provider_id is not None
+                and provider_id != snapshot.provider_id
+            )
+        ):
+            continue
+        key = (provider_id, element.lineage_id)
+        counts[key] = counts.get(key, 0) + 1
+    return frozenset(key for key, count in counts.items() if count == 1)
 
 
 def _remap_ids(values: frozenset[str], id_map: dict[str, str]) -> frozenset[str]:

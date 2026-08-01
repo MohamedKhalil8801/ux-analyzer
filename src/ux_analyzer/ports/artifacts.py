@@ -150,6 +150,10 @@ class BundleManifest:
     seed: int
     config_digest: str
     endpoint_origin: str
+    scenario_id: str | None = None
+    application_version_id: str | None = None
+    persona_id: str | None = None
+    policy: str | None = None
     model_ids: Mapping[str, str] = field(default_factory=_empty_string_mapping)
     prompt_versions: Mapping[str, str] = field(default_factory=_empty_string_mapping)
     package_version: str = __version__
@@ -202,6 +206,10 @@ class BundleManifest:
             seed=run_spec.seed,
             config_digest=run_spec.config_digest,
             endpoint_origin=endpoint_origin,
+            scenario_id=run_spec.scenario.id,
+            application_version_id=run_spec.application_version.id,
+            persona_id=run_spec.persona.id,
+            policy=run_spec.policy.value,
             model_ids=model_ids or {},
             prompt_versions=prompt_versions or {},
             package_version=package_version,
@@ -217,6 +225,10 @@ class BundleManifest:
             "seed": self.seed,
             "config_digest": self.config_digest,
             "endpoint_origin": self.endpoint_origin,
+            "scenario_id": self.scenario_id,
+            "application_version_id": self.application_version_id,
+            "persona_id": self.persona_id,
+            "policy": self.policy,
             "model_ids": dict(self.model_ids),
             "prompt_versions": dict(self.prompt_versions),
             "package_version": self.package_version,

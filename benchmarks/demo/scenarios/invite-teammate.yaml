@@ -35,6 +35,8 @@ expected_evidence:
   - verified-completion
 evaluation_target:
   labels_by_version:
-    defective: Invite teammate
+    defective: Share
     improved: Invite teammate
-  role: button
+  roles_by_version:
+    defective: button
+    improved: link

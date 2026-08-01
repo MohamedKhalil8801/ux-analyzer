@@ -13,6 +13,7 @@ from ux_analyzer.domain.interface import ElementRole, ElementSnapshot, ViewportS
 from ux_analyzer.ports.models import (
     ChatMessage,
     ModelManifest,
+    ModelResponseValidationError,
     ModelRole,
     StructuredModelClient,
 )
@@ -144,17 +145,21 @@ class StructuredCoarseScentEvaluator:
     async def evaluate(
         self, goal: str, snapshot: ViewportSnapshot
     ) -> tuple[CoarseScent, ...]:
+        model_elements = tuple(
+            (f"e{index}", element)
+            for index, element in enumerate(snapshot.elements)
+        )
         payload = CoarseScentRequest(
             goal=goal,
             elements=tuple(
                 CoarseScentElement(
-                    element_id=element.id,
+                    element_id=model_id,
                     role=ElementRole(element.role).value,
                     label=element.label,
                     region_label=_region_label(snapshot, element),
                     actionable=element.actionable,
                 )
-                for element in snapshot.elements
+                for model_id, element in model_elements
             ),
         )
         response = await self.client.complete(
@@ -163,15 +168,23 @@ class StructuredCoarseScentEvaluator:
             model=self.model,
             role=self.role,
         )
-        known = {element.id: element for element in snapshot.elements}
+        known = dict(model_elements)
         seen: set[str] = set()
         results: list[CoarseScent] = []
         for item in response.scores:
             if item.element_id in seen:
-                raise ValueError("coarse scent response contains duplicate element")
+                raise ModelResponseValidationError(
+                    self.role,
+                    "response contains duplicate element ID",
+                    response_summary={"element_id": item.element_id},
+                )
             element = known.get(item.element_id)
             if element is None:
-                raise ValueError("coarse scent response references unknown element")
+                raise ModelResponseValidationError(
+                    self.role,
+                    "response references unknown element ID",
+                    response_summary={"element_id": item.element_id},
+                )
             seen.add(item.element_id)
             results.append(CoarseScent.from_element(snapshot, element, item.score))
         return tuple(results)
@@ -207,18 +220,21 @@ class StructuredFullScentEvaluator:
         noticed = [
             element for element in snapshot.elements if element.id in state.noticed_ids
         ]
+        model_elements = tuple(
+            (f"e{index}", element) for index, element in enumerate(noticed)
+        )
         payload = FullScentRequest(
             goal=goal,
             elements=tuple(
                 FullScentElement(
-                    element_id=element.id,
+                    element_id=model_id,
                     role=ElementRole(element.role).value,
                     label=element.label,
                     region_label=_region_label(snapshot, element),
                     actionable=element.actionable,
                     disabled=element.disabled,
                 )
-                for element in noticed
+                for model_id, element in model_elements
             ),
         )
         response = await self.client.complete(
@@ -227,16 +243,25 @@ class StructuredFullScentEvaluator:
             model=self.model,
             role=self.role,
         )
-        noticed_ids = {element.id for element in noticed}
+        noticed_by_model_id = dict(model_elements)
         seen: set[str] = set()
         results: list[FullScent] = []
         for item in response.scores:
             if item.element_id in seen:
-                raise ValueError("full scent response contains duplicate element")
-            if item.element_id not in noticed_ids:
-                raise ValueError("full scent response references unnoticed element")
+                raise ModelResponseValidationError(
+                    self.role,
+                    "response contains duplicate element ID",
+                    response_summary={"element_id": item.element_id},
+                )
+            element = noticed_by_model_id.get(item.element_id)
+            if element is None:
+                raise ModelResponseValidationError(
+                    self.role,
+                    "response references unknown or unnoticed element ID",
+                    response_summary={"element_id": item.element_id},
+                )
             seen.add(item.element_id)
-            results.append(FullScent.for_element(state, item.element_id, item.score))
+            results.append(FullScent.for_element(state, element.id, item.score))
         return tuple(results)
 
 

@@ -51,9 +51,11 @@ scenarios:
       - verified-completion
     evaluation_target:
       labels_by_version:
-        defective: Invite teammate
+        defective: Share
         improved: Invite teammate
-      role: button
+      roles_by_version:
+        defective: button
+        improved: link
 
   - id: enable-2fa
     name: Enable two-factor authentication
@@ -126,12 +128,15 @@ providers:
       competition: -0.08
       occlusion: -0.09
   attention:
-    version: progressive-attention-v1
-    batch_size: 1
+    version: progressive-attention-v4
+    batch_size: 2
+    cross_region_exploration: 1
     prominence_weight: 1.0
-    coarse_scent_weight: 0.5
+    coarse_scent_weight: 1.0
     novelty_penalty: 0.25
     failure_penalty: 0.5
+    recovery_scent_threshold: 0.9
+    recovery_after_misses: 2
 
 evaluation:
   discovery_cost:

@@ -77,6 +77,39 @@ def test_scenario_timeout_rejects_non_positive_finite_value(tmp_path: Path) -> N
         load_project(_write_project(tmp_path, project))
 
 
+def test_scenario_budget_loads_max_model_calls(tmp_path: Path) -> None:
+    project = _read_project()
+    project["scenarios"][0]["budget"]["max_model_calls"] = 7
+
+    loaded = load_project(_write_project(tmp_path, project))
+
+    assert loaded.project.scenarios[0].budget.max_model_calls == 7
+
+
+def test_progressive_attention_defaults_to_two_element_batch(tmp_path: Path) -> None:
+    project = _read_project()
+    project.setdefault("providers", {}).setdefault("attention", {}).pop(
+        "batch_size", None
+    )
+
+    loaded = load_project(_write_project(tmp_path, project))
+
+    assert loaded.runtime.attention.batch_size == 2
+    assert loaded.runtime.attention.cross_region_exploration == 1
+    assert loaded.runtime.attention.version == "progressive-attention-v4"
+    assert loaded.runtime.attention.recovery_scent_threshold == pytest.approx(0.9)
+    assert loaded.runtime.attention.recovery_after_misses == 2
+
+
+def test_demo_calibrates_strong_scent_weight_for_progressive_attention() -> None:
+    demo_path = Path(__file__).parents[3] / "benchmarks" / "demo" / "project.yaml"
+
+    loaded = load_project(demo_path)
+
+    assert loaded.runtime.attention.batch_size == 2
+    assert loaded.runtime.attention.coarse_scent_weight == pytest.approx(1.0)
+
+
 def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     tmp_path: Path,
 ) -> None:
@@ -90,14 +123,24 @@ def test_loads_versioned_runtime_provider_and_evaluation_formulas(
         "attention": {
             "version": "attention-project-v2",
             "batch_size": 2,
+            "cross_region_exploration": 1,
             "prominence_weight": 1.4,
             "coarse_scent_weight": 0.6,
             "novelty_penalty": 0.2,
             "failure_penalty": 0.4,
+            "recovery_scent_threshold": 0.85,
+            "recovery_after_misses": 3,
         },
         "expectation": {"enabled": False},
     }
     project["scenarios"][0]["viewport"] = {"width": 900, "height": 700}
+    project["scenarios"][0]["evaluation_target"] = {
+        "labels_by_version": {
+            "defective": "Share",
+            "improved": "Invite teammate",
+        },
+        "roles_by_version": {"defective": "button", "improved": "link"},
+    }
     project["evaluation"] = {
         "discovery_cost": {
             "version": "discovery-project-v2",
@@ -132,12 +175,17 @@ def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     assert loaded.runtime.prominence.weights["contrast"] == pytest.approx(0.7)
     assert loaded.runtime.attention.version == "attention-project-v2"
     assert loaded.runtime.attention.batch_size == 2
+    assert loaded.runtime.attention.cross_region_exploration == 1
+    assert loaded.runtime.attention.recovery_scent_threshold == pytest.approx(0.85)
+    assert loaded.runtime.attention.recovery_after_misses == 3
     assert loaded.runtime.discovery_cost.version == "discovery-project-v2"
     assert loaded.runtime.findings.version == "finding-project-v2"
     assert loaded.runtime.state_updates.version == "state-project-v2"
     assert loaded.runtime.expectation_enabled is False
     assert loaded.project.scenarios[0].viewport_width == 900
     assert loaded.project.scenarios[0].viewport_height == 700
+    target = loaded.project.scenarios[0].evaluation_target
+    assert target.roles_by_version == {"defective": "button", "improved": "link"}
 
 
 def test_expectation_provider_cannot_be_enabled_in_poc(tmp_path: Path) -> None:

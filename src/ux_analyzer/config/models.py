@@ -60,6 +60,7 @@ class BudgetModel(_ConfigModel):
     max_steps: int = Field(gt=0)
     max_observations: int = Field(gt=0)
     max_interactions: int = Field(gt=0)
+    max_model_calls: int = Field(default=64, gt=0)
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
@@ -71,6 +72,7 @@ class ViewportModel(_ConfigModel):
 class ScenarioEvaluationTargetModel(_ConfigModel):
     labels_by_version: dict[str, str] = Field(min_length=1)
     role: str | None = Field(default=None, min_length=1)
+    roles_by_version: dict[str, str] = Field(default_factory=dict)
     region_label: str | None = Field(default=None, min_length=1)
 
 
@@ -125,12 +127,15 @@ class ProminenceProviderModel(_ConfigModel):
 
 
 class AttentionProviderModel(_ConfigModel):
-    version: str = Field(default="progressive-attention-v1", min_length=1)
-    batch_size: int = Field(default=1, ge=1, le=3)
+    version: str = Field(default="progressive-attention-v4", min_length=1)
+    batch_size: int = Field(default=2, ge=1, le=3)
+    cross_region_exploration: int = Field(default=1, ge=0, le=2)
     prominence_weight: float = Field(default=1.0, ge=0)
     coarse_scent_weight: float = Field(default=0.5, ge=0)
     novelty_penalty: float = Field(default=0.25, ge=0, le=1)
     failure_penalty: float = Field(default=0.5, ge=0, le=1)
+    recovery_scent_threshold: float = Field(default=0.9, ge=0, le=1)
+    recovery_after_misses: int = Field(default=2, ge=1)
 
 
 class ExpectationProviderModel(_ConfigModel):
