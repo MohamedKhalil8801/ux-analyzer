@@ -310,9 +310,7 @@ def _load_run(path: Path) -> dict[str, Any]:
         else outcome in {"verified-success", "agent-abandoned", "budget-exhausted"}
         and not evaluation_failure_reason
     )
-    ux_sample_invalid_reason = _optional_text(
-        result.get("ux_sample_invalid_reason")
-    )
+    ux_sample_invalid_reason = _optional_text(result.get("ux_sample_invalid_reason"))
     failure_reason = "; ".join(
         item
         for item in (
@@ -335,6 +333,10 @@ def _load_run(path: Path) -> dict[str, Any]:
         else "partial"
     )
     stage = _run_stage(result, crash, outcome, integrity_failures)
+    actions = _actions(events)
+    model_calls = _model_calls(events)
+    user_effort = _user_effort(actions, observations, metrics)
+    analysis_cost = _analysis_cost(model_calls)
     return {
         "run_id": run_id,
         "bundle_path": f"{path.parent.name}/{path.name}",
@@ -369,11 +371,13 @@ def _load_run(path: Path) -> dict[str, Any]:
         "prominence": _prominence(events),
         "scent_records": _scent_records(events),
         "decisions": _decisions(events),
-        "actions": _actions(events),
+        "actions": actions,
         "verification": verification,
         "memory": _memory(attention),
         "manifests": _manifests(manifest, result, state),
-        "model_calls": _model_calls(events),
+        "model_calls": model_calls,
+        "user_effort": user_effort,
+        "analysis_cost": analysis_cost,
         "evidence": supported_evidence,
         "findings": findings,
         "metrics": _metric_rows(metrics, verification, outcome) if trusted else [],
@@ -418,6 +422,8 @@ def _report_context(
                     "failed",
                     "trusted",
                     "metrics",
+                    "user_effort",
+                    "analysis_cost",
                 )
             }
         )
@@ -798,9 +804,7 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
                 "region_probabilities": _number_mapping(
                     event.get("region_probabilities")
                 ),
-                "recovery_selected_ids": _strings(
-                    event.get("recovery_selected_ids")
-                ),
+                "recovery_selected_ids": _strings(event.get("recovery_selected_ids")),
             }
         )
     elif kind == "verification-recorded":
@@ -1263,6 +1267,18 @@ def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 "discovery_cost": _median_metric(grouped, "discovery-cost"),
                 "wrong_actions": _median_metric(grouped, "wrong-actions"),
                 "backtracks": _median_metric(grouped, "backtracks"),
+                "estimated_task_seconds": _median_projection(
+                    grouped, "user_effort", "estimated_task_seconds"
+                ),
+                "model_calls": _median_projection(
+                    grouped, "analysis_cost", "model_calls"
+                ),
+                "analysis_latency_ms": _median_projection(
+                    grouped, "analysis_cost", "latency_ms"
+                ),
+                "analysis_tokens": _median_projection(
+                    grouped, "analysis_cost", "total_tokens"
+                ),
             }
         )
     return rows
@@ -1288,6 +1304,16 @@ def _run_overview_rows(
                 "observations": len(run["observations"]),
                 "discovery_cost": _format_overview_cost(
                     _median_metric([run], "discovery-cost")
+                ),
+                "estimated_task_seconds": _format_seconds(
+                    _number(run["user_effort"].get("estimated_task_seconds"), 0)
+                ),
+                "model_calls": int(_number(run["analysis_cost"].get("model_calls"), 0)),
+                "analysis_latency": _format_milliseconds(
+                    _number(run["analysis_cost"].get("latency_ms"), 0)
+                ),
+                "analysis_tokens": int(
+                    _number(run["analysis_cost"].get("total_tokens"), 0)
                 ),
                 "outcome": run["outcome"],
                 "stage": run["stage"],
@@ -1388,7 +1414,103 @@ def _gate_rows(
                 ),
             }
         )
+    existing = {(row["scenario_id"], row["persona_id"], row["policy"]) for row in rows}
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for run in runs:
+        if run["trusted"] and run["ux_sample_valid"] and run["metrics"]:
+            groups[(run["scenario_id"], run["persona_id"], run["policy"])].append(run)
+    for identity in sorted(groups):
+        if identity in existing:
+            continue
+        derived = _derived_gate_row(groups[identity])
+        if derived is not None:
+            rows.append(derived)
     return rows
+
+
+def _derived_gate_row(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    baseline = {
+        int(run["seed"]): run for run in runs if _version_kind(run) == "defective"
+    }
+    improved = {
+        int(run["seed"]): run for run in runs if _version_kind(run) == "improved"
+    }
+    seeds = tuple(sorted(set(baseline) & set(improved)))
+    if not seeds:
+        return None
+    cost_deltas = _paired_metric_deltas(baseline, improved, seeds, "discovery-cost")
+    wrong_deltas = _paired_metric_deltas(baseline, improved, seeds, "wrong-actions")
+    backtrack_deltas = _paired_metric_deltas(baseline, improved, seeds, "backtracks")
+    if cost_deltas is None or wrong_deltas is None or backtrack_deltas is None:
+        return None
+    baseline_completion = sum(baseline[seed]["verified"] for seed in seeds) / len(seeds)
+    improved_completion = sum(improved[seed]["verified"] for seed in seeds) / len(seeds)
+    checks = (
+        (
+            "paired median discovery cost did not decrease",
+            _median_values(cost_deltas) < 0,
+        ),
+        (
+            "paired median wrong-action burden increased",
+            _median_values(wrong_deltas) <= 0,
+        ),
+        (
+            "paired median backtrack burden increased",
+            _median_values(backtrack_deltas) <= 0,
+        ),
+        (
+            "verified completion rate regressed",
+            improved_completion >= baseline_completion,
+        ),
+    )
+    sample = runs[0]
+    reasons = [reason for reason, passed in checks if not passed]
+    return {
+        "scenario_id": sample["scenario_id"],
+        "scenario_label": sample["scenario_label"],
+        "persona_id": sample["persona_id"],
+        "persona_label": sample["persona_label"],
+        "policy": sample["policy"],
+        "baseline_version": baseline[seeds[0]]["version_id"],
+        "improved_version": improved[seeds[0]]["version_id"],
+        "paired_seed_count": len(seeds),
+        "available": True,
+        "passed": not reasons,
+        "reasons": reasons,
+    }
+
+
+def _version_kind(run: dict[str, Any]) -> str | None:
+    identity = f"{run['version_id']} {run['version_label']}".casefold()
+    if "improved" in identity:
+        return "improved"
+    if "defective" in identity:
+        return "defective"
+    return None
+
+
+def _paired_metric_deltas(
+    baseline: dict[int, dict[str, Any]],
+    improved: dict[int, dict[str, Any]],
+    seeds: tuple[int, ...],
+    name: str,
+) -> list[float] | None:
+    deltas: list[float] = []
+    for seed in seeds:
+        baseline_value = _median_metric([baseline[seed]], name)
+        improved_value = _median_metric([improved[seed]], name)
+        if baseline_value is None or improved_value is None:
+            return None
+        deltas.append(improved_value - baseline_value)
+    return deltas
+
+
+def _median_values(values: list[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 def _comparison_runs_are_trusted(
@@ -1428,6 +1550,74 @@ def _median_metric(runs: list[dict[str, Any]], name: str) -> float | None:
 
 def _format_overview_cost(value: float | None) -> str | None:
     return f"{value:.1f}" if value is not None else None
+
+
+def _median_projection(
+    runs: list[dict[str, Any]], projection: str, field: str
+) -> float | None:
+    values = [
+        _number(value, 0)
+        for run in runs
+        if _is_number(value := _mapping(run.get(projection)).get(field))
+    ]
+    if not values:
+        return None
+    values.sort()
+    middle = len(values) // 2
+    if len(values) % 2:
+        return values[middle]
+    return (values[middle - 1] + values[middle]) / 2
+
+
+def _format_seconds(value: float) -> str:
+    return f"{value:.1f} s"
+
+
+def _format_milliseconds(value: float) -> str:
+    return f"{int(value)} ms"
+
+
+def _user_effort(
+    actions: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    action_count = len(actions)
+    observation_count = len(observations)
+    discovery = _mapping(metrics.get("discovery_cost")).get("total")
+    return {
+        "formula_version": "simulated-task-time-v1",
+        "action_count": action_count,
+        "observation_count": observation_count,
+        "estimated_task_seconds": observation_count * 1.35 + action_count * 1.1,
+        "discovery_cost": _number(discovery, 0) if _is_number(discovery) else None,
+    }
+
+
+def _analysis_cost(model_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    usages = [_mapping(record.get("token_usage")) for record in model_calls]
+    return {
+        "model_calls": len(model_calls),
+        "attempts": sum(
+            int(_number(record.get("attempts"), 0)) for record in model_calls
+        ),
+        "latency_ms": sum(
+            int(_number(record.get("latency_ms"), 0)) for record in model_calls
+        ),
+        "prompt_tokens": sum(
+            int(_number(usage.get("prompt_tokens"), 0)) for usage in usages
+        ),
+        "completion_tokens": sum(
+            int(_number(usage.get("completion_tokens"), 0)) for usage in usages
+        ),
+        "total_tokens": sum(
+            int(_number(usage.get("total_tokens"), 0)) for usage in usages
+        ),
+        "monetary_estimate": None,
+        "monetary_reason": (
+            "Monetary estimate unavailable: model pricing is not configured."
+        ),
+    }
 
 
 def _evidence_summary(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:

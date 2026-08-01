@@ -34,6 +34,7 @@ main, .page-header { width: min(1600px, calc(100% - 28px)); margin: 0 auto; }
 .eyebrow { margin-bottom: 4px; color: var(--accent); font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .muted, .subvalue { color: var(--muted); }
 .subvalue { display: block; margin-top: 3px; font-size: .72rem; font-weight: 400; overflow-wrap: anywhere; }
+.method-note { margin: 10px 0 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
 
 .section { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); }
 .overview-section { padding: 18px; }

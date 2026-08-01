@@ -42,6 +42,10 @@
               <th>User actions</th>
               <th>Observations</th>
               <th>Discovery cost <span class="subvalue">lower is better</span></th>
+              <th>Estimated task time <span class="subvalue">simulated user effort</span></th>
+              <th>Model calls <span class="subvalue">analysis cost</span></th>
+              <th>Analysis latency</th>
+              <th>Tokens</th>
               <th>Outcome</th>
               <th>Stage</th>
               <th>Verification</th>
@@ -60,6 +64,10 @@
               <td data-metric="user-actions">{{ row.user_actions }}</td>
               <td data-metric="observations">{{ row.observations }}</td>
               <td data-metric="discovery-cost">{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td>
+              <td data-metric="estimated-task-seconds">{{ row.estimated_task_seconds }}</td>
+              <td data-metric="model-calls">{{ row.model_calls }}</td>
+              <td data-metric="analysis-latency">{{ row.analysis_latency }}</td>
+              <td data-metric="analysis-tokens">{{ row.analysis_tokens }}</td>
               <td><span class="status-pill">{{ row.outcome }}</span></td>
               <td>{{ row.stage }}</td>
               <td>{{ "verified" if row.verified else "not verified" }}</td>
@@ -67,23 +75,24 @@
               <td><strong>{{ row.gate_status }}</strong><span class="subvalue">{{ row.gate_reason }}</span></td>
             </tr>
           {% else %}
-            <tr><td colspan="13">No run evidence recorded.</td></tr>
+            <tr><td colspan="17">No run evidence recorded.</td></tr>
           {% endfor %}
           </tbody>
         </table>
       </div>
+      <p class="method-note"><strong>simulated-task-time-v1:</strong> 1.35 seconds per observation plus 1.1 seconds per executed action. Analysis cost is not user effort. Monetary estimate unavailable unless explicit model pricing is configured.</p>
 
       <details class="aggregate-details">
         <summary>Aggregate comparison and directional gates</summary>
         <div class="aggregate-grid">
           <div class="table-wrap">
             <table id="aggregate-table">
-              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Version</th><th>Runs</th><th>Verified</th><th>Discovery cost</th></tr></thead>
+              <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Version</th><th>Runs</th><th>Verified</th><th>Discovery cost</th><th>Task seconds</th><th>Model calls</th><th>Latency ms</th><th>Tokens</th></tr></thead>
               <tbody>
               {% for row in comparison_rows %}
-                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td></tr>
+                <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.estimated_task_seconds) if row.estimated_task_seconds is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.model_calls) if row.model_calls is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_latency_ms) if row.analysis_latency_ms is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_tokens) if row.analysis_tokens is not none else "unavailable" }}</td></tr>
               {% else %}
-                <tr><td colspan="7">Aggregate metrics unavailable.</td></tr>
+                <tr><td colspan="11">Aggregate metrics unavailable.</td></tr>
               {% endfor %}
               </tbody>
             </table>

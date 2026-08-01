@@ -577,6 +577,8 @@
     if (run.terminal_reason) parts.push("terminal reason: " + run.terminal_reason);
     if (run.evaluation_failure_reason) parts.push("evaluation failure: " + run.evaluation_failure_reason);
     if (run.ux_sample_invalid_reason) parts.push("invalid sample: " + run.ux_sample_invalid_reason);
+    if (run.user_effort) parts.push("estimated task time " + Number(run.user_effort.estimated_task_seconds || 0).toFixed(1) + " s");
+    if (run.analysis_cost) parts.push("analysis " + run.analysis_cost.model_calls + " model calls, " + run.analysis_cost.latency_ms + " ms, " + run.analysis_cost.total_tokens + " tokens");
     if (!run.trusted) parts.push("evidence untrusted");
     statusBanner.textContent = parts.join(" | ");
   }

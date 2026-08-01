@@ -329,8 +329,8 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "Prompt version" in html
     assert "Schema version" in html
     assert "Sanitized request summary" in html
-    assert '\"bundle_path\":\"runs\\u002frun-1\"' in html
-    assert '\"integrity_status\":\"trusted\"' in html
+    assert '"bundle_path":"runs\\u002frun-1"' in html
+    assert '"integrity_status":"trusted"' in html
     assert "Trust boundaries and limitations" in html
     assert "Seeded discovery cost." in html
     assert '"width":800' in html
@@ -377,6 +377,13 @@ def test_overview_counts_executed_actions_and_formats_discovery_cost(
     assert 'data-metric="user-actions">1</td>' in html
     assert 'data-metric="observations">1</td>' in html
     assert 'data-metric="discovery-cost">4.2</td>' in html
+    assert 'data-metric="estimated-task-seconds">2.5 s</td>' in html
+    assert 'data-metric="model-calls">1</td>' in html
+    assert 'data-metric="analysis-latency">125 ms</td>' in html
+    assert 'data-metric="analysis-tokens">19</td>' in html
+    assert "simulated-task-time-v1" in html
+    assert "Analysis cost is not user effort" in html
+    assert "Monetary estimate unavailable" in html
 
 
 def test_renderer_exposes_safe_model_and_progress_diagnostics(tmp_path: Path) -> None:
@@ -468,21 +475,21 @@ def test_renderer_exposes_safe_model_and_progress_diagnostics(tmp_path: Path) ->
     assert "model-failure: invalid cognitive response" in html
     assert '"recovery_selected_ids":["submit"]' in html
     assert "recovery-forced" in html
-    assert '\"role\":\"cognitive\"' in html
-    assert '\"response_summary\":{\"action\":\"inspect\",\"element_id\":null}' in html
+    assert '"role":"cognitive"' in html
+    assert '"response_summary":{"action":"inspect","element_id":null}' in html
     assert "repeated-fixture-input" in html
     assert "invite_email" in html
     assert "repeated-action-detected" in html
-    assert '\"count\":3' in html
+    assert '"count":3' in html
     assert "no-progress-recovery" in html
     assert (
-        '\"kind\":\"no-progress-recovery\",'
-        '\"action\":{\"kind\":\"scroll\",\"direction\":\"down\"},'
-        '\"count\":2'
+        '"kind":"no-progress-recovery",'
+        '"action":{"kind":"scroll","direction":"down"},'
+        '"count":2'
     ) in html
     assert "no-progress-detected" in html
     assert "repeated-action-cycle" in html
-    assert '\"cycle_length\":2' in html
+    assert '"cycle_length":2' in html
     assert "provider-secret" not in html
     assert "private-secret" not in html
 
@@ -615,6 +622,19 @@ def test_renderer_excludes_tampered_bundle_from_scorecards_and_gates(
     assert "checksum mismatch: result.json" in html
     assert "999999" not in html
     assert "All directional checks passed" not in html
+
+
+def test_renderer_derives_directional_gate_from_all_trusted_bundles(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-defective", version="defective", discovery_cost=8)
+    _write_run(tmp_path, "run-improved", version="improved", discovery_cost=3)
+
+    output = render_experiment_report(tmp_path, tmp_path / "report.html")
+    html = output.read_text(encoding="utf-8")
+
+    assert "All directional checks passed" in html
+    assert "Directional gates unavailable" not in html
 
 
 def test_renderer_excludes_active_bundle_from_scorecards_and_findings(
@@ -988,9 +1008,18 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         await page.goto(report_path.resolve().as_uri())
 
         overview_row = page.locator('tr[data-run-id="run-evaluation"]')
-        assert await overview_row.locator('[data-metric="user-actions"]').text_content() == "1"
-        assert await overview_row.locator('[data-metric="observations"]').text_content() == "1"
-        assert await overview_row.locator('[data-metric="discovery-cost"]').text_content() == "4.0"
+        assert (
+            await overview_row.locator('[data-metric="user-actions"]').text_content()
+            == "1"
+        )
+        assert (
+            await overview_row.locator('[data-metric="observations"]').text_content()
+            == "1"
+        )
+        assert (
+            await overview_row.locator('[data-metric="discovery-cost"]').text_content()
+            == "4.0"
+        )
         await overview_row.click()
         assert "run=run-evaluation" in page.url
         event_ids = await page.locator(".timeline-event").evaluate_all(
