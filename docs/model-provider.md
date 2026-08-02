@@ -26,6 +26,42 @@ checks presence without printing values. Non-dry `uxa run` requires all four
 settings. Dry-run matrix expansion can run without them unless `--check-env` is
 also supplied.
 
+## Saliency Execution Providers
+
+Foveacast runs three model sessions in fixed `1s`, `3s`, `7s` order. CPU is
+available on every supported platform. DirectML is optional and Windows-only;
+install exactly one runtime extra because both packages provide the
+`onnxruntime` import:
+
+```powershell
+uv sync --extra saliency-cpu
+# or, on Windows:
+uv sync --extra saliency-directml
+```
+
+The saliency execution preference is one of `cpu`, `directml`, or `auto`:
+
+| Preference | Behavior |
+| --- | --- |
+| `cpu` | Use `CPUExecutionProvider`. |
+| `directml` | Require Windows and an available `DmlExecutionProvider`; initialization failure stops inference. |
+| `auto` | Try DirectML on Windows when available, then fall back to CPU with a recorded reason. |
+
+Foveacast never downloads models or runtimes during inference. Model artifacts
+must be installed explicitly through model management. DirectML sessions use
+sequential execution and disable ONNX Runtime memory-pattern optimization;
+the three sessions are never run concurrently.
+
+Inference metadata records requested and actual provider, fallback reason,
+DirectML adapter/device ID when exposed by ONNX Runtime, and session options.
+These fields belong to the model-evidence manifest; CPU behavior and
+deterministic interface snapshots remain unchanged.
+
+DirectML parity and stability coverage is hardware-marked and skips when
+Windows, `onnxruntime-directml`, or local model files are unavailable. It never
+downloads artifacts. Set `UXA_FOVEACAST_MODEL_1S`, `UXA_FOVEACAST_MODEL_3S`,
+and `UXA_FOVEACAST_MODEL_7S` to existing files before running the marked test.
+
 ## Three Separate Roles
 
 | Role | Prompt/schema | Input boundary | Output |

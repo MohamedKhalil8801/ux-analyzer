@@ -49,6 +49,7 @@ testpaths = ["tests"]
 markers = [
     "e2e: bundled fixture browser acceptance tests",
     "live: opt-in OpenAI-compatible endpoint tests",
+    "directml: opt-in DirectML hardware parity and stability tests",
 ]
 
 [tool.ruff]

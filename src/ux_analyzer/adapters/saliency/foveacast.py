@@ -1,10 +1,12 @@
-"""CPU ONNX Runtime adapter for pinned Foveacast saliency models."""
+"""ONNX Runtime adapter for pinned Foveacast saliency models."""
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from enum import StrEnum
 from importlib import import_module
 from io import BytesIO
 from pathlib import Path
@@ -32,6 +34,7 @@ PROVIDER_VERSION = "foveacast-adapter-v1"
 MODEL_ID = "foveacast-v0.2.0"
 MODEL_VERSION = "v0.2.0"
 CPU_EXECUTION_PROVIDER = "CPUExecutionProvider"
+DIRECTML_EXECUTION_PROVIDER = "DmlExecutionProvider"
 _INPUT_SHAPE = (1, 3, MODEL_HEIGHT, MODEL_WIDTH)
 _OUTPUT_SHAPES = {
     (MODEL_HEIGHT, MODEL_WIDTH),
@@ -43,6 +46,15 @@ _DURATIONS = (
     AttentionDuration.THREE_SECONDS,
     AttentionDuration.SEVEN_SECONDS,
 )
+_SessionOptionValue = str | bool | int | float | None
+
+
+class ExecutionProviderPreference(StrEnum):
+    """Requested runtime provider selection policy."""
+
+    AUTO = "auto"
+    CPU = "cpu"
+    DIRECTML = "directml"
 
 
 class _OrtValueInfo(Protocol):
@@ -64,7 +76,11 @@ class _OrtSession(Protocol):
 
 class _OrtModule(Protocol):
     def InferenceSession(
-        self, path: str, *, providers: Sequence[str]
+        self,
+        path: str,
+        *,
+        providers: Sequence[str],
+        sess_options: object | None = None,
     ) -> _OrtSession: ...
 
 
@@ -236,6 +252,13 @@ class FoveacastInferenceMetadata:
     execution_provider: str
     input_name: str
     output_name: str
+    requested_execution_provider: str = ExecutionProviderPreference.CPU.value
+    actual_execution_provider: str = CPU_EXECUTION_PROVIDER
+    fallback_reason: str | None = None
+    adapter_device_id: str | None = None
+    session_options: Mapping[str, _SessionOptionValue] = field(
+        default_factory=lambda: dict[str, _SessionOptionValue]()
+    )
 
 
 def preprocess_image(image: Image.Image) -> PreprocessedScreenshot:
@@ -447,8 +470,94 @@ def _normalize_output(
     return np.ascontiguousarray(np.clip(normalized, 0.0, 1.0), dtype=np.float32)
 
 
+def _normalize_execution_provider_preference(value: str) -> str:
+    try:
+        return ExecutionProviderPreference(value.strip().lower()).value
+    except (AttributeError, ValueError) as error:
+        choices = ", ".join(
+            preference.value for preference in ExecutionProviderPreference
+        )
+        raise ValueError(
+            f"execution provider preference must be one of: {choices}"
+        ) from error
+
+
+def _available_execution_providers(ort: _OrtModule) -> tuple[str, ...]:
+    get_available = getattr(ort, "get_available_providers", None)
+    if not callable(get_available):
+        return ()
+    try:
+        providers = cast(Sequence[object], get_available())
+    except Exception:
+        return ()
+    return tuple(str(provider) for provider in providers)
+
+
+def _directml_unavailable_reason(ort: _OrtModule) -> str | None:
+    if sys.platform != "win32":
+        return "DirectML unavailable: DirectML requires Windows"
+    if DIRECTML_EXECUTION_PROVIDER not in _available_execution_providers(ort):
+        return "DirectML unavailable: DmlExecutionProvider is not installed"
+    return None
+
+
+def _directml_session_options(
+    ort: _OrtModule,
+) -> tuple[object, dict[str, _SessionOptionValue]]:
+    options_factory = getattr(ort, "SessionOptions", None)
+    execution_mode_type = getattr(ort, "ExecutionMode", None)
+    if not callable(options_factory) or execution_mode_type is None:
+        raise RuntimeError("ONNX Runtime lacks DirectML session option support")
+    sequential_mode = getattr(execution_mode_type, "ORT_SEQUENTIAL", None)
+    if sequential_mode is None:
+        raise RuntimeError("ONNX Runtime lacks ORT_SEQUENTIAL execution mode")
+    options = cast(Callable[[], object], options_factory)()
+    setattr(options, "execution_mode", sequential_mode)
+    setattr(options, "enable_mem_pattern", False)
+    return options, {
+        "execution_mode": "ORT_SEQUENTIAL",
+        "enable_mem_pattern": False,
+    }
+
+
+def _session_execution_provider(session: _OrtSession, requested: str) -> str:
+    get_providers = getattr(session, "get_providers", None)
+    if not callable(get_providers):
+        return requested
+    try:
+        providers = tuple(
+            str(provider) for provider in cast(Sequence[object], get_providers())
+        )
+    except Exception:
+        return requested
+    return providers[0] if providers else requested
+
+
+def _adapter_device_id(
+    session: _OrtSession,
+    execution_provider: str,
+) -> str | None:
+    if execution_provider != DIRECTML_EXECUTION_PROVIDER:
+        return None
+    get_provider_options = getattr(session, "get_provider_options", None)
+    if not callable(get_provider_options):
+        return None
+    try:
+        provider_options = cast(Mapping[object, object], get_provider_options())
+    except Exception:
+        return None
+    options = provider_options.get(DIRECTML_EXECUTION_PROVIDER)
+    if not isinstance(options, Mapping):
+        return None
+    typed_options = cast(Mapping[object, object], options)
+    device_id: object = typed_options.get("device_id")
+    if isinstance(device_id, (str, int)) and not isinstance(device_id, bool):
+        return str(device_id)
+    return None
+
+
 class FoveacastSaliencyProvider:
-    """Run three fixed-shape Foveacast CPU sessions sequentially per screenshot."""
+    """Run three fixed-shape Foveacast sessions sequentially per screenshot."""
 
     def __init__(
         self,
@@ -461,6 +570,7 @@ class FoveacastSaliencyProvider:
         precision: str = "fp16",
         model_checksums: Mapping[AttentionDuration | str, str] | None = None,
         ort_module: _OrtModule | object | None = None,
+        execution_provider_preference: str | None = None,
     ) -> None:
         self.model_paths = _duration_paths(model_paths)
         self.model_checksums = _duration_checksums(model_checksums)
@@ -469,22 +579,120 @@ class FoveacastSaliencyProvider:
         self.provider_version = provider_version
         self.precision = precision
         self.execution_provider = CPU_EXECUTION_PROVIDER
+        self.actual_execution_provider = CPU_EXECUTION_PROVIDER
+        self.requested_execution_provider = ExecutionProviderPreference.CPU.value
+        self.fallback_reason: str | None = None
+        self.adapter_device_id: str | None = None
+        self.session_options: dict[str, _SessionOptionValue] = {}
+        self._configured_execution_provider = (
+            _normalize_execution_provider_preference(execution_provider_preference)
+            if execution_provider_preference is not None
+            else None
+        )
         self._ort = _load_ort_module(ort_module)
         self._sessions: dict[AttentionDuration, _OrtSession] = {}
         self._io_names: dict[AttentionDuration, tuple[str, str, tuple[int, ...]]] = {}
         self.last_metadata: FoveacastInferenceMetadata | None = None
         self.last_timing: FoveacastTiming | None = None
-        self._cold_load_sessions()
+        self._cold_load_ms = 0.0
+        self._selected_execution_provider: str | None = None
+        if self._configured_execution_provider is not None:
+            self._ensure_sessions(self._configured_execution_provider)
+        else:
+            self._ensure_sessions(ExecutionProviderPreference.CPU.value)
+        self._prediction_started = False
 
-    def _cold_load_sessions(self) -> None:
-        started = perf_counter()
-        for duration in _DURATIONS:
-            session = self._ort.InferenceSession(
-                str(self.model_paths[duration]),
-                providers=[CPU_EXECUTION_PROVIDER],
+    def _ensure_sessions(self, requested_provider: str) -> None:
+        normalized_provider = _normalize_execution_provider_preference(
+            requested_provider
+        )
+        if self._sessions:
+            if normalized_provider != self._selected_execution_provider:
+                if self._prediction_started:
+                    raise ValueError(
+                        "execution provider preference cannot change after inference"
+                    )
+                self._sessions.clear()
+                self._io_names.clear()
+                self._selected_execution_provider = None
+            else:
+                return
+
+        self._selected_execution_provider = normalized_provider
+        self.requested_execution_provider = normalized_provider
+        self.fallback_reason = None
+        if normalized_provider == ExecutionProviderPreference.CPU.value:
+            self._cold_load_sessions(CPU_EXECUTION_PROVIDER)
+            return
+
+        unavailable_reason = _directml_unavailable_reason(self._ort)
+        if unavailable_reason is not None:
+            if normalized_provider == ExecutionProviderPreference.DIRECTML.value:
+                raise RuntimeError(unavailable_reason)
+            self.fallback_reason = unavailable_reason
+            self._cold_load_sessions(CPU_EXECUTION_PROVIDER)
+            return
+
+        try:
+            self._cold_load_sessions(DIRECTML_EXECUTION_PROVIDER)
+        except Exception as error:
+            self._sessions.clear()
+            self._io_names.clear()
+            self.actual_execution_provider = CPU_EXECUTION_PROVIDER
+            self.execution_provider = CPU_EXECUTION_PROVIDER
+            self.adapter_device_id = None
+            self.session_options = {}
+            if normalized_provider == ExecutionProviderPreference.DIRECTML.value:
+                raise RuntimeError(
+                    f"DirectML initialization failed: {type(error).__name__}"
+                ) from error
+            self.fallback_reason = (
+                f"DirectML initialization failed: {type(error).__name__}"
             )
-            self._sessions[duration] = session
-            self._io_names[duration] = _validate_session(session)
+            self._cold_load_sessions(CPU_EXECUTION_PROVIDER)
+
+    def _cold_load_sessions(self, execution_provider: str) -> None:
+        started = perf_counter()
+        session_options_object: object | None = None
+        session_options: dict[str, _SessionOptionValue] = {}
+        if execution_provider == DIRECTML_EXECUTION_PROVIDER:
+            session_options_object, session_options = _directml_session_options(
+                self._ort
+            )
+
+        sessions: dict[AttentionDuration, _OrtSession] = {}
+        io_names: dict[AttentionDuration, tuple[str, str, tuple[int, ...]]] = {}
+        adapter_device_id: str | None = None
+        for duration in _DURATIONS:
+            if session_options_object is None:
+                session = self._ort.InferenceSession(
+                    str(self.model_paths[duration]),
+                    providers=[execution_provider],
+                )
+            else:
+                session = self._ort.InferenceSession(
+                    str(self.model_paths[duration]),
+                    providers=[execution_provider],
+                    sess_options=session_options_object,
+                )
+            actual_provider = _session_execution_provider(session, execution_provider)
+            if execution_provider == DIRECTML_EXECUTION_PROVIDER and (
+                actual_provider != DIRECTML_EXECUTION_PROVIDER
+            ):
+                raise RuntimeError(
+                    "DirectML session initialized without DmlExecutionProvider"
+                )
+            sessions[duration] = session
+            io_names[duration] = _validate_session(session)
+            if adapter_device_id is None:
+                adapter_device_id = _adapter_device_id(session, actual_provider)
+
+        self._sessions = sessions
+        self._io_names = io_names
+        self.execution_provider = execution_provider
+        self.actual_execution_provider = execution_provider
+        self.adapter_device_id = adapter_device_id
+        self.session_options = session_options
         cold_load_ms = (perf_counter() - started) * 1000.0
         self._cold_load_ms = cold_load_ms
 
@@ -508,6 +716,18 @@ class FoveacastSaliencyProvider:
             raise ValueError(
                 "Foveacast supports only 1s, 3s, and 7s requested durations"
             )
+        request_preference = _normalize_execution_provider_preference(
+            metadata.execution_provider_preference
+        )
+        if (
+            self._configured_execution_provider is not None
+            and request_preference != self._configured_execution_provider
+        ):
+            raise ValueError(
+                "request execution provider preference does not match provider configuration"
+            )
+        self._ensure_sessions(self._configured_execution_provider or request_preference)
+        self._prediction_started = True
 
         predictions: list[SaliencyPrediction] = []
         warm_timings: list[tuple[AttentionDuration, float]] = []
@@ -546,6 +766,9 @@ class FoveacastSaliencyProvider:
                         preprocessing_version=PREPROCESSING_VERSION,
                         inference_duration_ms=inference_duration_ms,
                         execution_provider=self.execution_provider,
+                        warnings=(self.fallback_reason,)
+                        if self.fallback_reason is not None
+                        else (),
                     ),
                 )
             )
@@ -568,6 +791,11 @@ class FoveacastSaliencyProvider:
             execution_provider=self.execution_provider,
             input_name=self._io_names[_DURATIONS[0]][0],
             output_name=self._io_names[_DURATIONS[0]][1],
+            requested_execution_provider=self.requested_execution_provider,
+            actual_execution_provider=self.actual_execution_provider,
+            fallback_reason=self.fallback_reason,
+            adapter_device_id=self.adapter_device_id,
+            session_options=dict(self.session_options),
         )
         return SaliencyPredictionSet(
             viewport_id=metadata.viewport_id,
@@ -596,6 +824,8 @@ def _load_ort_module(ort_module: _OrtModule | object | None) -> _OrtModule:
 
 __all__ = [
     "CPU_EXECUTION_PROVIDER",
+    "DIRECTML_EXECUTION_PROVIDER",
+    "ExecutionProviderPreference",
     "FoveacastGeometry",
     "FoveacastInferenceMetadata",
     "FoveacastSaliencyProvider",
