@@ -176,7 +176,7 @@ def fixture_serve(
 def run(
     project: Path,
     experiment: str = typer.Option("core-pair", "--experiment"),
-    output: Path = typer.Option(Path(".uxa-output"), "--output"),
+    output: Path = typer.Option(Path("reports"), "--output"),
     workers: int = typer.Option(1, "--workers"),
     run_count: int | None = typer.Option(None, "--run-count"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -213,7 +213,7 @@ def run_one(
     persona: str = typer.Option(..., "--persona"),
     policy: str = typer.Option(..., "--policy"),
     seed: int = typer.Option(..., "--seed"),
-    output: Path = typer.Option(Path(".uxa-output"), "--output"),
+    output: Path = typer.Option(Path("reports"), "--output"),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     check_env: bool = typer.Option(False, "--check-env"),
@@ -276,7 +276,7 @@ def run_one(
 def ablate(
     project: Path,
     experiment: str = typer.Option("ablations", "--experiment"),
-    output: Path = typer.Option(Path(".uxa-output"), "--output"),
+    output: Path = typer.Option(Path("reports"), "--output"),
     workers: int = typer.Option(1, "--workers"),
     run_count: int | None = typer.Option(None, "--run-count"),
     policy: list[str] = typer.Option([], "--policy"),

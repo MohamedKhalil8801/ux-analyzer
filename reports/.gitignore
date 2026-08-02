@@ -1,0 +1,3 @@
+# Benchmark bundles and profiling output are generated artifacts.
+*
+!.gitignore
