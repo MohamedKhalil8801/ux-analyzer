@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import os
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from ux_analyzer.adapters.saliency.foveacast import (
 from ux_analyzer.domain.saliency import (
     AttentionDuration,
     SaliencyPredictionRequest,
+    SaliencyPredictionSet,
     SaliencyRequestMetadata,
 )
 
@@ -39,6 +42,13 @@ class FakeExecutionMode:
     ORT_SEQUENTIAL = "ORT_SEQUENTIAL"
 
 
+class RunTracker:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+
+
 class FakeSession:
     def __init__(
         self,
@@ -46,11 +56,13 @@ class FakeSession:
         run_order: list[str],
         duration: str,
         session_options: FakeSessionOptions | None,
+        run_tracker: RunTracker | None = None,
     ) -> None:
         self.provider = provider
         self.run_order = run_order
         self.duration = duration
         self.session_options = session_options
+        self.run_tracker = run_tracker
 
     def get_inputs(self) -> list[FakeNode]:
         return [FakeNode(name="input", shape=(1, 3, 240, 320))]
@@ -73,12 +85,31 @@ class FakeSession:
     ) -> list[np.ndarray[Any, Any]]:
         assert output_names == ["output"]
         assert inputs["input"].shape == (1, 3, 240, 320)
-        self.run_order.append(self.duration)
-        output = np.zeros((1, 1, 240, 320), dtype=np.float32)
-        offset = {"1s": 0.1, "3s": 0.2, "7s": 0.3}[self.duration]
-        output[0, 0, 120, 160] = offset
-        output[0, 0, 20, 20] = 0.5
-        return [output]
+        if self.run_tracker is None:
+            self.run_order.append(self.duration)
+            output = np.zeros((1, 1, 240, 320), dtype=np.float32)
+            offset = {"1s": 0.1, "3s": 0.2, "7s": 0.3}[self.duration]
+            output[0, 0, 120, 160] = offset
+            output[0, 0, 20, 20] = 0.5
+            return [output]
+
+        with self.run_tracker.lock:
+            self.run_tracker.active += 1
+            self.run_tracker.max_active = max(
+                self.run_tracker.max_active,
+                self.run_tracker.active,
+            )
+        try:
+            time.sleep(0.01)
+            self.run_order.append(self.duration)
+            output = np.zeros((1, 1, 240, 320), dtype=np.float32)
+            offset = {"1s": 0.1, "3s": 0.2, "7s": 0.3}[self.duration]
+            output[0, 0, 120, 160] = offset
+            output[0, 0, 20, 20] = 0.5
+            return [output]
+        finally:
+            with self.run_tracker.lock:
+                self.run_tracker.active -= 1
 
 
 class FakeOrt:
@@ -89,9 +120,11 @@ class FakeOrt:
         available_providers: tuple[str, ...],
         *,
         fail_directml: bool = False,
+        run_tracker: RunTracker | None = None,
     ) -> None:
         self.available_providers = available_providers
         self.fail_directml = fail_directml
+        self.run_tracker = run_tracker
         self.sessions: list[FakeSession] = []
         self.run_order: list[str] = []
         self.session_options: list[FakeSessionOptions | None] = []
@@ -123,6 +156,7 @@ class FakeOrt:
             self.run_order,
             Path(path).stem,
             sess_options,
+            self.run_tracker,
         )
         self.sessions.append(session)
         self.session_options.append(sess_options)
@@ -137,11 +171,15 @@ def _screenshot() -> bytes:
     return output.getvalue()
 
 
-def _request(preference: str) -> SaliencyPredictionRequest:
+def _request(
+    preference: str,
+    *,
+    viewport_id: str = "viewport-1",
+) -> SaliencyPredictionRequest:
     return SaliencyPredictionRequest(
         screenshot=_screenshot(),
         metadata=SaliencyRequestMetadata(
-            viewport_id="viewport-1",
+            viewport_id=viewport_id,
             screenshot_sha256="a" * 64,
             screenshot_width=2,
             screenshot_height=1,
@@ -257,6 +295,66 @@ def test_directml_preference_uses_three_sequential_configured_sessions(
         "execution_mode": "ORT_SEQUENTIAL",
         "enable_mem_pattern": False,
     }
+
+
+def test_concurrent_directml_predictions_serialize_runs_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    tracker = RunTracker()
+    fake_ort = FakeOrt(
+        (DIRECTML_EXECUTION_PROVIDER, CPU_EXECUTION_PROVIDER),
+        run_tracker=tracker,
+    )
+    provider = _provider(fake_ort, preference="directml")
+    start_barrier = threading.Barrier(2)
+    results: list[SaliencyPredictionSet | None] = [None, None]
+    errors: list[BaseException | None] = [None, None]
+
+    def run_prediction(index: int) -> None:
+        try:
+            start_barrier.wait(timeout=5.0)
+            results[index] = provider.predict(
+                _request("directml", viewport_id=f"viewport-{index}")
+            )
+        except BaseException as error:
+            errors[index] = error
+
+    threads = [
+        threading.Thread(target=run_prediction, args=(index,)) for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == [None, None]
+    assert tracker.max_active == 1
+    prediction_sets = [result for result in results if result is not None]
+    assert sorted(result.viewport_id for result in prediction_sets) == [
+        "viewport-0",
+        "viewport-1",
+    ]
+    assert all(
+        [prediction.duration for prediction in result.predictions]
+        == [
+            AttentionDuration.ONE_SECOND,
+            AttentionDuration.THREE_SECONDS,
+            AttentionDuration.SEVEN_SECONDS,
+        ]
+        and all(
+            prediction.metadata.execution_provider == DIRECTML_EXECUTION_PROVIDER
+            for prediction in result.predictions
+        )
+        for result in prediction_sets
+    )
+    assert provider.last_metadata is not None
+    assert provider.last_timing is not None
+    assert provider.last_metadata.timing == provider.last_timing
+    assert (
+        provider.last_metadata.actual_execution_provider == DIRECTML_EXECUTION_PROVIDER
+    )
 
 
 def test_auto_prefers_directml_when_available_on_windows(

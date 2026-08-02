@@ -10,6 +10,7 @@ from enum import StrEnum
 from importlib import import_module
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from typing import Any, Protocol, cast
 
@@ -592,15 +593,18 @@ class FoveacastSaliencyProvider:
         self._ort = _load_ort_module(ort_module)
         self._sessions: dict[AttentionDuration, _OrtSession] = {}
         self._io_names: dict[AttentionDuration, tuple[str, str, tuple[int, ...]]] = {}
+        self._session_lock = Lock()
         self.last_metadata: FoveacastInferenceMetadata | None = None
         self.last_timing: FoveacastTiming | None = None
         self._cold_load_ms = 0.0
         self._selected_execution_provider: str | None = None
-        if self._configured_execution_provider is not None:
-            self._ensure_sessions(self._configured_execution_provider)
-        else:
-            self._ensure_sessions(ExecutionProviderPreference.CPU.value)
         self._prediction_started = False
+        if self._configured_execution_provider is not None:
+            with self._session_lock:
+                self._ensure_sessions(self._configured_execution_provider)
+        else:
+            with self._session_lock:
+                self._ensure_sessions(ExecutionProviderPreference.CPU.value)
 
     def _ensure_sessions(self, requested_provider: str) -> None:
         normalized_provider = _normalize_execution_provider_preference(
@@ -726,82 +730,85 @@ class FoveacastSaliencyProvider:
             raise ValueError(
                 "request execution provider preference does not match provider configuration"
             )
-        self._ensure_sessions(self._configured_execution_provider or request_preference)
-        self._prediction_started = True
+        with self._session_lock:
+            self._ensure_sessions(
+                self._configured_execution_provider or request_preference
+            )
+            self._prediction_started = True
 
-        predictions: list[SaliencyPrediction] = []
-        warm_timings: list[tuple[AttentionDuration, float]] = []
-        total_started = perf_counter()
-        for duration in _DURATIONS:
-            if duration not in requested:
-                continue
-            input_name, output_name, output_shape = self._io_names[duration]
-            started = perf_counter()
-            outputs = self._sessions[duration].run(
-                [output_name], {input_name: processed.tensor}
-            )
-            inference_duration_ms = (perf_counter() - started) * 1000.0
-            if len(outputs) != 1:
-                raise ValueError("Foveacast model must return exactly one output")
-            saliency_map = _normalize_output(outputs[0], output_shape)
-            warm_timings.append((duration, inference_duration_ms))
-            plane = SaliencyPlane(
-                width=MODEL_WIDTH,
-                height=MODEL_HEIGHT,
-                values=saliency_map.astype("<f4", copy=False).tobytes(order="C"),
-            )
-            predictions.append(
-                SaliencyPrediction(
-                    viewport_id=metadata.viewport_id,
-                    duration=duration,
-                    plane=plane,
-                    metadata=SaliencyPredictionMetadata(
-                        provider_id=PROVIDER_ID,
-                        model_id=self.model_id,
-                        provider_version=self.provider_version,
-                        model_version=self.model_version,
-                        model_checksum=self._checksum_for(duration),
-                        input_dimensions=(MODEL_WIDTH, MODEL_HEIGHT),
-                        output_dimensions=(MODEL_WIDTH, MODEL_HEIGHT),
-                        preprocessing_version=PREPROCESSING_VERSION,
-                        inference_duration_ms=inference_duration_ms,
-                        execution_provider=self.execution_provider,
-                        warnings=(self.fallback_reason,)
-                        if self.fallback_reason is not None
-                        else (),
-                    ),
+            predictions: list[SaliencyPrediction] = []
+            warm_timings: list[tuple[AttentionDuration, float]] = []
+            total_started = perf_counter()
+            for duration in _DURATIONS:
+                if duration not in requested:
+                    continue
+                input_name, output_name, output_shape = self._io_names[duration]
+                started = perf_counter()
+                outputs = self._sessions[duration].run(
+                    [output_name], {input_name: processed.tensor}
                 )
+                inference_duration_ms = (perf_counter() - started) * 1000.0
+                if len(outputs) != 1:
+                    raise ValueError("Foveacast model must return exactly one output")
+                saliency_map = _normalize_output(outputs[0], output_shape)
+                warm_timings.append((duration, inference_duration_ms))
+                plane = SaliencyPlane(
+                    width=MODEL_WIDTH,
+                    height=MODEL_HEIGHT,
+                    values=saliency_map.astype("<f4", copy=False).tobytes(order="C"),
+                )
+                predictions.append(
+                    SaliencyPrediction(
+                        viewport_id=metadata.viewport_id,
+                        duration=duration,
+                        plane=plane,
+                        metadata=SaliencyPredictionMetadata(
+                            provider_id=PROVIDER_ID,
+                            model_id=self.model_id,
+                            provider_version=self.provider_version,
+                            model_version=self.model_version,
+                            model_checksum=self._checksum_for(duration),
+                            input_dimensions=(MODEL_WIDTH, MODEL_HEIGHT),
+                            output_dimensions=(MODEL_WIDTH, MODEL_HEIGHT),
+                            preprocessing_version=PREPROCESSING_VERSION,
+                            inference_duration_ms=inference_duration_ms,
+                            execution_provider=self.execution_provider,
+                            warnings=(self.fallback_reason,)
+                            if self.fallback_reason is not None
+                            else (),
+                        ),
+                    )
+                )
+            total_inference_ms = (perf_counter() - total_started) * 1000.0
+            timing = FoveacastTiming(
+                cold_load_ms=self._cold_load_ms,
+                warm_inference_ms=tuple(warm_timings),
+                total_inference_ms=total_inference_ms,
             )
-        total_inference_ms = (perf_counter() - total_started) * 1000.0
-        timing = FoveacastTiming(
-            cold_load_ms=self._cold_load_ms,
-            warm_inference_ms=tuple(warm_timings),
-            total_inference_ms=total_inference_ms,
-        )
-        self.last_timing = timing
-        self.last_metadata = FoveacastInferenceMetadata(
-            viewport_id=metadata.viewport_id,
-            screenshot_dimensions=metadata.screenshot_dimensions,
-            geometry=processed.geometry,
-            timing=timing,
-            model_id=self.model_id,
-            model_version=self.model_version,
-            precision=self.precision,
-            preprocessing_version=PREPROCESSING_VERSION,
-            execution_provider=self.execution_provider,
-            input_name=self._io_names[_DURATIONS[0]][0],
-            output_name=self._io_names[_DURATIONS[0]][1],
-            requested_execution_provider=self.requested_execution_provider,
-            actual_execution_provider=self.actual_execution_provider,
-            fallback_reason=self.fallback_reason,
-            adapter_device_id=self.adapter_device_id,
-            session_options=dict(self.session_options),
-        )
-        return SaliencyPredictionSet(
-            viewport_id=metadata.viewport_id,
-            predictions=tuple(predictions),
-            request_metadata=metadata,
-        )
+            self.last_timing = timing
+            self.last_metadata = FoveacastInferenceMetadata(
+                viewport_id=metadata.viewport_id,
+                screenshot_dimensions=metadata.screenshot_dimensions,
+                geometry=processed.geometry,
+                timing=timing,
+                model_id=self.model_id,
+                model_version=self.model_version,
+                precision=self.precision,
+                preprocessing_version=PREPROCESSING_VERSION,
+                execution_provider=self.execution_provider,
+                input_name=self._io_names[_DURATIONS[0]][0],
+                output_name=self._io_names[_DURATIONS[0]][1],
+                requested_execution_provider=self.requested_execution_provider,
+                actual_execution_provider=self.actual_execution_provider,
+                fallback_reason=self.fallback_reason,
+                adapter_device_id=self.adapter_device_id,
+                session_options=dict(self.session_options),
+            )
+            return SaliencyPredictionSet(
+                viewport_id=metadata.viewport_id,
+                predictions=tuple(predictions),
+                request_metadata=metadata,
+            )
 
     def _checksum_for(self, duration: AttentionDuration) -> str:
         configured = self.model_checksums.get(duration)
