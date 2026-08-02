@@ -50,6 +50,9 @@ _SENSITIVE_KEYS = frozenset(
     }
 )
 _BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
 
 
 class ModelConfigurationError(ValueError):
@@ -124,6 +127,17 @@ def _as_float(value: object, *, name: str) -> float:
     return float(value)
 
 
+def _normalize_reasoning_effort(value: str | None, *, name: str) -> str | None:
+    if value is None:
+        return None
+    normalized_effort = value.strip().lower()
+    if normalized_effort not in _REASONING_EFFORTS:
+        raise ModelConfigurationError(
+            f"{name} must be one of: none, minimal, low, medium, high, xhigh, max"
+        )
+    return normalized_effort
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class OpenAICompatibleSettings:
     """Validated model endpoint settings loaded from environment variables."""
@@ -132,6 +146,8 @@ class OpenAICompatibleSettings:
     api_key: str = field(repr=False)
     scent_model: str
     cognitive_model: str
+    scent_reasoning_effort: str | None = None
+    cognitive_reasoning_effort: str | None = None
     timeout_seconds: float = 30.0
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     redaction_values: tuple[str, ...] = ()
@@ -148,6 +164,12 @@ class OpenAICompatibleSettings:
         ):
             if not value:
                 raise ModelConfigurationError(f"{name} must not be empty")
+        for name in ("scent_reasoning_effort", "cognitive_reasoning_effort"):
+            object.__setattr__(
+                self,
+                name,
+                _normalize_reasoning_effort(getattr(self, name), name=name),
+            )
         if self.timeout_seconds <= 0:
             raise ModelConfigurationError("timeout_seconds must be greater than zero")
         object.__setattr__(self, "base_url", normalized_url)
@@ -187,6 +209,12 @@ class OpenAICompatibleSettings:
             api_key=values["UXA_LLM_API_KEY"],
             scent_model=values["UXA_SCENT_MODEL"],
             cognitive_model=values["UXA_COGNITIVE_MODEL"],
+            scent_reasoning_effort=(
+                values.get("UXA_LLM_SCENT_REASONING_EFFORT") or None
+            ),
+            cognitive_reasoning_effort=(
+                values.get("UXA_LLM_COGNITIVE_REASONING_EFFORT") or None
+            ),
         )
 
     @classmethod
@@ -225,6 +253,16 @@ class OpenAICompatibleSettings:
             api_key=str(value["api_key"]),
             scent_model=str(value["scent_model"]),
             cognitive_model=str(value["cognitive_model"]),
+            scent_reasoning_effort=(
+                None
+                if value.get("scent_reasoning_effort") is None
+                else str(value["scent_reasoning_effort"])
+            ),
+            cognitive_reasoning_effort=(
+                None
+                if value.get("cognitive_reasoning_effort") is None
+                else str(value["cognitive_reasoning_effort"])
+            ),
             timeout_seconds=_as_float(timeout_value, name="timeout_seconds"),
             retry_policy=retry,
             redaction_values=tuple(
@@ -238,6 +276,8 @@ class OpenAICompatibleSettings:
             f"base_url={self.base_url!r}, "
             f"scent_model={self.scent_model!r}, "
             f"cognitive_model={self.cognitive_model!r}, "
+            f"scent_reasoning_effort={self.scent_reasoning_effort!r}, "
+            f"cognitive_reasoning_effort={self.cognitive_reasoning_effort!r}, "
             f"timeout_seconds={self.timeout_seconds!r}, "
             f"retry_policy={self.retry_policy!r})"
         )
@@ -612,6 +652,13 @@ class OpenAICompatibleStructuredClient:
             "model": model,
             "messages": [message.model_dump() for message in messages],
         }
+        reasoning_effort = (
+            self.settings.cognitive_reasoning_effort
+            if role is ModelRole.COGNITIVE
+            else self.settings.scent_reasoning_effort
+        )
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         if mode == "strict":
             schema_payload = schema.model_json_schema()
             payload["response_format"] = {

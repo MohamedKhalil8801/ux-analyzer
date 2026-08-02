@@ -60,7 +60,10 @@ async def test_strict_schema_fallback_validates_locally_and_records_usage() -> N
         )
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+    client = OpenAICompatibleStructuredClient(
+        _settings(scent_reasoning_effort="low"),
+        http_client=http_client,
+    )
     result = await client.complete(
         CoarseScentResponse,
         (ChatMessage(role="user", content='{"goal":"Find invite"}'),),
@@ -72,6 +75,8 @@ async def test_strict_schema_fallback_validates_locally_and_records_usage() -> N
     assert len(requests) == 2
     assert requests[0]["response_format"]["type"] == "json_schema"
     assert requests[1]["response_format"]["type"] == "json_object"
+    assert requests[0]["reasoning_effort"] == "low"
+    assert requests[1]["reasoning_effort"] == "low"
     assert client.records[0].endpoint_origin == "https://fake-llm.test"
     assert client.records[0].token_usage.total_tokens == 19
     assert client.records[0].attempts == 2
@@ -155,6 +160,39 @@ async def test_cognitive_role_starts_in_json_object_mode() -> None:
 
     assert result.ok
     assert requests[0]["response_format"] == {"type": "json_object"}
+    assert "reasoning_effort" not in requests[0]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cognitive_reasoning_effort_is_forwarded_when_configured() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(scent_reasoning_effort="low", cognitive_reasoning_effort="high"),
+        http_client=http_client,
+    )
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    result = await client.complete(
+        SimpleResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="cognitive-model",
+        role=ModelRole.COGNITIVE,
+    )
+
+    assert result.ok
+    assert requests[0]["reasoning_effort"] == "high"
     await http_client.aclose()
 
 
