@@ -172,16 +172,16 @@ def test_dpr_and_zoom_scale_css_bounds_before_native_sampling() -> None:
             saliency,
             screenshot_dimensions=(16, 16),
             dpr=2.0,
-            zoom=1.0,
+            zoom=1.25,
         ),
         SaliencyAggregationConfig(),
     )
 
     aggregate = _profile(profiles, "button").aggregates[0]
 
-    assert aggregate.density == pytest.approx(1.0)
+    assert aggregate.density == pytest.approx(4.0 / 9.0)
     assert aggregate.raw_mass == pytest.approx(4.0)
-    assert aggregate.clipped_area == pytest.approx(16.0)
+    assert aggregate.clipped_area == pytest.approx(25.0)
 
 
 def test_prediction_sequence_requires_explicit_screenshot_dimensions() -> None:
@@ -193,20 +193,26 @@ def test_prediction_sequence_requires_explicit_screenshot_dimensions() -> None:
         )
 
 
-def test_prediction_sequence_uses_explicit_config_dimensions() -> None:
+def test_prediction_sequence_uses_explicit_config_geometry() -> None:
     saliency = np.zeros((8, 8), dtype=np.float32)
     saliency[2:4, 2:4] = 1.0
 
     profiles = aggregate_saliency(
-        _snapshot(_element("button", x=4, y=4, width=4, height=4)),
+        _snapshot(_element("button", x=2, y=2, width=2, height=2)),
         (_prediction(saliency),),
-        SaliencyAggregationConfig(screenshot_width=16, screenshot_height=16),
+        SaliencyAggregationConfig(
+            screenshot_width=16,
+            screenshot_height=16,
+            device_pixel_ratio=2.0,
+            zoom=1.25,
+        ),
     )
 
     aggregate = _profile(profiles, "button").aggregates[0]
 
-    assert aggregate.density == pytest.approx(1.0)
+    assert aggregate.density == pytest.approx(4.0 / 9.0)
     assert aggregate.raw_mass == pytest.approx(4.0)
+    assert aggregate.clipped_area == pytest.approx(25.0)
 
 
 def test_partial_config_dimensions_are_rejected() -> None:
