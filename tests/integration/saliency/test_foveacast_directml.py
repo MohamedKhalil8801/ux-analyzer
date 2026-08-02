@@ -178,6 +178,38 @@ def _provider(
     )
 
 
+def _average_ranks(values: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
+    order = np.argsort(values, kind="stable")
+    sorted_values = values[order]
+    ranks = np.empty(values.shape, dtype=np.float64)
+    start = 0
+    while start < values.size:
+        end = start + 1
+        while end < values.size and sorted_values[end] == sorted_values[start]:
+            end += 1
+        ranks[order[start:end]] = (start + 1 + end) / 2.0
+        start = end
+    return ranks
+
+
+def _spearman_rank_correlation(
+    expected: np.ndarray[Any, Any],
+    actual: np.ndarray[Any, Any],
+) -> float:
+    expected_ranks = _average_ranks(np.ravel(expected))
+    actual_ranks = _average_ranks(np.ravel(actual))
+    if expected_ranks.shape != actual_ranks.shape:
+        raise ValueError("Spearman inputs must have matching shapes")
+    expected_centered = expected_ranks - np.mean(expected_ranks)
+    actual_centered = actual_ranks - np.mean(actual_ranks)
+    denominator = float(
+        np.sqrt(np.sum(expected_centered**2) * np.sum(actual_centered**2))
+    )
+    if denominator == 0.0:
+        raise ValueError("Spearman correlation is undefined for constant input")
+    return float(np.sum(expected_centered * actual_centered) / denominator)
+
+
 def test_cpu_preference_records_cpu_provider_without_directml_options() -> None:
     fake_ort = FakeOrt((CPU_EXECUTION_PROVIDER,))
     provider = _provider(fake_ort)
@@ -315,6 +347,25 @@ def test_explicit_directml_requires_windows_and_available_runtime(
         provider.predict(_request("directml"))
 
 
+def test_spearman_rejects_high_pearson_with_different_ties_and_ranking() -> None:
+    group_count = 250
+    expected = np.concatenate(
+        (
+            np.repeat(np.linspace(0.0, 0.001, group_count), 2),
+            np.repeat(np.linspace(1.0, 1.001, group_count), 2),
+        )
+    )
+    actual = np.concatenate(
+        (
+            expected[: group_count * 2][::-1],
+            expected[group_count * 2 :][::-1],
+        )
+    )
+
+    assert float(np.corrcoef(expected, actual)[0, 1]) >= 0.999
+    assert _spearman_rank_correlation(expected, actual) < 0.999
+
+
 def _hardware_model_paths() -> dict[AttentionDuration, Path] | None:
     names = {
         AttentionDuration.ONE_SECOND: "UXA_FOVEACAST_MODEL_1S",
@@ -373,5 +424,5 @@ def test_directml_hardware_parity_and_stability() -> None:
             repeated_prediction.plane.float_values(), dtype=np.float32
         )
         assert float(np.max(np.abs(cpu_map - directml_map))) <= 0.002
-        assert float(np.corrcoef(cpu_map, directml_map)[0, 1]) >= 0.999
+        assert _spearman_rank_correlation(cpu_map, directml_map) >= 0.999
         np.testing.assert_array_equal(directml_map, repeated_map)
