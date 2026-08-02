@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ import pytest
 import pytest_asyncio
 from playwright.async_api import Browser, Page, async_playwright
 
+from ux_analyzer.adapters.web import visibility
 from ux_analyzer.adapters.web.extractor import capture, capture_with_diagnostics
 
 FIXTURE_PATH = (
@@ -92,6 +94,73 @@ async def test_capture_derives_local_contrast_after_dom_geometry(
     assert 0 <= result.diagnostics.local_contrast[send_invitation.id] <= 1
     assert result.diagnostics.local_contrast[send_invitation.id] > 0
     assert result.diagnostics.occlusion_fraction[send_invitation.id] == 0
+
+
+@pytest.mark.asyncio
+async def test_capture_decodes_screenshot_once_and_preserves_contrast_parity(
+    extraction_page: Page,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decode_calls = 0
+    original_decode = visibility._decode_png
+    captured_screenshot: bytes | None = None
+
+    def count_decode(data: bytes):
+        nonlocal decode_calls
+        decode_calls += 1
+        return original_decode(data)
+
+    original_screenshot = extraction_page.screenshot
+
+    async def capture_screenshot(*args: Any, **kwargs: Any) -> bytes:
+        nonlocal captured_screenshot
+        captured_screenshot = await original_screenshot(*args, **kwargs)
+        return captured_screenshot
+
+    monkeypatch.setattr(visibility, "_decode_png", count_decode)
+    monkeypatch.setattr(extraction_page, "screenshot", capture_screenshot)
+    result = await capture_with_diagnostics(extraction_page, "viewport-equivalent")
+
+    assert decode_calls == 1
+    assert captured_screenshot is not None
+
+    decode_calls = 0
+    for element in result.snapshot.elements:
+        assert element.local_contrast is not None
+        assert element.local_contrast == visibility.screenshot_local_contrast(
+            captured_screenshot,
+            element.bounds,
+            viewport_width=720,
+            viewport_height=800,
+        )
+
+    assert decode_calls == len(result.snapshot.elements)
+
+
+@pytest.mark.asyncio
+async def test_capture_reports_optional_extraction_stage_boundaries(
+    extraction_page: Page,
+) -> None:
+    stages: list[str] = []
+
+    @contextmanager
+    def measure(stage: str):
+        stages.append(stage)
+        yield
+
+    await capture_with_diagnostics(
+        extraction_page,
+        "viewport-profiled",
+        measure=measure,
+    )
+
+    assert stages == [
+        "dom.page_evaluate",
+        "dom.normalize",
+        "dom.screenshot",
+        "dom.local_contrast",
+        "dom.grouping",
+    ]
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import cast
 
@@ -17,6 +18,7 @@ from ux_analyzer.adapters.web.grouping import (
 )
 from ux_analyzer.adapters.web.visibility import (
     RawRect,
+    decode_screenshot,
     effective_visibility,
     geometric_visibility,
     screenshot_local_contrast,
@@ -29,6 +31,7 @@ from ux_analyzer.domain.interface import (
 )
 
 WEB_PROVIDER_ID = "playwright-web"
+StageMeasure = Callable[[str], AbstractContextManager[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,74 +50,96 @@ class ExtractionResult:
     diagnostics: ExtractionDiagnostics
 
 
-async def capture(page: Page, viewport_id: str) -> ViewportSnapshot:
+async def capture(
+    page: Page,
+    viewport_id: str,
+    *,
+    measure: StageMeasure | None = None,
+) -> ViewportSnapshot:
     """Capture one rendered page using one browser evaluation payload."""
 
-    return (await capture_with_diagnostics(page, viewport_id)).snapshot
+    return (
+        await capture_with_diagnostics(
+            page,
+            viewport_id,
+            measure=measure,
+        )
+    ).snapshot
 
 
-async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionResult:
+async def capture_with_diagnostics(
+    page: Page,
+    viewport_id: str,
+    *,
+    measure: StageMeasure | None = None,
+) -> ExtractionResult:
     """Capture snapshot and derived private measurements in deterministic order."""
 
     if not viewport_id:
         raise ValueError("viewport ID must not be empty")
-    payload = await page.evaluate(EVALUATION_PAYLOAD)
-    raw_regions, raw_elements, viewport_width, viewport_height = _normalize_payload(
-        payload
-    )
-    screenshot = await page.screenshot(type="png")
+    with _measure(measure, "dom.page_evaluate"):
+        payload = await page.evaluate(EVALUATION_PAYLOAD)
+    with _measure(measure, "dom.normalize"):
+        raw_regions, raw_elements, viewport_width, viewport_height = _normalize_payload(
+            payload
+        )
+    with _measure(measure, "dom.screenshot"):
+        captured_screenshot = await page.screenshot(type="png")
     snapshots: list[ElementSnapshot] = []
     contrast: dict[str, float] = {}
     occlusion: dict[str, float] = {}
     lineage_ids = _lineage_ids(raw_elements, raw_regions)
-    for raw_element, lineage_id in zip(raw_elements, lineage_ids, strict=True):
-        bounds = raw_element.bounds.to_domain()
-        element_id = f"{viewport_id}-element-{raw_element.ordinal}"
-        local_contrast = screenshot_local_contrast(
-            screenshot,
-            bounds,
-            viewport_width=viewport_width,
-            viewport_height=viewport_height,
-        )
-        occlusion_fraction = max(0.0, min(1.0, raw_element.occlusion_fraction))
-        effective_fraction = effective_visibility(
-            geometric_visibility(raw_element.bounds, raw_element.visible_bounds),
-            occlusion_fraction,
-        )
-        snapshots.append(
-            ElementSnapshot(
-                id=element_id,
-                role=_domain_role(raw_element.role, raw_element.tag),
-                label=raw_element.label,
-                bounds=bounds,
-                visibility_fraction=effective_fraction,
-                actionable=raw_element.actionable,
-                disabled=raw_element.disabled,
-                region_id=(
-                    f"{viewport_id}-region-{raw_element.region_ordinals[0]}"
-                    if raw_element.region_ordinals
-                    else None
-                ),
-                provider_id=WEB_PROVIDER_ID,
-                execution_reference=PrivateExecutionReference(
-                    provider_id=WEB_PROVIDER_ID,
-                    viewport_id=viewport_id,
-                    token=_execution_token(viewport_id, raw_element),
-                ),
-                selector=raw_element.selector,
-                test_id=raw_element.test_id,
-                hidden_label=raw_element.hidden_label,
-                destination_url=raw_element.destination_url,
-                lineage_id=lineage_id,
-                local_contrast=local_contrast,
-                occlusion_fraction=occlusion_fraction,
+    with _measure(measure, "dom.local_contrast"):
+        decoded_screenshot = decode_screenshot(captured_screenshot)
+        for raw_element, lineage_id in zip(raw_elements, lineage_ids, strict=True):
+            bounds = raw_element.bounds.to_domain()
+            element_id = f"{viewport_id}-element-{raw_element.ordinal}"
+            local_contrast = screenshot_local_contrast(
+                decoded_screenshot,
+                bounds,
+                viewport_width=viewport_width,
+                viewport_height=viewport_height,
             )
+            occlusion_fraction = max(0.0, min(1.0, raw_element.occlusion_fraction))
+            effective_fraction = effective_visibility(
+                geometric_visibility(raw_element.bounds, raw_element.visible_bounds),
+                occlusion_fraction,
+            )
+            snapshots.append(
+                ElementSnapshot(
+                    id=element_id,
+                    role=_domain_role(raw_element.role, raw_element.tag),
+                    label=raw_element.label,
+                    bounds=bounds,
+                    visibility_fraction=effective_fraction,
+                    actionable=raw_element.actionable,
+                    disabled=raw_element.disabled,
+                    region_id=(
+                        f"{viewport_id}-region-{raw_element.region_ordinals[0]}"
+                        if raw_element.region_ordinals
+                        else None
+                    ),
+                    provider_id=WEB_PROVIDER_ID,
+                    execution_reference=PrivateExecutionReference(
+                        provider_id=WEB_PROVIDER_ID,
+                        viewport_id=viewport_id,
+                        token=_execution_token(viewport_id, raw_element),
+                    ),
+                    selector=raw_element.selector,
+                    test_id=raw_element.test_id,
+                    hidden_label=raw_element.hidden_label,
+                    destination_url=raw_element.destination_url,
+                    lineage_id=lineage_id,
+                    local_contrast=local_contrast,
+                    occlusion_fraction=occlusion_fraction,
+                )
+            )
+            contrast[element_id] = local_contrast
+            occlusion[element_id] = occlusion_fraction
+    with _measure(measure, "dom.grouping"):
+        regions, graph_edges = build_regions_and_edges(
+            viewport_id, raw_regions, raw_elements, snapshots
         )
-        contrast[element_id] = local_contrast
-        occlusion[element_id] = occlusion_fraction
-    regions, graph_edges = build_regions_and_edges(
-        viewport_id, raw_regions, raw_elements, snapshots
-    )
     snapshot = ViewportSnapshot(
         id=viewport_id,
         elements=tuple(snapshots),
@@ -129,6 +154,13 @@ async def capture_with_diagnostics(page: Page, viewport_id: str) -> ExtractionRe
             occlusion_fraction=occlusion,
         ),
     )
+
+
+def _measure(
+    measure: StageMeasure | None,
+    stage: str,
+) -> AbstractContextManager[None]:
+    return measure(stage) if measure is not None else nullcontext()
 
 
 def _execution_token(viewport_id: str, element: RawElementFact) -> str:

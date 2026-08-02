@@ -62,6 +62,15 @@ class RawRect:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DecodedScreenshot:
+    """PNG pixels decoded once for reuse across element measurements."""
+
+    width: int
+    height: int
+    pixels: tuple[tuple[int, int, int, int], ...]
+
+
 def intersection(first: RawRect, second: RawRect) -> RawRect | None:
     """Return rectangle intersection, or ``None`` when areas do not overlap."""
 
@@ -119,7 +128,7 @@ def sample_points(rectangle: RawRect) -> tuple[tuple[float, float], ...]:
 
 
 def screenshot_local_contrast(
-    screenshot: bytes,
+    screenshot: bytes | DecodedScreenshot,
     bounds: BoundingBox,
     *,
     viewport_width: int,
@@ -131,7 +140,10 @@ def screenshot_local_contrast(
     pixels are read. The result uses Michelson contrast and stays in ``[0, 1]``.
     """
 
-    width, height, pixels = _decode_png(screenshot)
+    decoded = (
+        decode_screenshot(screenshot) if isinstance(screenshot, bytes) else screenshot
+    )
+    width, height, pixels = decoded.width, decoded.height, decoded.pixels
     scale_x = width / viewport_width
     scale_y = height / viewport_height
     left = max(0, min(width, int(bounds.x * scale_x)))
@@ -150,6 +162,13 @@ def screenshot_local_contrast(
     darkest = min(luminances)
     lightest = max(luminances)
     return _clamp((lightest - darkest) / (lightest + darkest + 1e-9))
+
+
+def decode_screenshot(data: bytes) -> DecodedScreenshot:
+    """Decode PNG bytes into reusable RGBA pixels."""
+
+    width, height, pixels = _decode_png(data)
+    return DecodedScreenshot(width=width, height=height, pixels=pixels)
 
 
 def _clamp(value: float) -> float:
