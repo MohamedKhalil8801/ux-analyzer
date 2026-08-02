@@ -280,7 +280,7 @@ def _aggregate_duration(
 ) -> _DurationEvidence:
     values = _plane_array(prediction)
     source_width, source_height, dpr, zoom = _source_geometry_inputs(
-        snapshot, request_metadata, config
+        request_metadata, config
     )
     input_width, input_height = prediction.metadata.input_dimensions
     geometry = _NativeGeometry.from_dimensions(
@@ -344,56 +344,37 @@ def _plane_array(prediction: SaliencyPrediction) -> np.ndarray[Any, Any]:
 
 
 def _source_geometry_inputs(
-    snapshot: ViewportSnapshot,
     request_metadata: SaliencyRequestMetadata | None,
     config: SaliencyAggregationConfig,
 ) -> tuple[int, int, float, float]:
+    config_width = config.screenshot_width
+    config_height = config.screenshot_height
+    if (config_width is None) != (config_height is None):
+        raise ValueError(
+            "screenshot_width and screenshot_height must be provided together"
+        )
     if request_metadata is not None:
+        if (
+            config_width is not None
+            and (config_width, config_height) != request_metadata.screenshot_dimensions
+        ):
+            raise ValueError("inconsistent screenshot dimensions")
         return (
             request_metadata.screenshot_width,
             request_metadata.screenshot_height,
             request_metadata.device_pixel_ratio,
             request_metadata.zoom,
         )
-    if config.screenshot_width is not None and config.screenshot_height is not None:
+    if config_width is not None and config_height is not None:
         return (
-            config.screenshot_width,
-            config.screenshot_height,
+            config_width,
+            config_height,
             config.device_pixel_ratio,
             config.zoom,
         )
-    scale = config.device_pixel_ratio * config.zoom
-    inferred_width = max(
-        1,
-        int(
-            math.ceil(
-                max(
-                    (
-                        element.bounds.x + element.bounds.width
-                        for element in snapshot.elements
-                    ),
-                    default=1.0,
-                )
-                * scale
-            )
-        ),
+    raise ValueError(
+        "explicit screenshot dimensions required in prediction request or config"
     )
-    inferred_height = max(
-        1,
-        int(
-            math.ceil(
-                max(
-                    (
-                        element.bounds.y + element.bounds.height
-                        for element in snapshot.elements
-                    ),
-                    default=1.0,
-                )
-                * scale
-            )
-        ),
-    )
-    return inferred_width, inferred_height, config.device_pixel_ratio, config.zoom
 
 
 def _source_bounds(
