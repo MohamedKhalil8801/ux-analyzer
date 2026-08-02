@@ -17,7 +17,12 @@ from ux_analyzer.application.evaluation import (
     evaluation_target_for,
 )
 from ux_analyzer.application.run_agent import RunAgent, RunFinalizationError
-from ux_analyzer.domain.attention import Abandon, ProgressiveObservation
+from ux_analyzer.domain.attention import (
+    Abandon,
+    AttentionState,
+    FullScent,
+    ProgressiveObservation,
+)
 from ux_analyzer.domain.benchmark import (
     ApplicationVersion,
     ApplicationVersionKind,
@@ -39,7 +44,9 @@ from ux_analyzer.domain.interface import (
 from ux_analyzer.domain.run import VerificationResult
 from ux_analyzer.ports.artifacts import ArtifactReference, BundleManifest
 from ux_analyzer.ports.models import (
+    CognitiveRunContext,
     ModelCallRecord,
+    ModelResponseValidationError,
     ModelRole,
     RetryEvent,
     TokenUsage,
@@ -235,6 +242,137 @@ class FakeCognitiveAgent:
         if hasattr(decision, "__await__"):
             return await decision
         return decision
+
+
+class ConcurrentModelRecordSource:
+    def __init__(self) -> None:
+        self._records: list[ModelCallRecord] = []
+
+    @property
+    def records(self) -> tuple[ModelCallRecord, ...]:
+        return tuple(self._records)
+
+    def append(self, role: ModelRole) -> None:
+        self._records.append(
+            ModelCallRecord(
+                role=role,
+                model=f"{role.value}-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest=f"{role.value}-prompt",
+                schema_version=f"{role.value}-v1",
+                attempts=1,
+                latency_ms=1,
+                token_usage=TokenUsage(),
+                request={},
+                response={},
+            )
+        )
+
+
+class CoordinatedFullScentEvaluator:
+    def __init__(
+        self,
+        records: ConcurrentModelRecordSource,
+        started: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        self.records = records
+        self.started = started
+        self.release = release
+        self.inputs: tuple[str, AttentionState, ViewportSnapshot] | None = None
+
+    async def evaluate(
+        self, goal: str, state: AttentionState, snapshot: ViewportSnapshot
+    ) -> tuple[FullScent, ...]:
+        self.inputs = (goal, state, snapshot)
+        self.started.set()
+        await self.release.wait()
+        self.records.append(ModelRole.FULL_SCENT)
+        return (FullScent.for_element(state, "target", 0.8),)
+
+
+class ValidationFailingFullScentEvaluator(CoordinatedFullScentEvaluator):
+    async def evaluate(
+        self, goal: str, state: AttentionState, snapshot: ViewportSnapshot
+    ) -> tuple[FullScent, ...]:
+        self.inputs = (goal, state, snapshot)
+        self.started.set()
+        self.records.append(ModelRole.FULL_SCENT)
+        raise ModelResponseValidationError(ModelRole.FULL_SCENT, "invalid scent")
+
+
+class BlockingFullScentEvaluator(CoordinatedFullScentEvaluator):
+    def __init__(
+        self,
+        records: ConcurrentModelRecordSource,
+        started: asyncio.Event,
+        cancelled: asyncio.Event,
+    ) -> None:
+        super().__init__(records, started, asyncio.Event())
+        self.cancelled = cancelled
+
+    async def evaluate(
+        self, goal: str, state: AttentionState, snapshot: ViewportSnapshot
+    ) -> tuple[FullScent, ...]:
+        self.inputs = (goal, state, snapshot)
+        self.started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            self.records.append(ModelRole.FULL_SCENT)
+            self.cancelled.set()
+        return (FullScent.for_element(state, "target", 0.8),)
+
+
+class CoordinatedCognitiveAgent(FakeCognitiveAgent):
+    def __init__(
+        self,
+        records: ConcurrentModelRecordSource,
+        started: asyncio.Event,
+        decision: object,
+    ) -> None:
+        super().__init__((decision,))
+        self.records = records
+        self.started = started
+        self.contexts: list[CognitiveRunContext] = []
+        self.decision_inputs: list[tuple[str, ProgressiveObservation]] = []
+
+    def update_context(self, context: CognitiveRunContext) -> None:
+        self.contexts.append(context)
+
+    async def decide(self, goal: str, observation: ProgressiveObservation) -> object:
+        self.decision_inputs.append((goal, observation))
+        self.started.set()
+        self.records.append(ModelRole.COGNITIVE)
+        return await super().decide(goal, observation)
+
+
+class BlockingCognitiveAgent(CoordinatedCognitiveAgent):
+    def __init__(
+        self,
+        records: ConcurrentModelRecordSource,
+        started: asyncio.Event,
+        cancelled: asyncio.Event,
+    ) -> None:
+        super().__init__(
+            records,
+            started,
+            CognitiveDecision(
+                action={"kind": "abandon", "reason": "unreachable"},
+                reason="unreachable",
+            ),
+        )
+        self.cancelled = cancelled
+
+    async def decide(self, goal: str, observation: ProgressiveObservation) -> object:
+        self.decision_inputs.append((goal, observation))
+        self.started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            self.records.append(ModelRole.COGNITIVE)
+            self.cancelled.set()
+        return self.decisions[0]
 
 
 class FakeVerifier:
@@ -488,8 +626,12 @@ def _agent(
     model_record_source: FakeModelRecordSource | None = None,
     result_evaluator=None,
     attention_policy: object | None = None,
+    full_scent_evaluator: object | None = None,
+    max_model_calls: int = 64,
 ) -> RunAgent:
-    spec = _spec(timeout_seconds=timeout_seconds)
+    spec = _spec(
+        timeout_seconds=timeout_seconds, max_model_calls=max_model_calls
+    )
     return RunAgent(
         observation_provider=provider,
         prominence_provider=FakeProminenceProvider(),
@@ -500,6 +642,7 @@ def _agent(
         session_config_factory=lambda _: _config(spec, tmp_path),
         model_record_source=model_record_source,
         result_evaluator=result_evaluator,
+        full_scent_evaluator=full_scent_evaluator,
     )
 
 
@@ -778,6 +921,261 @@ async def test_model_call_budget_counts_calls_without_an_audit_source(
         and event.get("model_calls") == 1
         for event in bundles.bundle.events
     )
+
+
+@pytest.mark.asyncio
+async def test_full_scent_and_cognitive_overlap_but_commit_evidence_in_logical_order(
+    tmp_path: Path,
+) -> None:
+    records = ConcurrentModelRecordSource()
+    full_started = asyncio.Event()
+    cognitive_started = asyncio.Event()
+    release_full = asyncio.Event()
+    full = CoordinatedFullScentEvaluator(records, full_started, release_full)
+    decision = CognitiveDecision(
+        action={"kind": "abandon", "reason": "Stop."},
+        reason="Stop.",
+    )
+    cognitive = CoordinatedCognitiveAgent(records, cognitive_started, decision)
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        full_scent_evaluator=full,
+        model_record_source=records,  # type: ignore[arg-type]
+    )
+
+    task = asyncio.create_task(agent.execute(_spec(timeout_seconds=None)))
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(full_started.wait(), cognitive_started.wait()), timeout=1
+        )
+    except TimeoutError:
+        release_full.set()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+    release_full.set()
+    result = await task
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert full.inputs is not None
+    assert full.inputs[0] == "Invite teammate"
+    assert full.inputs[2] is not None
+    assert full.inputs[2].id == "viewport-1"
+    assert full.inputs[1].noticed_ids == frozenset({"target"})
+    assert full.inputs[1].current_viewport_id == "viewport-1"
+    assert cognitive.contexts == [
+        CognitiveRunContext(
+            viewport_id="viewport-1",
+            working_memory_capacity=3,
+            confidence=0.5,
+            frustration=0.0,
+            abandonment_threshold=0.9,
+            attention_temperature=1.0,
+        )
+    ]
+    assert cognitive.decision_inputs[0][0] == "Invite teammate"
+    assert tuple(
+        element.id
+        for element in cognitive.decision_inputs[0][1].newly_revealed_elements
+    ) == ("target",)
+
+    model_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict) and event.get("kind") == "model-call-recorded"
+    ]
+    assert [event["record"].role for event in model_events] == [
+        ModelRole.FULL_SCENT,
+        ModelRole.COGNITIVE,
+    ]
+    evidence_kinds = [
+        event.get("kind")
+        for event in bundles.bundle.events
+        if isinstance(event, dict)
+        and event.get("kind") in {"full-scent-recorded", "decision-recorded"}
+    ]
+    assert evidence_kinds == ["full-scent-recorded", "decision-recorded"]
+    assert [record.role for record in result.evidence.model_calls] == [
+        ModelRole.FULL_SCENT,
+        ModelRole.COGNITIVE,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_full_scent_uses_sequential_budget_fallback_when_one_call_remains(
+    tmp_path: Path,
+) -> None:
+    records = ConcurrentModelRecordSource()
+    full_started = asyncio.Event()
+    release_full = asyncio.Event()
+    full = CoordinatedFullScentEvaluator(records, full_started, release_full)
+    cognitive = CoordinatedCognitiveAgent(
+        records,
+        asyncio.Event(),
+        CognitiveDecision(
+            action={"kind": "abandon", "reason": "Must not run."},
+            reason="Must not run.",
+        ),
+    )
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        full_scent_evaluator=full,
+        model_record_source=records,  # type: ignore[arg-type]
+        max_model_calls=1,
+    )
+    release_full.set()
+
+    result = await agent.execute(_spec(max_model_calls=1, timeout_seconds=None))
+
+    assert result.outcome.kind == "budget-exhausted"
+    assert cognitive.decision_inputs == []
+    assert [record.role for record in result.evidence.model_calls] == [
+        ModelRole.FULL_SCENT
+    ]
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "model-call-budget-exhausted"
+        and event.get("model_calls") == 1
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_parallel_validation_failure_keeps_model_records_and_failure_semantics(
+    tmp_path: Path,
+) -> None:
+    records = ConcurrentModelRecordSource()
+    full = ValidationFailingFullScentEvaluator(
+        records, asyncio.Event(), asyncio.Event()
+    )
+    cognitive = CoordinatedCognitiveAgent(
+        records,
+        asyncio.Event(),
+        CognitiveDecision(
+            action={"kind": "abandon", "reason": "Unused."},
+            reason="Unused.",
+        ),
+    )
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        full_scent_evaluator=full,
+        model_record_source=records,  # type: ignore[arg-type]
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "model-failure"
+    assert result.terminal_reason == "full-scent: invalid scent"
+    model_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict) and event.get("kind") == "model-call-recorded"
+    ]
+    assert [event["record"].role for event in model_events] == [
+        ModelRole.FULL_SCENT,
+        ModelRole.COGNITIVE,
+    ]
+    assert not any(
+        isinstance(event, dict)
+        and event.get("kind") in {"full-scent-recorded", "decision-recorded"}
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_parallel_cognitive_validation_failure_keeps_full_scent_evidence(
+    tmp_path: Path,
+) -> None:
+    records = ConcurrentModelRecordSource()
+    full = CoordinatedFullScentEvaluator(
+        records, asyncio.Event(), asyncio.Event()
+    )
+    full.release.set()
+    cognitive = CoordinatedCognitiveAgent(
+        records,
+        asyncio.Event(),
+        ModelResponseValidationError(ModelRole.COGNITIVE, "invalid decision"),
+    )
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        full_scent_evaluator=full,
+        model_record_source=records,  # type: ignore[arg-type]
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "model-failure"
+    assert result.terminal_reason == "cognitive: invalid decision"
+    evidence_kinds = [
+        event.get("kind")
+        for event in bundles.bundle.events
+        if isinstance(event, dict)
+        and event.get("kind") in {"full-scent-recorded", "decision-recorded"}
+    ]
+    assert evidence_kinds == ["full-scent-recorded"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_cancellation_cancels_both_model_tasks_and_records_calls(
+    tmp_path: Path,
+) -> None:
+    records = ConcurrentModelRecordSource()
+    full_cancelled = asyncio.Event()
+    cognitive_cancelled = asyncio.Event()
+    full = BlockingFullScentEvaluator(
+        records, asyncio.Event(), full_cancelled
+    )
+    cognitive = BlockingCognitiveAgent(
+        records, asyncio.Event(), cognitive_cancelled
+    )
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        full_scent_evaluator=full,
+        model_record_source=records,  # type: ignore[arg-type]
+    )
+
+    task = asyncio.create_task(agent.execute(_spec(timeout_seconds=None)))
+    await asyncio.gather(full.started.wait(), cognitive.started.wait())
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.gather(full_cancelled.wait(), cognitive_cancelled.wait())
+
+    model_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict) and event.get("kind") == "model-call-recorded"
+    ]
+    assert [event["record"].role for event in model_events] == [
+        ModelRole.FULL_SCENT,
+        ModelRole.COGNITIVE,
+    ]
+    assert bundles.bundle.aborted
 
 
 @pytest.mark.asyncio

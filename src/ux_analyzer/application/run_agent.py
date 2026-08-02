@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from ux_analyzer.application.action_validation import (
     ActionValidationError,
@@ -35,6 +35,7 @@ from ux_analyzer.application.state_updates import (
 )
 from ux_analyzer.domain.attention import (
     Abandon,
+    FullScent,
     InteractWithElement,
     PersonaObservation,
 )
@@ -76,6 +77,7 @@ from ux_analyzer.ports.models import (
     FullScentEvaluator,
     ModelCallRecord,
     ModelResponseValidationError,
+    ModelRole,
 )
 from ux_analyzer.ports.observation import (
     ObservationCapture,
@@ -761,7 +763,13 @@ class RunAgent:
                     terminal_reason="attention budget exhausted",
                 )
 
-            if self.full_scent_evaluator is not None:
+            parallel_model_calls = (
+                self.full_scent_evaluator is not None
+                and spec.scenario.budget.max_model_calls - context.model_call_count
+                >= 2
+            )
+            full_scent: tuple[FullScent, ...] | None = None
+            if self.full_scent_evaluator is not None and not parallel_model_calls:
                 try:
                     context.model_call_count += 1
                     with context.profiler.measure("model.full_scent"):
@@ -791,23 +799,6 @@ class RunAgent:
                         agent_claimed_success=claimed_success,
                         terminal_reason="model call budget exhausted",
                     )
-                full_sequence = writer.append_event(
-                    {
-                        "kind": "full-scent-recorded",
-                        "scores": tuple(
-                            {"element_id": item.element_id, "score": item.score}
-                            for item in full_scent
-                        ),
-                    }
-                )
-                context.scent.append(
-                    ScentEvidence(
-                        "full-scent",
-                        snapshot.id,
-                        tuple(full_scent),
-                        source_event_id=_event_id(full_sequence),
-                    )
-                )
 
             update_context = getattr(self.cognitive_agent, "update_context", None)
             if callable(update_context):
@@ -830,18 +821,74 @@ class RunAgent:
                         attention_temperature=spec.persona.attention_temperature,
                     )
                 )
+            parallel_error: BaseException | None = None
+            decision: object | None = None
             try:
-                context.model_call_count += 1
-                with context.profiler.measure("model.cognitive"):
-                    decision = await self.cognitive_agent.decide(
-                        spec.scenario.goal, observation
+                if parallel_model_calls:
+                    context.model_call_count += 2
+                    full_result, cognitive_result = (
+                        await self._evaluate_parallel_calls(
+                            context,
+                            spec.scenario.goal,
+                            context.application_state.attention,
+                            snapshot,
+                            observation,
+                        )
                     )
+                    if isinstance(full_result, BaseException):
+                        raise full_result
+                    full_scent = cast(tuple[FullScent, ...], full_result)
+                    if isinstance(cognitive_result, BaseException):
+                        parallel_error = cognitive_result
+                    else:
+                        decision = cognitive_result
+                else:
+                    context.model_call_count += 1
+                    with context.profiler.measure("model.cognitive"):
+                        decision = await self.cognitive_agent.decide(
+                            spec.scenario.goal, observation
+                        )
             except ModelResponseValidationError as error:
                 return self._model_failure(
                     context, writer, error, claimed_success=claimed_success
                 )
             finally:
-                self._record_model_calls(context, writer)
+                self._record_model_calls(
+                    context,
+                    writer,
+                    ordered_roles=(
+                        (ModelRole.FULL_SCENT, ModelRole.COGNITIVE)
+                        if parallel_model_calls
+                        else ()
+                    ),
+                )
+            if full_scent is not None:
+                full_sequence = writer.append_event(
+                    {
+                        "kind": "full-scent-recorded",
+                        "scores": tuple(
+                            {"element_id": item.element_id, "score": item.score}
+                            for item in full_scent
+                        ),
+                    }
+                )
+                context.scent.append(
+                    ScentEvidence(
+                        "full-scent",
+                        snapshot.id,
+                        tuple(full_scent),
+                        source_event_id=_event_id(full_sequence),
+                    )
+                )
+            if parallel_error is not None:
+                if isinstance(parallel_error, ModelResponseValidationError):
+                    return self._model_failure(
+                        context,
+                        writer,
+                        parallel_error,
+                        claimed_success=claimed_success,
+                    )
+                raise parallel_error
             decision_sequence = writer.append_event(
                 {
                     "kind": "decision-recorded",
@@ -1175,7 +1222,45 @@ class RunAgent:
             ),
             writer,
             context.state_event_ids,
+            )
+
+    async def _evaluate_parallel_calls(
+        self,
+        context: _RunContext,
+        goal: str,
+        attention: object,
+        snapshot: ViewportSnapshot,
+        observation: PersonaObservation,
+    ) -> tuple[object, object]:
+        full_scent_evaluator = self.full_scent_evaluator
+        if full_scent_evaluator is None:
+            raise RuntimeError("parallel evaluation requires full scent evaluator")
+
+        async def evaluate_full_scent() -> tuple[FullScent, ...]:
+            with context.profiler.measure("model.full_scent"):
+                return await full_scent_evaluator.evaluate(
+                    goal, attention, snapshot
+                )
+
+        async def evaluate_cognitive() -> object:
+            with context.profiler.measure("model.cognitive"):
+                return await self.cognitive_agent.decide(goal, observation)
+
+        tasks = (
+            asyncio.create_task(evaluate_full_scent()),
+            asyncio.create_task(evaluate_cognitive()),
         )
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        full_result, cognitive_result = results
+        return cast(tuple[object, object], tuple(results))
 
     async def _verify(
         self,
@@ -1336,13 +1421,23 @@ class RunAgent:
         return replace(result, bundle_path=bundle_path)
 
     def _record_model_calls(
-        self, context: _RunContext, writer: RunBundleWriter
+        self,
+        context: _RunContext,
+        writer: RunBundleWriter,
+        *,
+        ordered_roles: Sequence[ModelRole] = (),
     ) -> None:
         source = self.model_record_source
         if source is None:
             return
         records = tuple(source.records)
-        for record in records[context.model_record_cursor :]:
+        new_records = list(records[context.model_record_cursor :])
+        if ordered_roles:
+            role_order = {role: index for index, role in enumerate(ordered_roles)}
+            new_records.sort(
+                key=lambda record: role_order.get(record.role, len(role_order))
+            )
+        for record in new_records:
             context.model_calls.append(record)
             writer.append_event({"kind": "model-call-recorded", "record": record})
         context.model_record_cursor = len(records)
