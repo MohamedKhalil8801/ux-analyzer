@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import shutil
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -377,6 +379,58 @@ class ModelRegistry:
             / artifact.filename
         )
 
+    @property
+    def _release_root(self) -> Path:
+        return (
+            self.model_home
+            / self.manifest.provider
+            / self.manifest.version
+            / self.manifest.precision
+        )
+
+    @property
+    def _release_manifest_path(self) -> Path:
+        return self._release_root / "manifest.json"
+
+    def _release_manifest_payload(self) -> dict[str, object]:
+        return {
+            "model_id": self.manifest.model_id,
+            "provider": self.manifest.provider,
+            "version": self.manifest.version,
+            "precision": self.manifest.precision,
+            "artifacts": [
+                {
+                    "filename": artifact.filename,
+                    "sha256": artifact.sha256,
+                    "duration": artifact.duration,
+                    "kind": artifact.kind,
+                }
+                for artifact in self.manifest.artifacts
+            ],
+        }
+
+    def _release_manifest_is_valid(self) -> bool:
+        try:
+            payload = json.loads(
+                self._release_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return False
+        return payload == self._release_manifest_payload()
+
+    @staticmethod
+    def _write_release_manifest(path: Path, payload: Mapping[str, object]) -> None:
+        try:
+            with path.open("w", encoding="utf-8") as output:
+                json.dump(payload, output, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+        except OSError as error:
+            raise ModelRegistryError(
+                f"unable to write release manifest: {path}"
+            ) from error
+
     def _artifact_status(self, artifact: ModelArtifact) -> ArtifactStatus:
         path = self.artifact_path(artifact)
         if not path.is_file():
@@ -419,13 +473,21 @@ class ModelRegistry:
             state = ModelState.UNSUPPORTED_PROVIDER
         elif any(item.state is ArtifactState.CHECKSUM_MISMATCH for item in artifacts):
             state = ModelState.CHECKSUM_MISMATCH
-        elif any(item.state is ArtifactState.MISSING for item in artifacts):
+        elif (
+            any(item.state is ArtifactState.MISSING for item in artifacts)
+            or not self._release_manifest_is_valid()
+        ):
             state = ModelState.ARTIFACT_MISSING
         else:
             state = ModelState.READY
         diagnostics = [state.value]
         if runtime.detail:
             diagnostics.append(runtime.detail)
+        if (
+            state is ModelState.ARTIFACT_MISSING
+            and not self._release_manifest_is_valid()
+        ):
+            diagnostics.append("release manifest missing or invalid")
         return RegistryStatus(
             model_id=model_id,
             state=state,
@@ -447,23 +509,111 @@ class ModelRegistry:
         self._require_precision(precision)
         downloaded: list[str] = []
         skipped: list[str] = []
-        for artifact in self.manifest.artifacts:
-            target = self.artifact_path(artifact)
-            if target.is_file():
-                try:
-                    if _sha256_file(target) == artifact.sha256:
-                        skipped.append(artifact.filename)
-                        continue
-                except OSError:
-                    pass
-            self._download(artifact, target)
-            downloaded.append(artifact.filename)
+        existing = {
+            artifact.filename: self._artifact_status(artifact)
+            for artifact in self.manifest.artifacts
+        }
+        if (
+            all(status.state is ArtifactState.READY for status in existing.values())
+            and self._release_manifest_is_valid()
+        ):
+            return InstallResult(
+                model_id=model_id,
+                downloaded=(),
+                skipped=tuple(
+                    artifact.filename for artifact in self.manifest.artifacts
+                ),
+                attribution=self.manifest.attribution_text,
+            )
+
+        release_root = self._release_root
+        release_root.mkdir(parents=True, exist_ok=True)
+        staging_root = Path(tempfile.mkdtemp(prefix=".staging-", dir=release_root))
+        try:
+            for artifact in self.manifest.artifacts:
+                staged_target = staging_root / artifact.sha256 / artifact.filename
+                status = existing[artifact.filename]
+                if status.state is ArtifactState.READY:
+                    staged_target.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copyfile(status.path, staged_target)
+                    except OSError as error:
+                        raise ModelRegistryError(
+                            f"unable to stage {artifact.filename}: {error}"
+                        ) from error
+                    if _sha256_file(staged_target) != artifact.sha256:
+                        raise ChecksumMismatchError(
+                            f"checksum mismatch for {artifact.filename}"
+                        )
+                    skipped.append(artifact.filename)
+                else:
+                    self._download(artifact, staged_target)
+                    downloaded.append(artifact.filename)
+
+            self._write_release_manifest(
+                staging_root / "manifest.json", self._release_manifest_payload()
+            )
+            self._publish_staged_release(staging_root)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
         return InstallResult(
             model_id=model_id,
             downloaded=tuple(downloaded),
             skipped=tuple(skipped),
             attribution=self.manifest.attribution_text,
         )
+
+    def _publish_staged_release(self, staging_root: Path) -> None:
+        """Publish staged files with manifest as complete-release commit marker."""
+
+        moved: list[Path] = []
+        backups: list[tuple[Path, Path]] = []
+        backup_root = staging_root / ".backups"
+        previous_manifest: Path | None = None
+        manifest_published = False
+        try:
+            for index, artifact in enumerate(self.manifest.artifacts):
+                staged_target = staging_root / artifact.sha256 / artifact.filename
+                target = self.artifact_path(artifact)
+                if target.is_file() and _sha256_file(target) == artifact.sha256:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() or target.is_symlink():
+                    backup = backup_root / f"artifact-{index}"
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, backup)
+                    backups.append((target, backup))
+                os.replace(staged_target, target)
+                moved.append(target)
+
+            if self._release_manifest_path.exists():
+                previous_manifest = backup_root / "manifest.json"
+                previous_manifest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(self._release_manifest_path, previous_manifest)
+            os.replace(staging_root / "manifest.json", self._release_manifest_path)
+            manifest_published = True
+        except OSError as error:
+            if manifest_published:
+                try:
+                    self._release_manifest_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for target in reversed(moved):
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for target, backup in reversed(backups):
+                try:
+                    os.replace(backup, target)
+                except OSError:
+                    pass
+            if previous_manifest is not None:
+                try:
+                    os.replace(previous_manifest, self._release_manifest_path)
+                except OSError:
+                    pass
+            raise ModelRegistryError(f"release publish failed: {error}") from error
 
     def _download(self, artifact: ModelArtifact, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -517,6 +667,11 @@ class ModelRegistry:
         self._require_model(model_id)
         self._require_precision(precision)
         removed: list[str] = []
+        if (
+            self._release_manifest_path.is_file()
+            or self._release_manifest_path.is_symlink()
+        ):
+            self._release_manifest_path.unlink()
         for artifact in self.manifest.artifacts:
             path = self.artifact_path(artifact)
             if path.is_file() or path.is_symlink():

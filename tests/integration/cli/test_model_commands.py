@@ -10,9 +10,11 @@ import pytest
 from typer.testing import CliRunner
 
 import ux_analyzer.cli as cli
+import ux_analyzer.saliency.model_registry as model_registry_module
 from ux_analyzer.saliency.model_registry import (
     ChecksumMismatchError,
     ModelRegistry,
+    ModelRegistryError,
     ModelState,
     RuntimeState,
     RuntimeStatus,
@@ -124,6 +126,77 @@ def test_models_install_rejects_bad_checksum_and_cleans_partial(
 
     assert not local_artifact_registry.artifact_path(artifact).exists()
     assert not list(local_artifact_registry.model_home.rglob("*.partial"))
+
+
+def test_models_install_second_checksum_failure_leaves_release_unpublished(
+    local_artifact_registry: ModelRegistry,
+) -> None:
+    artifact = local_artifact_registry.manifest.artifacts[1]
+    (
+        local_artifact_registry.model_home.parent / "artifacts" / artifact.filename
+    ).write_bytes(b"tampered second fixture artifact")
+
+    with pytest.raises(ChecksumMismatchError):
+        local_artifact_registry.install("foveacast-v0.2.0")
+
+    assert all(
+        not local_artifact_registry.artifact_path(item).exists()
+        for item in local_artifact_registry.manifest.artifacts
+    )
+    release_root = (
+        local_artifact_registry.model_home
+        / local_artifact_registry.manifest.provider
+        / local_artifact_registry.manifest.version
+        / local_artifact_registry.manifest.precision
+    )
+    assert not (release_root / "manifest.json").exists()
+    assert not list(local_artifact_registry.model_home.rglob("*.partial"))
+    assert not list(local_artifact_registry.model_home.rglob(".staging-*"))
+
+
+def test_publication_failure_preserves_existing_ready_release(
+    local_artifact_registry: ModelRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_artifact_registry.install("foveacast-v0.2.0")
+    original_artifacts = {
+        artifact.filename: local_artifact_registry.artifact_path(artifact).read_bytes()
+        for artifact in local_artifact_registry.manifest.artifacts
+    }
+    release_root = (
+        local_artifact_registry.model_home
+        / local_artifact_registry.manifest.provider
+        / local_artifact_registry.manifest.version
+        / local_artifact_registry.manifest.precision
+    )
+    manifest_path = release_root / "manifest.json"
+    original_manifest = manifest_path.read_bytes()
+
+    monkeypatch.setattr(
+        local_artifact_registry, "_release_manifest_is_valid", lambda: False
+    )
+    real_replace = model_registry_module.os.replace
+
+    def fail_before_manifest_backup(source: Path, destination: Path) -> None:
+        if source == manifest_path:
+            raise OSError("injected publication failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        model_registry_module.os, "replace", fail_before_manifest_backup
+    )
+
+    with pytest.raises(ModelRegistryError, match="release publish failed"):
+        local_artifact_registry.install("foveacast-v0.2.0")
+
+    monkeypatch.undo()
+    status = local_artifact_registry.status("foveacast-v0.2.0")
+    assert status.state is ModelState.READY
+    assert manifest_path.read_bytes() == original_manifest
+    assert {
+        artifact.filename: local_artifact_registry.artifact_path(artifact).read_bytes()
+        for artifact in local_artifact_registry.manifest.artifacts
+    } == original_artifacts
 
 
 def test_models_status_and_remove_are_explicit_commands(
