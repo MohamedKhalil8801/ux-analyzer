@@ -101,11 +101,20 @@ from ux_analyzer.providers.scent import (
     StructuredFullScentEvaluator,
 )
 from ux_analyzer.reporting.renderer import render_experiment_report
+from ux_analyzer.saliency.model_registry import (
+    DEFAULT_MODEL_ID,
+    DEFAULT_PRECISION,
+    ModelRegistry,
+    ModelRegistryError,
+    load_manifest,
+)
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
 app = typer.Typer(add_completion=False)
 fixture_app = typer.Typer(add_completion=False)
+models_app = typer.Typer(add_completion=False)
 app.add_typer(fixture_app, name="fixture")
+app.add_typer(models_app, name="models")
 
 _MODEL_CALLS_BY_POLICY = {
     ExperimentPolicy.FULL_LIST.value: 1,
@@ -133,6 +142,70 @@ def main() -> None:
 def version() -> None:
     """Print package version."""
     typer.echo(f"uxa {__version__}")
+
+
+def _registry_for(model_id: str) -> ModelRegistry:
+    """Load packaged registry manifest for one operator-selected model."""
+
+    try:
+        return ModelRegistry(manifest=load_manifest(model_id))
+    except ModelRegistryError as error:
+        _exit_with_error(f"unable to load model {model_id}: {error}")
+
+
+@models_app.command("install")
+def models_install(
+    model_id: str = typer.Argument(DEFAULT_MODEL_ID),
+    precision: str = typer.Option(DEFAULT_PRECISION, "--precision"),
+) -> None:
+    """Explicitly download and verify one saliency model release."""
+
+    try:
+        result = _registry_for(model_id).install(model_id, precision=precision)
+    except ModelRegistryError as error:
+        _exit_with_error(str(error))
+    action = "downloaded" if result.downloaded else "already installed"
+    typer.echo(f"{model_id}: {action}")
+    if result.downloaded:
+        typer.echo(f"artifacts: {', '.join(result.downloaded)}")
+    typer.echo(f"license attribution: {result.attribution}")
+
+
+@models_app.command("status")
+def models_status(
+    model_id: str = typer.Argument(DEFAULT_MODEL_ID),
+    provider: str = typer.Option("cpu", "--provider"),
+) -> None:
+    """Inspect runtime and local saliency model artifacts without downloading."""
+
+    try:
+        status = _registry_for(model_id).status(model_id, provider=provider)
+    except ModelRegistryError as error:
+        _exit_with_error(str(error))
+    typer.echo(f"{model_id}: {status.state.value}")
+    for diagnostic in status.diagnostics[1:]:
+        typer.echo(f"diagnostic: {diagnostic}")
+    for artifact in status.artifacts:
+        if artifact.state.value != "ready":
+            typer.echo(f"{artifact.artifact.filename}: {artifact.state.value}")
+    typer.echo(f"license attribution: {status.attribution}")
+
+
+@models_app.command("remove")
+def models_remove(
+    model_id: str = typer.Argument(DEFAULT_MODEL_ID),
+    precision: str = typer.Option(DEFAULT_PRECISION, "--precision"),
+) -> None:
+    """Explicitly remove one saliency model release from local storage."""
+
+    try:
+        result = _registry_for(model_id).remove(model_id, precision=precision)
+    except ModelRegistryError as error:
+        _exit_with_error(str(error))
+    if result.removed:
+        typer.echo(f"{model_id}: removed {len(result.removed)} artifacts")
+    else:
+        typer.echo(f"{model_id}: already absent")
 
 
 @app.command()

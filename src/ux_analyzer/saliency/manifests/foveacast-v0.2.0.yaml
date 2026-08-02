@@ -1,0 +1,49 @@
+model_id: foveacast-v0.2.0
+provider: foveacast
+version: v0.2.0
+precision: fp16
+artifacts:
+  - filename: foveacast-v3-1s-fp16.onnx
+    duration: 1s
+    kind: model
+    url: https://github.com/khawkins98/foveacast-training/releases/download/v0.2.0/foveacast-v3-1s-fp16.onnx
+    sha256: 4b9fdc2734e36c612a120ab7b0050ae276723160ccc625c6f554e906dd6345d5
+  - filename: foveacast-v3-3s-fp16.onnx
+    duration: 3s
+    kind: model
+    url: https://github.com/khawkins98/foveacast-training/releases/download/v0.2.0/foveacast-v3-3s-fp16.onnx
+    sha256: 842a23f97908d146b8749e05f6b220bdb495eae76c75cc7252550825585ef76e
+  - filename: foveacast-v3-7s-fp16.onnx
+    duration: 7s
+    kind: model
+    url: https://github.com/khawkins98/foveacast-training/releases/download/v0.2.0/foveacast-v3-7s-fp16.onnx
+    sha256: cf66388dc6fe5db4712c77cf3929d04380ed73ac963677b8c9de2b6380fb51e0
+  - filename: foveacast-v3-1s-fp16.parity.json
+    duration: 1s
+    kind: parity
+    url: https://github.com/khawkins98/foveacast-training/releases/download/v0.2.0/foveacast-v3-1s-fp16.parity.json
+    sha256: 2572f301f49bf49ec38bcff57fa1282380726e79f1ce4c9a5cd56f9f4894944b
+  - filename: foveacast-v3-3s-fp16.parity.json
+    duration: 3s
+    kind: parity
+    url: https://github.com/khawkins98/foveacast-training/releases/download/v0.2.0/foveacast-v3-3s-fp16.parity.json
+    sha256: 3ccbd9da648baaf7c0ddca9fce1e56d92ce71f94de2f2751b2dd2af41c276a20
+  - filename: foveacast-v3-7s-fp16.parity.json
+    duration: 7s
+    kind: parity
+    url: https://github.com/khawkins98/foveacast-training/releases/download/v0.2.0/foveacast-v3-7s-fp16.parity.json
+    sha256: 16cb94c448a6dc510e7d44d31147634750bb3d1801cfa55daf0bcf83e1d97cca
+licenses:
+  - component: Foveacast training code
+    license: MIT
+    attribution: khawkins98/foveacast-training
+  - component: MSI-Net architecture
+    license: MIT
+    attribution: MSI-Net authors
+  - component: UEyes dataset-derived weights
+    license: CC BY 4.0
+    attribution: Jiang et al. 2023
+  - component: ONNX Runtime
+    license: MIT
+    attribution: ONNX Runtime authors
+attribution: Use of UEyes dataset-derived weights requires attribution to Jiang et al. 2023.
