@@ -173,11 +173,12 @@ experiments:
       - fixture-app-improved
     persona_ids:
       - first-time-nontechnical
-      - impatient
     policies:
       - full-list
       - progressive-prominence-scent
-    run_count: 10
+    model_trials:
+      - 0
+    run_count: 1
   - id: ablations
     name: Attention policy ablations
     scenario_ids:
@@ -188,11 +189,30 @@ experiments:
       - fixture-app-improved
     persona_ids:
       - first-time-nontechnical
-      - impatient
     policies:
       - prominence-ranked-list
       - progressive-prominence
-    run_count: 10
+    model_trials:
+      - 0
+    run_count: 1
+  - id: baseline-model-trials
+    name: Invite teammate baseline model-trial replication
+    scenario_ids:
+      - invite-teammate
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    persona_ids:
+      - first-time-nontechnical
+    policies:
+      - full-list
+      - progressive-prominence-scent
+    seeds:
+      - 0
+    model_trials:
+      - 0
+      - 1
+    run_count: 1
   - id: focused-validation
     name: Focused defective versus improved validation
     scenario_ids:

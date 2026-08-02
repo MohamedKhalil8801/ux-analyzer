@@ -356,7 +356,9 @@ async def test_production_cli_report_is_interactive_and_causal(
         },
     )
     assert result.exit_code == 0, result.stdout
-    assert "completed runs: 1; failures: 0" in result.stdout
+    assert "run specs: 1" in result.stdout
+    assert "finalized runs: 1; execution failures: 0" in result.stdout
+    assert "UX samples: 1 valid; 0 invalid" in result.stdout
     assert "report generated:" in result.stdout
     assert requests
     report_path = output / "report.html"

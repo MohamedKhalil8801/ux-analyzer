@@ -1,16 +1,18 @@
-id: ablations
-name: Attention policy ablations
+id: baseline-model-trials
+name: Invite teammate baseline model-trial replication
 scenario_ids:
   - invite-teammate
-  - enable-2fa
 application_version_ids:
   - fixture-app-defective
   - fixture-app-improved
 persona_ids:
   - first-time-nontechnical
 policies:
-  - prominence-ranked-list
-  - progressive-prominence
+  - full-list
+  - progressive-prominence-scent
+seeds:
+  - 0
 model_trials:
   - 0
+  - 1
 run_count: 1

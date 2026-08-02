@@ -214,12 +214,35 @@ def test_run_dry_run_prints_matrix_model_calls_and_serial_default(
     assert result.exit_code == 0
     assert "policies: full-list, progressive-prominence-scent" in result.stdout
     assert "workers: 1" in result.stdout
-    assert "run specs: 88" in result.stdout
-    assert "model calls for one attention cycle: 248" in result.stdout
-    assert "maximum logical model calls: 5632" in result.stdout
-    assert "deterministic seed repetitions suppressed: 72" in result.stdout
+    assert "run specs: 8" in result.stdout
+    assert "model calls for one attention cycle: 16" in result.stdout
+    assert "maximum logical model calls: 512" in result.stdout
+    assert "deterministic seed repetitions suppressed: 0" in result.stdout
     assert "overall run timeout: none" in result.stdout
     assert "super-secret-api-key" not in result.stdout
+
+
+def test_baseline_model_trials_dry_run_counts_trials_without_negative_suppression(
+    tmp_path: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(DEMO_PROJECT),
+            "--experiment",
+            "baseline-model-trials",
+            "--output",
+            str(tmp_path),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "run specs: 8" in result.stdout
+    assert "deterministic seed repetitions suppressed: 0" in result.stdout
+    assert result.stdout.count("/full-list: 2 runs") == 2
+    assert result.stdout.count("/progressive-prominence-scent: 2 runs") == 2
 
 
 def test_single_run_resolver_selects_one_stable_semantic_spec() -> None:
@@ -469,7 +492,8 @@ def test_ablate_selects_optional_policies_and_run_count_override(
     assert result.exit_code == 0
     assert "policies: prominence-ranked-list, progressive-prominence" in result.stdout
     assert "configured seeds: 2" in result.stdout
-    assert "run specs: 24" in result.stdout
+    assert "run specs: 12" in result.stdout
+    assert "deterministic seed repetitions suppressed: 4" in result.stdout
 
 
 def test_focused_validation_dry_run_expands_exactly_four_balanced_cells(

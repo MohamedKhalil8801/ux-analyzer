@@ -566,13 +566,23 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
         )
         for spec in matrix.specs
     )
+    accounting_cells = Counter(
+        (
+            spec.scenario.id,
+            spec.application_version.id,
+            spec.persona.id,
+            spec.policy.value,
+            spec.model_trial,
+        )
+        for spec in matrix.specs
+    )
     typer.echo(f"project: {matrix.loaded.project.id}")
     typer.echo(f"experiment: {matrix.definition.id}")
     typer.echo(f"policies: {', '.join(policy_names)}")
     typer.echo(f"workers: {workers}")
     typer.echo(f"configured seeds: {len(configured_seeds)}")
     typer.echo(f"run specs: {len(matrix.specs)}")
-    eligible_cells = len(cells)
+    eligible_cells = len(accounting_cells)
     unsuppressed_specs = eligible_cells * len(configured_seeds)
     suppressed = unsuppressed_specs - len(matrix.specs)
     typer.echo(f"deterministic seed repetitions suppressed: {suppressed}")

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
+from ux_analyzer.application.experiment import ExperimentContext, expand_experiment
 from ux_analyzer.config.loader import ProjectConfigError, load_project
 from ux_analyzer.domain.benchmark import (
     ApplicationVersionKind,
@@ -131,6 +132,72 @@ def test_demo_loads_four_cell_focused_validation_experiment() -> None:
     )
     assert experiment.persona_ids == ("first-time-nontechnical",)
     assert experiment.run_count == 1
+
+
+def test_demo_uses_reduced_local_budget_matrices() -> None:
+    demo_path = Path(__file__).parents[3] / "benchmarks" / "demo" / "project.yaml"
+
+    loaded = load_project(demo_path)
+    experiments = {item.id: item for item in loaded.project.experiments}
+
+    expected_scenarios = ("invite-teammate", "enable-2fa")
+    expected_versions = ("fixture-app-defective", "fixture-app-improved")
+    expected_personas = ("first-time-nontechnical",)
+    expected_policies = {
+        "core-pair": (
+            ExperimentPolicy.FULL_LIST,
+            ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
+        ),
+        "ablations": (
+            ExperimentPolicy.PROMINENCE_RANKED_LIST,
+            ExperimentPolicy.PROGRESSIVE_PROMINENCE,
+        ),
+    }
+
+    for experiment_id, policies in expected_policies.items():
+        experiment = experiments[experiment_id]
+        assert experiment.scenario_ids == expected_scenarios
+        assert experiment.application_version_ids == expected_versions
+        assert experiment.persona_ids == expected_personas
+        assert experiment.policies == policies
+        assert experiment.run_count == 1
+        assert experiment.model_trials == (0,)
+        assert (
+            len(
+                expand_experiment(
+                    ExperimentContext(
+                        definition=experiment,
+                        project=loaded.project,
+                        config_digest=loaded.config_digest,
+                    )
+                )
+            )
+            == 8
+        )
+
+    baseline = experiments["baseline-model-trials"]
+    assert baseline.scenario_ids == ("invite-teammate",)
+    assert baseline.application_version_ids == expected_versions
+    assert baseline.persona_ids == expected_personas
+    assert baseline.policies == (
+        ExperimentPolicy.FULL_LIST,
+        ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
+    )
+    assert baseline.seeds == (0,)
+    assert baseline.model_trials == (0, 1)
+    assert baseline.run_count == 1
+    assert (
+        len(
+            expand_experiment(
+                ExperimentContext(
+                    definition=baseline,
+                    project=loaded.project,
+                    config_digest=loaded.config_digest,
+                )
+            )
+        )
+        == 8
+    )
 
 
 def test_loads_versioned_runtime_provider_and_evaluation_formulas(
