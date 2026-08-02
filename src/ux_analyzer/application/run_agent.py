@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Protocol
 
 from ux_analyzer.application.action_validation import (
@@ -158,6 +162,103 @@ class ModelRecordSource(Protocol):
     def records(self) -> Sequence[ModelCallRecord]: ...
 
 
+@dataclass(slots=True)
+class _StageTiming:
+    count: int = 0
+    total_ms: float = 0.0
+    max_ms: float = 0.0
+
+
+class RunProfiler:
+    """Optional wall-clock profiler for one run; never changes run evidence."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path
+        self._started = perf_counter()
+        self._stages: dict[str, _StageTiming] = {}
+        self._samples: list[dict[str, object]] = []
+
+    @property
+    def enabled(self) -> bool:
+        return self._path is not None
+
+    @contextmanager
+    def measure(self, stage: str) -> Iterator[None]:
+        if not self.enabled:
+            yield
+            return
+        started = perf_counter()
+        try:
+            yield
+        finally:
+            elapsed_ms = (perf_counter() - started) * 1000
+            timing = self._stages.setdefault(stage, _StageTiming())
+            timing.count += 1
+            timing.total_ms += elapsed_ms
+            timing.max_ms = max(timing.max_ms, elapsed_ms)
+            self._samples.append(
+                {"stage": stage, "elapsed_ms": round(elapsed_ms, 3)}
+            )
+
+    def write(self, *, run_id: str) -> None:
+        if self._path is None:
+            return
+        total_ms = (perf_counter() - self._started) * 1000
+        stages = {
+            name: {
+                "count": timing.count,
+                "total_ms": round(timing.total_ms, 3),
+                "average_ms": round(timing.total_ms / timing.count, 3),
+                "max_ms": round(timing.max_ms, 3),
+                "share_of_run": round(timing.total_ms / total_ms, 4)
+                if total_ms > 0
+                else 0.0,
+            }
+            for name, timing in self._stages.items()
+        }
+        payload = {
+            "run_id": run_id,
+            "elapsed_ms": round(total_ms, 3),
+            "stages": stages,
+            "samples": self._samples,
+        }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._path.with_name(f".{self._path.name}.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(self._path)
+
+
+class _ProfiledRunBundleWriter:
+    """Measure bundle operations while preserving writer contract."""
+
+    def __init__(self, writer: RunBundleWriter, profiler: RunProfiler) -> None:
+        self._writer = writer
+        self._profiler = profiler
+
+    @property
+    def run_id(self) -> str:
+        return self._writer.run_id
+
+    def append_event(self, event: object) -> int:
+        with self._profiler.measure("bundle.append_event"):
+            return self._writer.append_event(event)
+
+    def write_artifact(self, name: str, content: bytes | str) -> ArtifactReference:
+        with self._profiler.measure("bundle.write_artifact"):
+            return self._writer.write_artifact(name, content)
+
+    def finalize(self, result: object) -> Path:
+        with self._profiler.measure("bundle.finalize"):
+            return self._writer.finalize(result)
+
+    def abort(self, reason: str) -> Path:
+        with self._profiler.measure("bundle.abort"):
+            return self._writer.abort(reason)
+
+
 SessionConfigFactory = Callable[[RunSpec], ObservationSessionConfig]
 SnapshotExtractor = Callable[[ObservationCapture], ViewportSnapshot]
 ProviderManifestFactory = Callable[[RunSpec], Sequence[ProviderManifest]]
@@ -257,6 +358,7 @@ class _RunContext:
 
     state: RunState
     application_state: ApplicationState
+    profiler: RunProfiler
     session: SessionHandle | None = None
     prominence: list[ProminenceEvidence] = field(
         default_factory=lambda: list[ProminenceEvidence]()
@@ -313,6 +415,7 @@ class RunAgent:
         provider_manifest_factory: ProviderManifestFactory | None = None,
         model_record_source: ModelRecordSource | None = None,
         result_evaluator: ResultEvaluator | None = None,
+        profile_path: Path | None = None,
     ) -> None:
         selected_bundle_factory = bundle_factory or bundle_writer_factory
         selected_session_factory = session_config_factory or session_factory
@@ -335,15 +438,21 @@ class RunAgent:
         self.provider_manifest_factory = provider_manifest_factory
         self.model_record_source = model_record_source
         self.result_evaluator = result_evaluator
+        self.profile_path = profile_path
 
     async def execute(self, spec: RunSpec) -> RunResult:
         """Execute, independently verify, finalize, and always clean up one run."""
 
         writer: RunBundleWriter | None = None
         initial_state = RunState.initial(spec)
+        profiler = RunProfiler(self.profile_path)
+        set_profiler = getattr(self.observation_provider, "set_profiler", None)
+        if callable(set_profiler):
+            set_profiler(profiler)
         context = _RunContext(
             state=initial_state,
             application_state=ApplicationState.from_attention(initial_state.attention),
+            profiler=profiler,
         )
         artifact_checksums: list[ArtifactChecksum] = []
         timeout_seconds = spec.scenario.budget.timeout_seconds
@@ -354,7 +463,10 @@ class RunAgent:
         )
 
         try:
-            writer = self.bundle_factory.start(spec)
+            with profiler.measure("bundle.start"):
+                writer = self.bundle_factory.start(spec)
+            if profiler.enabled:
+                writer = _ProfiledRunBundleWriter(writer, profiler)
             artifact_checksums.append(
                 _artifact_checksum(writer.write_artifact("run-start.txt", spec.run_id))
             )
@@ -392,12 +504,13 @@ class RunAgent:
                 )
 
             if deadline is None:
-                execution = await self._verify_terminal(
-                    execution,
-                    writer,
-                    context.session,
-                    context.state_event_ids,
-                )
+                with profiler.measure("verification.terminal"):
+                    execution = await self._verify_terminal(
+                        execution,
+                        writer,
+                        context.session,
+                        context.state_event_ids,
+                    )
             else:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
@@ -406,15 +519,16 @@ class RunAgent:
                     )
                 else:
                     try:
-                        execution = await asyncio.wait_for(
-                            self._verify_terminal(
-                                execution,
-                                writer,
-                                context.session,
-                                context.state_event_ids,
-                            ),
-                            timeout=remaining,
-                        )
+                        with profiler.measure("verification.terminal"):
+                            execution = await asyncio.wait_for(
+                                self._verify_terminal(
+                                    execution,
+                                    writer,
+                                    context.session,
+                                    context.state_event_ids,
+                                ),
+                                timeout=remaining,
+                            )
                     except TimeoutError:
                         execution = _timed_out_execution(
                             execution, writer, context.state_event_ids
@@ -449,7 +563,11 @@ class RunAgent:
                 )
             raise
         finally:
-            await self._end_session(context.session)
+            try:
+                with profiler.measure("browser.end_session"):
+                    await self._end_session(context.session)
+            finally:
+                profiler.write(run_id=spec.run_id)
 
     async def _run(
         self,
@@ -458,11 +576,13 @@ class RunAgent:
         writer: RunBundleWriter,
         artifact_checksums: list[ArtifactChecksum],
     ) -> _Execution:
-        session = await self.observation_provider.start_session(
-            self.session_config_factory(spec)
-        )
+        with context.profiler.measure("browser.start_session"):
+            session = await self.observation_provider.start_session(
+                self.session_config_factory(spec)
+            )
         context.session = session
-        await self.observation_provider.reset(session)
+        with context.profiler.measure("browser.reset"):
+            await self.observation_provider.reset(session)
         await self._capture(context, writer, artifact_checksums)
         rng = random.Random(spec.seed)
         claimed_success = False
@@ -498,7 +618,8 @@ class RunAgent:
             if snapshot is None:
                 raise RuntimeError("run has no current viewport")
 
-            scores = tuple(self.prominence_provider.score(snapshot))
+            with context.profiler.measure("prominence.score"):
+                scores = tuple(self.prominence_provider.score(snapshot))
             prominence_sequence = writer.append_event(
                 {
                     "kind": "prominence-recorded",
@@ -515,9 +636,10 @@ class RunAgent:
             if self.coarse_scent_evaluator is not None:
                 try:
                     context.model_call_count += 1
-                    coarse_scent = await self.coarse_scent_evaluator.evaluate(
-                        spec.scenario.goal, snapshot
-                    )
+                    with context.profiler.measure("model.coarse_scent"):
+                        coarse_scent = await self.coarse_scent_evaluator.evaluate(
+                            spec.scenario.goal, snapshot
+                        )
                 except ModelResponseValidationError as error:
                     return self._model_failure(
                         context, writer, error, claimed_success=claimed_success
@@ -558,14 +680,15 @@ class RunAgent:
                 )
 
             try:
-                selection = self.attention_policy.next_observation(
-                    application_state.attention,
-                    snapshot,
-                    scores,
-                    coarse_scent,
-                    rng,
-                    recovery_level=context.no_progress_count,
-                )
+                with context.profiler.measure("attention.select"):
+                    selection = self.attention_policy.next_observation(
+                        application_state.attention,
+                        snapshot,
+                        scores,
+                        coarse_scent,
+                        rng,
+                        recovery_level=context.no_progress_count,
+                    )
             except ValueError as error:
                 if str(error) != _ATTENTION_EXHAUSTED_MESSAGE:
                     raise
@@ -641,11 +764,12 @@ class RunAgent:
             if self.full_scent_evaluator is not None:
                 try:
                     context.model_call_count += 1
-                    full_scent = await self.full_scent_evaluator.evaluate(
-                        spec.scenario.goal,
-                        context.application_state.attention,
-                        snapshot,
-                    )
+                    with context.profiler.measure("model.full_scent"):
+                        full_scent = await self.full_scent_evaluator.evaluate(
+                            spec.scenario.goal,
+                            context.application_state.attention,
+                            snapshot,
+                        )
                 except ModelResponseValidationError as error:
                     return self._model_failure(
                         context, writer, error, claimed_success=claimed_success
@@ -708,9 +832,10 @@ class RunAgent:
                 )
             try:
                 context.model_call_count += 1
-                decision = await self.cognitive_agent.decide(
-                    spec.scenario.goal, observation
-                )
+                with context.profiler.measure("model.cognitive"):
+                    decision = await self.cognitive_agent.decide(
+                        spec.scenario.goal, observation
+                    )
             except ModelResponseValidationError as error:
                 return self._model_failure(
                     context, writer, error, claimed_success=claimed_success
@@ -740,12 +865,13 @@ class RunAgent:
                 writer.append_event({"kind": "agent-claim", "claimed_success": True})
 
             try:
-                validated = validate_action(
-                    decision,
-                    context.application_state.attention,
-                    snapshot,
-                    fixture_inputs=spec.scenario.fixture_inputs,
-                )
+                with context.profiler.measure("action.validate"):
+                    validated = validate_action(
+                        decision,
+                        context.application_state.attention,
+                        snapshot,
+                        fixture_inputs=spec.scenario.fixture_inputs,
+                    )
             except ActionValidationError as error:
                 writer.append_event({"kind": "action-rejected", "reason": str(error)})
                 context.application_state = _require_application_state(
@@ -840,9 +966,10 @@ class RunAgent:
                 context.consecutive_action_count = 0
                 continue
 
-            result = await self.observation_provider.execute(
-                session, validated.platform_action
-            )
+            with context.profiler.measure("browser.execute"):
+                result = await self.observation_provider.execute(
+                    session, validated.platform_action
+                )
             context.state = _record(
                 context.state,
                 ActionExecuted(
@@ -937,9 +1064,10 @@ class RunAgent:
                 )
 
             if result.succeeded:
-                verification = await self._verify(
-                    context.state, writer, session, context.state_event_ids
-                )
+                with context.profiler.measure("verification.run"):
+                    verification = await self._verify(
+                        context.state, writer, session, context.state_event_ids
+                    )
                 context.state = verification[0]
                 if verification[1].verified:
                     return _Execution(
@@ -1020,7 +1148,8 @@ class RunAgent:
         session = context.session
         if session is None:
             raise RuntimeError("capture requires active session")
-        capture = await self.observation_provider.capture(session)
+        with context.profiler.measure("observation.capture.total"):
+            capture = await self.observation_provider.capture(session)
         snapshot = self.snapshot_extractor(capture)
         previous_snapshot = context.state.current_snapshot
         screenshot = writer.write_artifact(f"{snapshot.id}.png", capture.screenshot)
@@ -1183,7 +1312,8 @@ class RunAgent:
         )
         if self.result_evaluator is not None and result.ux_sample_valid:
             try:
-                result = self.result_evaluator(result)
+                with context.profiler.measure("evaluation.run"):
+                    result = self.result_evaluator(result)
             except Exception as error:
                 evaluation_reason = _evaluation_failure_reason(error)
                 result = replace(

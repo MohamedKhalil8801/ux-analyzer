@@ -26,6 +26,7 @@ from ux_analyzer.domain.attention import AttentionState
 from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
 from ux_analyzer.ports.observation import (
+    ObservationCapture,
     SessionHandle,
     ViewportSize,
 )
@@ -699,6 +700,58 @@ async def test_fixture_provider_resets_state_before_reload_and_deletes_on_end(
         "browser-end",
         "fixture-delete",
     ]
+
+
+@pytest.mark.asyncio
+async def test_fixture_provider_extracts_against_current_page_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extracted: list[dict[str, object]] = []
+    page = object()
+
+    class FakeAdapter:
+        async def capture(self, session: SessionHandle) -> ObservationCapture:
+            return ObservationCapture(
+                session_id=session.session_id,
+                viewport_id="viewport-1",
+                url="http://fixture.test/app",
+                title="Fixture",
+                viewport=session.viewport,
+                screenshot=b"capture-artifact",
+            )
+
+        def page_for_testing(self, session: SessionHandle) -> object:
+            del session
+            return page
+
+    async def fake_capture_snapshot(
+        extraction_page: object,
+        viewport_id: str,
+        **kwargs: object,
+    ) -> ViewportSnapshot:
+        extracted.append(kwargs)
+        assert extraction_page is page
+        return ViewportSnapshot(id=viewport_id, elements=())
+
+    monkeypatch.setattr(cli, "capture_snapshot", fake_capture_snapshot)
+    provider = cli._FixtureObservationProvider(
+        FakeAdapter(),  # type: ignore[arg-type]
+        "http://fixture.test",
+        {},
+    )
+    session = SessionHandle(
+        session_id="run-1",
+        test_account_id=AccountId("test-run-1"),
+        viewport=ViewportSize(900, 700),
+        trace_path=Path("trace.zip"),
+        blocked_events=[],
+    )
+
+    capture = await provider.capture(session)
+
+    assert extracted == [{}]
+    assert capture.snapshot is not None
+    assert capture.snapshot.id == "viewport-1"
 
 
 def test_report_regenerates_from_finalized_bundles(tmp_path: Path) -> None:

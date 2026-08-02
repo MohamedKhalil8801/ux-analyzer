@@ -52,6 +52,7 @@ from ux_analyzer.application.run_agent import (
     AttentionPolicy,
     ProminenceProvider,
     RunAgent,
+    RunProfiler,
     RunResult,
 )
 from ux_analyzer.application.run_agent import CognitiveAgent as RunCognitiveAgent
@@ -182,6 +183,11 @@ def run(
     check_env: bool = typer.Option(False, "--check-env"),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
     resume: bool = typer.Option(False, "--resume"),
+    profile_output: Path | None = typer.Option(
+        None,
+        "--profile-output",
+        help="Write per-run stage timings as JSON files under this directory.",
+    ),
 ) -> None:
     """Expand and execute one benchmark experiment."""
     _run_experiment_command(
@@ -195,6 +201,7 @@ def run(
         check_env=check_env,
         fixture_origin=fixture_origin,
         resume=resume,
+        profile_output=profile_output,
     )
 
 
@@ -210,6 +217,11 @@ def run_one(
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     check_env: bool = typer.Option(False, "--check-env"),
+    profile_output: Path | None = typer.Option(
+        None,
+        "--profile-output",
+        help="Write this run's stage timings as JSON under this directory.",
+    ),
 ) -> None:
     """Execute exactly one semantically selected benchmark run."""
 
@@ -237,6 +249,7 @@ def run_one(
                 workers=1,
                 fixture_origin=fixture_origin,
                 settings=_settings_with_fixture_redaction(settings, matrix.loaded),
+                profile_output=profile_output,
             )
         )
     except Exception as error:
@@ -249,6 +262,8 @@ def run_one(
     )
     typer.echo(f"evaluation summary: {summary_path}")
     typer.echo(f"report generated: {report_path}")
+    if profile_output is not None:
+        typer.echo(f"profile output: {profile_output}")
     if (
         result.failures
         or _evaluation_failures(result.results)
@@ -269,6 +284,11 @@ def ablate(
     check_env: bool = typer.Option(False, "--check-env"),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
     resume: bool = typer.Option(False, "--resume"),
+    profile_output: Path | None = typer.Option(
+        None,
+        "--profile-output",
+        help="Write per-run stage timings as JSON files under this directory.",
+    ),
 ) -> None:
     """Execute selected attention policy ablations."""
     _run_experiment_command(
@@ -282,6 +302,7 @@ def ablate(
         check_env=check_env,
         fixture_origin=fixture_origin,
         resume=resume,
+        profile_output=profile_output,
     )
 
 
@@ -333,6 +354,7 @@ def _run_experiment_command(
     check_env: bool,
     fixture_origin: str,
     resume: bool,
+    profile_output: Path | None,
 ) -> None:
     if workers <= 0:
         _exit_with_error("workers must be greater than zero")
@@ -377,6 +399,7 @@ def _run_experiment_command(
                 fixture_origin=fixture_origin,
                 settings=_settings_with_fixture_redaction(settings, matrix.loaded),
                 checkpoint=checkpoint,
+                profile_output=profile_output,
             )
         )
     except Exception as error:
@@ -390,6 +413,8 @@ def _run_experiment_command(
     )
     typer.echo(f"evaluation summary: {summary_path}")
     typer.echo(f"report generated: {report_path}")
+    if profile_output is not None:
+        typer.echo(f"profile output: {profile_output}")
     if (
         result.failures
         or _evaluation_failures(result.results)
@@ -695,15 +720,30 @@ class _FixtureObservationProvider:
         self._fixture_origin = fixture_origin.rstrip("/")
         self._fixture_inputs = dict(fixture_inputs)
         self._http_client = http_client
+        self._profiler: RunProfiler | None = None
+
+    def set_profiler(self, profiler: RunProfiler) -> None:
+        self._profiler = profiler
 
     async def start_session(self, config: ObservationSessionConfig) -> SessionHandle:
         return await self._adapter.start_session(config)
 
     async def capture(self, session: SessionHandle) -> ObservationCapture:
-        capture = await self._adapter.capture(session)
-        snapshot = await capture_snapshot(
-            self._adapter.page_for_testing(session), capture.viewport_id
-        )
+        if self._profiler is None:
+            capture = await self._adapter.capture(session)
+            snapshot = await capture_snapshot(
+                self._adapter.page_for_testing(session),
+                capture.viewport_id,
+            )
+            return replace(capture, snapshot=snapshot)
+        with self._profiler.measure("browser.capture"):
+            capture = await self._adapter.capture(session)
+        with self._profiler.measure("dom.extract"):
+            snapshot = await capture_snapshot(
+                self._adapter.page_for_testing(session),
+                capture.viewport_id,
+                measure=self._profiler.measure,
+            )
         return replace(capture, snapshot=snapshot)
 
     async def execute(
@@ -905,6 +945,7 @@ async def _execute_matrix(
     fixture_origin: str,
     settings: OpenAICompatibleSettings,
     checkpoint: ExperimentCheckpointStore | None = None,
+    profile_output: Path | None = None,
 ) -> ExperimentResult:
     from playwright.async_api import async_playwright
 
@@ -933,6 +974,7 @@ async def _execute_matrix(
                     settings=settings,
                     runtime=matrix.loaded.runtime,
                     fixture_http_client=fixture_http,
+                    profile_output=profile_output,
                 )
 
             def record_progress(
@@ -969,6 +1011,7 @@ def _build_agent(
     settings: OpenAICompatibleSettings,
     runtime: RuntimeConfig,
     fixture_http_client: httpx.AsyncClient | None = None,
+    profile_output: Path | None = None,
 ) -> RunAgent:
     provider = _FixtureObservationProvider(
         adapter,
@@ -1034,6 +1077,9 @@ def _build_agent(
         ),
         model_record_source=client,
         result_evaluator=lambda result: _evaluate_result(result, runtime),
+        profile_path=(profile_output / f"{spec.run_id}.json")
+        if profile_output is not None
+        else None,
     )
 
 
