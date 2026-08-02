@@ -8,8 +8,9 @@ application_version_ids:
   - fixture-app-improved
 persona_ids:
   - first-time-nontechnical
-  - impatient
 policies:
   - full-list
   - progressive-prominence-scent
-run_count: 10
+model_trials:
+  - 0
+run_count: 1
