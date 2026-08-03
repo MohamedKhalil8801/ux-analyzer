@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 def _empty_int_list() -> list[int]:
@@ -13,6 +13,30 @@ def _empty_int_list() -> list[int]:
 
 def _default_model_trials() -> list[int]:
     return [0]
+
+
+def _default_prominence_provider_ids() -> list[str]:
+    return ["heuristic"]
+
+
+def _default_saliency_model_set() -> list[str]:
+    return ["foveacast-v0.2.0"]
+
+
+def _default_saliency_semantic_roles() -> list[str]:
+    return ["button", "checkbox", "input", "link", "menu", "tab", "text"]
+
+
+def _default_saliency_structural_roles() -> list[str]:
+    return ["other"]
+
+
+def _default_saliency_stage_mixtures() -> dict[str, dict[str, float]]:
+    return {
+        "initial": {"1s": 1.0},
+        "exploration": {"3s": 1.0},
+        "persistent": {"3s": 0.25, "7s": 0.75},
+    }
 
 
 def _empty_float_mapping() -> dict[str, float]:
@@ -122,6 +146,9 @@ class ExperimentModel(_ConfigModel):
     ] = Field(min_length=1)
     seeds: list[int] = Field(default_factory=_empty_int_list)
     model_trials: list[int] = Field(default_factory=_default_model_trials, min_length=1)
+    prominence_provider_ids: list[str] = Field(
+        default_factory=_default_prominence_provider_ids, min_length=1
+    )
     run_count: int = Field(gt=0)
 
 
@@ -147,12 +174,77 @@ class ExpectationProviderModel(_ConfigModel):
     enabled: Literal[False] = False
 
 
+class SaliencyCacheModel(_ConfigModel):
+    enabled: bool = True
+    scope: Literal["experiment"] = "experiment"
+
+
+class SaliencyAggregationModel(_ConfigModel):
+    version: str = Field(default="element-saliency-aggregation-v1", min_length=1)
+    density_weight: float = Field(default=0.60, ge=0)
+    robust_peak_weight: float = Field(default=0.25, ge=0)
+    mass_share_weight: float = Field(default=0.15, ge=0)
+    temperature: float = Field(default=1.0, gt=0)
+    meaningful_score_threshold: float = Field(default=1e-9, ge=0)
+    semantic_roles: list[str] = Field(
+        default_factory=_default_saliency_semantic_roles, min_length=1
+    )
+    structural_roles: list[str] = Field(
+        default_factory=_default_saliency_structural_roles, min_length=1
+    )
+
+
+class SaliencyStageSelectorModel(_ConfigModel):
+    version: str = Field(default="saliency-stage-selector-v1", min_length=1)
+    temperature: float = Field(default=1.0, gt=0)
+    mixtures: dict[str, dict[str, float]] = Field(
+        default_factory=_default_saliency_stage_mixtures,
+        validation_alias=AliasChoices("mixtures", "stage_mixtures"),
+    )
+
+
+class SaliencyFallbackModel(_ConfigModel):
+    enabled: bool = True
+    provider_id: str = Field(default="heuristic", min_length=1)
+
+
+class SaliencyProviderModel(_ConfigModel):
+    model_set: list[str] = Field(
+        default_factory=_default_saliency_model_set, min_length=1
+    )
+    precision: Literal["fp16"] = "fp16"
+    execution_provider_preference: Literal["auto", "cpu", "directml"] = Field(
+        default="auto",
+        validation_alias=AliasChoices(
+            "execution_provider_preference", "execution_preference"
+        ),
+    )
+    cache: SaliencyCacheModel = Field(default_factory=SaliencyCacheModel)
+    aggregation: SaliencyAggregationModel = Field(
+        default_factory=SaliencyAggregationModel
+    )
+    stage_selector: SaliencyStageSelectorModel = Field(
+        default_factory=SaliencyStageSelectorModel
+    )
+    fallback: SaliencyFallbackModel = Field(default_factory=SaliencyFallbackModel)
+
+    @field_validator("model_set")
+    @classmethod
+    def _validate_model_set(cls, model_set: list[str]) -> list[str]:
+        if any(not model_id.strip() for model_id in model_set):
+            raise ValueError("saliency model IDs must not be empty")
+        if len(model_set) != len(set(model_set)):
+            raise ValueError("saliency model IDs must be unique")
+        return model_set
+
+
 class ProvidersModel(_ConfigModel):
     prominence: ProminenceProviderModel = Field(default_factory=ProminenceProviderModel)
     attention: AttentionProviderModel = Field(default_factory=AttentionProviderModel)
     expectation: ExpectationProviderModel = Field(
         default_factory=ExpectationProviderModel
     )
+    saliency: SaliencyProviderModel | None = None
 
 
 class DiscoveryCostModel(_ConfigModel):

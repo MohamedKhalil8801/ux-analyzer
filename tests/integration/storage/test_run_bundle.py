@@ -342,6 +342,40 @@ def test_manifest_persists_default_model_trial_zero() -> None:
     assert manifest.to_dict()["model_trial"] == 0
 
 
+def test_mapping_manifest_preserves_prominence_provider_and_legacy_default(
+    tmp_path: Path,
+) -> None:
+    common = {
+        "seed": 17,
+        "config_digest": "config-sha256",
+        "endpoint_origin": "https://llm.example.test/v1",
+    }
+    provider_writer = FilesystemRunBundleWriter.start(
+        tmp_path,
+        {
+            **common,
+            "run_id": "run-foveacast",
+            "prominence_provider_id": "foveacast",
+        },
+    )
+    provider_manifest = json.loads(
+        (provider_writer.staging_path / "manifest.json").read_text()
+    )
+    provider_writer.abort("test complete")
+
+    legacy_writer = FilesystemRunBundleWriter.start(
+        tmp_path,
+        {**common, "run_id": "run-legacy"},
+    )
+    legacy_manifest = json.loads(
+        (legacy_writer.staging_path / "manifest.json").read_text()
+    )
+    legacy_writer.abort("test complete")
+
+    assert provider_manifest["prominence_provider_id"] == "foveacast"
+    assert legacy_manifest["prominence_provider_id"] == "heuristic"
+
+
 def test_start_uses_atomic_staging_and_finalize_creates_required_files(
     tmp_path: Path,
 ) -> None:

@@ -50,6 +50,7 @@ def _write_run(
     evaluation_failure_reason: str | None = None,
     ux_sample_valid: bool | None = None,
     ux_sample_invalid_reason: str | None = None,
+    prominence_provider_id: str = "heuristic",
 ) -> None:
     is_verified = outcome == "verified-success" if verified is None else verified
     is_valid_sample = (
@@ -67,6 +68,7 @@ def _write_run(
             "run_id": run_id,
             "seed": 7,
             "model_trial": model_trial,
+            "prominence_provider_id": prominence_provider_id,
             "config_digest": "config-sha",
             "endpoint_origin": "https://llm.example.test/v1",
             "model_ids": {"cognitive": "model-v1"},
@@ -372,6 +374,46 @@ def test_renderer_distinguishes_model_trials_in_run_aggregate_and_gate_views(
 
     assert html.count('data-metric="model-trial">2</td>') >= 4
     assert html.count("model-dependent (attention seed 7, model trial 2)") >= 2
+
+
+def test_renderer_keeps_prominence_providers_separate_in_rows_and_gates(
+    tmp_path: Path,
+) -> None:
+    for provider in ("heuristic", "foveacast"):
+        _write_run(
+            tmp_path,
+            f"run-defective-{provider}",
+            version="defective",
+            discovery_cost=8,
+            prominence_provider_id=provider,
+        )
+        _write_run(
+            tmp_path,
+            f"run-improved-{provider}",
+            version="improved",
+            discovery_cost=3,
+            prominence_provider_id=provider,
+        )
+
+    experiment = renderer._load_experiment(tmp_path)
+
+    assert {
+        run["prominence_provider_id"] for run in experiment["runs"]
+    } == {"heuristic", "foveacast"}
+    assert {
+        row["prominence_provider_id"] for row in experiment["run_rows"]
+    } == {"heuristic", "foveacast"}
+    assert {
+        row["prominence_provider_id"] for row in experiment["comparison_rows"]
+    } == {"heuristic", "foveacast"}
+    assert {
+        row["prominence_provider_id"] for row in experiment["gate_rows"]
+    } == {"heuristic", "foveacast"}
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    assert html.count('data-metric="prominence-provider">foveacast</td>') >= 3
 
 
 def test_overview_counts_executed_actions_and_formats_discovery_cost(

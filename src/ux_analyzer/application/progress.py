@@ -108,7 +108,10 @@ def repeated_cycle_length(
     """Return the repeated suffix period when two complete periods match."""
 
     for length in range(min_length, max_length + 1):
-        if len(history) >= length * 2 and history[-length:] == history[-2 * length : -length]:
+        if (
+            len(history) >= length * 2
+            and history[-length:] == history[-2 * length : -length]
+        ):
             return length
     return None
 

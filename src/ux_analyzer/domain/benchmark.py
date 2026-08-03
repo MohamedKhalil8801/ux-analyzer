@@ -33,6 +33,29 @@ class ExperimentPolicy(StrEnum):
         }
 
 
+PROMINENCE_PROVIDER_REGISTRY: Mapping[str, str] = MappingProxyType(
+    {
+        "heuristic": "heuristic-prominence-v1",
+        "foveacast": "foveacast-prominence-v1",
+    }
+)
+
+
+def resolve_prominence_provider_id(provider_id: str) -> str:
+    """Resolve one configured prominence axis ID through provider registry."""
+
+    if type(provider_id) is not str or not provider_id.strip():
+        raise ValueError("prominence provider ID must not be empty")
+    try:
+        PROMINENCE_PROVIDER_REGISTRY[provider_id]
+    except KeyError as error:
+        available = ", ".join(PROMINENCE_PROVIDER_REGISTRY)
+        raise ValueError(
+            f"unknown prominence provider ID {provider_id!r}; available: {available}"
+        ) from error
+    return provider_id
+
+
 class VerifierOperator(StrEnum):
     """Supported comparison operations for fixture-state verification."""
 
@@ -260,6 +283,7 @@ class ExperimentDefinition:
     seeds: tuple[int, ...]
     run_count: int
     model_trials: tuple[int, ...] = (0,)
+    prominence_provider_ids: tuple[str, ...] = ("heuristic",)
 
     def __post_init__(self) -> None:
         if self.run_count <= 0:
@@ -272,6 +296,14 @@ class ExperimentDefinition:
         object.__setattr__(self, "policies", tuple(self.policies))
         object.__setattr__(self, "seeds", tuple(self.seeds))
         object.__setattr__(self, "model_trials", tuple(self.model_trials))
+        provider_ids = tuple(self.prominence_provider_ids)
+        if not provider_ids:
+            raise ValueError("experiment needs at least one prominence provider")
+        if len(provider_ids) != len(set(provider_ids)):
+            raise ValueError("experiment prominence providers must be unique")
+        for provider_id in provider_ids:
+            resolve_prominence_provider_id(provider_id)
+        object.__setattr__(self, "prominence_provider_ids", provider_ids)
 
 
 @dataclass(frozen=True, slots=True)

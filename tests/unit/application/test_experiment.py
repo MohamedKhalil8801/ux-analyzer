@@ -90,6 +90,7 @@ def _definition(
     policies: tuple[ExperimentPolicy, ...],
     seeds: tuple[int, ...] = (),
     model_trials: tuple[int, ...] = (0,),
+    prominence_provider_ids: tuple[str, ...] = ("heuristic",),
 ) -> ExperimentDefinition:
     return ExperimentDefinition(
         id="core",
@@ -100,6 +101,7 @@ def _definition(
         policies=policies,
         seeds=seeds,
         model_trials=model_trials,
+        prominence_provider_ids=prominence_provider_ids,
         run_count=10,
     )
 
@@ -196,6 +198,57 @@ def test_zero_model_trial_preserves_legacy_run_id_payload() -> None:
     assert deterministic_run_id(**kwargs, model_trial=1) != deterministic_run_id(
         **kwargs, model_trial=0
     )
+
+
+def test_heuristic_provider_preserves_legacy_run_id_payload() -> None:
+    kwargs = {
+        "experiment_id": "core",
+        "scenario_id": "invite",
+        "application_version_id": "app-defective",
+        "persona_id": "new-user",
+        "policy": ExperimentPolicy.PROGRESSIVE_PROMINENCE,
+        "seed": 7,
+        "config_digest": "config-sha",
+    }
+
+    assert deterministic_run_id(**kwargs, prominence_provider_id="heuristic") == (
+        "run-6efda27bcc2d4245830ceae8ca1c030f42d90153e47ebea15d740593993cfadf"
+    )
+    assert deterministic_run_id(
+        **kwargs, prominence_provider_id="foveacast"
+    ) != deterministic_run_id(**kwargs, prominence_provider_id="heuristic")
+
+
+def test_prominence_providers_expand_as_independent_matrix_axis() -> None:
+    specs = expand_experiment(
+        _definition(
+            (ExperimentPolicy.PROGRESSIVE_PROMINENCE,),
+            seeds=(7,),
+            prominence_provider_ids=("heuristic", "foveacast"),
+        ),
+        project=_project(),
+        config_digest="config-sha",
+    )
+
+    assert len(specs) == 4
+    assert {spec.prominence_provider_id for spec in specs} == {
+        "heuristic",
+        "foveacast",
+    }
+    assert {(spec.seed, spec.model_trial) for spec in specs} == {(7, 0)}
+    assert len({spec.run_id for spec in specs}) == 4
+
+
+def test_unknown_prominence_provider_rejected_during_expansion() -> None:
+    with pytest.raises(ValueError, match="unknown prominence provider"):
+        expand_experiment(
+            _definition(
+                (ExperimentPolicy.FULL_LIST,),
+                prominence_provider_ids=("unknown",),
+            ),
+            project=_project(),
+            config_digest="config-sha",
+        )
 
 
 def test_explicit_seed_matrix_replaces_default_run_count_seeds() -> None:

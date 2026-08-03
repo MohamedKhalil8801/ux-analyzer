@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -13,6 +14,7 @@ from typing import Any, cast
 _CHECKPOINT_NAME = "experiment-progress.json"
 _SCHEMA_VERSION = 1
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
+_QUARANTINE_DIR = ".quarantine"
 
 
 class CheckpointError(ValueError):
@@ -33,7 +35,13 @@ class ExperimentCheckpoint:
 class ExperimentCheckpointStore:
     """Persist per-run experiment progress using atomic same-directory replace."""
 
-    def __init__(self, output: Path, selected_run_ids: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        output: Path,
+        selected_run_ids: tuple[str, ...],
+        *,
+        selected_prominence_provider_ids: Mapping[str, str] | None = None,
+    ) -> None:
         selected = tuple(selected_run_ids)
         if not selected or len(selected) != len(set(selected)):
             raise CheckpointError("selected run IDs must be non-empty and unique")
@@ -43,6 +51,14 @@ class ExperimentCheckpointStore:
         self.path = self.output / _CHECKPOINT_NAME
         self.temporary_path = self.output / f".{_CHECKPOINT_NAME}.tmp"
         self.selected_run_ids = selected
+        selected_providers = dict(selected_prominence_provider_ids or {})
+        if set(selected_providers) - set(selected):
+            raise CheckpointError(
+                "selected prominence providers contain an unknown run ID"
+            )
+        if any(not provider_id for provider_id in selected_providers.values()):
+            raise CheckpointError("selected prominence provider IDs must be non-empty")
+        self.selected_prominence_provider_ids = selected_providers
         self._statuses = {run_id: "pending" for run_id in selected}
         self._failure_types: dict[str, str] = {}
         self._interrupted: set[str] = set()
@@ -125,6 +141,19 @@ class ExperimentCheckpointStore:
             archived.append(destination)
         return tuple(archived)
 
+    def _quarantine_invalid_finalized_bundle(self, run_id: str) -> None:
+        bundle = self.output / "runs" / run_id
+        if not (bundle.exists() or bundle.is_symlink()):
+            return
+        quarantine_root = self.output / _QUARANTINE_DIR
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        destination = quarantine_root / run_id
+        suffix = 1
+        while destination.exists():
+            destination = quarantine_root / f"{run_id}-{suffix}"
+            suffix += 1
+        shutil.move(str(bundle), str(destination))
+
     def _require_selected(self, run_id: str) -> None:
         if run_id not in self._statuses:
             raise CheckpointError(f"run ID is not in selected matrix: {run_id}")
@@ -182,11 +211,17 @@ class ExperimentCheckpointStore:
 
     def _reconcile_filesystem(self) -> None:
         for run_id in self.selected_run_ids:
-            if finalized_bundle_is_valid(self.output, run_id):
+            expected_provider = self.selected_prominence_provider_ids.get(run_id)
+            if finalized_bundle_is_valid(
+                self.output,
+                run_id,
+                expected_prominence_provider_id=expected_provider,
+            ):
                 self._statuses[run_id] = "finalized"
                 self._failure_types.pop(run_id, None)
                 self._interrupted.discard(run_id)
                 continue
+            self._quarantine_invalid_finalized_bundle(run_id)
             self._statuses[run_id] = "pending"
             if (self.output / ".staging" / run_id).is_dir():
                 self._interrupted.add(run_id)
@@ -212,17 +247,29 @@ class ExperimentCheckpointStore:
         os.replace(self.temporary_path, self.path)
 
 
-def finalized_bundle_is_valid(output: Path, run_id: str) -> bool:
+def finalized_bundle_is_valid(
+    output: Path,
+    run_id: str,
+    *,
+    expected_prominence_provider_id: str | None = None,
+) -> bool:
     """Return whether a selected finalized bundle is complete and trustworthy."""
 
     if not run_id or Path(run_id).name != run_id:
         return False
     bundle = Path(output) / "runs" / run_id
-    return not finalized_bundle_failures(bundle, expected_run_id=run_id)
+    return not finalized_bundle_failures(
+        bundle,
+        expected_run_id=run_id,
+        expected_prominence_provider_id=expected_prominence_provider_id,
+    )
 
 
 def finalized_bundle_failures(
-    bundle: Path, *, expected_run_id: str | None = None
+    bundle: Path,
+    *,
+    expected_run_id: str | None = None,
+    expected_prominence_provider_id: str | None = None,
 ) -> list[str]:
     """Return integrity and terminal-structure failures for a finalized bundle."""
 
@@ -287,6 +334,12 @@ def finalized_bundle_failures(
     manifest = _read_json_object(bundle / "manifest.json", "manifest.json", failures)
     result = _read_json_object(bundle / "result.json", "result.json", failures)
     events = _read_json_lines(bundle / "timeline.jsonl", failures)
+    if expected_prominence_provider_id is not None:
+        actual_provider = manifest.get("prominence_provider_id", "heuristic")
+        if actual_provider != expected_prominence_provider_id:
+            failures.append(
+                "manifest prominence provider ID does not match selected run"
+            )
     embedded_ids = [
         value
         for value in (
@@ -327,9 +380,7 @@ def finalized_bundle_failures(
     return list(dict.fromkeys(failures))
 
 
-def _read_json_object(
-    path: Path, name: str, failures: list[str]
-) -> dict[str, object]:
+def _read_json_object(path: Path, name: str, failures: list[str]) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):

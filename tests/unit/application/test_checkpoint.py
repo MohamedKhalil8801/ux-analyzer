@@ -9,6 +9,7 @@ from ux_analyzer.application.checkpoint import (
     ExperimentCheckpointStore,
     finalized_bundle_is_valid,
 )
+from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
 
 def _write_finalized_bundle(
@@ -16,16 +17,18 @@ def _write_finalized_bundle(
     run_id: str,
     *,
     manifest_run_id: str | None = None,
+    manifest_prominence_provider_id: str | None = None,
     result_run_id: str | None = None,
     terminal: bool = True,
     outcome: bool = True,
 ) -> Path:
     run_path = root / "runs" / run_id
     run_path.mkdir(parents=True)
+    manifest = {"run_id": manifest_run_id or run_id, "seed": 0}
+    if manifest_prominence_provider_id is not None:
+        manifest["prominence_provider_id"] = manifest_prominence_provider_id
     content = {
-        "manifest.json": json.dumps(
-            {"run_id": manifest_run_id or run_id, "seed": 0}
-        ).encode(),
+        "manifest.json": json.dumps(manifest).encode(),
         "timeline.jsonl": (
             json.dumps(
                 {
@@ -141,3 +144,49 @@ def test_invalid_checksum_is_not_resumable(tmp_path: Path) -> None:
     )
 
     assert not finalized_bundle_is_valid(tmp_path, "run-1")
+
+
+def test_resume_rejects_bundle_with_wrong_prominence_provider(tmp_path: Path) -> None:
+    _write_finalized_bundle(
+        tmp_path,
+        "run-foveacast",
+        manifest_prominence_provider_id="heuristic",
+    )
+
+    assert not finalized_bundle_is_valid(
+        tmp_path,
+        "run-foveacast",
+        expected_prominence_provider_id="foveacast",
+    )
+
+
+def test_resume_quarantines_wrong_provider_bundle_before_retry(tmp_path: Path) -> None:
+    run_id = "run-foveacast"
+    _write_finalized_bundle(
+        tmp_path,
+        run_id,
+        manifest_prominence_provider_id="heuristic",
+    )
+
+    store = ExperimentCheckpointStore(
+        tmp_path,
+        (run_id,),
+        selected_prominence_provider_ids={run_id: "foveacast"},
+    )
+    state = store.initialize(resume=True)
+
+    assert state.pending_run_ids == (run_id,)
+    assert not (tmp_path / "runs" / run_id).exists()
+    assert (tmp_path / ".quarantine" / run_id / "manifest.json").is_file()
+
+    writer = FilesystemRunBundleWriter.start(
+        tmp_path,
+        {
+            "run_id": run_id,
+            "seed": 0,
+            "config_digest": "digest",
+            "endpoint_origin": "https://example.test",
+            "prominence_provider_id": "foveacast",
+        },
+    )
+    writer.abort("retry regression")

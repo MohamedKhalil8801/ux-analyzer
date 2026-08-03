@@ -17,6 +17,7 @@ from ux_analyzer.domain.benchmark import (
     ExperimentPolicy,
     Persona,
     Scenario,
+    resolve_prominence_provider_id,
 )
 from ux_analyzer.domain.interface import (
     PrivateExecutionReference,
@@ -86,12 +87,14 @@ class RunSpec:
     policy: ExperimentPolicy
     config_digest: str
     model_trial: int = 0
+    prominence_provider_id: str = "heuristic"
 
     def __post_init__(self) -> None:
         if not self.run_id:
             raise ValueError("run_id must not be empty")
         if not self.config_digest:
             raise ValueError("config_digest must not be empty")
+        resolve_prominence_provider_id(self.prominence_provider_id)
         if self.application_version.id not in self.scenario.application_version_ids:
             raise ValueError("application version is not eligible for scenario")
         if self.persona.id not in self.scenario.eligible_persona_ids:

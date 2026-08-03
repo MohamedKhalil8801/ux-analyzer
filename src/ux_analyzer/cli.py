@@ -67,6 +67,7 @@ from ux_analyzer.domain.benchmark import (
     ApplicationVersionKind,
     ExperimentDefinition,
     ExperimentPolicy,
+    resolve_prominence_provider_id,
 )
 from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
@@ -286,6 +287,9 @@ def run_one(
     persona: str = typer.Option(..., "--persona"),
     policy: str = typer.Option(..., "--policy"),
     seed: int = typer.Option(..., "--seed"),
+    prominence_provider_id: str = typer.Option(
+        "heuristic", "--prominence-provider", "--prominence-provider-id"
+    ),
     output: Path = typer.Option(Path("reports"), "--output"),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -305,6 +309,7 @@ def run_one(
         persona_id=persona,
         policy=policy,
         seed=seed,
+        prominence_provider_id=prominence_provider_id,
     )
     settings: OpenAICompatibleSettings | None = None
     if check_env or not dry_run:
@@ -458,7 +463,11 @@ def _run_experiment_command(
             )
         else:
             checkpoint = ExperimentCheckpointStore(
-                output, tuple(spec.run_id for spec in matrix.specs)
+                output,
+                tuple(spec.run_id for spec in matrix.specs),
+                selected_prominence_provider_ids={
+                    spec.run_id: spec.prominence_provider_id for spec in matrix.specs
+                },
             )
             checkpoint.initialize()
     except CheckpointError as error:
@@ -502,7 +511,11 @@ def _prepare_resumed_matrix(
     """Reconcile a selected matrix with integrity-valid finalized bundles."""
 
     store = ExperimentCheckpointStore(
-        output, tuple(spec.run_id for spec in matrix.specs)
+        output,
+        tuple(spec.run_id for spec in matrix.specs),
+        selected_prominence_provider_ids={
+            spec.run_id: spec.prominence_provider_id for spec in matrix.specs
+        },
     )
     state = store.initialize(resume=True)
     finalized = set(state.finalized_run_ids)
@@ -569,6 +582,7 @@ def _resolve_single_run(
     persona_id: str,
     policy: str,
     seed: int,
+    prominence_provider_id: str = "heuristic",
 ) -> _ResolvedMatrix:
     """Resolve semantic identifiers into one deterministic run specification."""
 
@@ -611,6 +625,7 @@ def _resolve_single_run(
         policies=(selected_policy,),
         seeds=(seed,),
         run_count=1,
+        prominence_provider_ids=(prominence_provider_id,),
     )
     specs = expand_experiment(
         ExperimentContext(
@@ -626,6 +641,7 @@ def _resolve_single_run(
 
 def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     policy_names = tuple(policy.value for policy in matrix.definition.policies)
+    provider_names = matrix.definition.prominence_provider_ids
     configured_seeds = matrix.definition.seeds or tuple(
         range(matrix.definition.run_count)
     )
@@ -636,6 +652,7 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
             spec.application_version.id,
             spec.persona.id,
             spec.policy.value,
+            spec.prominence_provider_id,
         )
         for spec in matrix.specs
     )
@@ -645,6 +662,7 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
             spec.application_version.id,
             spec.persona.id,
             spec.policy.value,
+            spec.prominence_provider_id,
             spec.model_trial,
         )
         for spec in matrix.specs
@@ -652,6 +670,7 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     typer.echo(f"project: {matrix.loaded.project.id}")
     typer.echo(f"experiment: {matrix.definition.id}")
     typer.echo(f"policies: {', '.join(policy_names)}")
+    typer.echo(f"prominence providers: {', '.join(provider_names)}")
     typer.echo(f"workers: {workers}")
     typer.echo(f"configured seeds: {len(configured_seeds)}")
     typer.echo(f"run specs: {len(matrix.specs)}")
@@ -673,8 +692,11 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
         timeout_summary = f"{next(iter(timeouts)):g}s"
     typer.echo(f"overall run timeout: {timeout_summary}")
     typer.echo("matrix:")
-    for (scenario, version, persona, policy), count in sorted(cells.items()):
-        typer.echo(f"- {scenario}/{version}/{persona}/{policy}: {count} runs")
+    for (scenario, version, persona, policy, provider), count in sorted(cells.items()):
+        typer.echo(
+            f"- {scenario}/{version}/{persona}/{policy}: {count} runs "
+            f"(prominence-provider={provider})"
+        )
 
 
 def _model_settings_or_exit() -> OpenAICompatibleSettings:
@@ -955,6 +977,7 @@ class _BundleFactory:
         self._runtime = runtime
 
     def start(self, spec: RunSpec) -> RunBundleWriter:
+        resolve_prominence_provider_id(spec.prominence_provider_id)
         scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
         model_manifests = [
             ProviderManifest(
@@ -1005,6 +1028,7 @@ class _BundleFactory:
                 "observation": "fixture-web-v1",
                 "models": "openai-compatible-v1",
                 "prominence": self._runtime.prominence.version,
+                "prominence-provider": spec.prominence_provider_id,
                 "attention": self._runtime.attention.version,
                 "discovery_cost": self._runtime.discovery_cost.version,
                 "findings": self._runtime.findings.version,
@@ -1068,7 +1092,9 @@ async def _execute_matrix(
                 if failure is not None:
                     checkpoint.record_failure(spec.run_id, failure.error_type)
                 elif result is not None and finalized_bundle_is_valid(
-                    output, spec.run_id
+                    output,
+                    spec.run_id,
+                    expected_prominence_provider_id=spec.prominence_provider_id,
                 ):
                     checkpoint.record_finalized(spec.run_id)
                 else:
@@ -1096,6 +1122,7 @@ def _build_agent(
     fixture_http_client: httpx.AsyncClient | None = None,
     profile_output: Path | None = None,
 ) -> RunAgent:
+    resolve_prominence_provider_id(spec.prominence_provider_id)
     provider = _FixtureObservationProvider(
         adapter,
         fixture_origin,
@@ -1199,8 +1226,9 @@ def _complete_experiment(
         evaluable = tuple(item for item in run_results if item.metrics is not None)
         evaluation = evaluate_experiment_results(evaluable)
         run_metrics = evaluation.run_metrics
-        cell_aggregates = evaluation.cell_aggregates
-        variant_comparisons = evaluation.variant_comparisons
+        grouping_specs = tuple(item.state.spec for item in run_results)
+        cell_aggregates = _provider_cell_aggregates(run_metrics, grouping_specs)
+        variant_comparisons = _compare_selected_variants(run_metrics, grouping_specs)
         findings_by_run: dict[str, object] = {
             item.run_id: item.findings or () for item in run_results
         }
@@ -1208,7 +1236,7 @@ def _complete_experiment(
         run_metrics, findings_by_run = _selected_finalized_evidence(
             output, selected_specs, run_results
         )
-        cell_aggregates = aggregate_cells(run_metrics) if run_metrics else ()
+        cell_aggregates = _provider_cell_aggregates(run_metrics, selected_specs)
         variant_comparisons = _compare_selected_variants(run_metrics, selected_specs)
     failures = [
         *(_experiment_failure_record(item) for item in result.failures),
@@ -1248,24 +1276,66 @@ def _complete_experiment(
     return summary_path, report_path
 
 
+def _provider_cell_aggregates(
+    metrics: Sequence[RunMetrics], specs: Sequence[RunSpec]
+) -> tuple[dict[str, object], ...]:
+    """Serialize cell aggregates without merging prominence provider axes."""
+
+    specs_by_run = {spec.run_id: spec for spec in specs}
+    groups: dict[str, list[RunMetrics]] = {}
+    for metric in metrics:
+        spec = specs_by_run.get(metric.run_id)
+        if spec is not None:
+            groups.setdefault(spec.prominence_provider_id, []).append(metric)
+    rows: list[dict[str, object]] = []
+    for provider_id in sorted(groups):
+        for aggregate in aggregate_cells(groups[provider_id]):
+            value = _json_data(aggregate)
+            if not isinstance(value, dict):
+                raise TypeError("cell aggregate did not serialize to an object")
+            row = cast(dict[str, object], value)
+            row["prominence_provider_id"] = provider_id
+            rows.append(row)
+    return tuple(rows)
+
+
 def _selected_finalized_evidence(
     output: Path,
     selected_specs: Sequence[RunSpec],
     returned_results: Sequence[RunResult],
 ) -> tuple[tuple[RunMetrics, ...], dict[str, object]]:
-    metrics_by_run = {
-        result.run_id: result.metrics
-        for result in returned_results
-        if result.metrics is not None
+    selected_by_run = {spec.run_id: spec for spec in selected_specs}
+    returned_metric_run_ids = {
+        result.run_id for result in returned_results if result.metrics is not None
     }
-    findings_by_run: dict[str, object] = {
-        result.run_id: result.findings or () for result in returned_results
-    }
+    metrics_by_run: dict[str, RunMetrics] = {}
+    findings_by_run: dict[str, object] = {}
+    for result in returned_results:
+        spec = selected_by_run.get(result.run_id)
+        if spec is None or result.metrics is None:
+            continue
+        if result.state.spec.prominence_provider_id != spec.prominence_provider_id:
+            continue
+        if not finalized_bundle_is_valid(
+            output,
+            spec.run_id,
+            expected_prominence_provider_id=spec.prominence_provider_id,
+        ):
+            continue
+        metrics_by_run[result.run_id] = result.metrics
+        findings_by_run[result.run_id] = result.findings or ()
     adapter = TypeAdapter(RunMetrics)
     for spec in selected_specs:
-        if spec.run_id in metrics_by_run:
+        if (
+            spec.run_id in metrics_by_run
+            or spec.run_id in returned_metric_run_ids
+        ):
             continue
-        if not finalized_bundle_is_valid(output, spec.run_id):
+        if not finalized_bundle_is_valid(
+            output,
+            spec.run_id,
+            expected_prominence_provider_id=spec.prominence_provider_id,
+        ):
             continue
         result_path = output / "runs" / spec.run_id / "result.json"
         try:
@@ -1294,7 +1364,7 @@ def _compare_selected_variants(
 ) -> tuple[object, ...]:
     specs_by_run = {spec.run_id: spec for spec in selected_specs}
     groups: dict[
-        tuple[str, str, str, int], dict[ApplicationVersionKind, list[RunMetrics]]
+        tuple[str, str, str, int, str], dict[ApplicationVersionKind, list[RunMetrics]]
     ] = {}
     for metric in metrics:
         spec = specs_by_run.get(metric.run_id)
@@ -1305,6 +1375,7 @@ def _compare_selected_variants(
             metric.persona_id,
             metric.policy,
             metric.model_trial,
+            spec.prominence_provider_id,
         )
         groups.setdefault(key, {}).setdefault(spec.application_version.kind, []).append(
             metric
@@ -1319,7 +1390,19 @@ def _compare_selected_variants(
             and {(item.seed, item.model_trial) for item in baseline}
             == {(item.seed, item.model_trial) for item in improved}
         ):
-            comparisons.append(compare_variants(baseline, improved))
+            provider_id = key[-1]
+            comparison = _json_data(compare_variants(baseline, improved))
+            if not isinstance(comparison, dict):
+                raise TypeError("variant comparison did not serialize to an object")
+            comparison_row = cast(dict[str, object], comparison)
+            comparison_row["prominence_provider_id"] = provider_id
+            for variant_name in ("baseline", "improved"):
+                variant = comparison_row.get(variant_name)
+                if isinstance(variant, dict):
+                    cast(dict[str, object], variant)["prominence_provider_id"] = (
+                        provider_id
+                    )
+            comparisons.append(comparison_row)
     return tuple(comparisons)
 
 
@@ -1368,6 +1451,7 @@ def _invalid_ux_sample_record(result: RunResult) -> dict[str, object]:
         "policy": spec.policy.value,
         "seed": spec.seed,
         "model_trial": spec.model_trial,
+        "prominence_provider_id": spec.prominence_provider_id,
     }
 
 
@@ -1385,6 +1469,7 @@ def _experiment_failure_record(failure: ExperimentFailure) -> dict[str, object]:
         "policy": spec.policy.value,
         "seed": spec.seed,
         "model_trial": spec.model_trial,
+        "prominence_provider_id": spec.prominence_provider_id,
     }
 
 
@@ -1403,6 +1488,7 @@ def _evaluation_failure_record(result: RunResult) -> dict[str, object]:
         "policy": spec.policy.value,
         "seed": spec.seed,
         "model_trial": spec.model_trial,
+        "prominence_provider_id": spec.prominence_provider_id,
     }
 
 

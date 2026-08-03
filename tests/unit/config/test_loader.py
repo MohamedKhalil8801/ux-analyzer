@@ -60,6 +60,111 @@ def test_missing_model_trials_defaults_to_zero() -> None:
     assert loaded.project.experiments[0].model_trials == (0,)
 
 
+def test_missing_prominence_provider_ids_defaults_to_heuristic() -> None:
+    loaded = load_project(FIXTURE_PATH)
+
+    assert loaded.project.experiments[0].prominence_provider_ids == ("heuristic",)
+    assert loaded.runtime.saliency.model_set == ("foveacast-v0.2.0",)
+    assert loaded.runtime.saliency.execution_provider_preference == "auto"
+    assert loaded.runtime.saliency.fallback.provider_id == "heuristic"
+
+
+def test_loads_saliency_provider_configuration_and_provider_axis(
+    tmp_path: Path,
+) -> None:
+    project = _read_project()
+    project["providers"] = {
+        "prominence": {
+            "version": "heuristic-project-v2",
+            "weights": {"contrast": 0.7},
+            "temperature": 0.75,
+        },
+        "saliency": {
+            "model_set": ["foveacast-v0.2.0"],
+            "precision": "fp16",
+            "execution_provider_preference": "cpu",
+            "cache": {"enabled": False, "scope": "experiment"},
+            "aggregation": {
+                "version": "aggregation-project-v2",
+                "density_weight": 0.5,
+                "robust_peak_weight": 0.3,
+                "mass_share_weight": 0.2,
+                "temperature": 0.8,
+            },
+            "stage_selector": {
+                "version": "stage-project-v2",
+                "temperature": 0.9,
+                "stage_mixtures": {"initial": {"1s": 1.0}},
+            },
+            "fallback": {"enabled": True, "provider_id": "heuristic"},
+        },
+    }
+    project["experiments"][0]["prominence_provider_ids"] = [
+        "heuristic",
+        "foveacast",
+    ]
+
+    loaded = load_project(_write_project(tmp_path, project))
+
+    assert loaded.project.experiments[0].prominence_provider_ids == (
+        "heuristic",
+        "foveacast",
+    )
+    assert loaded.runtime.prominence.version == "heuristic-project-v2"
+    assert loaded.runtime.saliency.model_set == ("foveacast-v0.2.0",)
+    assert loaded.runtime.saliency.execution_provider_preference == "cpu"
+    assert loaded.runtime.saliency.cache.enabled is False
+    assert loaded.runtime.saliency.aggregation.version == "aggregation-project-v2"
+    assert loaded.runtime.saliency.stage_selector.version == "stage-project-v2"
+    assert loaded.runtime.saliency.stage_selector.mixtures == {"initial": {"1s": 1.0}}
+
+
+def test_unknown_prominence_provider_id_is_rejected_before_execution(
+    tmp_path: Path,
+) -> None:
+    project = _read_project()
+    project["experiments"][0]["prominence_provider_ids"] = ["unknown"]
+
+    with pytest.raises(ProjectConfigError, match="unknown prominence provider"):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_duplicate_prominence_provider_ids_are_rejected_as_project_config_error(
+    tmp_path: Path,
+) -> None:
+    project = _read_project()
+    project["experiments"][0]["prominence_provider_ids"] = ["heuristic", "heuristic"]
+
+    with pytest.raises(ProjectConfigError, match="duplicate prominence provider"):
+        load_project(_write_project(tmp_path, project))
+
+
+@pytest.mark.parametrize(
+    "model_set",
+    ([""], ["foveacast-v0.2.0", "foveacast-v0.2.0"]),
+)
+def test_saliency_model_ids_must_be_non_empty_and_unique(
+    tmp_path: Path, model_set: list[str]
+) -> None:
+    project = _read_project()
+    project["providers"] = {"saliency": {"model_set": model_set}}
+
+    with pytest.raises(ProjectConfigError, match="saliency model ID"):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_invalid_heuristic_config_is_not_labeled_as_saliency_config(
+    tmp_path: Path,
+) -> None:
+    project = _read_project()
+    project["providers"] = {"prominence": {"weights": {"unknown": 1.0}}}
+
+    with pytest.raises(ProjectConfigError, match="invalid prominence config") as error:
+        load_project(_write_project(tmp_path, project))
+
+    assert "invalid saliency config" not in str(error.value)
+
+
 def test_scenario_timeout_can_be_null_or_omitted(tmp_path: Path) -> None:
     project = _read_project()
     project["scenarios"][0]["budget"]["timeout_seconds"] = None

@@ -87,6 +87,7 @@ def _write_resumable_metrics_bundle(
     *,
     cost: float,
     include_model_trial: bool = True,
+    manifest_prominence_provider_id: str | None = None,
 ) -> None:
     run = root / "runs" / spec.run_id
     run.mkdir(parents=True)
@@ -123,6 +124,11 @@ def _write_resumable_metrics_bundle(
     manifest = {"run_id": spec.run_id, "seed": spec.seed}
     if include_model_trial:
         manifest["model_trial"] = spec.model_trial
+    manifest["prominence_provider_id"] = (
+        spec.prominence_provider_id
+        if manifest_prominence_provider_id is None
+        else manifest_prominence_provider_id
+    )
     contents = {
         "manifest.json": json.dumps(manifest).encode(),
         "timeline.jsonl": (
@@ -395,7 +401,7 @@ def test_resume_completion_evaluates_all_selected_finalized_bundles(
 
         from ux_analyzer.application.evaluation import RunMetrics
         from ux_analyzer.application.run_agent import RunResult
-        from ux_analyzer.domain.run import VerifiedSuccess
+        from ux_analyzer.domain.run import RunState, VerifiedSuccess
         from ux_analyzer.ports.verification import VerificationResult
 
         persisted = json.loads(
@@ -407,7 +413,7 @@ def test_resume_completion_evaluates_all_selected_finalized_bundles(
                 outcome=VerifiedSuccess(),
                 verification=VerificationResult(verified=True),
                 agent_claimed_success=True,
-                state=None,  # type: ignore[arg-type]
+                state=RunState.initial(selected[-1]),
                 metrics=TypeAdapter(RunMetrics).validate_python(persisted["metrics"]),
             ),
         )
@@ -471,6 +477,107 @@ def test_resume_completion_keeps_model_trials_separate_for_variant_comparisons(
     }
 
 
+def test_resume_completion_excludes_finalized_bundle_with_wrong_provider(
+    tmp_path: Path,
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["prominence_provider_ids"] = ["heuristic", "foveacast"]
+    project_path = tmp_path / "provider-axis.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    matrix = cli._resolve_matrix_or_exit(
+        project_path, "focused-validation", run_count=1, policies=()
+    )
+    foveacast_spec = next(
+        spec for spec in matrix.specs if spec.prominence_provider_id == "foveacast"
+    )
+    _write_resumable_metrics_bundle(
+        tmp_path,
+        foveacast_spec,
+        cost=1,
+        manifest_prominence_provider_id="heuristic",
+    )
+
+    summary_path, _ = cli._complete_experiment(
+        ExperimentResult(specs=(foveacast_spec,), results=(), failures=()),
+        output=tmp_path,
+        runtime=matrix.loaded.runtime,
+        selected_specs=(foveacast_spec,),
+    )
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["run_metrics"] == []
+    assert summary["variant_comparisons"] == []
+
+
+@pytest.mark.parametrize(
+    ("manifest_provider_id", "returned_provider_id"),
+    (("heuristic", "foveacast"), ("foveacast", "heuristic")),
+)
+def test_resume_completion_rejects_mismatched_manifest_or_returned_provider(
+    tmp_path: Path,
+    manifest_provider_id: str,
+    returned_provider_id: str,
+) -> None:
+    from pydantic import TypeAdapter
+
+    from ux_analyzer.application.evaluation import RunMetrics
+    from ux_analyzer.application.run_agent import RunResult
+    from ux_analyzer.domain.run import RunState, VerifiedSuccess
+    from ux_analyzer.ports.verification import VerificationResult
+
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["prominence_provider_ids"] = ["heuristic", "foveacast"]
+    project_path = tmp_path / "provider-axis.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    matrix = cli._resolve_matrix_or_exit(
+        project_path, "focused-validation", run_count=1, policies=()
+    )
+    foveacast_spec = next(
+        spec for spec in matrix.specs if spec.prominence_provider_id == "foveacast"
+    )
+    _write_resumable_metrics_bundle(
+        tmp_path,
+        foveacast_spec,
+        cost=1,
+        manifest_prominence_provider_id=manifest_provider_id,
+    )
+    persisted = json.loads(
+        (tmp_path / "runs" / foveacast_spec.run_id / "result.json").read_text()
+    )
+    returned_spec = replace(
+        foveacast_spec, prominence_provider_id=returned_provider_id
+    )
+    returned = RunResult(
+        run_id=foveacast_spec.run_id,
+        outcome=VerifiedSuccess(),
+        verification=VerificationResult(verified=True),
+        agent_claimed_success=True,
+        state=RunState.initial(returned_spec),
+        metrics=TypeAdapter(RunMetrics).validate_python(persisted["metrics"]),
+    )
+
+    summary_path, _ = cli._complete_experiment(
+        ExperimentResult(
+            specs=(foveacast_spec,), results=(returned,), failures=()
+        ),
+        output=tmp_path,
+        runtime=matrix.loaded.runtime,
+        selected_specs=(foveacast_spec,),
+    )
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["run_metrics"] == []
+    assert summary["variant_comparisons"] == []
+
+
 def test_ablate_selects_optional_policies_and_run_count_override(
     tmp_path: Path,
 ) -> None:
@@ -516,6 +623,137 @@ def test_focused_validation_dry_run_expands_exactly_four_balanced_cells(
     assert "run specs: 4" in result.stdout
     assert result.stdout.count("/full-list: 1 runs") == 2
     assert result.stdout.count("/progressive-prominence-scent: 1 runs") == 2
+
+
+def test_provider_axis_dry_run_expands_eight_cells_and_prints_provider(
+    tmp_path: Path,
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["prominence_provider_ids"] = ["heuristic", "foveacast"]
+    project_path = tmp_path / "provider-axis.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "focused-validation",
+            "--output",
+            str(tmp_path / "output"),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "prominence providers: heuristic, foveacast" in result.stdout
+    assert "run specs: 8" in result.stdout
+    assert "prominence-provider=foveacast" in result.stdout
+
+
+def test_bundle_manifest_records_prominence_provider_id(tmp_path: Path) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["prominence_provider_ids"] = ["heuristic", "foveacast"]
+    project_path = tmp_path / "provider-axis.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    loaded = load_project(project_path)
+    definition = next(
+        item for item in loaded.project.experiments if item.id == "focused-validation"
+    )
+    spec = next(
+        item
+        for item in expand_experiment(
+            ExperimentContext(definition, loaded.project, loaded.config_digest)
+        )
+        if item.prominence_provider_id == "foveacast"
+    )
+    settings = OpenAICompatibleSettings(
+        base_url="https://llm.example.test/v1",
+        api_key="secret",
+        scent_model="scent-model",
+        cognitive_model="cognitive-model",
+    )
+
+    writer = cli._BundleFactory(tmp_path, settings, loaded.runtime).start(spec)
+    manifest = json.loads((writer.staging_path / "manifest.json").read_text())
+    writer.abort("test complete")
+
+    assert manifest["prominence_provider_id"] == "foveacast"
+
+
+def test_resume_trust_requires_matching_prominence_provider_id(tmp_path: Path) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["prominence_provider_ids"] = ["heuristic", "foveacast"]
+    project_path = tmp_path / "provider-axis.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    matrix = cli._resolve_matrix_or_exit(
+        project_path, "focused-validation", run_count=1, policies=()
+    )
+    foveacast_spec = next(
+        spec for spec in matrix.specs if spec.prominence_provider_id == "foveacast"
+    )
+    _write_resumable_metrics_bundle(
+        tmp_path,
+        foveacast_spec,
+        cost=1,
+        manifest_prominence_provider_id="heuristic",
+    )
+
+    resumed, store = cli._prepare_resumed_matrix(matrix, tmp_path)
+
+    assert foveacast_spec.run_id in {spec.run_id for spec in resumed.specs}
+    assert foveacast_spec.run_id not in store.state.finalized_run_ids
+
+
+def test_resume_report_groups_variant_comparisons_by_prominence_provider(
+    tmp_path: Path,
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["prominence_provider_ids"] = ["heuristic", "foveacast"]
+    project_path = tmp_path / "provider-axis.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    matrix = cli._resolve_matrix_or_exit(
+        project_path, "focused-validation", run_count=1, policies=()
+    )
+    for index, spec in enumerate(matrix.specs):
+        _write_resumable_metrics_bundle(tmp_path, spec, cost=float(index + 1))
+
+    summary_path, _ = cli._complete_experiment(
+        ExperimentResult(specs=matrix.specs, results=(), failures=()),
+        output=tmp_path,
+        runtime=matrix.loaded.runtime,
+        selected_specs=matrix.specs,
+    )
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    comparisons = summary["variant_comparisons"]
+    assert len(comparisons) == 4
+    assert {item["prominence_provider_id"] for item in comparisons} == {
+        "heuristic",
+        "foveacast",
+    }
+    assert len(summary["cell_aggregates"]) == 8
+    assert {item["prominence_provider_id"] for item in summary["cell_aggregates"]} == {
+        "heuristic",
+        "foveacast",
+    }
 
 
 def test_production_policy_adapter_preserves_complete_list_observation() -> None:
@@ -937,6 +1175,7 @@ def test_complete_experiment_always_reports_all_failed_specs(tmp_path: Path) -> 
             "model_trial": spec.model_trial,
             "persona_id": spec.persona.id,
             "policy": spec.policy.value,
+            "prominence_provider_id": spec.prominence_provider_id,
             "reason": "browser capture failed",
             "run_id": spec.run_id,
             "scenario_id": spec.scenario.id,

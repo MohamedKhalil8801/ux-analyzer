@@ -772,6 +772,7 @@ def _coerce_manifest(value: BundleManifest | Mapping[str, object]) -> BundleMani
         application_version_id=cast(str | None, value.get("application_version_id")),
         persona_id=cast(str | None, value.get("persona_id")),
         policy=cast(str | None, value.get("policy")),
+        prominence_provider_id=str(value.get("prominence_provider_id", "heuristic")),
         model_ids=cast(Mapping[str, str], value.get("model_ids", {})),
         prompt_versions=cast(Mapping[str, str], value.get("prompt_versions", {})),
         package_version=str(value.get("package_version", "unknown")),

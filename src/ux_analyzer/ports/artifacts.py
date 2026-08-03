@@ -991,6 +991,7 @@ class BundleManifest:
     application_version_id: str | None = None
     persona_id: str | None = None
     policy: str | None = None
+    prominence_provider_id: str = "heuristic"
     model_ids: Mapping[str, str] = field(default_factory=_empty_string_mapping)
     prompt_versions: Mapping[str, str] = field(default_factory=_empty_string_mapping)
     package_version: str = __version__
@@ -1004,6 +1005,7 @@ class BundleManifest:
             ("config_digest", self.config_digest),
             ("endpoint_origin", self.endpoint_origin),
             ("package_version", self.package_version),
+            ("prominence_provider_id", self.prominence_provider_id),
         ):
             if not value:
                 raise ValueError(f"{name} must not be empty")
@@ -1049,6 +1051,7 @@ class BundleManifest:
             application_version_id=run_spec.application_version.id,
             persona_id=run_spec.persona.id,
             policy=run_spec.policy.value,
+            prominence_provider_id=run_spec.prominence_provider_id,
             model_ids=model_ids or {},
             prompt_versions=prompt_versions or {},
             package_version=package_version,
@@ -1069,6 +1072,7 @@ class BundleManifest:
             "application_version_id": self.application_version_id,
             "persona_id": self.persona_id,
             "policy": self.policy,
+            "prominence_provider_id": self.prominence_provider_id,
             "model_ids": dict(self.model_ids),
             "prompt_versions": dict(self.prompt_versions),
             "package_version": self.package_version,

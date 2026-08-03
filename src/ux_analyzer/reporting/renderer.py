@@ -43,6 +43,7 @@ _METRIC_IDENTITY_KEYS = frozenset(
         "scenario_id",
         "seed",
         "model_trial",
+        "prominence_provider_id",
     }
 )
 
@@ -298,6 +299,9 @@ def _load_run(path: Path) -> dict[str, Any]:
     run_id = _first_string(manifest.get("run_id"), result.get("run_id"), path.name)
     seed = int(_number(manifest.get("seed"), 0))
     model_trial = int(_number(manifest.get("model_trial"), 0))
+    prominence_provider_id = _first_string(
+        manifest.get("prominence_provider_id"), "heuristic"
+    )
     reproducibility = _text(metrics.get("reproducibility"), "seeded")
     reproducibility_label = (
         f"model-dependent (attention seed {seed}, model trial {model_trial})"
@@ -351,6 +355,7 @@ def _load_run(path: Path) -> dict[str, Any]:
         "integrity_status": "trusted" if trusted else "failed",
         "seed": seed,
         "model_trial": model_trial,
+        "prominence_provider_id": prominence_provider_id,
         "reproducibility": reproducibility,
         "reproducibility_label": reproducibility_label,
         "scenario_id": scenario_id,
@@ -415,6 +420,7 @@ def _report_context(
                     "integrity_status",
                     "seed",
                     "model_trial",
+                    "prominence_provider_id",
                     "reproducibility_label",
                     "scenario_id",
                     "scenario_label",
@@ -455,6 +461,7 @@ def _report_context(
                 "run_id",
                 "scenario_id",
                 "model_trial",
+                "prominence_provider_id",
                 "version_id",
                 "persona_id",
                 "policy",
@@ -1192,8 +1199,8 @@ def _findings(result: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str, str, int], list[dict[str, Any]]] = defaultdict(
-        list
+    groups: dict[tuple[str, str, str, str, str, int], list[dict[str, Any]]] = (
+        defaultdict(list)
     )
     for run in runs:
         if not run["trusted"] or not run["metrics"]:
@@ -1204,12 +1211,20 @@ def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 run["persona_id"],
                 run["policy"],
                 run["version_id"],
+                _text(run.get("prominence_provider_id"), "heuristic"),
                 int(run["model_trial"]),
             )
         ].append(run)
     rows: list[dict[str, Any]] = []
     for identity in sorted(groups):
-        scenario_id, persona_id, policy, version_id, model_trial = identity
+        (
+            scenario_id,
+            persona_id,
+            policy,
+            version_id,
+            prominence_provider_id,
+            model_trial,
+        ) = identity
         grouped = groups[identity]
         rows.append(
             {
@@ -1220,6 +1235,7 @@ def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 "policy": policy,
                 "version_id": version_id,
                 "version_label": grouped[0]["version_label"],
+                "prominence_provider_id": prominence_provider_id,
                 "model_trial": model_trial,
                 "reproducibility_label": _aggregate_reproducibility_label(grouped),
                 "run_count": len(grouped),
@@ -1267,6 +1283,9 @@ def _run_overview_rows(
                 "persona_id": run["persona_id"],
                 "persona_label": run["persona_label"],
                 "policy": run["policy"],
+                "prominence_provider_id": _text(
+                    run.get("prominence_provider_id"), "heuristic"
+                ),
                 "model_trial": int(_number(run.get("model_trial"), 0)),
                 "reproducibility_label": _text(
                     run.get("reproducibility_label"), "seeded"
@@ -1306,6 +1325,8 @@ def _gate_for_run(
         if row["scenario_id"] == run["scenario_id"]
         and row["persona_id"] == run["persona_id"]
         and row["policy"] == run["policy"]
+        and row["prominence_provider_id"]
+        == _text(run.get("prominence_provider_id"), "heuristic")
         and int(_number(row.get("model_trial"), 0))
         == int(_number(run.get("model_trial"), 0))
         and run["version_id"] in {row["baseline_version"], row["improved_version"]}
@@ -1347,6 +1368,9 @@ def _gate_rows(
         scenario_id = _text(baseline.get("scenario_id"))
         persona_id = _text(baseline.get("persona_id"))
         policy = _text(baseline.get("policy"))
+        prominence_provider_id = _text(
+            baseline.get("prominence_provider_id"), "heuristic"
+        )
         model_trial = int(_number(baseline.get("model_trial"), 0))
         matching = next(
             (
@@ -1355,6 +1379,8 @@ def _gate_rows(
                 if run["scenario_id"] == scenario_id
                 and run["persona_id"] == persona_id
                 and run["policy"] == policy
+                and _text(run.get("prominence_provider_id"), "heuristic")
+                == prominence_provider_id
                 and int(_number(run.get("model_trial"), 0)) == model_trial
                 and run["trusted"]
             ),
@@ -1369,6 +1395,7 @@ def _gate_rows(
                 "persona_id": persona_id,
                 "persona_label": matching.get("persona_label", persona_id),
                 "policy": policy,
+                "prominence_provider_id": prominence_provider_id,
                 "model_trial": model_trial,
                 "reproducibility_label": _text(
                     matching.get("reproducibility_label"), "seeded"
@@ -1391,7 +1418,9 @@ def _gate_rows(
                 ),
             }
         )
-    groups: dict[tuple[str, str, str, int], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str, int], list[dict[str, Any]]] = defaultdict(
+        list
+    )
     for run in runs:
         if run["trusted"] and run["ux_sample_valid"] and run["metrics"]:
             groups[
@@ -1399,6 +1428,7 @@ def _gate_rows(
                     run["scenario_id"],
                     run["persona_id"],
                     run["policy"],
+                    _text(run.get("prominence_provider_id"), "heuristic"),
                     int(_number(run.get("model_trial"), 0)),
                 )
             ].append(run)
@@ -1412,6 +1442,7 @@ def _gate_rows(
                     row["scenario_id"],
                     row["persona_id"],
                     row["policy"],
+                    _text(row.get("prominence_provider_id"), "heuristic"),
                     int(_number(row.get("model_trial"), 0)),
                 )
                 != identity
@@ -1488,6 +1519,9 @@ def _derived_gate_row(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
         "persona_id": sample["persona_id"],
         "persona_label": sample["persona_label"],
         "policy": sample["policy"],
+        "prominence_provider_id": _text(
+            sample.get("prominence_provider_id"), "heuristic"
+        ),
         "model_trial": int(_number(sample.get("model_trial"), 0)),
         "reproducibility_label": _aggregate_reproducibility_label(runs),
         "baseline_version": baseline[seeds[0]]["version_id"],
@@ -1545,6 +1579,8 @@ def _comparison_runs_are_trusted(
             and run["persona_id"] == _text(cell.get("persona_id"))
             and run["policy"] == _text(cell.get("policy"))
             and run["version_id"] == _text(cell.get("application_version_id"))
+            and _text(run.get("prominence_provider_id"), "heuristic")
+            == _text(cell.get("prominence_provider_id"), "heuristic")
             and int(_number(run.get("model_trial"), 0))
             == int(_number(cell.get("model_trial"), 0))
         ]
@@ -1669,6 +1705,7 @@ def _failure_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         "application_version_id",
         "persona_id",
         "policy",
+        "prominence_provider_id",
         "seed",
         "model_trial",
     )
@@ -1706,6 +1743,7 @@ def _merge_failure(run: dict[str, Any], failure: dict[str, Any]) -> None:
         ("version_id", "application_version_id"),
         ("persona_id", "persona_id"),
         ("policy", "policy"),
+        ("prominence_provider_id", "prominence_provider_id"),
         ("seed", "seed"),
         ("model_trial", "model_trial"),
     ):
@@ -1718,6 +1756,9 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
     scenario_id = _text(failure.get("scenario_id"), "unknown")
     version_id = _text(failure.get("application_version_id"), "unknown")
     persona_id = _text(failure.get("persona_id"), "unknown")
+    prominence_provider_id = _text(
+        failure.get("prominence_provider_id"), "heuristic"
+    )
     return {
         "run_id": run_id,
         "bundle_path": "",
@@ -1734,6 +1775,7 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
         "persona_id": persona_id,
         "persona_label": persona_id.replace("-", " ").title(),
         "policy": _text(failure.get("policy"), "unknown"),
+        "prominence_provider_id": prominence_provider_id,
         "outcome": _text(failure.get("error_type"), "failed"),
         "verified": False,
         "claimed": False,

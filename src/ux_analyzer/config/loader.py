@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 
 import yaml
@@ -19,6 +20,7 @@ from ux_analyzer.config.models import (
     ExperimentModel,
     FixtureStateVerifierModel,
     ProjectModel,
+    SaliencyProviderModel,
     ScenarioModel,
 )
 from ux_analyzer.domain.benchmark import (
@@ -37,6 +39,7 @@ from ux_analyzer.domain.benchmark import (
     VerifierOperator,
     VerifierSpec,
     VisibleResultVerifierSpec,
+    resolve_prominence_provider_id,
 )
 from ux_analyzer.providers.attention_policy import AttentionPolicyConfig
 from ux_analyzer.providers.finding_rules import FindingRuleConfig
@@ -44,10 +47,49 @@ from ux_analyzer.providers.prominence import (
     DEFAULT_PROMINENCE_WEIGHTS,
     HeuristicProminenceConfig,
 )
+from ux_analyzer.providers.saliency_aggregation import SaliencyAggregationConfig
 
 
 class ProjectConfigError(ValueError):
     """Raised when project YAML is invalid or internally inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class SaliencyCacheConfig:
+    """Experiment-scoped cache policy for learned saliency evidence."""
+
+    enabled: bool = True
+    scope: str = "experiment"
+
+
+@dataclass(frozen=True, slots=True)
+class SaliencyStageSelectorConfig:
+    """Versioned stage mixture and temperature configuration."""
+
+    version: str = "saliency-stage-selector-v1"
+    temperature: float = 1.0
+    mixtures: Mapping[str, Mapping[str, float]] = MappingProxyType({})
+
+
+@dataclass(frozen=True, slots=True)
+class SaliencyFallbackConfig:
+    """Operational fallback policy when learned prominence is unavailable."""
+
+    enabled: bool = True
+    provider_id: str = "heuristic"
+
+
+@dataclass(frozen=True, slots=True)
+class SaliencyRuntimeConfig:
+    """Resolved learned saliency provider configuration."""
+
+    model_set: tuple[str, ...]
+    precision: str
+    execution_provider_preference: str
+    cache: SaliencyCacheConfig
+    aggregation: SaliencyAggregationConfig
+    stage_selector: SaliencyStageSelectorConfig
+    fallback: SaliencyFallbackConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +102,7 @@ class RuntimeConfig:
     findings: FindingRuleConfig
     state_updates: StateUpdateConfig
     expectation_enabled: bool
+    saliency: SaliencyRuntimeConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,10 +145,11 @@ def load_project(path: Path) -> LoadedProject:
     _validate_references(config)
     project = _to_domain(config)
     digest = _canonical_digest(config.model_dump(mode="json"))
+    runtime = _to_runtime(config)
     return LoadedProject(
         project=project,
         config_digest=digest,
-        runtime=_to_runtime(config),
+        runtime=runtime,
     )
 
 
@@ -115,12 +159,21 @@ def _to_runtime(config: ProjectModel) -> RuntimeConfig:
     discovery = config.evaluation.discovery_cost
     findings = config.evaluation.findings
     state_updates = config.evaluation.state_updates
-    return RuntimeConfig(
-        prominence=HeuristicProminenceConfig(
+    saliency = config.providers.saliency or SaliencyProviderModel()
+    try:
+        prominence_runtime = HeuristicProminenceConfig(
             version=prominence.version,
             weights=prominence.weights or dict(DEFAULT_PROMINENCE_WEIGHTS),
             temperature=prominence.temperature,
-        ),
+        )
+    except ValueError as error:
+        raise ProjectConfigError(f"invalid prominence config: {error}") from error
+    try:
+        saliency_runtime = _to_saliency_runtime(saliency)
+    except ValueError as error:
+        raise ProjectConfigError(f"invalid saliency config: {error}") from error
+    return RuntimeConfig(
+        prominence=prominence_runtime,
         attention=AttentionPolicyConfig(
             version=attention.version,
             batch_size=attention.batch_size,
@@ -161,6 +214,45 @@ def _to_runtime(config: ProjectModel) -> RuntimeConfig:
             failure_frustration_delta=state_updates.failure_frustration_delta,
         ),
         expectation_enabled=config.providers.expectation.enabled,
+        saliency=saliency_runtime,
+    )
+
+
+def _to_saliency_runtime(config: SaliencyProviderModel) -> SaliencyRuntimeConfig:
+    aggregation = config.aggregation
+    stage_selector = config.stage_selector
+    mixtures = {
+        stage: MappingProxyType(dict(values))
+        for stage, values in stage_selector.mixtures.items()
+    }
+    resolve_prominence_provider_id(config.fallback.provider_id)
+    return SaliencyRuntimeConfig(
+        model_set=tuple(config.model_set),
+        precision=config.precision,
+        execution_provider_preference=config.execution_provider_preference,
+        cache=SaliencyCacheConfig(
+            enabled=config.cache.enabled,
+            scope=config.cache.scope,
+        ),
+        aggregation=SaliencyAggregationConfig(
+            version=aggregation.version,
+            density_weight=aggregation.density_weight,
+            robust_peak_weight=aggregation.robust_peak_weight,
+            mass_share_weight=aggregation.mass_share_weight,
+            temperature=aggregation.temperature,
+            meaningful_score_threshold=aggregation.meaningful_score_threshold,
+            semantic_roles=tuple(aggregation.semantic_roles),
+            structural_roles=tuple(aggregation.structural_roles),
+        ),
+        stage_selector=SaliencyStageSelectorConfig(
+            version=stage_selector.version,
+            temperature=stage_selector.temperature,
+            mixtures=MappingProxyType(mixtures),
+        ),
+        fallback=SaliencyFallbackConfig(
+            enabled=config.fallback.enabled,
+            provider_id=config.fallback.provider_id,
+        ),
     )
 
 
@@ -263,6 +355,17 @@ def _validate_references(config: ProjectModel) -> None:
                 raise ProjectConfigError(
                     f"experiment {experiment.id!r} references unknown persona {persona_id!r}"
                 )
+        if len(experiment.prominence_provider_ids) != len(
+            set(experiment.prominence_provider_ids)
+        ):
+            raise ProjectConfigError(
+                f"duplicate prominence provider ID in experiment {experiment.id!r}"
+            )
+        for provider_id in experiment.prominence_provider_ids:
+            try:
+                resolve_prominence_provider_id(provider_id)
+            except ValueError as error:
+                raise ProjectConfigError(str(error)) from error
 
 
 def _assert_unique_ids(kind: str, ids: Iterable[str]) -> None:
@@ -375,14 +478,41 @@ def _to_experiment(experiment: ExperimentModel) -> ExperimentDefinition:
         seeds=tuple(experiment.seeds),
         run_count=experiment.run_count,
         model_trials=tuple(experiment.model_trials),
+        prominence_provider_ids=tuple(experiment.prominence_provider_ids),
     )
 
 
 def _canonical_digest(payload: dict[str, object]) -> str:
+    normalized = _digest_compatibility_payload(payload)
     canonical = json.dumps(
-        payload,
+        normalized,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _digest_compatibility_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Keep omitted default provider settings out of legacy config identity."""
+
+    normalized = dict(payload)
+    providers_value = normalized.get("providers")
+    if isinstance(providers_value, dict):
+        providers = dict(cast(dict[str, object], providers_value))
+        if providers.get("saliency") is None:
+            providers.pop("saliency", None)
+        normalized["providers"] = providers
+    experiments_value = normalized.get("experiments")
+    if isinstance(experiments_value, list):
+        experiments: list[object] = []
+        for item in cast(list[object], experiments_value):
+            if isinstance(item, dict):
+                experiment = dict(cast(dict[str, object], item))
+                if experiment.get("prominence_provider_ids") == ["heuristic"]:
+                    experiment.pop("prominence_provider_ids", None)
+                experiments.append(experiment)
+            else:
+                experiments.append(item)
+        normalized["experiments"] = experiments
+    return normalized
