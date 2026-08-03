@@ -11,6 +11,9 @@ from typing import cast
 
 import yaml
 
+from ux_analyzer.application.saliency import (
+    ProminenceResult,
+)
 from ux_analyzer.domain.interface import (
     ElementRole,
     ElementSnapshot,
@@ -47,100 +50,8 @@ _DEFAULT_WEIGHTS = {
 DEFAULT_PROMINENCE_WEIGHTS = MappingProxyType(_DEFAULT_WEIGHTS)
 
 
-def _empty_float_map() -> dict[str, float]:
-    return {}
-
-
 def _empty_feature_override_map() -> dict[str, Mapping[str, float]]:
     return {}
-
-
-@dataclass(frozen=True, slots=True)
-class FeatureMeasurement:
-    """Raw feature, normalized feature, and its weighted contribution."""
-
-    raw: float
-    normalized: float
-    contribution: float
-
-
-@dataclass(frozen=True, slots=True)
-class ProminenceResult:
-    """One element score with enough detail for replay and diagnosis."""
-
-    element_id: str
-    raw_score: float
-    normalized_probability: float
-    feature_contributions: Mapping[str, float] = field(default_factory=_empty_float_map)
-    raw_values: Mapping[str, float] = field(default_factory=_empty_float_map)
-    normalized_values: Mapping[str, float] = field(default_factory=_empty_float_map)
-    first_notice_probability: float | None = None
-    notice_within_budget_probability: float | None = None
-
-    def __post_init__(self) -> None:
-        if not self.element_id:
-            raise ValueError("prominence element ID must not be empty")
-        for name, value in (
-            ("raw_score", self.raw_score),
-            ("normalized_probability", self.normalized_probability),
-        ):
-            if not math.isfinite(value):
-                raise ValueError(f"{name} must be finite")
-        if not 0 <= self.normalized_probability <= 1:
-            raise ValueError("normalized_probability must be between 0 and 1")
-        feature_contributions: dict[str, float] = dict(self.feature_contributions)
-        raw_values: dict[str, float] = dict(self.raw_values)
-        normalized_values: dict[str, float] = dict(self.normalized_values)
-        object.__setattr__(
-            self, "feature_contributions", MappingProxyType(feature_contributions)
-        )
-        object.__setattr__(self, "raw_values", MappingProxyType(raw_values))
-        object.__setattr__(
-            self, "normalized_values", MappingProxyType(normalized_values)
-        )
-        first_notice = self.first_notice_probability
-        if first_notice is None:
-            first_notice = self.normalized_probability
-            object.__setattr__(self, "first_notice_probability", first_notice)
-        within_budget = self.notice_within_budget_probability
-        if within_budget is None:
-            within_budget = self.normalized_probability
-            object.__setattr__(self, "notice_within_budget_probability", within_budget)
-        for name, value in (
-            ("first_notice_probability", first_notice),
-            ("notice_within_budget_probability", within_budget),
-        ):
-            if not 0 <= value <= 1:
-                raise ValueError(f"{name} must be between 0 and 1")
-
-    @property
-    def score(self) -> float:
-        """Compatibility alias for the unnormalized weighted score."""
-
-        return self.raw_score
-
-    @property
-    def probability(self) -> float:
-        """Compatibility alias for the normalized notice probability."""
-
-        return self.normalized_probability
-
-    @property
-    def feature_values(self) -> Mapping[str, FeatureMeasurement]:
-        """Combine raw, normalized, and contribution maps by feature."""
-
-        return MappingProxyType(
-            {
-                name: FeatureMeasurement(
-                    raw=self.raw_values.get(name, 0.0),
-                    normalized=self.normalized_values.get(name, 0.0),
-                    contribution=self.feature_contributions.get(name, 0.0),
-                )
-                for name in set(self.raw_values)
-                | set(self.normalized_values)
-                | set(self.feature_contributions)
-            }
-        )
 
 
 @dataclass(frozen=True, slots=True)
