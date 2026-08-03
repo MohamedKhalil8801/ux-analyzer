@@ -155,3 +155,67 @@ def test_model_home_honors_environment_override(
     monkeypatch.setenv("UXA_MODEL_HOME", str(tmp_path / "custom-models"))
 
     assert model_home() == tmp_path / "custom-models"
+
+
+def test_remove_rejects_symlinked_artifact_parent(tmp_path: Path) -> None:
+    manifest = load_manifest("foveacast-v0.2.0")
+    registry = ModelRegistry(model_home=tmp_path, manifest=manifest)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    artifact = manifest.artifacts[0]
+    artifact_parent = registry.artifact_path(artifact).parent
+    artifact_parent.parent.mkdir(parents=True)
+    try:
+        artifact_parent.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink fixture unavailable: {error}")
+
+    with pytest.raises(Exception, match="link|reparse|symlink"):
+        registry.remove()
+
+    assert not any(outside.iterdir())
+
+
+def test_remove_rejects_artifact_parent_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ux_analyzer.saliency.model_registry as registry_module
+
+    manifest = load_manifest("foveacast-v0.2.0")
+    registry = ModelRegistry(model_home=tmp_path, manifest=manifest)
+    artifact = manifest.artifacts[0]
+    artifact_path = registry.artifact_path(artifact)
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"installed")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_artifact = outside / artifact.filename
+    outside_artifact.write_bytes(b"outside")
+    real_parent = artifact_path.parent.with_name(f"{artifact_path.parent.name}-real")
+    real_unlink = registry_module.secure_unlink
+    swapped = False
+
+    def swap_before_remove(path: Path, label: str, *, missing_ok: bool = False) -> None:
+        nonlocal swapped
+        if not swapped and path == artifact_path:
+            artifact_path.parent.rename(real_parent)
+            try:
+                artifact_path.parent.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                real_parent.rename(artifact_path.parent)
+                pytest.skip(f"symlink race fixture unavailable: {error}")
+            swapped = True
+        real_unlink(path, label, missing_ok=missing_ok)
+
+    monkeypatch.setattr(registry_module, "secure_unlink", swap_before_remove)
+    try:
+        with pytest.raises(Exception, match="link|reparse|containment"):
+            registry.remove()
+    finally:
+        if artifact_path.parent.is_symlink():
+            artifact_path.parent.unlink()
+        if real_parent.exists():
+            real_parent.rename(artifact_path.parent)
+
+    assert outside_artifact.read_bytes() == b"outside"

@@ -70,7 +70,13 @@ from ux_analyzer.domain.run import (
 from ux_analyzer.domain.run import (
     SafetyBlocked as SafetyBlockedOutcome,
 )
-from ux_analyzer.ports.artifacts import ArtifactReference, RunBundleWriter
+from ux_analyzer.ports.artifacts import (
+    ArtifactReference,
+    BundleManifest,
+    RunBundleWriter,
+    SaliencyArtifactKind,
+    SaliencyCacheHitEvent,
+)
 from ux_analyzer.ports.models import (
     CoarseScentEvaluator,
     CognitiveRunContext,
@@ -244,13 +250,36 @@ class _ProfiledRunBundleWriter:
     def run_id(self) -> str:
         return self._writer.run_id
 
+    @property
+    def manifest(self) -> BundleManifest:
+        return self._writer.manifest
+
     def append_event(self, event: object) -> int:
         with self._profiler.measure("bundle.append_event"):
             return self._writer.append_event(event)
 
+    def append_saliency_event(self, event: SaliencyCacheHitEvent) -> int:
+        with self._profiler.measure("bundle.append_saliency_event"):
+            return self._writer.append_saliency_event(event)
+
     def write_artifact(self, name: str, content: bytes | str) -> ArtifactReference:
         with self._profiler.measure("bundle.write_artifact"):
             return self._writer.write_artifact(name, content)
+
+    def write_named_artifact(
+        self, name: str, content: bytes | str
+    ) -> ArtifactReference:
+        with self._profiler.measure("bundle.write_named_artifact"):
+            return self._writer.write_named_artifact(name, content)
+
+    def write_saliency_artifact(
+        self,
+        name: str,
+        content: bytes | str,
+        kind: SaliencyArtifactKind,
+    ) -> ArtifactReference:
+        with self._profiler.measure("bundle.write_saliency_artifact"):
+            return self._writer.write_saliency_artifact(name, content, kind)
 
     def finalize(self, result: object) -> Path:
         with self._profiler.measure("bundle.finalize"):

@@ -5,9 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
-import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import import_module
@@ -17,6 +15,21 @@ from urllib.request import urlopen
 
 import yaml
 from platformdirs import user_data_dir
+
+from ux_analyzer.ports.artifacts import BundleStateError
+from ux_analyzer.storage.run_bundle import (
+    secure_assert_ancestors,
+    secure_ensure_directory,
+    secure_is_link_or_reparse,
+    secure_make_temporary_directory,
+    secure_read_bytes,
+    secure_remove_tree,
+    secure_replace,
+    secure_rmdir,
+    secure_unlink,
+    secure_write_bytes,
+    secure_write_chunks,
+)
 
 DEFAULT_MODEL_ID = "foveacast-v0.2.0"
 DEFAULT_PRECISION = "fp16"
@@ -332,9 +345,9 @@ def _probe_runtime(provider: str) -> RuntimeStatus:
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(_CHUNK_SIZE), b""):
-            digest.update(chunk)
+    content = secure_read_bytes(path, "model artifact")
+    for offset in range(0, len(content), _CHUNK_SIZE):
+        digest.update(content[offset : offset + _CHUNK_SIZE])
     return digest.hexdigest()
 
 
@@ -412,21 +425,20 @@ class ModelRegistry:
     def _release_manifest_is_valid(self) -> bool:
         try:
             payload = json.loads(
-                self._release_manifest_path.read_text(encoding="utf-8")
+                secure_read_bytes(self._release_manifest_path, "release manifest")
             )
-        except (OSError, json.JSONDecodeError):
+        except (BundleStateError, OSError, json.JSONDecodeError):
             return False
         return payload == self._release_manifest_payload()
 
     @staticmethod
     def _write_release_manifest(path: Path, payload: Mapping[str, object]) -> None:
         try:
-            with path.open("w", encoding="utf-8") as output:
-                json.dump(payload, output, sort_keys=True)
-                output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-        except OSError as error:
+            secure_write_bytes(
+                path,
+                (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8"),
+            )
+        except (BundleStateError, OSError) as error:
             raise ModelRegistryError(
                 f"unable to write release manifest: {path}"
             ) from error
@@ -458,6 +470,42 @@ class ModelRegistry:
             state=ArtifactState.READY,
             actual_sha256=actual,
         )
+
+    def verify_artifact(self, artifact: ModelArtifact) -> ArtifactStatus:
+        """Recheck one manifest artifact and return its verified descriptor."""
+
+        if artifact not in self.manifest.artifacts:
+            raise ModelRegistryError(
+                f"artifact is not part of manifest: {artifact.filename}"
+            )
+        status = self._artifact_status(artifact)
+        if status.state is ArtifactState.CHECKSUM_MISMATCH:
+            raise ChecksumMismatchError(
+                f"checksum mismatch for {artifact.filename}: "
+                f"expected {artifact.sha256}, got {status.actual_sha256 or 'missing'}"
+            )
+        if status.state is ArtifactState.MISSING:
+            raise ModelRegistryError(f"artifact missing: {artifact.filename}")
+        return status
+
+    def verified_model_artifacts(
+        self,
+        model_id: str = DEFAULT_MODEL_ID,
+        *,
+        precision: str = DEFAULT_PRECISION,
+    ) -> tuple[ArtifactStatus, ...]:
+        """Return all pinned model artifacts after checking installed bytes."""
+
+        self._require_model(model_id)
+        self._require_precision(precision)
+        statuses = tuple(
+            self.verify_artifact(artifact)
+            for artifact in self.manifest.artifacts
+            if artifact.kind == "model"
+        )
+        if not statuses:
+            raise ModelRegistryError("manifest contains no model artifacts")
+        return statuses
 
     def status(self, model_id: str, *, provider: str = "cpu") -> RegistryStatus:
         """Inspect runtime and local artifacts without making network calls."""
@@ -527,17 +575,24 @@ class ModelRegistry:
             )
 
         release_root = self._release_root
-        release_root.mkdir(parents=True, exist_ok=True)
-        staging_root = Path(tempfile.mkdtemp(prefix=".staging-", dir=release_root))
+        secure_ensure_directory(release_root, "model release root")
+        staging_root = secure_make_temporary_directory(
+            release_root, ".staging-", "model staging root"
+        )
         try:
             for artifact in self.manifest.artifacts:
                 staged_target = staging_root / artifact.sha256 / artifact.filename
                 status = existing[artifact.filename]
                 if status.state is ArtifactState.READY:
-                    staged_target.parent.mkdir(parents=True, exist_ok=True)
+                    secure_ensure_directory(
+                        staged_target.parent, "staged model artifact parent"
+                    )
                     try:
-                        shutil.copyfile(status.path, staged_target)
-                    except OSError as error:
+                        secure_write_bytes(
+                            staged_target,
+                            secure_read_bytes(status.path, "installed model artifact"),
+                        )
+                    except (BundleStateError, OSError) as error:
                         raise ModelRegistryError(
                             f"unable to stage {artifact.filename}: {error}"
                         ) from error
@@ -555,7 +610,12 @@ class ModelRegistry:
             )
             self._publish_staged_release(staging_root)
         finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
+            try:
+                secure_remove_tree(
+                    staging_root, "model staging cleanup", missing_ok=True
+                )
+            except (BundleStateError, OSError):
+                pass
         return InstallResult(
             model_id=model_id,
             downloaded=tuple(downloaded),
@@ -572,77 +632,90 @@ class ModelRegistry:
         previous_manifest: Path | None = None
         manifest_published = False
         try:
+            secure_assert_ancestors(self._release_root, "model release root")
+            if secure_is_link_or_reparse(self._release_root):
+                raise ModelRegistryError(
+                    "model release root must not be a link or reparse point"
+                )
             for index, artifact in enumerate(self.manifest.artifacts):
                 staged_target = staging_root / artifact.sha256 / artifact.filename
                 target = self.artifact_path(artifact)
                 if target.is_file() and _sha256_file(target) == artifact.sha256:
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
+                secure_ensure_directory(target.parent, "model artifact parent")
                 if target.exists() or target.is_symlink():
                     backup = backup_root / f"artifact-{index}"
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(target, backup)
+                    secure_ensure_directory(backup.parent, "model backup parent")
+                    secure_replace(target, backup, "model artifact backup")
                     backups.append((target, backup))
-                os.replace(staged_target, target)
+                secure_replace(staged_target, target, "model artifact publication")
                 moved.append(target)
 
             if self._release_manifest_path.exists():
                 previous_manifest = backup_root / "manifest.json"
-                previous_manifest.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(self._release_manifest_path, previous_manifest)
-            os.replace(staging_root / "manifest.json", self._release_manifest_path)
+                secure_ensure_directory(previous_manifest.parent, "model backup parent")
+                secure_replace(
+                    self._release_manifest_path,
+                    previous_manifest,
+                    "model manifest backup",
+                )
+            secure_replace(
+                staging_root / "manifest.json",
+                self._release_manifest_path,
+                "model manifest publication",
+            )
             manifest_published = True
-        except OSError as error:
+        except (BundleStateError, OSError) as error:
             if manifest_published:
                 try:
-                    self._release_manifest_path.unlink(missing_ok=True)
-                except OSError:
+                    secure_unlink(
+                        self._release_manifest_path,
+                        "published model manifest rollback",
+                        missing_ok=True,
+                    )
+                except (BundleStateError, OSError):
                     pass
             for target in reversed(moved):
                 try:
-                    target.unlink(missing_ok=True)
-                except OSError:
+                    secure_unlink(
+                        target, "published model artifact rollback", missing_ok=True
+                    )
+                except (BundleStateError, OSError):
                     pass
             for target, backup in reversed(backups):
                 try:
-                    os.replace(backup, target)
-                except OSError:
+                    secure_replace(backup, target, "model artifact rollback")
+                except (BundleStateError, OSError):
                     pass
             if previous_manifest is not None:
                 try:
-                    os.replace(previous_manifest, self._release_manifest_path)
-                except OSError:
+                    secure_replace(
+                        previous_manifest,
+                        self._release_manifest_path,
+                        "model manifest rollback",
+                    )
+                except (BundleStateError, OSError):
                     pass
             raise ModelRegistryError(f"release publish failed: {error}") from error
 
     def _download(self, artifact: ModelArtifact, target: Path) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Path | None = None
+        secure_ensure_directory(target.parent, "staged download parent")
         digest = hashlib.sha256()
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix=f".{artifact.filename}.",
-                suffix=".partial",
-                dir=target.parent,
-                delete=False,
-            ) as temporary:
-                temporary_path = Path(temporary.name)
-                with urlopen(
-                    artifact.url, timeout=_DOWNLOAD_TIMEOUT_SECONDS
-                ) as response:
-                    for chunk in iter(lambda: response.read(_CHUNK_SIZE), b""):
-                        temporary.write(chunk)
+            with urlopen(artifact.url, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as response:
+
+                def chunks() -> Iterator[bytes]:
+                    while chunk := response.read(_CHUNK_SIZE):
                         digest.update(chunk)
-                temporary.flush()
-                os.fsync(temporary.fileno())
+                        yield chunk
+
+                secure_write_chunks(target, chunks(), "model download")
             actual = digest.hexdigest()
             if actual != artifact.sha256:
                 raise ChecksumMismatchError(
                     f"checksum mismatch for {artifact.filename}: "
                     f"expected {artifact.sha256}, got {actual}"
                 )
-            os.replace(temporary_path, target)
         except ChecksumMismatchError:
             raise
         except OSError as error:
@@ -650,10 +723,12 @@ class ModelRegistry:
                 f"download failed for {artifact.filename}: {error}"
             ) from error
         finally:
-            if temporary_path is not None:
+            if digest.hexdigest() != artifact.sha256:
                 try:
-                    temporary_path.unlink(missing_ok=True)
-                except OSError:
+                    secure_unlink(
+                        target, "partial model download cleanup", missing_ok=True
+                    )
+                except (BundleStateError, OSError):
                     pass
 
     def remove(
@@ -666,18 +741,27 @@ class ModelRegistry:
 
         self._require_model(model_id)
         self._require_precision(precision)
+        try:
+            secure_assert_ancestors(self._release_root, "model release root")
+            for artifact in self.manifest.artifacts:
+                secure_assert_ancestors(self.artifact_path(artifact), "model artifact")
+        except BundleStateError as error:
+            raise ModelRegistryError(str(error)) from error
         removed: list[str] = []
-        if (
-            self._release_manifest_path.is_file()
-            or self._release_manifest_path.is_symlink()
-        ):
-            self._release_manifest_path.unlink()
-        for artifact in self.manifest.artifacts:
-            path = self.artifact_path(artifact)
-            if path.is_file() or path.is_symlink():
-                path.unlink()
-                removed.append(artifact.filename)
-            self._remove_empty_parents(path.parent)
+        try:
+            if (
+                self._release_manifest_path.is_file()
+                or self._release_manifest_path.is_symlink()
+            ):
+                secure_unlink(self._release_manifest_path, "model release manifest")
+            for artifact in self.manifest.artifacts:
+                path = self.artifact_path(artifact)
+                if path.is_file() or path.is_symlink():
+                    secure_unlink(path, "model artifact")
+                    removed.append(artifact.filename)
+                self._remove_empty_parents(path.parent)
+        except BundleStateError as error:
+            raise ModelRegistryError(str(error)) from error
         return RemoveResult(model_id=model_id, removed=tuple(removed))
 
     @staticmethod
@@ -689,8 +773,8 @@ class ModelRegistry:
             start.parent.parent.parent,
         ):
             try:
-                directory.rmdir()
-            except OSError:
+                secure_rmdir(directory, "empty model store directory")
+            except (BundleStateError, OSError):
                 break
 
 
