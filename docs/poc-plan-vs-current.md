@@ -17,8 +17,8 @@ bundles, and filesystem-openable HTML reports.
 The implementation has since been changed to make real runs terminate and
 produce interpretable evidence before scaling the full matrix. The largest
 changes are exact single-run execution, checkpoint/resume, additional terminal
-guards, progressive-attention recovery, policy-specific seed expansion, and
-separate UX-effort and benchmark-cost reporting.
+guards, progressive-attention recovery, separate attention seed and external
+model-trial identity, and separate UX-effort and benchmark-cost reporting.
 
 ## Execution And Reliability Changes
 
@@ -49,7 +49,9 @@ numeric prominence/scent scores.
 
 | Area | Original POC plan | Current implementation | Reason and effect |
 | --- | --- | --- | --- |
-| Core matrix seeds | Ten seeds for every scenario/version/persona/policy cell: 160 runs. | Progressive policies retain all ten seeds. `full-list` and `prominence-ranked-list` use only the first seed, producing 88 `core-pair` runs and suppressing 72 repetitions. | Avoids repeating deterministic attention selection. External model sampling can still vary; see limitations below. |
+| Core and ablation matrices | Historical ten-seed expansion across every semantic cell. | `core-pair` and `ablation` each contain 8 specs. Attention seed and external model trial remain separate axes. | Current matrices state exact semantic specs without conflating local attention randomness with external model variation. |
+| Baseline replication | No separate external model-trial axis. | Four semantic cells x two model trials = 8 specs, with attention seed held fixed. | Measures external model variation without changing scenario, version, persona, policy, or attention seed. |
+| Historical matrix | Old 88-run result combined deterministic-list suppression with ten progressive seeds. | Retained as historical evidence only; it is not current matrix semantics. | Prevents old run counts from being read as current experiment definitions. |
 | Directional gate | Improved must lower paired median discovery cost, not increase wrong actions/backtracks, and not regress completion. | For a pair where defective fails and improved verifies, completion improvement dominates the failed run's artificially cheap effort. Effort gates still apply to pairs where both variants complete, and completion regression always fails. | Prevents early abandonment from being scored as easier than successful completion. |
 | Effort reporting | Discovery cost and its components were the main effort measure. | Report separates simulated user effort (actions, observations, discovery cost, `simulated-task-time-v1`) from analysis cost (model calls, attempts, latency, tokens). | Slow model inference is benchmark operating cost, not simulated user task time. |
 | Time estimate | No task-time formula. | `simulated-task-time-v1` uses `1.35 seconds * observations + 1.1 seconds * actions`. | Provides a directly comparable deterministic proxy. It is not measured or calibrated human time. |

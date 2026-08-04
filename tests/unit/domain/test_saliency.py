@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import struct
+from dataclasses import asdict
 
 import pytest
 
@@ -11,9 +14,11 @@ from ux_analyzer.domain.saliency import (
     ElementAttentionProfile,
     ElementAttentionProfileSet,
     ElementSaliencyAggregate,
+    SaliencyGeometry,
     SaliencyPlane,
     SaliencyPrediction,
     SaliencyPredictionMetadata,
+    SaliencyPredictionProvenance,
     SaliencyPredictionSet,
     SaliencyRequest,
     SaliencyRequestMetadata,
@@ -30,8 +35,23 @@ def _metadata(
         provider_version="1.0.0",
         model_version="0.2.0",
         model_checksum="sha256:model",
-        input_dimensions=(240, 320),
+        input_dimensions=(320, 240),
         output_dimensions=output_dimensions,
+        geometry=SaliencyGeometry(
+            geometry_version="saliency-geometry-v1",
+            source_dimensions=(2, 2),
+            native_dimensions=(320, 240),
+            content_dimensions=(320, 240),
+            pad_left=0,
+            pad_top=0,
+            pad_right=0,
+            pad_bottom=0,
+            scale=120.0,
+            scale_x=160.0,
+            scale_y=120.0,
+            device_pixel_ratio=1.0,
+            zoom=1.0,
+        ),
         preprocessing_version="foveacast-preprocess-v1",
         inference_duration_ms=12.5,
         execution_provider="cpu",
@@ -83,6 +103,12 @@ def _aggregate(
     )
 
 
+def _provenance(
+    duration: AttentionDuration = AttentionDuration.ONE_SECOND,
+) -> tuple[SaliencyPredictionProvenance, ...]:
+    return (SaliencyPredictionProvenance(duration=duration, metadata=_metadata()),)
+
+
 def test_saliency_plane_requires_float32_shape_size() -> None:
     with pytest.raises(ValueError, match="plane byte length"):
         SaliencyPlane(width=2, height=2, values=b"short")
@@ -96,9 +122,10 @@ def test_saliency_plane_rejects_nonfinite_and_out_of_range_values() -> None:
 
 
 def test_request_metadata_normalizes_collections_and_checks_ranges() -> None:
+    screenshot = b"png"
     metadata = SaliencyRequestMetadata(
         viewport_id="viewport-1",
-        screenshot_sha256="a" * 64,
+        screenshot_sha256=hashlib.sha256(screenshot).hexdigest(),
         screenshot_width=1280,
         screenshot_height=720,
         device_pixel_ratio=2.0,
@@ -108,7 +135,7 @@ def test_request_metadata_normalizes_collections_and_checks_ranges() -> None:
         precision="fp16",
         execution_provider_preference="auto",
     )
-    request = SaliencyRequest(screenshot=b"png", metadata=metadata)
+    request = SaliencyRequest(screenshot=screenshot, metadata=metadata)
 
     assert metadata.requested_durations == (
         AttentionDuration.ONE_SECOND,
@@ -119,7 +146,7 @@ def test_request_metadata_normalizes_collections_and_checks_ranges() -> None:
     with pytest.raises(ValueError, match="device_pixel_ratio"):
         SaliencyRequestMetadata(
             viewport_id="viewport-1",
-            screenshot_sha256="hash",
+            screenshot_sha256="a" * 64,
             screenshot_width=1,
             screenshot_height=1,
             device_pixel_ratio=0,
@@ -129,6 +156,53 @@ def test_request_metadata_normalizes_collections_and_checks_ranges() -> None:
             precision="fp32",
             execution_provider_preference="cpu",
         )
+
+
+def test_screenshot_sha256_requires_lowercase_64_character_sha256() -> None:
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        SaliencyRequestMetadata(
+            viewport_id="viewport-1",
+            screenshot_sha256="A" * 64,
+            screenshot_width=1,
+            screenshot_height=1,
+            device_pixel_ratio=1.0,
+            zoom=1.0,
+            requested_durations=(AttentionDuration.ONE_SECOND,),
+            model_set=("model-1",),
+            precision="fp32",
+            execution_provider_preference="cpu",
+        )
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        SaliencyRequestMetadata(
+            viewport_id="viewport-1",
+            screenshot_sha256="a" * 63,
+            screenshot_width=1,
+            screenshot_height=1,
+            device_pixel_ratio=1.0,
+            zoom=1.0,
+            requested_durations=(AttentionDuration.ONE_SECOND,),
+            model_set=("model-1",),
+            precision="fp32",
+            execution_provider_preference="cpu",
+        )
+
+
+def test_request_rejects_screenshot_hash_mismatch() -> None:
+    metadata = SaliencyRequestMetadata(
+        viewport_id="viewport-1",
+        screenshot_sha256=hashlib.sha256(b"expected").hexdigest(),
+        screenshot_width=1,
+        screenshot_height=1,
+        device_pixel_ratio=1.0,
+        zoom=1.0,
+        requested_durations=(AttentionDuration.ONE_SECOND,),
+        model_set=("model-1",),
+        precision="fp32",
+        execution_provider_preference="cpu",
+    )
+
+    with pytest.raises(ValueError, match="screenshot_sha256 does not match"):
+        SaliencyRequest(screenshot=b"actual", metadata=metadata)
 
 
 def test_prediction_set_rejects_duplicate_durations_and_viewport_mismatch() -> None:
@@ -163,6 +237,21 @@ def test_prediction_metadata_requires_plane_dimensions_and_finite_latency() -> N
             model_checksum="checksum",
             input_dimensions=(1, 1),
             output_dimensions=(1, 1),
+            geometry=SaliencyGeometry(
+                geometry_version="saliency-geometry-v1",
+                source_dimensions=(1, 1),
+                native_dimensions=(1, 1),
+                content_dimensions=(1, 1),
+                pad_left=0,
+                pad_top=0,
+                pad_right=0,
+                pad_bottom=0,
+                scale=1.0,
+                scale_x=1.0,
+                scale_y=1.0,
+                device_pixel_ratio=1.0,
+                zoom=1.0,
+            ),
             preprocessing_version="v1",
             inference_duration_ms=float("inf"),
             execution_provider="cpu",
@@ -182,6 +271,8 @@ def test_element_attention_profile_set_rejects_duplicate_profiles() -> None:
         eventual=None,
         general=None,
         aggregates=(_aggregate(),),
+        aggregation_version="element-saliency-aggregation-v1",
+        prediction_provenance=_provenance(),
     )
 
     with pytest.raises(ValueError, match="duplicate element profile"):
@@ -224,7 +315,48 @@ def test_profile_rejects_aggregate_from_other_viewport_or_duplicate_duration() -
             eventual=None,
             general=None,
             aggregates=(_aggregate(viewport_id="viewport-2"),),
+            aggregation_version="element-saliency-aggregation-v1",
+            prediction_provenance=_provenance(),
         )
+
+
+def test_prediction_and_profile_provenance_survives_json_serialization() -> None:
+    prediction = _prediction()
+    prediction_set = SaliencyPredictionSet(
+        viewport_id="viewport-1", predictions=(prediction,)
+    )
+    prediction_payload = json.loads(
+        json.dumps(asdict(prediction_set.predictions[0].metadata))
+    )
+
+    assert prediction_payload["model_checksum"] == "sha256:model"
+    assert prediction_payload["geometry"]["geometry_version"] == (
+        "saliency-geometry-v1"
+    )
+    assert prediction_payload["geometry"]["pad_left"] == 0
+
+    profile = ElementAttentionProfile(
+        viewport_id="viewport-1",
+        element_id="button-1",
+        immediate=AttentionEstimate(
+            kind=AttentionEstimateKind.PREDICTED,
+            score=0.8,
+            source="foveacast",
+        ),
+        early=None,
+        eventual=None,
+        general=None,
+        aggregates=(_aggregate(),),
+        aggregation_version="element-saliency-aggregation-v1",
+        prediction_provenance=_provenance(),
+    )
+    profile_payload = json.loads(json.dumps(asdict(profile)))
+
+    assert profile_payload["aggregation_version"] == ("element-saliency-aggregation-v1")
+    assert (
+        profile_payload["prediction_provenance"][0]["metadata"]["model_checksum"]
+        == "sha256:model"
+    )
 
     with pytest.raises(ValueError, match="duplicate duration"):
         ElementAttentionProfile(
@@ -238,6 +370,8 @@ def test_profile_rejects_aggregate_from_other_viewport_or_duplicate_duration() -
                 _aggregate(),
                 _aggregate(duration=AttentionDuration.ONE_SECOND),
             ),
+            aggregation_version="element-saliency-aggregation-v1",
+            prediction_provenance=_provenance(),
         )
 
 

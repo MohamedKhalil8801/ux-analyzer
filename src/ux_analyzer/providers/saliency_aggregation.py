@@ -11,14 +11,16 @@ import numpy as np
 
 from ux_analyzer.domain.interface import ElementRole, ElementSnapshot, ViewportSnapshot
 from ux_analyzer.domain.saliency import (
+    SALIENCY_GEOMETRY_VERSION,
     AttentionDuration,
     AttentionEstimate,
     AttentionEstimateKind,
     ElementAttentionProfile,
     ElementSaliencyAggregate,
+    SaliencyGeometry,
     SaliencyPrediction,
+    SaliencyPredictionProvenance,
     SaliencyPredictionSet,
-    SaliencyRequestMetadata,
 )
 
 DEFAULT_AGGREGATION_VERSION = "element-saliency-aggregation-v1"
@@ -61,10 +63,6 @@ class SaliencyAggregationConfig:
     structural_roles: tuple[ElementRole | str, ...] = field(
         default_factory=_default_structural_roles
     )
-    screenshot_width: int | None = None
-    screenshot_height: int | None = None
-    device_pixel_ratio: float = 1.0
-    zoom: float = 1.0
 
     def __post_init__(self) -> None:
         if not self.version.strip():
@@ -100,77 +98,6 @@ class SaliencyAggregationConfig:
         object.__setattr__(self, "semantic_roles", semantic_roles)
         object.__setattr__(self, "structural_roles", structural_roles)
 
-        for name, dimension in (
-            ("screenshot_width", self.screenshot_width),
-            ("screenshot_height", self.screenshot_height),
-        ):
-            if dimension is not None and (
-                isinstance(dimension, bool) or dimension <= 0
-            ):
-                raise ValueError(f"{name} must be greater than zero")
-        for name, scale in (
-            ("device_pixel_ratio", self.device_pixel_ratio),
-            ("zoom", self.zoom),
-        ):
-            if not math.isfinite(scale) or scale <= 0:
-                raise ValueError(f"{name} must be greater than zero")
-
-
-@dataclass(frozen=True, slots=True)
-class _NativeGeometry:
-    source_width: int
-    source_height: int
-    input_width: int
-    input_height: int
-    map_width: int
-    map_height: int
-    content_width: int
-    content_height: int
-    pad_left: int
-    pad_top: int
-
-    @classmethod
-    def from_dimensions(
-        cls,
-        source_width: int,
-        source_height: int,
-        input_width: int,
-        input_height: int,
-        map_width: int,
-        map_height: int,
-    ) -> _NativeGeometry:
-        scale = min(input_width / source_width, input_height / source_height)
-        content_width = max(1, int(round(source_width * scale)))
-        content_height = max(1, int(round(source_height * scale)))
-        return cls(
-            source_width=source_width,
-            source_height=source_height,
-            input_width=input_width,
-            input_height=input_height,
-            map_width=map_width,
-            map_height=map_height,
-            content_width=content_width,
-            content_height=content_height,
-            pad_left=(input_width - content_width) // 2,
-            pad_top=(input_height - content_height) // 2,
-        )
-
-    def source_bounds_to_map(
-        self, left: float, top: float, right: float, bottom: float
-    ) -> tuple[float, float, float, float]:
-        """Map source pixel edges through fit-and-pad geometry into map edges."""
-
-        input_left = self.pad_left + left * self.content_width / self.source_width
-        input_top = self.pad_top + top * self.content_height / self.source_height
-        input_right = self.pad_left + right * self.content_width / self.source_width
-        input_bottom = self.pad_top + bottom * self.content_height / self.source_height
-        return (
-            input_left * self.map_width / self.input_width,
-            input_top * self.map_height / self.input_height,
-            input_right * self.map_width / self.input_width,
-            input_bottom * self.map_height / self.input_height,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class _SourceBounds:
@@ -200,18 +127,24 @@ def aggregate_saliency(
     """Aggregate every snapshot element while exposing operational candidates."""
 
     settings = config or SaliencyAggregationConfig()
-    prediction_items, request_metadata = _prediction_items(snapshot, predictions)
+    prediction_items = _prediction_items(snapshot, predictions)
     evidence_by_duration = tuple(
         _aggregate_duration(
             snapshot,
             prediction,
-            request_metadata,
             settings,
         )
         for prediction in prediction_items
     )
     estimates_by_element = _estimates_by_element(
         snapshot, evidence_by_duration, settings
+    )
+    prediction_provenance = tuple(
+        SaliencyPredictionProvenance(
+            duration=evidence.prediction.duration,
+            metadata=evidence.prediction.metadata,
+        )
+        for evidence in evidence_by_duration
     )
     aggregates_by_element: dict[str, list[ElementSaliencyAggregate]] = {
         element.id: [] for element in snapshot.elements
@@ -232,6 +165,8 @@ def aggregate_saliency(
                 eventual=duration_estimates.get(AttentionDuration.SEVEN_SECONDS),
                 general=duration_estimates.get(AttentionDuration.GENERAL),
                 aggregates=tuple(aggregates_by_element[element.id]),
+                aggregation_version=settings.version,
+                prediction_provenance=prediction_provenance,
             )
         )
     return tuple(profiles)
@@ -252,15 +187,13 @@ def _normalize_roles(
 def _prediction_items(
     snapshot: ViewportSnapshot,
     predictions: SaliencyPredictionSet | Sequence[SaliencyPrediction],
-) -> tuple[tuple[SaliencyPrediction, ...], SaliencyRequestMetadata | None]:
+) -> tuple[SaliencyPrediction, ...]:
     if isinstance(predictions, SaliencyPredictionSet):
         if predictions.viewport_id != snapshot.id:
             raise ValueError("saliency predictions belong to a different viewport")
         items = predictions.predictions
-        request_metadata = predictions.request_metadata
     else:
         items = tuple(predictions)
-        request_metadata = None
     if not items:
         raise ValueError("saliency predictions must not be empty")
     durations = tuple(item.duration for item in items)
@@ -269,36 +202,34 @@ def _prediction_items(
     for prediction in items:
         if prediction.viewport_id != snapshot.id:
             raise ValueError("saliency prediction belongs to a different viewport")
-    return items, request_metadata
+    return items
 
 
 def _aggregate_duration(
     snapshot: ViewportSnapshot,
     prediction: SaliencyPrediction,
-    request_metadata: SaliencyRequestMetadata | None,
     config: SaliencyAggregationConfig,
 ) -> _DurationEvidence:
     values = _plane_array(prediction)
-    source_width, source_height, dpr, zoom = _source_geometry_inputs(
-        request_metadata, config
-    )
-    input_width, input_height = prediction.metadata.input_dimensions
-    geometry = _NativeGeometry.from_dimensions(
-        source_width,
-        source_height,
-        input_width,
-        input_height,
-        prediction.plane.width,
-        prediction.plane.height,
-    )
+    geometry = prediction.metadata.geometry
+    if geometry.geometry_version != SALIENCY_GEOMETRY_VERSION:
+        raise ValueError(
+            f"unsupported saliency geometry version: {geometry.geometry_version!r}"
+        )
+    source_width, source_height = geometry.source_dimensions
+    dpr = geometry.device_pixel_ratio
+    zoom = geometry.zoom
     total_mass = _visible_map_mass(values, geometry)
     aggregates: dict[str, ElementSaliencyAggregate] = {}
     source_bounds: dict[str, _SourceBounds] = {}
     for element in snapshot.elements:
         bounds = _source_bounds(element, source_width, source_height, dpr, zoom)
         source_bounds[element.id] = bounds
-        map_bounds = geometry.source_bounds_to_map(
-            bounds.left, bounds.top, bounds.right, bounds.bottom
+        map_bounds = _source_bounds_to_map(
+            geometry,
+            bounds,
+            map_width=prediction.plane.width,
+            map_height=prediction.plane.height,
         )
         region = _sample_region(values, map_bounds)
         density, robust_peak, raw_mass = _region_statistics(region)
@@ -343,40 +274,6 @@ def _plane_array(prediction: SaliencyPrediction) -> np.ndarray[Any, Any]:
         raise ValueError("saliency plane shape does not match dimensions") from error
 
 
-def _source_geometry_inputs(
-    request_metadata: SaliencyRequestMetadata | None,
-    config: SaliencyAggregationConfig,
-) -> tuple[int, int, float, float]:
-    config_width = config.screenshot_width
-    config_height = config.screenshot_height
-    if (config_width is None) != (config_height is None):
-        raise ValueError(
-            "screenshot_width and screenshot_height must be provided together"
-        )
-    if request_metadata is not None:
-        if (
-            config_width is not None
-            and (config_width, config_height) != request_metadata.screenshot_dimensions
-        ):
-            raise ValueError("inconsistent screenshot dimensions")
-        return (
-            request_metadata.screenshot_width,
-            request_metadata.screenshot_height,
-            request_metadata.device_pixel_ratio,
-            request_metadata.zoom,
-        )
-    if config_width is not None and config_height is not None:
-        return (
-            config_width,
-            config_height,
-            config.device_pixel_ratio,
-            config.zoom,
-        )
-    raise ValueError(
-        "explicit screenshot dimensions required in prediction request or config"
-    )
-
-
 def _source_bounds(
     element: ElementSnapshot,
     source_width: int,
@@ -399,14 +296,42 @@ def _source_bounds(
     )
 
 
-def _visible_map_mass(values: np.ndarray[Any, Any], geometry: _NativeGeometry) -> float:
+def _source_bounds_to_map(
+    geometry: SaliencyGeometry,
+    bounds: _SourceBounds,
+    *,
+    map_width: int,
+    map_height: int,
+) -> tuple[float, float, float, float]:
+    source_width, source_height = geometry.source_dimensions
+    native_width, native_height = geometry.native_dimensions
+    content_width, content_height = geometry.content_dimensions
+    input_bounds = (
+        geometry.pad_left + bounds.left * content_width / source_width,
+        geometry.pad_top + bounds.top * content_height / source_height,
+        geometry.pad_left + bounds.right * content_width / source_width,
+        geometry.pad_top + bounds.bottom * content_height / source_height,
+    )
+    return (
+        input_bounds[0] * map_width / native_width,
+        input_bounds[1] * map_height / native_height,
+        input_bounds[2] * map_width / native_width,
+        input_bounds[3] * map_height / native_height,
+    )
+
+
+def _visible_map_mass(
+    values: np.ndarray[Any, Any], geometry: SaliencyGeometry
+) -> float:
+    map_width = values.shape[1]
+    map_height = values.shape[0]
     content_bounds = (
-        geometry.pad_left * geometry.map_width / geometry.input_width,
-        geometry.pad_top * geometry.map_height / geometry.input_height,
-        geometry.content_width * geometry.map_width / geometry.input_width
-        + geometry.pad_left * geometry.map_width / geometry.input_width,
-        geometry.content_height * geometry.map_height / geometry.input_height
-        + geometry.pad_top * geometry.map_height / geometry.input_height,
+        geometry.pad_left * map_width / geometry.native_dimensions[0],
+        geometry.pad_top * map_height / geometry.native_dimensions[1],
+        geometry.content_dimensions[0] * map_width / geometry.native_dimensions[0]
+        + geometry.pad_left * map_width / geometry.native_dimensions[0],
+        geometry.content_dimensions[1] * map_height / geometry.native_dimensions[1]
+        + geometry.pad_top * map_height / geometry.native_dimensions[1],
     )
     region = _sample_region(values, content_bounds)
     if region is None:

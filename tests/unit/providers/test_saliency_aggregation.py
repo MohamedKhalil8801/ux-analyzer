@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
@@ -8,6 +9,8 @@ import pytest
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
 from ux_analyzer.domain.saliency import (
     AttentionDuration,
+    ElementAttentionProfile,
+    SaliencyGeometry,
     SaliencyPlane,
     SaliencyPrediction,
     SaliencyPredictionMetadata,
@@ -55,9 +58,16 @@ def _prediction(
     dpr: float = 1.0,
     zoom: float = 1.0,
     provider_id: str = "foveacast",
+    geometry_version: str = "saliency-geometry-v1",
 ) -> SaliencyPrediction:
     height, width = values.shape
     screenshot_width, screenshot_height = screenshot_dimensions or (width, height)
+    native_width, native_height = width, height
+    scale = min(native_width / screenshot_width, native_height / screenshot_height)
+    content_width = max(1, int(round(screenshot_width * scale)))
+    content_height = max(1, int(round(screenshot_height * scale)))
+    pad_left = (native_width - content_width) // 2
+    pad_top = (native_height - content_height) // 2
     return SaliencyPrediction(
         viewport_id="viewport-1",
         duration=duration,
@@ -74,6 +84,21 @@ def _prediction(
             model_checksum=f"checksum-{duration.value}",
             input_dimensions=(width, height),
             output_dimensions=(width, height),
+            geometry=SaliencyGeometry(
+                geometry_version=geometry_version,
+                source_dimensions=(screenshot_width, screenshot_height),
+                native_dimensions=(native_width, native_height),
+                content_dimensions=(content_width, content_height),
+                pad_left=pad_left,
+                pad_top=pad_top,
+                pad_right=native_width - pad_left - content_width,
+                pad_bottom=native_height - pad_top - content_height,
+                scale=scale,
+                scale_x=content_width / screenshot_width,
+                scale_y=content_height / screenshot_height,
+                device_pixel_ratio=dpr,
+                zoom=zoom,
+            ),
             preprocessing_version="foveacast-preprocess-v1",
             inference_duration_ms=1.0,
             execution_provider="CPUExecutionProvider",
@@ -123,7 +148,9 @@ def _predictions(
     )
 
 
-def _profile(profiles, element_id: str):
+def _profile(
+    profiles: Sequence[ElementAttentionProfile], element_id: str
+) -> ElementAttentionProfile:
     return next(profile for profile in profiles if profile.element_id == element_id)
 
 
@@ -160,7 +187,16 @@ def test_formula_preserves_native_aggregate_evidence_and_provenance() -> None:
     assert aggregate.occlusion_fraction == 0.0
     assert aggregate.raw_score == pytest.approx(raw_score)
     assert aggregate.adjusted_score == pytest.approx(raw_score)
-    assert _profile(profiles, "button").immediate.source == "foveacast"
+    immediate = _profile(profiles, "button").immediate
+    assert immediate is not None
+    assert immediate.source == "foveacast"
+    assert _profile(profiles, "button").aggregation_version == (
+        "element-saliency-aggregation-v1"
+    )
+    assert (
+        _profile(profiles, "button").prediction_provenance[0].metadata.model_checksum
+        == "checksum-1s"
+    )
 
 
 def test_dpr_and_zoom_scale_css_bounds_before_native_sampling() -> None:
@@ -184,58 +220,6 @@ def test_dpr_and_zoom_scale_css_bounds_before_native_sampling() -> None:
     assert aggregate.clipped_area == pytest.approx(25.0)
 
 
-def test_prediction_sequence_requires_explicit_screenshot_dimensions() -> None:
-    with pytest.raises(ValueError, match="explicit screenshot dimensions"):
-        aggregate_saliency(
-            _snapshot(_element("button", x=0, y=0, width=1, height=1)),
-            (_prediction(np.ones((4, 4), dtype=np.float32)),),
-            SaliencyAggregationConfig(),
-        )
-
-
-def test_prediction_sequence_uses_explicit_config_geometry() -> None:
-    saliency = np.zeros((8, 8), dtype=np.float32)
-    saliency[2:4, 2:4] = 1.0
-
-    profiles = aggregate_saliency(
-        _snapshot(_element("button", x=2, y=2, width=2, height=2)),
-        (_prediction(saliency),),
-        SaliencyAggregationConfig(
-            screenshot_width=16,
-            screenshot_height=16,
-            device_pixel_ratio=2.0,
-            zoom=1.25,
-        ),
-    )
-
-    aggregate = _profile(profiles, "button").aggregates[0]
-
-    assert aggregate.density == pytest.approx(4.0 / 9.0)
-    assert aggregate.raw_mass == pytest.approx(4.0)
-    assert aggregate.clipped_area == pytest.approx(25.0)
-
-
-def test_partial_config_dimensions_are_rejected() -> None:
-    with pytest.raises(ValueError, match="provided together"):
-        aggregate_saliency(
-            _snapshot(_element("button", x=0, y=0, width=1, height=1)),
-            (_prediction(np.ones((4, 4), dtype=np.float32)),),
-            SaliencyAggregationConfig(screenshot_width=4),
-        )
-
-
-def test_request_and_config_dimensions_must_agree() -> None:
-    with pytest.raises(ValueError, match="inconsistent screenshot dimensions"):
-        aggregate_saliency(
-            _snapshot(_element("button", x=0, y=0, width=1, height=1)),
-            _predictions(
-                np.ones((4, 4), dtype=np.float32),
-                screenshot_dimensions=(8, 4),
-            ),
-            SaliencyAggregationConfig(screenshot_width=4, screenshot_height=8),
-        )
-
-
 def test_aspect_fit_padding_is_removed_by_inverse_geometry() -> None:
     saliency = np.zeros((8, 8), dtype=np.float32)
     saliency[3:5, 2:4] = 1.0
@@ -249,6 +233,41 @@ def test_aspect_fit_padding_is_removed_by_inverse_geometry() -> None:
 
     assert aggregate.density == pytest.approx(1.0)
     assert aggregate.raw_mass == pytest.approx(4.0)
+
+
+def test_non_square_hotspot_and_stripe_use_result_geometry() -> None:
+    saliency = np.zeros((8, 8), dtype=np.float32)
+    saliency[3:5, 2:4] = 1.0
+    saliency[2:6, 5:6] = 0.8
+    profiles = aggregate_saliency(
+        _snapshot(
+            _element("hotspot", x=3, y=1, width=3, height=3),
+            _element("stripe", x=7.5, y=0, width=1.5, height=6),
+            _element("padding", x=0, y=0, width=2, height=1),
+        ),
+        _predictions(saliency, screenshot_dimensions=(12, 6)),
+    )
+
+    hotspot = _profile(profiles, "hotspot").aggregates[0]
+    stripe = _profile(profiles, "stripe").aggregates[0]
+    padding = _profile(profiles, "padding").aggregates[0]
+
+    assert hotspot.raw_mass > 0
+    assert stripe.raw_mass > 0
+    assert padding.raw_mass == 0
+    assert stripe.density == pytest.approx(0.8)
+
+
+def test_unsupported_prediction_geometry_version_is_rejected() -> None:
+    prediction = _prediction(
+        np.ones((4, 4), dtype=np.float32), geometry_version="unknown-geometry-v9"
+    )
+
+    with pytest.raises(ValueError, match="unsupported saliency geometry version"):
+        aggregate_saliency(
+            _snapshot(_element("button", x=0, y=0, width=1, height=1)),
+            (prediction,),
+        )
 
 
 def test_viewport_clipping_partial_visibility_and_occlusion_adjust_score() -> None:
@@ -346,6 +365,7 @@ def test_nested_structural_container_is_suppressed_but_evidence_remains() -> Non
     assert card.aggregates[0].raw_mass > 0
     assert card.immediate is None
     assert button.immediate is not None
+    assert button.immediate.score is not None
     assert button.immediate.score > 0
 
 
@@ -393,7 +413,9 @@ def test_large_container_does_not_win_from_area_alone() -> None:
 
     def score(element_id: str) -> float:
         estimate = _profile(profiles, element_id).immediate
-        return estimate.score if estimate is not None else 0.0
+        if estimate is None or estimate.score is None:
+            return 0.0
+        return estimate.score
 
     assert score("button") > score("background-card")
 
@@ -430,6 +452,7 @@ def test_zero_constant_and_tiny_peak_maps_remain_finite() -> None:
                 )
             )
         if profile.immediate is not None:
+            assert profile.immediate.score is not None
             assert math.isfinite(profile.immediate.score)
 
     assert _profile(peak_profiles, "peak").aggregates[0].robust_peak == 1.0

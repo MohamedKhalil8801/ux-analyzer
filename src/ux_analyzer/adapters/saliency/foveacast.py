@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib import import_module
 from io import BytesIO
-from pathlib import Path
 from threading import Lock
 from time import perf_counter
 from typing import Any, Protocol, cast
@@ -18,12 +16,18 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 
 from ux_analyzer.domain.saliency import (
+    SALIENCY_GEOMETRY_VERSION,
     AttentionDuration,
+    SaliencyGeometry,
     SaliencyPlane,
     SaliencyPrediction,
     SaliencyPredictionMetadata,
     SaliencyPredictionRequest,
     SaliencyPredictionSet,
+)
+from ux_analyzer.saliency.model_registry import (
+    ArtifactStatus,
+    ModelRegistry,
 )
 
 MODEL_WIDTH = 320
@@ -34,14 +38,12 @@ PROVIDER_ID = "foveacast"
 PROVIDER_VERSION = "foveacast-adapter-v1"
 MODEL_ID = "foveacast-v0.2.0"
 MODEL_VERSION = "v0.2.0"
+INPUT_NAME = "input"
+OUTPUT_NAME = "output"
 CPU_EXECUTION_PROVIDER = "CPUExecutionProvider"
 DIRECTML_EXECUTION_PROVIDER = "DmlExecutionProvider"
 _INPUT_SHAPE = (1, 3, MODEL_HEIGHT, MODEL_WIDTH)
-_OUTPUT_SHAPES = {
-    (MODEL_HEIGHT, MODEL_WIDTH),
-    (1, MODEL_HEIGHT, MODEL_WIDTH),
-    (1, 1, MODEL_HEIGHT, MODEL_WIDTH),
-}
+_OUTPUT_SHAPE = (1, 1, MODEL_HEIGHT, MODEL_WIDTH)
 _DURATIONS = (
     AttentionDuration.ONE_SECOND,
     AttentionDuration.THREE_SECONDS,
@@ -343,65 +345,6 @@ def _resize_pixel_center_bilinear(
     return resized
 
 
-def _duration_paths(
-    model_paths: Mapping[AttentionDuration | str, Path | str] | Sequence[Path | str],
-) -> dict[AttentionDuration, Path]:
-    if isinstance(model_paths, Mapping):
-        entries = tuple(model_paths.items())
-    else:
-        paths = tuple(model_paths)
-        if len(paths) != len(_DURATIONS):
-            raise ValueError("model_paths must contain one path for each duration")
-        entries = tuple(zip(_DURATIONS, paths, strict=True))
-    normalized: dict[AttentionDuration, Path] = {}
-    for duration, path in entries:
-        try:
-            normalized_duration = AttentionDuration(duration)
-        except ValueError as error:
-            raise ValueError(f"unsupported Foveacast duration: {duration!r}") from error
-        if normalized_duration is AttentionDuration.GENERAL:
-            raise ValueError("Foveacast does not support general duration")
-        if normalized_duration in normalized:
-            raise ValueError(f"duplicate model path for {normalized_duration.value}")
-        normalized[normalized_duration] = Path(path)
-    if set(normalized) != set(_DURATIONS):
-        raise ValueError("model_paths must contain 1s, 3s, and 7s models")
-    return normalized
-
-
-def _duration_checksums(
-    checksums: Mapping[AttentionDuration | str, str] | None,
-) -> dict[AttentionDuration, str]:
-    if checksums is None:
-        return {}
-    normalized: dict[AttentionDuration, str] = {}
-    for duration, checksum in checksums.items():
-        normalized_duration = AttentionDuration(duration)
-        if normalized_duration is AttentionDuration.GENERAL:
-            raise ValueError("Foveacast does not support general duration")
-        if normalized_duration in normalized:
-            raise ValueError(
-                f"duplicate model checksum for {normalized_duration.value}"
-            )
-        if not checksum.strip():
-            raise ValueError("model checksum must not be empty")
-        normalized[normalized_duration] = checksum
-    return normalized
-
-
-def _sha256_file(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError:
-        return None
-    return digest.hexdigest()
-
-
 def _node_name(node: _OrtValueInfo, kind: str) -> str:
     name: object = node.name
     if not isinstance(name, str) or not name.strip():
@@ -433,15 +376,18 @@ def _validate_session(session: _OrtSession) -> tuple[str, str, tuple[int, ...]]:
     output_name = _node_name(outputs[0], "output")
     input_shape = _node_shape(inputs[0], "input")
     output_shape = _node_shape(outputs[0], "output")
+    if input_name != INPUT_NAME:
+        raise ValueError(f"input name must be {INPUT_NAME!r}, got {input_name!r}")
+    if output_name != OUTPUT_NAME:
+        raise ValueError(f"output name must be {OUTPUT_NAME!r}, got {output_name!r}")
     if input_shape != _INPUT_SHAPE:
         raise ValueError(f"input shape must be {_INPUT_SHAPE}, got {input_shape}")
-    if output_shape not in _OUTPUT_SHAPES:
-        expected = ", ".join(str(shape) for shape in sorted(_OUTPUT_SHAPES))
-        raise ValueError(f"output shape must be one of {expected}, got {output_shape}")
+    if output_shape != _OUTPUT_SHAPE:
+        raise ValueError(f"output shape must be {_OUTPUT_SHAPE}, got {output_shape}")
     return input_name, output_name, output_shape
 
 
-def _normalize_output(
+def _validate_output_contract(
     output: object, output_shape: tuple[int, ...]
 ) -> np.ndarray[Any, Any]:
     try:
@@ -454,21 +400,14 @@ def _normalize_output(
         )
     if not bool(np.isfinite(array).all()):
         raise ValueError("saliency output must contain finite values")
-    if len(output_shape) == 4:
-        saliency_map = array[0, 0]
-    elif len(output_shape) == 3:
-        saliency_map = array[0]
-    else:
-        saliency_map = array
+    saliency_map = array[0, 0]
     minimum = float(np.min(saliency_map))
     maximum = float(np.max(saliency_map))
     if minimum == maximum:
         raise ValueError("saliency output must not be constant")
-    if 0.0 <= minimum and maximum <= 1.0:
-        normalized = saliency_map
-    else:
-        normalized = (saliency_map - minimum) / (maximum - minimum)
-    return np.ascontiguousarray(np.clip(normalized, 0.0, 1.0), dtype=np.float32)
+    if minimum < 0.0 or maximum > 1.0:
+        raise ValueError("saliency output values must be between 0 and 1")
+    return np.ascontiguousarray(saliency_map, dtype=np.float32)
 
 
 def _normalize_execution_provider_preference(value: str) -> str:
@@ -562,23 +501,56 @@ class FoveacastSaliencyProvider:
 
     def __init__(
         self,
-        model_paths: Mapping[AttentionDuration | str, Path | str]
-        | Sequence[Path | str],
+        registry: ModelRegistry,
         *,
-        model_id: str = MODEL_ID,
-        model_version: str = MODEL_VERSION,
-        provider_version: str = PROVIDER_VERSION,
-        precision: str = "fp16",
-        model_checksums: Mapping[AttentionDuration | str, str] | None = None,
         ort_module: _OrtModule | object | None = None,
         execution_provider_preference: str | None = None,
     ) -> None:
-        self.model_paths = _duration_paths(model_paths)
-        self.model_checksums = _duration_checksums(model_checksums)
-        self.model_id = model_id
-        self.model_version = model_version
-        self.provider_version = provider_version
-        self.precision = precision
+        manifest = registry.manifest
+        if manifest.provider != PROVIDER_ID:
+            raise ValueError(
+                f"registry provider must be {PROVIDER_ID!r}, got {manifest.provider!r}"
+            )
+        if manifest.model_id != MODEL_ID:
+            raise ValueError(
+                f"registry model must be {MODEL_ID!r}, got {manifest.model_id!r}"
+            )
+        if manifest.version != MODEL_VERSION:
+            raise ValueError(
+                f"registry model version must be {MODEL_VERSION!r}, got {manifest.version!r}"
+            )
+        if manifest.precision != "fp16":
+            raise ValueError(
+                f"registry precision must be 'fp16', got {manifest.precision!r}"
+            )
+        model_artifacts = registry.verified_model_artifacts(
+            manifest.model_id, precision=manifest.precision
+        )
+        artifacts: dict[AttentionDuration, ArtifactStatus] = {}
+        for status in model_artifacts:
+            try:
+                duration = AttentionDuration(status.artifact.duration)
+            except ValueError as error:
+                raise ValueError(
+                    f"unsupported Foveacast model duration: {status.artifact.duration!r}"
+                ) from error
+            if duration is AttentionDuration.GENERAL or duration in artifacts:
+                raise ValueError(
+                    "registry must contain one model for each Foveacast duration"
+                )
+            artifacts[duration] = status
+        if set(artifacts) != set(_DURATIONS):
+            raise ValueError("registry must contain 1s, 3s, and 7s model artifacts")
+
+        self.registry = registry
+        self._artifacts = artifacts
+        self.model_paths = {
+            duration: status.path for duration, status in artifacts.items()
+        }
+        self.model_id = manifest.model_id
+        self.model_version = manifest.version
+        self.provider_version = PROVIDER_VERSION
+        self.precision = manifest.precision
         self.execution_provider = CPU_EXECUTION_PROVIDER
         self.actual_execution_provider = CPU_EXECUTION_PROVIDER
         self.requested_execution_provider = ExecutionProviderPreference.CPU.value
@@ -668,6 +640,7 @@ class FoveacastSaliencyProvider:
         io_names: dict[AttentionDuration, tuple[str, str, tuple[int, ...]]] = {}
         adapter_device_id: str | None = None
         for duration in _DURATIONS:
+            self.registry.verify_artifact(self._artifacts[duration].artifact)
             if session_options_object is None:
                 session = self._ort.InferenceSession(
                     str(self.model_paths[duration]),
@@ -714,6 +687,21 @@ class FoveacastSaliencyProvider:
         processed = preprocess_screenshot(request.screenshot)
         if processed.geometry.source_dimensions != metadata.screenshot_dimensions:
             raise ValueError("screenshot dimensions do not match request metadata")
+        result_geometry = SaliencyGeometry(
+            geometry_version=SALIENCY_GEOMETRY_VERSION,
+            source_dimensions=processed.geometry.source_dimensions,
+            native_dimensions=processed.geometry.input_dimensions,
+            content_dimensions=processed.geometry.resized_dimensions,
+            pad_left=processed.geometry.pad_left,
+            pad_top=processed.geometry.pad_top,
+            pad_right=processed.geometry.pad_right,
+            pad_bottom=processed.geometry.pad_bottom,
+            scale=processed.geometry.scale,
+            scale_x=processed.geometry.scale_x,
+            scale_y=processed.geometry.scale_y,
+            device_pixel_ratio=metadata.device_pixel_ratio,
+            zoom=metadata.zoom,
+        )
         requested = set(metadata.requested_durations)
         unsupported = requested.difference(_DURATIONS)
         if unsupported:
@@ -750,7 +738,7 @@ class FoveacastSaliencyProvider:
                 inference_duration_ms = (perf_counter() - started) * 1000.0
                 if len(outputs) != 1:
                     raise ValueError("Foveacast model must return exactly one output")
-                saliency_map = _normalize_output(outputs[0], output_shape)
+                saliency_map = _validate_output_contract(outputs[0], output_shape)
                 warm_timings.append((duration, inference_duration_ms))
                 plane = SaliencyPlane(
                     width=MODEL_WIDTH,
@@ -770,6 +758,7 @@ class FoveacastSaliencyProvider:
                             model_checksum=self._checksum_for(duration),
                             input_dimensions=(MODEL_WIDTH, MODEL_HEIGHT),
                             output_dimensions=(MODEL_WIDTH, MODEL_HEIGHT),
+                            geometry=result_geometry,
                             preprocessing_version=PREPROCESSING_VERSION,
                             inference_duration_ms=inference_duration_ms,
                             execution_provider=self.execution_provider,
@@ -811,11 +800,7 @@ class FoveacastSaliencyProvider:
             )
 
     def _checksum_for(self, duration: AttentionDuration) -> str:
-        configured = self.model_checksums.get(duration)
-        if configured is not None:
-            return configured
-        checksum = _sha256_file(self.model_paths[duration])
-        return checksum or f"unverified:{duration.value}"
+        return self._artifacts[duration].artifact.sha256
 
 
 def _load_ort_module(ort_module: _OrtModule | object | None) -> _OrtModule:
@@ -837,8 +822,10 @@ __all__ = [
     "FoveacastInferenceMetadata",
     "FoveacastSaliencyProvider",
     "FoveacastTiming",
+    "INPUT_NAME",
     "MODEL_HEIGHT",
     "MODEL_WIDTH",
+    "OUTPUT_NAME",
     "PADDING_VALUE",
     "PREPROCESSING_VERSION",
     "PreprocessedScreenshot",

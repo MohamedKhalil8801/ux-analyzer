@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 import io
-import os
 import sys
 import threading
 import time
@@ -23,6 +23,15 @@ from ux_analyzer.domain.saliency import (
     SaliencyPredictionRequest,
     SaliencyPredictionSet,
     SaliencyRequestMetadata,
+)
+from ux_analyzer.saliency.model_registry import (
+    ModelArtifact,
+    ModelManifest,
+    ModelRegistry,
+    ModelState,
+    RuntimeState,
+    RuntimeStatus,
+    load_manifest,
 )
 
 
@@ -151,10 +160,12 @@ class FakeOrt:
             assert sess_options.enable_mem_pattern is False
         else:
             assert sess_options is None
+        stem = Path(path).stem
+        duration = next(label for label in ("1s", "3s", "7s") if label in stem)
         session = FakeSession(
             provider,
             self.run_order,
-            Path(path).stem,
+            duration,
             sess_options,
             self.run_tracker,
         )
@@ -176,11 +187,12 @@ def _request(
     *,
     viewport_id: str = "viewport-1",
 ) -> SaliencyPredictionRequest:
+    screenshot = _screenshot()
     return SaliencyPredictionRequest(
-        screenshot=_screenshot(),
+        screenshot=screenshot,
         metadata=SaliencyRequestMetadata(
             viewport_id=viewport_id,
-            screenshot_sha256="a" * 64,
+            screenshot_sha256=hashlib.sha256(screenshot).hexdigest(),
             screenshot_width=2,
             screenshot_height=1,
             device_pixel_ratio=1.0,
@@ -193,26 +205,56 @@ def _request(
     )
 
 
+def _registry(tmp_path: Path) -> ModelRegistry:
+    manifest = load_manifest("foveacast-v0.2.0")
+    artifacts: list[ModelArtifact] = []
+    payloads: dict[str, bytes] = {}
+    for artifact in manifest.artifacts:
+        payload = f"fixture {artifact.filename}".encode()
+        payloads[artifact.filename] = payload
+        artifacts.append(
+            ModelArtifact(
+                filename=artifact.filename,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                url=f"http://127.0.0.1/{artifact.filename}",
+                duration=artifact.duration,
+                kind=artifact.kind,
+            )
+        )
+    local_manifest = ModelManifest(
+        model_id=manifest.model_id,
+        provider=manifest.provider,
+        version=manifest.version,
+        precision=manifest.precision,
+        artifacts=tuple(artifacts),
+        licenses=manifest.licenses,
+        attribution=manifest.attribution,
+    )
+    registry = ModelRegistry(
+        model_home=tmp_path / "models",
+        manifest=local_manifest,
+        runtime_probe=lambda _provider: RuntimeStatus(
+            state=RuntimeState.READY,
+            provider="CPUExecutionProvider",
+        ),
+    )
+    for artifact in local_manifest.artifacts:
+        path = registry.artifact_path(artifact)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payloads[artifact.filename])
+    return registry
+
+
 def _provider(
     fake_ort: FakeOrt,
+    registry: ModelRegistry,
     *,
     preference: str | None = None,
 ) -> FoveacastSaliencyProvider:
-    kwargs: dict[str, object] = {"ort_module": fake_ort}
-    if preference is not None:
-        kwargs["execution_provider_preference"] = preference
     return FoveacastSaliencyProvider(
-        model_paths={
-            AttentionDuration.ONE_SECOND: Path("1s.onnx"),
-            AttentionDuration.THREE_SECONDS: Path("3s.onnx"),
-            AttentionDuration.SEVEN_SECONDS: Path("7s.onnx"),
-        },
-        model_checksums={
-            duration: f"checksum-{duration.value}"
-            for duration in AttentionDuration
-            if duration is not AttentionDuration.GENERAL
-        },
-        **kwargs,
+        registry,
+        ort_module=fake_ort,
+        execution_provider_preference=preference,
     )
 
 
@@ -248,9 +290,11 @@ def _spearman_rank_correlation(
     return float(np.sum(expected_centered * actual_centered) / denominator)
 
 
-def test_cpu_preference_records_cpu_provider_without_directml_options() -> None:
+def test_cpu_preference_records_cpu_provider_without_directml_options(
+    tmp_path: Path,
+) -> None:
     fake_ort = FakeOrt((CPU_EXECUTION_PROVIDER,))
-    provider = _provider(fake_ort)
+    provider = _provider(fake_ort, _registry(tmp_path))
 
     provider.predict(_request("cpu"))
 
@@ -269,11 +313,12 @@ def test_cpu_preference_records_cpu_provider_without_directml_options() -> None:
 
 
 def test_directml_preference_uses_three_sequential_configured_sessions(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     fake_ort = FakeOrt((DIRECTML_EXECUTION_PROVIDER, CPU_EXECUTION_PROVIDER))
-    provider = _provider(fake_ort, preference="directml")
+    provider = _provider(fake_ort, _registry(tmp_path), preference="directml")
 
     provider.predict(_request("directml"))
 
@@ -298,6 +343,7 @@ def test_directml_preference_uses_three_sequential_configured_sessions(
 
 
 def test_concurrent_directml_predictions_serialize_runs_and_metadata(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
@@ -306,7 +352,7 @@ def test_concurrent_directml_predictions_serialize_runs_and_metadata(
         (DIRECTML_EXECUTION_PROVIDER, CPU_EXECUTION_PROVIDER),
         run_tracker=tracker,
     )
-    provider = _provider(fake_ort, preference="directml")
+    provider = _provider(fake_ort, _registry(tmp_path), preference="directml")
     start_barrier = threading.Barrier(2)
     results: list[SaliencyPredictionSet | None] = [None, None]
     errors: list[BaseException | None] = [None, None]
@@ -358,11 +404,12 @@ def test_concurrent_directml_predictions_serialize_runs_and_metadata(
 
 
 def test_auto_prefers_directml_when_available_on_windows(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     fake_ort = FakeOrt((DIRECTML_EXECUTION_PROVIDER, CPU_EXECUTION_PROVIDER))
-    provider = _provider(fake_ort, preference="auto")
+    provider = _provider(fake_ort, _registry(tmp_path), preference="auto")
 
     provider.predict(_request("auto"))
 
@@ -378,11 +425,12 @@ def test_auto_prefers_directml_when_available_on_windows(
 
 
 def test_auto_falls_back_to_cpu_with_reason_when_directml_unavailable(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     fake_ort = FakeOrt((CPU_EXECUTION_PROVIDER,))
-    provider = _provider(fake_ort, preference="auto")
+    provider = _provider(fake_ort, _registry(tmp_path), preference="auto")
 
     provider.predict(_request("auto"))
 
@@ -398,6 +446,7 @@ def test_auto_falls_back_to_cpu_with_reason_when_directml_unavailable(
 
 
 def test_auto_falls_back_to_cpu_when_directml_initialization_fails(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
@@ -405,7 +454,7 @@ def test_auto_falls_back_to_cpu_when_directml_initialization_fails(
         (DIRECTML_EXECUTION_PROVIDER, CPU_EXECUTION_PROVIDER),
         fail_directml=True,
     )
-    provider = _provider(fake_ort, preference="auto")
+    provider = _provider(fake_ort, _registry(tmp_path), preference="auto")
 
     provider.predict(_request("auto"))
 
@@ -421,6 +470,7 @@ def test_auto_falls_back_to_cpu_when_directml_initialization_fails(
 
 
 def test_explicit_directml_failure_is_not_silently_fallback(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
@@ -428,18 +478,19 @@ def test_explicit_directml_failure_is_not_silently_fallback(
         (DIRECTML_EXECUTION_PROVIDER, CPU_EXECUTION_PROVIDER),
         fail_directml=True,
     )
-    provider = _provider(fake_ort)
+    provider = _provider(fake_ort, _registry(tmp_path))
 
     with pytest.raises(RuntimeError, match="DirectML initialization failed"):
         provider.predict(_request("directml"))
 
 
 def test_explicit_directml_requires_windows_and_available_runtime(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
     fake_ort = FakeOrt((DIRECTML_EXECUTION_PROVIDER, CPU_EXECUTION_PROVIDER))
-    provider = _provider(fake_ort)
+    provider = _provider(fake_ort, _registry(tmp_path))
 
     with pytest.raises(RuntimeError, match="requires Windows"):
         provider.predict(_request("directml"))
@@ -464,29 +515,17 @@ def test_spearman_rejects_high_pearson_with_different_ties_and_ranking() -> None
     assert _spearman_rank_correlation(expected, actual) < 0.999
 
 
-def _hardware_model_paths() -> dict[AttentionDuration, Path] | None:
-    names = {
-        AttentionDuration.ONE_SECOND: "UXA_FOVEACAST_MODEL_1S",
-        AttentionDuration.THREE_SECONDS: "UXA_FOVEACAST_MODEL_3S",
-        AttentionDuration.SEVEN_SECONDS: "UXA_FOVEACAST_MODEL_7S",
-    }
-    paths = {
-        duration: Path(os.environ[name])
-        for duration, name in names.items()
-        if name in os.environ
-    }
-    if len(paths) != len(names) or not all(path.is_file() for path in paths.values()):
-        return None
-    return paths
-
-
 @pytest.mark.directml
 def test_directml_hardware_parity_and_stability() -> None:
     if sys.platform != "win32":
         pytest.skip("DirectML hardware test requires Windows")
-    paths = _hardware_model_paths()
-    if paths is None:
-        pytest.skip("set UXA_FOVEACAST_MODEL_1S/3S/7S to local model files")
+    registry = ModelRegistry()
+    status = registry.status("foveacast-v0.2.0", provider="directml")
+    if status.state is not ModelState.READY:
+        pytest.skip(
+            "pinned Foveacast DirectML artifacts/runtime unavailable: "
+            + "; ".join(status.diagnostics)
+        )
     try:
         import onnxruntime as ort
     except ImportError:
@@ -495,12 +534,12 @@ def test_directml_hardware_parity_and_stability() -> None:
         pytest.skip("DirectML execution provider is unavailable")
 
     cpu = FoveacastSaliencyProvider(
-        paths,
+        registry,
         execution_provider_preference="cpu",
         ort_module=ort,
     )
     directml = FoveacastSaliencyProvider(
-        paths,
+        registry,
         execution_provider_preference="directml",
         ort_module=ort,
     )

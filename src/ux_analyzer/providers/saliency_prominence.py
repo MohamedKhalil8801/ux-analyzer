@@ -420,7 +420,7 @@ class FoveacastProminenceProvider:
             if self.cache_enabled:
                 if cache is None:
                     raise RuntimeError("saliency cache is unavailable")
-            entry = cache.store(cache_key, payload)
+                entry = cache.store(cache_key, payload)
                 self._materialize(
                     entry, artifacts, cache, source_viewport_id=snapshot.id
                 )

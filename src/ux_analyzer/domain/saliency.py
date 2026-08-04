@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
+
+SALIENCY_GEOMETRY_VERSION = "saliency-geometry-v1"
 
 
 class AttentionDuration(StrEnum):
@@ -38,6 +41,16 @@ class SearchStage(StrEnum):
 def _require_text(name: str, value: str) -> None:
     if not value.strip():
         raise ValueError(f"{name} must not be empty")
+
+
+def _require_sha256(value: str) -> None:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or value != value.lower()
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError("screenshot_sha256 must be lowercase SHA-256")
 
 
 def _positive_dimension(name: str, value: int) -> None:
@@ -121,6 +134,61 @@ class SaliencyPlane:
 
 
 @dataclass(frozen=True, slots=True)
+class SaliencyGeometry:
+    """Domain-neutral reversible geometry for one prediction result."""
+
+    geometry_version: str
+    source_dimensions: tuple[int, int]
+    native_dimensions: tuple[int, int]
+    content_dimensions: tuple[int, int]
+    pad_left: int
+    pad_top: int
+    pad_right: int
+    pad_bottom: int
+    scale: float
+    scale_x: float
+    scale_y: float
+    device_pixel_ratio: float
+    zoom: float
+
+    def __post_init__(self) -> None:
+        _require_text("geometry_version", self.geometry_version)
+        source_dimensions = _dimensions("source dimensions", self.source_dimensions)
+        native_dimensions = _dimensions("native dimensions", self.native_dimensions)
+        content_dimensions = _dimensions("content dimensions", self.content_dimensions)
+        if any(
+            type(offset) is not int or offset < 0
+            for offset in (
+                self.pad_left,
+                self.pad_top,
+                self.pad_right,
+                self.pad_bottom,
+            )
+        ):
+            raise ValueError("geometry padding must be non-negative integers")
+        content_width, content_height = content_dimensions
+        native_width, native_height = native_dimensions
+        if (
+            self.pad_left + content_width + self.pad_right != native_width
+            or self.pad_top + content_height + self.pad_bottom != native_height
+        ):
+            raise ValueError("geometry content and padding must fill native dimensions")
+        for name, value in (
+            ("geometry scale", self.scale),
+            ("geometry scale_x", self.scale_x),
+            ("geometry scale_y", self.scale_y),
+            ("device_pixel_ratio", self.device_pixel_ratio),
+            ("zoom", self.zoom),
+        ):
+            _finite(name, value)
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
+        object.__setattr__(self, "source_dimensions", source_dimensions)
+        object.__setattr__(self, "native_dimensions", native_dimensions)
+        object.__setattr__(self, "content_dimensions", content_dimensions)
+
+
+@dataclass(frozen=True, slots=True)
 class SaliencyRequestMetadata:
     """Sanitized, reproducible inputs requested from a saliency provider."""
 
@@ -137,7 +205,7 @@ class SaliencyRequestMetadata:
 
     def __post_init__(self) -> None:
         _require_text("viewport_id", self.viewport_id)
-        _require_text("screenshot_sha256", self.screenshot_sha256)
+        _require_sha256(self.screenshot_sha256)
         _positive_dimension("screenshot width", self.screenshot_width)
         _positive_dimension("screenshot height", self.screenshot_height)
         _finite("device_pixel_ratio", self.device_pixel_ratio)
@@ -188,6 +256,9 @@ class SaliencyRequest:
             raise ValueError("screenshot must be bytes") from error
         if not screenshot:
             raise ValueError("screenshot must not be empty")
+        actual_sha256 = hashlib.sha256(screenshot).hexdigest()
+        if actual_sha256 != self.metadata.screenshot_sha256:
+            raise ValueError("screenshot_sha256 does not match screenshot bytes")
         object.__setattr__(self, "screenshot", screenshot)
 
 
@@ -202,6 +273,7 @@ class SaliencyPredictionMetadata:
     model_checksum: str
     input_dimensions: tuple[int, int]
     output_dimensions: tuple[int, int]
+    geometry: SaliencyGeometry
     preprocessing_version: str
     inference_duration_ms: float
     execution_provider: str
@@ -222,6 +294,8 @@ class SaliencyPredictionMetadata:
             _require_text(name, value)
         input_dimensions = _dimensions("input dimensions", self.input_dimensions)
         output_dimensions = _dimensions("output dimensions", self.output_dimensions)
+        if self.geometry.native_dimensions != input_dimensions:
+            raise ValueError("geometry native dimensions must match input dimensions")
         _nonnegative("inference duration", self.inference_duration_ms)
         warnings = tuple(self.warnings)
         if any(not warning.strip() for warning in warnings):
@@ -229,6 +303,17 @@ class SaliencyPredictionMetadata:
         object.__setattr__(self, "input_dimensions", input_dimensions)
         object.__setattr__(self, "output_dimensions", output_dimensions)
         object.__setattr__(self, "warnings", warnings)
+
+
+@dataclass(frozen=True, slots=True)
+class SaliencyPredictionProvenance:
+    """Replay metadata for one duration without duplicating its native map."""
+
+    duration: AttentionDuration | str
+    metadata: SaliencyPredictionMetadata
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "duration", AttentionDuration(self.duration))
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,10 +392,13 @@ class ElementAttentionProfile:
     eventual: AttentionEstimate | None
     general: AttentionEstimate | None
     aggregates: tuple[ElementSaliencyAggregate, ...]
+    aggregation_version: str = ""
+    prediction_provenance: tuple[SaliencyPredictionProvenance, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text("viewport_id", self.viewport_id)
         _require_text("element_id", self.element_id)
+        _require_text("aggregation_version", self.aggregation_version)
         aggregates = tuple(self.aggregates)
         durations = tuple(aggregate.duration for aggregate in aggregates)
         if len(durations) != len(set(durations)):
@@ -320,7 +408,14 @@ class ElementAttentionProfile:
                 raise ValueError("aggregate belongs to different viewport")
             if aggregate.element_id != self.element_id:
                 raise ValueError("aggregate belongs to different element")
+        provenance = tuple(self.prediction_provenance)
+        if not provenance:
+            raise ValueError("prediction provenance must not be empty")
+        provenance_durations = tuple(item.duration for item in provenance)
+        if len(provenance_durations) != len(set(provenance_durations)):
+            raise ValueError("duplicate duration in prediction provenance")
         object.__setattr__(self, "aggregates", aggregates)
+        object.__setattr__(self, "prediction_provenance", provenance)
 
     def estimate_for(
         self, duration: AttentionDuration | str
@@ -395,6 +490,22 @@ class SaliencyPredictionSet:
         for prediction in predictions:
             if prediction.viewport_id != self.viewport_id:
                 raise ValueError("prediction belongs to different viewport")
+            if self.request_metadata is not None:
+                geometry = prediction.metadata.geometry
+                if (
+                    geometry.source_dimensions
+                    != self.request_metadata.screenshot_dimensions
+                ):
+                    raise ValueError(
+                        "prediction geometry source dimensions do not match request"
+                    )
+                if (
+                    geometry.device_pixel_ratio
+                    != self.request_metadata.device_pixel_ratio
+                ):
+                    raise ValueError("prediction geometry DPR does not match request")
+                if geometry.zoom != self.request_metadata.zoom:
+                    raise ValueError("prediction geometry zoom does not match request")
         object.__setattr__(self, "predictions", predictions)
 
     def prediction_for(self, duration: AttentionDuration | str) -> SaliencyPrediction:
@@ -419,9 +530,12 @@ __all__ = [
     "ElementAttentionProfile",
     "ElementAttentionProfileSet",
     "ElementSaliencyAggregate",
+    "SALIENCY_GEOMETRY_VERSION",
     "SaliencyPlane",
+    "SaliencyGeometry",
     "SaliencyPrediction",
     "SaliencyPredictionMetadata",
+    "SaliencyPredictionProvenance",
     "SaliencyPredictionRequest",
     "SaliencyPredictionSet",
     "SaliencyProfileSet",

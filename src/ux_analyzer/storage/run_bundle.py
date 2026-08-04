@@ -935,7 +935,7 @@ class FilesystemRunBundleWriter:
         if type(event) not in allowed_types:
             raise TypeError("saliency event must use typed allowlisted contract")
         if isinstance(event, SaliencyCacheHitEvent):
-        self._verify_saliency_event_artifacts(event)
+            self._verify_saliency_event_artifacts(event)
         if isinstance(event, ProminenceRecordedEvent) and event.source_event_id:
             source = self._saliency_event_by_id.get(event.source_event_id)
             if not isinstance(source, SaliencyProfilesRecordedEvent):
@@ -1175,7 +1175,7 @@ class FilesystemRunBundleWriter:
             self._timeline.flush()
             for event in self._saliency_events:
                 if isinstance(event, SaliencyCacheHitEvent):
-                self._verify_saliency_event_artifacts(event)
+                    self._verify_saliency_event_artifacts(event)
             self._timeline.close()
             _write_bytes(
                 self.staging_path / "result.json",

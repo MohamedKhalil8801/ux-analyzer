@@ -175,15 +175,17 @@ def test_publication_failure_preserves_existing_ready_release(
     monkeypatch.setattr(
         local_artifact_registry, "_release_manifest_is_valid", lambda: False
     )
-    real_replace = model_registry_module.os.replace
+    real_replace = model_registry_module.secure_replace
 
-    def fail_before_manifest_backup(source: Path, destination: Path) -> None:
+    def fail_before_manifest_backup(
+        source: Path, destination: Path, label: str
+    ) -> None:
         if source == manifest_path:
             raise OSError("injected publication failure")
-        real_replace(source, destination)
+        real_replace(source, destination, label)
 
     monkeypatch.setattr(
-        model_registry_module.os, "replace", fail_before_manifest_backup
+        model_registry_module, "secure_replace", fail_before_manifest_backup
     )
 
     with pytest.raises(ModelRegistryError, match="release publish failed"):
@@ -197,6 +199,43 @@ def test_publication_failure_preserves_existing_ready_release(
         artifact.filename: local_artifact_registry.artifact_path(artifact).read_bytes()
         for artifact in local_artifact_registry.manifest.artifacts
     } == original_artifacts
+
+
+def test_install_rejects_artifact_parent_swap(
+    local_artifact_registry: ModelRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = local_artifact_registry.manifest.artifacts[0]
+    target = local_artifact_registry.artifact_path(artifact)
+    outside = local_artifact_registry.model_home / "outside"
+    outside.mkdir(parents=True)
+    real_parent = target.parent.with_name(f"{target.parent.name}-real")
+    real_replace = model_registry_module.secure_replace
+    swapped = False
+
+    def swap_before_publish(source: Path, destination: Path, label: str) -> None:
+        nonlocal swapped
+        if not swapped and destination == target:
+            target.parent.rename(real_parent)
+            try:
+                target.parent.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                real_parent.rename(target.parent)
+                pytest.skip(f"symlink race fixture unavailable: {error}")
+            swapped = True
+        real_replace(source, destination, label)
+
+    monkeypatch.setattr(model_registry_module, "secure_replace", swap_before_publish)
+    try:
+        with pytest.raises(ModelRegistryError, match="release publish failed"):
+            local_artifact_registry.install("foveacast-v0.2.0")
+    finally:
+        if target.parent.is_symlink():
+            target.parent.unlink()
+        if real_parent.exists():
+            real_parent.rename(target.parent)
+
+    assert not any(outside.iterdir())
 
 
 def test_models_status_and_remove_are_explicit_commands(

@@ -40,6 +40,7 @@ from ux_analyzer.providers.prominence import (
     HeuristicProminenceProvider,
     ProminenceResult,
 )
+from ux_analyzer.providers.saliency_aggregation import SaliencyAggregationConfig
 from ux_analyzer.providers.saliency_prominence import (
     AttentionStageSelector,
     FoveacastProminenceProvider,
@@ -285,9 +286,11 @@ class _ModelProvider:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.calls = 0
         self.error = error
+        self.requests: list[SaliencyPredictionRequest] = []
 
     def predict(self, request: SaliencyPredictionRequest) -> SaliencyPredictionSet:
         self.calls += 1
+        self.requests.append(request)
         if self.error is not None:
             raise self.error
         return _prediction_set(request)
@@ -324,6 +327,56 @@ class _Cache:
     def materialize_into_bundle(self, entry: _Entry, writer: object, **kwargs: object):
         del entry, writer, kwargs
         return ()
+
+
+def test_cache_disabled_without_writer_rejects_inference_before_model_call() -> None:
+    model = _ModelProvider()
+    cache = _Cache()
+    aggregation_config = SaliencyAggregationConfig(
+        version="aggregation-project-v2",
+        density_weight=0.5,
+        robust_peak_weight=0.3,
+        mass_share_weight=0.2,
+    )
+    stage_selector = AttentionStageSelector(
+        version="stage-project-v2",
+        temperature=0.9,
+        mixtures={
+            "initial": {"7s": 1.0},
+            "exploration": {"3s": 1.0},
+            "persistent": {"3s": 0.25, "7s": 0.75},
+        },
+    )
+    provider = FoveacastProminenceProvider(
+        model_provider=model,
+        cache=cache,
+        cache_enabled=False,
+        model_set=("foveacast-v0.2.0", "foveacast-v0.2.0-shadow"),
+        precision="fp16",
+        execution_provider_preference="directml",
+        aggregation_config=aggregation_config,
+        aggregator=lambda snapshot, predictions, config: (
+            _profile("first", immediate=0.8, early=0.4, eventual=0.2),
+            _profile("second", immediate=0.2, early=0.6, eventual=0.9),
+        ),
+        stage_selector=stage_selector,
+        heuristic_provider=HeuristicProminenceProvider(),
+        fallback_enabled=True,
+        fallback_provider_id="heuristic",
+    )
+
+    batch = provider.score(_capture(), _snapshot(), SearchStage.INITIAL, None)
+
+    assert model.requests == []
+    assert provider.cache_enabled is False
+    assert cache.entries == {}
+    assert provider.aggregation_config is aggregation_config
+    assert provider.stage_selector.version == "stage-project-v2"
+    assert batch.learned_available is False
+    assert (
+        batch.fallback_reason
+        == "cache-disabled saliency requires typed artifact writer"
+    )
 
 
 class _ConcurrentCache(_Cache):

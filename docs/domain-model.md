@@ -9,8 +9,8 @@
 | `ApplicationVersion` | One presentation variant. POC requires `defective` and `improved` kinds. |
 | `Scenario` | Fixed goal, start state, fixture inputs, budgets, safeguards, eligible personas, and verifier contract. |
 | `Persona` | Explicit simulation parameters: working-memory capacity, confidence, frustration, abandonment threshold, and attention temperature. |
-| `ExperimentDefinition` | Cartesian-product selection of scenarios, versions, personas, policies, and seeds. |
-| `RunSpec` | One immutable assignment of scenario, application version, persona, policy, seed, and config digest. |
+| `ExperimentDefinition` | Cartesian-product selection of scenarios, versions, personas, policies, attention seeds, and external model trials. |
+| `RunSpec` | One immutable assignment of scenario, application version, persona, policy, attention seed, model trial, and config digest. |
 | `Run` | Runtime state for one `RunSpec`, ordered events, snapshots, verification, manifests, and terminal outcome. |
 | `ViewportSnapshot` | Immutable capture identity plus element snapshots, regions, graph edges, screenshot reference, and private provider references. |
 | `ElementSnapshot` | One rendered element in one viewport, including private execution metadata. |
@@ -133,23 +133,25 @@ verification. This permits false-success measurement.
 
 ## Experiments and Verifier Independence
 
-Current `core-pair` matrix:
+Current controlled matrices:
 
 ```text
-8 full-list cells x 1 seed
-+ 8 progressive-prominence-scent cells x 10 seeds
-= 88 runs
+core-pair: 8 specs
+ablation: 8 specs
+baseline replication: 4 semantic cells x 2 model trials = 8 specs
 ```
 
-Policies are `full-list` and `progressive-prominence-scent`. `ablations` uses
-`prominence-ranked-list` and `progressive-prominence`. Deterministic list
-policies use only the first configured seed; progressive policies retain the
-configured seed set.
+Attention `seed` and external `model_trial` are separate axes. Core and ablation
+matrices use one model trial per semantic spec. Baseline replication keeps one
+attention seed and varies two external model trials across four semantic cells.
+The former 88-run matrix with ten seeds is historical evidence, not current
+matrix semantics.
 
 Run IDs are SHA-256 hashes of experiment ID, scenario ID, application version
-ID, persona ID, policy, seed, and config digest. Matrix order is deterministic.
-Compared variant cells must share scenario, persona, policy, config digest, and
-the exact seed set; only application version changes. The directional gate is:
+ID, persona ID, policy, attention seed, model trial, and config digest. Matrix
+order is deterministic. Compared variant cells must share scenario, persona,
+policy, config digest, and matching attention-seed/model-trial assignments;
+only application version changes. The directional gate is:
 
 1. Verified completion rate does not regress.
 2. For pairs where both variants complete, improved paired-seed median
