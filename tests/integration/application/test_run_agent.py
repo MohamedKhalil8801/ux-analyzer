@@ -1324,6 +1324,40 @@ async def test_modal_like_recapture_resets_stage_for_unchanged_semantic_snapshot
 
 
 @pytest.mark.asyncio
+async def test_click_recapture_resets_stage_for_unchanged_semantic_snapshot(
+    tmp_path: Path,
+) -> None:
+    saliency = FakeSaliencyProminenceProvider()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot("viewport-1"), _snapshot("viewport-2"))),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "target"},
+                    reason="Click target.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."}, reason="Stop."
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        attention_policy=RepeatingAttentionPolicy(),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [stage for _, stage, _ in saliency.calls] == [
+        SearchStage.INITIAL,
+        SearchStage.INITIAL,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_configured_recovery_threshold_reaches_persistent_stage_at_threshold(
     tmp_path: Path,
 ) -> None:
@@ -1417,6 +1451,87 @@ async def test_capture_aware_saliency_timeline_finalizes_in_filesystem_bundle(
         for event in timeline
         if event["kind"] == "prominence-recorded"
     )
+
+
+@pytest.mark.asyncio
+async def test_filesystem_result_projects_public_evidence_and_private_snapshot_fields(
+    tmp_path: Path,
+) -> None:
+    private_element = replace(
+        _snapshot().elements[0],
+        selector="[data-private-result]",
+        test_id="private-test-id",
+        hidden_label="private-hidden-label",
+        destination_url="https://private.example/hidden",
+    )
+    snapshot = replace(_snapshot(), elements=(private_element,))
+    saliency = FoveacastProminenceProvider(
+        model_provider=ValidFakeSaliencyModel(),
+        cache=SaliencyCache(tmp_path / "saliency-cache"),
+    )
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((snapshot,)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FilesystemBundleFactory(
+            tmp_path / "bundles", provider_manifests=(_saliency_manifest(),)
+        ),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert isinstance(result.bundle_path, Path)
+    persisted = json.loads(
+        (result.bundle_path / "result.json").read_text(encoding="utf-8")
+    )
+    serialized = json.dumps(persisted, sort_keys=True)
+    for private_value in (
+        "token-target",
+        "[data-private-result]",
+        "private-test-id",
+        "private-hidden-label",
+        "https://private.example/hidden",
+    ):
+        assert private_value not in serialized
+    for private_key in (
+        "execution_reference",
+        "selector",
+        "test_id",
+        "hidden_label",
+        "destination_url",
+        "token",
+    ):
+        assert f'"{private_key}"' not in serialized
+    for saliency_key in (
+        "raw_score",
+        "normalized_probability",
+        "feature_contributions",
+        "raw_values",
+        "normalized_values",
+    ):
+        assert f'"{saliency_key}"' not in serialized
+
+    assert persisted["state"]["snapshots"][0]["provider_id"] == "fake-observer"
+    prominence = persisted["evidence"]["prominence"][0]
+    assert prominence["viewport_id"] == "viewport-1"
+    assert prominence["source_event_id"].startswith("event-")
+    assert set(prominence) == {"viewport_id", "source_event_id"}
+    selection = persisted["evidence"]["selections"][0]
+    assert selection["source_event_id"].startswith("event-")
+    assert "element_probabilities" not in selection
+    assert "region_probabilities" not in selection
+    decision = persisted["evidence"]["decisions"][0]
+    assert decision["source_event_id"].startswith("event-")
+    assert "decision" not in decision
 
 
 def _saliency_manifest() -> ProviderManifest:
@@ -1681,7 +1796,7 @@ async def test_in_memory_writer_detects_tampered_saliency_reference(
             return reference
 
     class TamperingFactory(FakeBundleFactory):
-    def __init__(self) -> None:
+        def __init__(self) -> None:
             self.bundle = TamperingBundle()
 
     agent = _agent(

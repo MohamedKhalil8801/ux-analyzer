@@ -46,13 +46,29 @@ from ux_analyzer.ports.artifacts import (
 _CHECKSUMS_FILE = "checksums.sha256"
 _CRASH_MARKER = "crash.marker"
 _ACTIVE_MARKER = ".active"
+_PRIVATE_PERSISTENCE_KEYS = frozenset(
+    {
+        "execution_reference",
+        "selector",
+        "test_id",
+        "hidden_label",
+        "destination_url",
+        "token",
+    }
+)
 
+
+def _is_private_persistence_key(value: object) -> bool:
+    return str(value) in _PRIVATE_PERSISTENCE_KEYS
 
 def _json_value(value: object) -> Any:
     """Convert domain values to JSON data at infrastructure boundary."""
 
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
+    persistence_projection = getattr(value, "to_persistence_dict", None)
+    if callable(persistence_projection):
+        return _json_value(persistence_projection())
     if isinstance(value, Enum):
         return _json_value(value.value)
     if isinstance(value, (datetime, date)):
@@ -63,7 +79,11 @@ def _json_value(value: object) -> Any:
         raise TypeError("bytes cannot be serialized into artifact JSON")
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        return {str(key): _json_value(item) for key, item in mapping.items()}
+        return {
+            str(key): _json_value(item)
+            for key, item in mapping.items()
+            if not _is_private_persistence_key(key)
+        }
     if isinstance(value, (list, tuple, set, frozenset)):
         sequence = cast(Sequence[object], value)
         return [_json_value(item) for item in sequence]
@@ -71,6 +91,7 @@ def _json_value(value: object) -> Any:
         return {
             field.name: _json_value(getattr(value, field.name))
             for field in fields(value)
+            if not _is_private_persistence_key(field.name)
         }
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):

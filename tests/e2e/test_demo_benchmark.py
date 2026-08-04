@@ -312,13 +312,14 @@ def _reduced_project(path: Path) -> Path:
     return path
 
 
-def _prominence_score(result: dict[str, object]) -> dict[str, object]:
-    evidence = result["evidence"]
-    assert isinstance(evidence, dict)
-    prominence = evidence["prominence"]
-    assert isinstance(prominence, list) and prominence
-    record = prominence[0]
-    assert isinstance(record, dict)
+def _prominence_score(events: list[dict[str, object]]) -> dict[str, object]:
+    record = next(
+        event
+        for event in events
+        if event.get("kind") == "prominence-recorded"
+        and isinstance(event.get("scores"), list)
+        and event["scores"]
+    )
     scores = record["scores"]
     assert isinstance(scores, list) and scores
     score = scores[0]
@@ -364,11 +365,15 @@ async def test_production_cli_report_is_interactive_and_causal(
     report_path = output / "report.html"
     run_path = next((output / "runs").iterdir())
     persisted = json.loads((run_path / "result.json").read_text(encoding="utf-8"))
+    events = [
+        json.loads(line)
+        for line in (run_path / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert persisted["metrics"]["feedback_observed"] is True
     assert "missing-feedback" not in {
         finding["category"] for finding in persisted["findings"]
     }
-    score = _prominence_score(persisted)
+    score = _prominence_score(events)
     element_id = str(score["element_id"])
     raw_values = score["raw_values"]
     normalized_values = score["normalized_values"]

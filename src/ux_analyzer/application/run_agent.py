@@ -431,6 +431,50 @@ class RunEvidence:
     screenshot_artifacts: tuple[ArtifactChecksum, ...] = ()
     state_event_ids: tuple[str, ...] = ()
 
+    def to_persistence_dict(self) -> dict[str, object]:
+        """Return public evidence references without raw decision or score data."""
+
+        return {
+            "prominence": tuple(
+                {
+                    "viewport_id": record.viewport_id,
+                    "source_event_id": record.source_event_id,
+                }
+                for record in self.prominence
+            ),
+            "scent": tuple(
+                {
+                    "kind": record.kind,
+                    "viewport_id": record.viewport_id,
+                    "source_event_id": record.source_event_id,
+                }
+                for record in self.scent
+            ),
+            "selections": tuple(
+                {
+                    "viewport_id": record.viewport_id,
+                    "selected_ids": record.selected_ids,
+                    "selection_mode": record.selection_mode,
+                    "region_id": record.region_id,
+                    "recovery_selected_ids": record.recovery_selected_ids,
+                    "source_event_id": record.source_event_id,
+                }
+                for record in self.selections
+            ),
+            "decisions": tuple(
+                {
+                    "viewport_id": record.viewport_id,
+                    "source_event_id": record.source_event_id,
+                }
+                for record in self.decisions
+            ),
+            "model_calls": tuple(
+                _model_call_persistence_dict(record) for record in self.model_calls
+            ),
+            "screenshot_artifacts": self.screenshot_artifacts,
+            "state_event_ids": self.state_event_ids,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class RunResult:
@@ -455,6 +499,25 @@ class RunResult:
         """Compatibility alias for callers using shorter claim vocabulary."""
 
         return self.agent_claimed_success
+
+    def to_persistence_dict(self) -> dict[str, object]:
+        """Return result fields with explicit public evidence persistence."""
+
+        return {
+            "run_id": self.run_id,
+            "outcome": self.outcome,
+            "verification": self.verification,
+            "agent_claimed_success": self.agent_claimed_success,
+            "state": self.state,
+            "bundle_path": self.bundle_path,
+            "terminal_reason": self.terminal_reason,
+            "evidence": self.evidence.to_persistence_dict(),
+            "metrics": self.metrics,
+            "findings": self.findings,
+            "evaluation_failure_reason": self.evaluation_failure_reason,
+            "ux_sample_valid": self.ux_sample_valid,
+            "ux_sample_invalid_reason": self.ux_sample_invalid_reason,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1887,6 +1950,7 @@ def _stage_reset_action(action: Mapping[str, object] | None) -> bool:
         in {
             "back",
             "close-menu",
+            "click",
             "navigate",
             "open-menu",
             "scroll",
@@ -2204,6 +2268,22 @@ def _prominence_payload(score: ProminenceResult) -> dict[str, object]:
         "feature_contributions": dict(score.feature_contributions),
         "raw_values": dict(score.raw_values),
         "normalized_values": dict(score.normalized_values),
+    }
+
+
+def _model_call_persistence_dict(record: ModelCallRecord) -> dict[str, object]:
+    """Persist model-call audit metadata without request or response payloads."""
+
+    return {
+        "role": record.role,
+        "model": record.model,
+        "endpoint_origin": record.endpoint_origin,
+        "prompt_digest": record.prompt_digest,
+        "schema_version": record.schema_version,
+        "attempts": record.attempts,
+        "latency_ms": record.latency_ms,
+        "token_usage": record.token_usage,
+        "retries": record.retries,
     }
 
 
