@@ -28,9 +28,14 @@ from ux_analyzer.ports.artifacts import (
     BundleAlreadyFinalizedError,
     BundleManifest,
     BundleStateError,
+    ProminenceRecordedEvent,
     RedactionPolicy,
+    SaliencyArtifactContext,
     SaliencyArtifactKind,
     SaliencyCacheHitEvent,
+    SaliencyFallbackRecordedEvent,
+    SaliencyProfilesRecordedEvent,
+    SaliencyTimelineEvent,
     canonicalize_saliency_artifact_content,
     is_sensitive_key,
     sanitize_artifact_content,
@@ -824,7 +829,8 @@ class FilesystemRunBundleWriter:
         self._next_sequence = 1
         self._finalized = False
         self._aborted = False
-        self._saliency_events: list[SaliencyCacheHitEvent] = []
+        self._saliency_events: list[SaliencyTimelineEvent] = []
+        self._saliency_event_by_id: dict[str, SaliencyTimelineEvent] = {}
 
     @classmethod
     def start(
@@ -873,6 +879,10 @@ class FilesystemRunBundleWriter:
         return self.manifest.run_id
 
     @property
+    def saliency_artifact_context(self) -> SaliencyArtifactContext | None:
+        return None
+
+    @property
     def finalized(self) -> bool:
         return self._finalized
 
@@ -890,7 +900,15 @@ class FilesystemRunBundleWriter:
         """Append one event, overriding caller sequence with monotonic sequence."""
 
         self._ensure_writable()
-        if isinstance(event, SaliencyCacheHitEvent):
+        if isinstance(
+            event,
+            (
+                SaliencyCacheHitEvent,
+                SaliencyProfilesRecordedEvent,
+                SaliencyFallbackRecordedEvent,
+                ProminenceRecordedEvent,
+            ),
+        ):
             raise TypeError("saliency events require typed append_saliency_event")
         if isinstance(event, Mapping):
             event_mapping = cast(Mapping[object, object], event)
@@ -904,15 +922,35 @@ class FilesystemRunBundleWriter:
             raise TypeError("saliency events require typed append_saliency_event")
         return self._append_event_value(event_value)
 
-    def append_saliency_event(self, event: SaliencyCacheHitEvent) -> int:
-        """Append one allowlisted saliency cache event."""
+    def append_saliency_event(self, event: SaliencyTimelineEvent) -> int:
+        """Append one allowlisted saliency timeline event."""
 
         self._ensure_writable()
-        if type(event) is not SaliencyCacheHitEvent:
-            raise TypeError("saliency event must be SaliencyCacheHitEvent")
+        allowed_types = (
+            SaliencyCacheHitEvent,
+            SaliencyProfilesRecordedEvent,
+            SaliencyFallbackRecordedEvent,
+            ProminenceRecordedEvent,
+        )
+        if type(event) not in allowed_types:
+            raise TypeError("saliency event must use typed allowlisted contract")
+        if isinstance(event, SaliencyCacheHitEvent):
         self._verify_saliency_event_artifacts(event)
+        if isinstance(event, ProminenceRecordedEvent) and event.source_event_id:
+            source = self._saliency_event_by_id.get(event.source_event_id)
+            if not isinstance(source, SaliencyProfilesRecordedEvent):
+                raise BundleStateError(
+                    "prominence event source_event_id must reference profile event"
+                )
+            if (
+                source.source_viewport_id != event.source_viewport_id
+                or source.artifact_namespace != event.artifact_namespace
+                or source.cache_state != event.cache_state
+            ):
+                raise BundleStateError("saliency timeline source join does not match")
         sequence = self._append_event_value(event.to_dict())
         self._saliency_events.append(event)
+        self._saliency_event_by_id[f"event-{sequence}"] = event
         return sequence
 
     def _verify_saliency_event_artifacts(self, event: SaliencyCacheHitEvent) -> None:
@@ -934,6 +972,25 @@ class FilesystemRunBundleWriter:
                 raise BundleStateError(
                     f"saliency event artifact sha256 mismatch: {reference.path}"
                 )
+
+    def verify_artifact(self, reference: ArtifactReference) -> None:
+        """Verify writer-owned bytes for application-level artifact checks."""
+
+        normalized = validate_saliency_artifact_path(reference.path)
+        destination = self._secure_destination(normalized)
+        if not destination.is_file() or _is_link_or_reparse(destination):
+            raise BundleStateError(
+                f"materialized artifact is missing: {reference.path}"
+            )
+        content = _read_bytes(destination, "materialized saliency artifact")
+        if len(content) != reference.size:
+            raise BundleStateError(
+                f"materialized artifact size mismatch: {reference.path}"
+            )
+        if hashlib.sha256(content).hexdigest() != reference.sha256:
+            raise BundleStateError(
+                f"materialized artifact checksum mismatch: {reference.path}"
+            )
 
     def _append_event_value(self, event_value: dict[str, Any]) -> int:
         event_value["sequence"] = self._next_sequence
@@ -1117,6 +1174,7 @@ class FilesystemRunBundleWriter:
         try:
             self._timeline.flush()
             for event in self._saliency_events:
+                if isinstance(event, SaliencyCacheHitEvent):
                 self._verify_saliency_event_artifacts(event)
             self._timeline.close()
             _write_bytes(

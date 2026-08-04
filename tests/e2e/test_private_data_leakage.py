@@ -16,6 +16,11 @@ from ux_analyzer.domain.interface import (
     PrivateExecutionReference,
     ViewportSnapshot,
 )
+from ux_analyzer.ports.artifacts import (
+    ProminenceRecordedEvent,
+    SaliencyFallbackRecordedEvent,
+    SaliencyProfilesRecordedEvent,
+)
 from ux_analyzer.ports.models import ChatMessage, ModelRole
 from ux_analyzer.providers.cognitive import (
     CognitiveModelResponse,
@@ -212,3 +217,46 @@ def test_leakage_failure_names_event_and_redacted_field_path() -> None:
             {"messages": [{"content": "api-key-123"}]},
             _forbidden_values(),
         )
+
+
+def test_typed_saliency_events_keep_private_values_out_of_timeline_payload() -> None:
+    profile_event = SaliencyProfilesRecordedEvent(
+        viewport_id="viewport-1",
+        provider_id="foveacast",
+        search_stage="initial",
+        model_checksums=("1" * 64, "2" * 64, "3" * 64),
+        execution_provider="CPUExecutionProvider",
+        preprocessing_version="foveacast-preprocess-v1",
+        precision="fp16",
+        cache_key="a" * 64,
+        warnings=(
+            "API key: api-key-123",
+            "selector=[data-testid='invite']",
+            "fixture-secret=demo-secret@example.test",
+        ),
+    )
+    fallback_event = SaliencyFallbackRecordedEvent(
+        viewport_id="viewport-1",
+        provider_id="foveacast-prominence",
+        fallback_provider_id="heuristic-prominence",
+        search_stage="initial",
+        reason="model failed; token=private-token",
+    )
+    prominence_event = ProminenceRecordedEvent(
+        viewport_id="viewport-1",
+        provider_id="foveacast-prominence",
+        active_provider_id="foveacast",
+        search_stage="initial",
+        selected_mixture=(("1s", 1.0),),
+    )
+
+    payload = {
+        "profiles": profile_event.to_dict(),
+        "fallback": fallback_event.to_dict(),
+        "prominence": prominence_event.to_dict(),
+    }
+    _assert_no_leaks("saliency-events", payload, _forbidden_values())
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "scores" not in serialized
+    assert "raw_map" not in serialized
+    assert "normalized_probability" not in serialized

@@ -23,6 +23,7 @@ from ux_analyzer.adapters.openai import (
     OpenAICompatibleStructuredClient,
     load_environment_file,
 )
+from ux_analyzer.adapters.saliency.foveacast import FoveacastSaliencyProvider
 from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
 from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
 from ux_analyzer.adapters.web.session import PlaywrightSessionAdapter
@@ -97,6 +98,10 @@ from ux_analyzer.providers.finding_rules import FindingRuleSet
 from ux_analyzer.providers.full_list_policy import FullListPolicy
 from ux_analyzer.providers.prominence import HeuristicProminenceProvider
 from ux_analyzer.providers.ranked_list_policy import ProminenceRankedListPolicy
+from ux_analyzer.providers.saliency_prominence import (
+    AttentionStageSelector,
+    FoveacastProminenceProvider,
+)
 from ux_analyzer.providers.scent import (
     StructuredCoarseScentEvaluator,
     StructuredFullScentEvaluator,
@@ -110,6 +115,7 @@ from ux_analyzer.saliency.model_registry import (
     load_manifest,
 )
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
+from ux_analyzer.storage.saliency_cache import SaliencyCache
 
 app = typer.Typer(add_completion=False)
 fixture_app = typer.Typer(add_completion=False)
@@ -896,8 +902,14 @@ class _FixtureObservationProvider:
 class _AttentionPolicyAdapter:
     """Normalize unrestricted list policy output to bounded domain observations."""
 
-    def __init__(self, policy: object) -> None:
+    def __init__(
+        self,
+        policy: object,
+        *,
+        config: AttentionPolicyConfig | None = None,
+    ) -> None:
         self._policy = policy
+        self.config = config or getattr(policy, "config", AttentionPolicyConfig())
 
     @property
     def id(self) -> str:
@@ -1004,6 +1016,16 @@ class _BundleFactory:
                 for role, prompt_version, schema_version in (
                     ("coarse-scent", "scent-coarse-v1", "scent-coarse-v1"),
                     ("full-scent", "scent-full-v1", "scent-full-v1"),
+                )
+            )
+        if spec.prominence_provider_id == "foveacast":
+            model_manifests.append(
+                ProviderManifest(
+                    provider_id="foveacast",
+                    role="prominence",
+                    model_id=self._runtime.saliency.model_set[0],
+                    endpoint_origin="internal",
+                    version="v0.2.0",
                 )
             )
         manifest = BundleManifest.from_run_spec(
@@ -1134,7 +1156,8 @@ def _build_agent(
         temperature=spec.persona.attention_temperature,
     )
     policy = _AttentionPolicyAdapter(
-        _attention_policy_for(spec.policy, attention_config)
+        _attention_policy_for(spec.policy, attention_config),
+        config=attention_config,
     )
     scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
     coarse = (
@@ -1167,11 +1190,48 @@ def _build_agent(
         observation_provider=cast(ObservationProvider, provider),
         snapshot_extractor=_snapshot_from_capture,
     )
+    heuristic_prominence = HeuristicProminenceProvider(runtime.prominence)
+    if spec.prominence_provider_id == "foveacast":
+        model_set = runtime.saliency.model_set
+        if len(model_set) != 1:
+            raise ValueError(
+                "Foveacast runtime currently requires exactly one configured model"
+            )
+        registry = _registry_for(model_set[0])
+        redaction = RedactionPolicy.from_fixture_inputs(spec.scenario.fixture_inputs)
+        prominence_provider: ProminenceProvider = cast(
+            ProminenceProvider,
+            FoveacastProminenceProvider(
+                model_provider=lambda: FoveacastSaliencyProvider(
+                    registry,
+                    execution_provider_preference=(
+                        runtime.saliency.execution_provider_preference
+                    ),
+                ),
+                cache=lambda: SaliencyCache(output, redaction=redaction),
+                cache_enabled=runtime.saliency.cache.enabled,
+                cache_scope=runtime.saliency.cache.scope,
+                model_set=model_set,
+                precision=runtime.saliency.precision,
+                execution_provider_preference=(
+                    runtime.saliency.execution_provider_preference
+                ),
+                aggregation_config=runtime.saliency.aggregation,
+                stage_selector=AttentionStageSelector(
+                    version=runtime.saliency.stage_selector.version,
+                    temperature=runtime.saliency.stage_selector.temperature,
+                    mixtures=runtime.saliency.stage_selector.mixtures,
+                ),
+                heuristic_provider=heuristic_prominence,
+                fallback_enabled=runtime.saliency.fallback.enabled,
+                fallback_provider_id=runtime.saliency.fallback.provider_id,
+            ),
+        )
+    else:
+        prominence_provider = cast(ProminenceProvider, heuristic_prominence)
     return RunAgent(
         observation_provider=cast(ObservationProvider, provider),
-        prominence_provider=cast(
-            ProminenceProvider, HeuristicProminenceProvider(runtime.prominence)
-        ),
+        prominence_provider=prominence_provider,
         attention_policy=cast(AttentionPolicy, policy),
         cognitive_agent=cast(RunCognitiveAgent, cognitive),
         verifier=verifier,
@@ -1326,10 +1386,7 @@ def _selected_finalized_evidence(
         findings_by_run[result.run_id] = result.findings or ()
     adapter = TypeAdapter(RunMetrics)
     for spec in selected_specs:
-        if (
-            spec.run_id in metrics_by_run
-            or spec.run_id in returned_metric_run_ids
-        ):
+        if spec.run_id in metrics_by_run or spec.run_id in returned_metric_run_ids:
             continue
         if not finalized_bundle_is_valid(
             output,

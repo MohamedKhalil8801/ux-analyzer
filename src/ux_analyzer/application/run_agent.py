@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import json
 import random
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from time import perf_counter
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -23,8 +25,10 @@ from ux_analyzer.application.progress import (
     element_progress_identity,
     made_meaningful_progress,
     repeated_cycle_length,
+    snapshot_progress_signature,
     transition_progress_signature,
 )
+from ux_analyzer.application.saliency import ProminenceBatch
 from ux_analyzer.application.state_updates import (
     ApplicationState,
     StateUpdateConfig,
@@ -73,9 +77,16 @@ from ux_analyzer.domain.run import (
 from ux_analyzer.ports.artifacts import (
     ArtifactReference,
     BundleManifest,
+    ProminenceRecordedEvent,
+    RedactionPolicy,
     RunBundleWriter,
+    SaliencyArtifactContext,
     SaliencyArtifactKind,
-    SaliencyCacheHitEvent,
+    SaliencyFallbackRecordedEvent,
+    SaliencyProfilesRecordedEvent,
+    required_saliency_artifact_paths,
+    sanitize_log_text,
+    validate_saliency_artifact_path,
 )
 from ux_analyzer.ports.models import (
     CoarseScentEvaluator,
@@ -133,7 +144,7 @@ class ObservationSelection(Protocol):
 class ProminenceProvider(Protocol):
     """Application-facing prominence scoring capability."""
 
-    def score(self, snapshot: ViewportSnapshot) -> Sequence[ProminenceResult]: ...
+    score: Callable[..., object]
 
 
 class AttentionPolicy(Protocol):
@@ -204,9 +215,7 @@ class RunProfiler:
             timing.count += 1
             timing.total_ms += elapsed_ms
             timing.max_ms = max(timing.max_ms, elapsed_ms)
-            self._samples.append(
-                {"stage": stage, "elapsed_ms": round(elapsed_ms, 3)}
-            )
+            self._samples.append({"stage": stage, "elapsed_ms": round(elapsed_ms, 3)})
 
     def write(self, *, run_id: str) -> None:
         if self._path is None:
@@ -254,11 +263,15 @@ class _ProfiledRunBundleWriter:
     def manifest(self) -> BundleManifest:
         return self._writer.manifest
 
+    @property
+    def saliency_artifact_context(self) -> SaliencyArtifactContext | None:
+        return self._writer.saliency_artifact_context
+
     def append_event(self, event: object) -> int:
         with self._profiler.measure("bundle.append_event"):
             return self._writer.append_event(event)
 
-    def append_saliency_event(self, event: SaliencyCacheHitEvent) -> int:
+    def append_saliency_event(self, event: object) -> int:
         with self._profiler.measure("bundle.append_saliency_event"):
             return self._writer.append_saliency_event(event)
 
@@ -281,6 +294,10 @@ class _ProfiledRunBundleWriter:
         with self._profiler.measure("bundle.write_saliency_artifact"):
             return self._writer.write_saliency_artifact(name, content, kind)
 
+    def verify_artifact(self, reference: ArtifactReference) -> None:
+        with self._profiler.measure("bundle.verify_artifact"):
+            self._writer.verify_artifact(reference)
+
     def finalize(self, result: object) -> Path:
         with self._profiler.measure("bundle.finalize"):
             return self._writer.finalize(result)
@@ -288,6 +305,72 @@ class _ProfiledRunBundleWriter:
     def abort(self, reason: str) -> Path:
         with self._profiler.measure("bundle.abort"):
             return self._writer.abort(reason)
+
+
+class _SaliencyArtifactTrackingWriter:
+    """Capture references returned by capture-aware artifact writes."""
+
+    def __init__(
+        self, writer: RunBundleWriter, context: SaliencyArtifactContext
+    ) -> None:
+        self._writer = writer
+        self._context = context
+        self.references: list[ArtifactReference] = []
+
+    @property
+    def run_id(self) -> str:
+        return self._writer.run_id
+
+    @property
+    def manifest(self) -> BundleManifest:
+        return self._writer.manifest
+
+    @property
+    def saliency_artifact_context(self) -> SaliencyArtifactContext:
+        return self._context
+
+    def append_event(self, event: object) -> int:
+        return self._writer.append_event(event)
+
+    def append_saliency_event(self, event: object) -> int:
+        return self._writer.append_saliency_event(event)
+
+    def write_artifact(self, name: str, content: bytes | str) -> ArtifactReference:
+        return self._writer.write_artifact(name, content)
+
+    def write_named_artifact(
+        self, name: str, content: bytes | str
+    ) -> ArtifactReference:
+        return self._writer.write_named_artifact(name, content)
+
+    def write_saliency_artifact(
+        self,
+        name: str,
+        content: bytes | str,
+        kind: SaliencyArtifactKind,
+    ) -> ArtifactReference:
+        reference = self._writer.write_saliency_artifact(
+            self._remap_path(name), content, kind
+        )
+        self.references.append(reference)
+        return reference
+
+    def verify_artifact(self, reference: ArtifactReference) -> None:
+        self._writer.verify_artifact(reference)
+
+    def _remap_path(self, name: str) -> str:
+        normalized = validate_saliency_artifact_path(name)
+        return f"saliency/{self._context.artifact_namespace}/{normalized.name}"
+
+    def _remap_reference(self, reference: ArtifactReference) -> ArtifactReference:
+        path = self._remap_path(reference.path)
+        return replace(reference, path=path, name=path)
+
+    def finalize(self, result: object) -> Path:
+        return self._writer.finalize(result)
+
+    def abort(self, reason: str) -> Path:
+        return self._writer.abort(reason)
 
 
 SessionConfigFactory = Callable[[RunSpec], ObservationSessionConfig]
@@ -383,6 +466,28 @@ class _Execution:
     terminal_reason: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _CapturedViewport:
+    """Local capture data passed to model providers without entering RunState."""
+
+    capture: ObservationCapture
+    snapshot: ViewportSnapshot
+    screenshot_sha256: str
+    source_event_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SaliencyRuntimeMetadata:
+    provider_id: str
+    model_checksums: tuple[str, ...]
+    execution_provider: str
+    preprocessing_version: str
+    precision: str
+    cache_key: str | None
+    timings_ms: tuple[float, ...]
+    warnings: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class _RunContext:
     """Mutable per-execution cursor; never shared between run calls."""
@@ -421,6 +526,13 @@ class _RunContext:
     )
     previous_action: dict[str, object] | None = None
     previous_action_result: dict[str, object] | None = None
+    current_capture: _CapturedViewport | None = None
+    current_viewport_identity: tuple[object, ...] | None = None
+    observed_viewport_identity: tuple[object, ...] | None = None
+    stage_reset_for_capture: bool = True
+    saliency_fallback_reason: str | None = None
+    redaction_policy: RedactionPolicy = field(default_factory=RedactionPolicy)
+    saliency_artifact_references: list[ArtifactReference] = field(default_factory=list)
 
 
 class RunAgent:
@@ -484,6 +596,9 @@ class RunAgent:
             state=initial_state,
             application_state=ApplicationState.from_attention(initial_state.attention),
             profiler=profiler,
+            redaction_policy=RedactionPolicy.from_fixture_inputs(
+                spec.scenario.fixture_inputs
+            ),
         )
         artifact_checksums: list[ArtifactChecksum] = []
         timeout_seconds = spec.scenario.budget.timeout_seconds
@@ -645,18 +760,31 @@ class RunAgent:
                     agent_claimed_success=claimed_success,
                     terminal_reason="attention budget exhausted",
                 )
+            captured = context.current_capture
             snapshot = context.state.current_snapshot
-            if snapshot is None:
-                raise RuntimeError("run has no current viewport")
+            if captured is None or snapshot is None:
+                raise RuntimeError("run has no current viewport capture")
 
             with context.profiler.measure("prominence.score"):
-                scores = tuple(self.prominence_provider.score(snapshot))
-            prominence_sequence = writer.append_event(
-                {
-                    "kind": "prominence-recorded",
-                    "viewport_id": snapshot.id,
-                    "scores": tuple(_prominence_payload(score) for score in scores),
+                scores, prominence_batch, artifact_references = self._score_prominence(
+                    captured, snapshot, context, writer
+                )
+            if artifact_references:
+                known_paths = {
+                    reference.path for reference in context.saliency_artifact_references
                 }
+                context.saliency_artifact_references.extend(
+                    reference
+                    for reference in artifact_references
+                    if reference.path not in known_paths
+                )
+            prominence_sequence = self._record_prominence(
+                context,
+                writer,
+                snapshot,
+                scores=scores,
+                batch=prominence_batch,
+                artifact_references=artifact_references,
             )
             context.prominence.append(
                 ProminenceEvidence(
@@ -781,6 +909,8 @@ class RunAgent:
                     recovery_state=getattr(selection, "next_recovery_state", None),
                 )
             )
+            context.observed_viewport_identity = context.current_viewport_identity
+            context.stage_reset_for_capture = False
             _sync_run_attention(context)
 
             if context.application_state.budgets.steps <= 0:
@@ -794,8 +924,7 @@ class RunAgent:
 
             parallel_model_calls = (
                 self.full_scent_evaluator is not None
-                and spec.scenario.budget.max_model_calls - context.model_call_count
-                >= 2
+                and spec.scenario.budget.max_model_calls - context.model_call_count >= 2
             )
             full_scent: tuple[FullScent, ...] | None = None
             if self.full_scent_evaluator is not None and not parallel_model_calls:
@@ -855,14 +984,12 @@ class RunAgent:
             try:
                 if parallel_model_calls:
                     context.model_call_count += 2
-                    full_result, cognitive_result = (
-                        await self._evaluate_parallel_calls(
+                    full_result, cognitive_result = await self._evaluate_parallel_calls(
                             context,
                             spec.scenario.goal,
                             context.application_state.attention,
                             snapshot,
                             observation,
-                        )
                     )
                     if isinstance(full_result, BaseException):
                         raise full_result
@@ -1173,8 +1300,7 @@ class RunAgent:
                 )
 
             stalled_out = (
-                context.consecutive_action_count >= 3
-                or context.no_progress_count >= 5
+                context.consecutive_action_count >= 3 or context.no_progress_count >= 5
             )
             if not meaningful_progress and stalled_out:
                 if context.consecutive_action_count >= 3:
@@ -1214,13 +1340,12 @@ class RunAgent:
                     terminal_reason=context.application_state.abandonment_reason,
                 )
 
-
     async def _capture(
         self,
         context: _RunContext,
         writer: RunBundleWriter,
         artifact_checksums: list[ArtifactChecksum],
-    ) -> None:
+    ) -> _CapturedViewport:
         session = context.session
         if session is None:
             raise RuntimeError("capture requires active session")
@@ -1242,6 +1367,13 @@ class RunAgent:
                 )
             )
             _sync_run_attention(context)
+        current_identity = _viewport_identity(snapshot)
+        context.stage_reset_for_capture = (
+            context.current_viewport_identity is None
+            or current_identity != context.current_viewport_identity
+            or _stage_reset_action(context.previous_action)
+        )
+        context.current_viewport_identity = current_identity
         context.state = _record(
             context.state,
             ViewportCaptured(
@@ -1252,6 +1384,180 @@ class RunAgent:
             writer,
             context.state_event_ids,
             )
+        source_event_id = context.state_event_ids[-1]
+        captured = _CapturedViewport(
+            capture=capture,
+            snapshot=snapshot,
+            screenshot_sha256=hashlib.sha256(capture.screenshot).hexdigest(),
+            source_event_id=source_event_id,
+        )
+        context.current_capture = captured
+        return captured
+
+    def _score_prominence(
+        self,
+        captured: _CapturedViewport,
+        snapshot: ViewportSnapshot,
+        context: _RunContext,
+        writer: RunBundleWriter,
+    ) -> tuple[
+        tuple[ProminenceResult, ...],
+        ProminenceBatch | None,
+        tuple[ArtifactReference, ...],
+    ]:
+        stage = _search_stage(self.attention_policy, context, snapshot)
+        score_method = self.prominence_provider.score
+        if _capture_score_method(score_method):
+            tracking_writer = _SaliencyArtifactTrackingWriter(
+                writer,
+                SaliencyArtifactContext(
+                    source_viewport_id=snapshot.id,
+                    artifact_namespace=_saliency_artifact_namespace(
+                        self.prominence_provider, captured, snapshot
+                    ),
+                    source_event_id=captured.source_event_id,
+                ),
+            )
+            result = score_method(captured.capture, snapshot, stage, tracking_writer)
+            artifact_references = tuple(tracking_writer.references)
+        else:
+            result = score_method(snapshot)
+            artifact_references = ()
+        if isinstance(result, ProminenceBatch):
+            return tuple(result.scores), result, artifact_references
+        if not isinstance(result, Sequence) or isinstance(result, (str, bytes)):
+            raise TypeError("prominence provider must return scores or ProminenceBatch")
+        return (
+            tuple(cast(Sequence[ProminenceResult], result)),
+            None,
+            artifact_references,
+        )
+
+    def _record_prominence(
+        self,
+        context: _RunContext,
+        writer: RunBundleWriter,
+        snapshot: ViewportSnapshot,
+        *,
+        scores: tuple[ProminenceResult, ...],
+        batch: ProminenceBatch | None,
+        artifact_references: Sequence[ArtifactReference] = (),
+    ) -> int:
+        if batch is None:
+            return writer.append_event(
+                {
+                    "kind": "prominence-recorded",
+                    "viewport_id": snapshot.id,
+                    "scores": tuple(_prominence_payload(score) for score in scores),
+                }
+            )
+
+        stage = _search_stage(self.attention_policy, context, snapshot)
+        stage_value = stage.value
+        metadata = _saliency_runtime_metadata(
+            self.prominence_provider,
+            context.current_capture,
+            batch,
+        )
+        artifact_identity: tuple[str, tuple[str, ...]] | None = None
+        artifact_failure_reason: str | None = None
+        profile_event_id: int | None = None
+        if batch.learned_available:
+            if len(metadata.model_checksums) != 3:
+                raise RuntimeError("saliency profile provenance lacks model checksums")
+            try:
+                artifact_identity = _saliency_artifact_identity(
+                    snapshot.id, artifact_references
+                )
+            except RuntimeError:
+                artifact_failure_reason = (
+                    "learned saliency artifact evidence unavailable"
+                )
+            if artifact_identity is not None:
+                artifact_viewport_id, artifact_ids = artifact_identity
+                profile_event_id = _append_typed_saliency_event(
+                    writer,
+                    SaliencyProfilesRecordedEvent(
+                        viewport_id=artifact_viewport_id,
+                        provider_id=metadata.provider_id,
+                        search_stage=stage_value,
+                        model_checksums=cast(
+                            tuple[str, str, str], metadata.model_checksums
+                        ),
+                        execution_provider=metadata.execution_provider,
+                        preprocessing_version=metadata.preprocessing_version,
+                        precision=metadata.precision,
+                        cache_key=metadata.cache_key,
+                        timings_ms=metadata.timings_ms,
+                        artifact_ids=artifact_ids,
+                        warnings=metadata.warnings,
+                        source_viewport_id=snapshot.id,
+                        artifact_namespace=artifact_viewport_id,
+                        source_event_id=(
+                            context.current_capture.source_event_id
+                            if context.current_capture is not None
+                            else None
+                        ),
+                        cache_state=batch.cache_state,
+                    ),
+                )
+            else:
+                artifact_failure_reason = artifact_failure_reason or (
+                    "learned saliency artifact evidence unavailable"
+                )
+        if not batch.learned_available or artifact_failure_reason is not None:
+            reason = (
+                artifact_failure_reason
+                or batch.fallback_reason
+                or batch.learned_unavailable_reason
+            )
+            if not reason:
+                reason = "learned prominence unavailable"
+            reason = sanitize_log_text(reason, context.redaction_policy)
+            context.saliency_fallback_reason = reason
+            _append_typed_saliency_event(
+                writer,
+                SaliencyFallbackRecordedEvent(
+                    viewport_id=snapshot.id,
+                    provider_id=str(batch.provider_id),
+                    fallback_provider_id=(
+                        str(batch.active_provider_id)
+                        if not batch.learned_available
+                        else "unavailable"
+                    ),
+                    search_stage=stage_value,
+                    reason=reason,
+                    model_checksums=metadata.model_checksums,
+                    execution_provider=metadata.execution_provider,
+                    cache_key=metadata.cache_key,
+                    warnings=metadata.warnings,
+                    source_viewport_id=snapshot.id,
+                    cache_state="fallback",
+                ),
+            )
+        return _append_typed_saliency_event(
+            writer,
+            ProminenceRecordedEvent(
+                viewport_id=snapshot.id,
+                provider_id=str(batch.provider_id),
+                active_provider_id=str(batch.active_provider_id),
+                search_stage=stage_value,
+                selected_mixture=_stage_mixture(self.prominence_provider, batch, stage),
+                selected_element_ids=tuple(score.element_id for score in scores),
+                source_viewport_id=snapshot.id,
+                artifact_namespace=(
+                    artifact_identity[0] if artifact_identity is not None else None
+                ),
+                source_event_id=(
+                    _event_id(profile_event_id)
+                    if profile_event_id is not None
+                    else None
+                ),
+                cache_state=(
+                    batch.cache_state if batch.learned_available else "fallback"
+                ),
+            ),
+        )
 
     async def _evaluate_parallel_calls(
         self,
@@ -1267,9 +1573,7 @@ class RunAgent:
 
         async def evaluate_full_scent() -> tuple[FullScent, ...]:
             with context.profiler.measure("model.full_scent"):
-                return await full_scent_evaluator.evaluate(
-                    goal, attention, snapshot
-                )
+                return await full_scent_evaluator.evaluate(goal, attention, snapshot)
 
         async def evaluate_cognitive() -> object:
             with context.profiler.measure("model.cognitive"):
@@ -1384,13 +1688,26 @@ class RunAgent:
                 writer,
                 context.state_event_ids,
             )
+        _validate_materialized_saliency_artifacts(
+            writer, context.saliency_artifact_references
+        )
+        terminal_artifact_checksums = list(artifact_checksums)
+        known_artifacts = {
+            (item.path, item.sha256) for item in terminal_artifact_checksums
+        }
+        for reference in context.saliency_artifact_references:
+            checksum = _artifact_checksum(reference)
+            identity = (checksum.path, checksum.sha256)
+            if identity not in known_artifacts:
+                terminal_artifact_checksums.append(checksum)
+                known_artifacts.add(identity)
         manifests = self._provider_manifests(spec)
         terminal = RunTerminated(
             outcome=execution.outcome,
             verification=verification,
             provider_manifests=manifests,
             configuration_digest=spec.config_digest,
-            artifact_checksums=tuple(artifact_checksums),
+            artifact_checksums=tuple(terminal_artifact_checksums),
         )
         try:
             final_state = _record(state, terminal, writer, context.state_event_ids)
@@ -1404,6 +1721,12 @@ class RunAgent:
             execution.outcome,
             execution.terminal_reason,
         )
+        if context.saliency_fallback_reason is not None:
+            ux_sample_valid = False
+            ux_sample_invalid_reason = "saliency-fallback: " + sanitize_log_text(
+                context.saliency_fallback_reason,
+                context.redaction_policy,
+            )
         result = RunResult(
             run_id=spec.run_id,
             outcome=execution.outcome,
@@ -1521,6 +1844,319 @@ class RunAgent:
         await _shielded_await(self.observation_provider.end_session(session))
 
 
+def _capture_score_method(method: object) -> bool:
+    """Detect capture-aware functions, decorated functions, and callable objects."""
+
+    try:
+        inspect.signature(method).bind(object(), object(), object(), object())
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _search_stage(
+    attention_policy: object,
+    context: _RunContext,
+    snapshot: ViewportSnapshot,
+) -> object:
+    if (
+        context.stage_reset_for_capture
+        or context.current_viewport_identity is None
+        or context.observed_viewport_identity != context.current_viewport_identity
+    ):
+        from ux_analyzer.domain.saliency import SearchStage
+
+        return SearchStage.INITIAL
+    threshold = getattr(
+        getattr(attention_policy, "config", None), "recovery_after_misses", 2
+    )
+    if context.no_progress_count >= threshold:
+        from ux_analyzer.domain.saliency import SearchStage
+
+        return SearchStage.PERSISTENT
+    from ux_analyzer.domain.saliency import SearchStage
+
+    return SearchStage.EXPLORATION
+
+
+def _stage_reset_action(action: Mapping[str, object] | None) -> bool:
+    if action is None:
+        return False
+    return any(
+        action_kind
+        in {
+            "back",
+            "close-menu",
+            "navigate",
+            "open-menu",
+            "scroll",
+            "toggle",
+        }
+        for action_kind in (
+            action.get("kind"),
+            action.get("platform_action_kind"),
+        )
+    )
+
+
+def _viewport_identity(snapshot: ViewportSnapshot) -> tuple[object, ...]:
+    """Use semantic capture identity; viewport and region IDs are namespaces."""
+
+    return snapshot_progress_signature(snapshot)
+
+
+def _saliency_artifact_namespace(
+    provider: object,
+    captured: _CapturedViewport,
+    snapshot: ViewportSnapshot,
+) -> str:
+    cache_key = getattr(provider, "cache_key", None)
+    if not isinstance(cache_key, str):
+        model_provider = getattr(provider, "_model_provider", None)
+        get_model_provider = getattr(provider, "_get_model_provider", None)
+        if model_provider is None and callable(get_model_provider):
+            try:
+                model_provider = get_model_provider()
+            except Exception:
+                model_provider = None
+        request_builder = getattr(provider, "_request", None)
+        key_builder = getattr(provider, "_request_cache_key", None)
+        if (
+            model_provider is not None
+            and callable(request_builder)
+            and callable(key_builder)
+        ):
+            try:
+                request = request_builder(captured.capture, model_provider)
+                key = key_builder(request, model_provider)
+                candidate = getattr(key, "digest", None)
+                if isinstance(candidate, str):
+                    cache_key = candidate
+            except Exception:
+                cache_key = None
+    identity = json.dumps(
+        {
+            "cache_key": cache_key,
+            "screenshot_sha256": captured.screenshot_sha256,
+            "viewport_id": snapshot.id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"inference-{hashlib.sha256(identity).hexdigest()}"
+
+
+def _stage_mixture(
+    provider: object,
+    batch: ProminenceBatch,
+    stage: object,
+) -> tuple[tuple[str, float], ...]:
+    value = str(getattr(stage, "value", stage))
+    configured = getattr(batch, "selected_mixture", None)
+    if isinstance(configured, tuple) and configured:
+        return tuple((str(duration), float(weight)) for duration, weight in configured)
+    if configured is None:
+        selector = getattr(provider, "stage_selector", None)
+        mixtures = getattr(selector, "mixtures", None)
+        if isinstance(mixtures, Mapping):
+            configured = mixtures.get(stage, mixtures.get(value))
+    if isinstance(configured, Mapping):
+        durations = tuple(
+            (str(getattr(duration, "value", duration)), float(weight))
+            for duration, weight in configured.items()
+            if isinstance(weight, (int, float))
+            and not isinstance(weight, bool)
+            and weight > 0
+        )
+        if durations:
+            return durations
+    return {
+        "initial": (("1s", 1.0),),
+        "exploration": (("3s", 1.0),),
+        "persistent": (("3s", 0.25), ("7s", 0.75)),
+    }[value]
+
+
+def _saliency_artifact_identity(
+    snapshot_id: str,
+    references: Sequence[ArtifactReference],
+) -> tuple[str, tuple[str, ...]]:
+    if not references:
+        raise RuntimeError("learned saliency artifact references are missing")
+    _validate_saliency_references(references)
+    viewport_ids = {PurePosixPath(reference.path).parts[1] for reference in references}
+    if len(viewport_ids) != 1:
+        raise RuntimeError(
+            "saliency artifacts must belong to one materialized viewport"
+        )
+    viewport_id = next(iter(viewport_ids))
+    actual_paths = {reference.path for reference in references}
+    if actual_paths != set(required_saliency_artifact_paths(viewport_id)):
+        raise RuntimeError("saliency artifacts must cover one viewport exactly")
+    return viewport_id, tuple(sorted(actual_paths))
+
+
+def _validate_saliency_references(
+    references: Sequence[ArtifactReference],
+) -> None:
+    paths: set[str] = set()
+    for reference in references:
+        validate_saliency_artifact_path(reference.path)
+        if reference.name != reference.path:
+            raise RuntimeError("saliency artifact reference name must match path")
+        if (
+            len(reference.sha256) != 64
+            or reference.sha256 != reference.sha256.lower()
+            or any(
+                character not in "0123456789abcdef" for character in reference.sha256
+            )
+        ):
+            raise RuntimeError("saliency artifact reference checksum is invalid")
+        if reference.size < 0:
+            raise RuntimeError("saliency artifact reference size must not be negative")
+        if reference.path in paths:
+            raise RuntimeError("saliency artifact references must be unique")
+        paths.add(reference.path)
+
+
+def _validate_materialized_saliency_artifacts(
+    writer: RunBundleWriter,
+    references: Sequence[ArtifactReference],
+) -> None:
+    if not references:
+        return
+    _validate_saliency_references(references)
+    for reference in references:
+        try:
+            writer.verify_artifact(reference)
+        except Exception as error:
+            raise RuntimeError(str(error)) from error
+
+
+def _append_typed_saliency_event(
+    writer: RunBundleWriter,
+    event: object,
+) -> int:
+    append = getattr(writer, "append_saliency_event", None)
+    if not callable(append):
+        raise TypeError("capture-aware prominence requires typed saliency event writer")
+    return int(append(event))
+
+
+def _saliency_runtime_metadata(
+    provider: object,
+    captured: _CapturedViewport | None,
+    batch: ProminenceBatch,
+) -> _SaliencyRuntimeMetadata:
+    model_provider = getattr(provider, "_model_provider", None)
+    get_model_provider = getattr(provider, "_get_model_provider", None)
+    if model_provider is None and callable(get_model_provider):
+        try:
+            model_provider = get_model_provider()
+        except Exception:
+            model_provider = None
+
+    metadata_by_duration: dict[str, object] = {}
+    for profile in batch.learned_profiles:
+        for provenance in getattr(profile, "prediction_provenance", ()):
+            raw_duration = getattr(provenance, "duration", "")
+            duration_value = getattr(raw_duration, "value", raw_duration)
+            duration = str(duration_value)
+            metadata_by_duration[duration] = getattr(provenance, "metadata", None)
+
+    configured_checksums = getattr(model_provider, "model_checksums", None)
+    if configured_checksums is None:
+        configured_checksums = getattr(provider, "model_checksums", None)
+    checksums: list[str] = []
+    timings: list[float] = []
+    warnings: list[str] = []
+    for duration in ("1s", "3s", "7s"):
+        metadata = metadata_by_duration.get(duration)
+        checksum = getattr(metadata, "model_checksum", None)
+        if checksum is None and isinstance(configured_checksums, Mapping):
+            checksum = configured_checksums.get(duration)
+        if isinstance(checksum, str) and len(checksum) == 64:
+            checksums.append(checksum)
+        timing = getattr(metadata, "inference_duration_ms", None)
+        if isinstance(timing, (int, float)) and not isinstance(timing, bool):
+            timings.append(float(timing))
+        for warning in getattr(metadata, "warnings", ()):
+            if isinstance(warning, str):
+                warnings.append(warning)
+
+    provider_id = next(
+        (
+            str(getattr(metadata_by_duration[duration], "provider_id"))
+            for duration in ("1s", "3s", "7s")
+            if duration in metadata_by_duration
+            and getattr(metadata_by_duration[duration], "provider_id", None)
+        ),
+        str(batch.active_provider_id),
+    )
+    execution_provider = next(
+        (
+            str(getattr(metadata_by_duration[duration], "execution_provider"))
+            for duration in ("1s", "3s", "7s")
+            if duration in metadata_by_duration
+            and getattr(metadata_by_duration[duration], "execution_provider", None)
+        ),
+        str(
+            getattr(
+                model_provider,
+                "actual_execution_provider",
+                getattr(provider, "actual_execution_provider", "CPUExecutionProvider"),
+            )
+        ),
+    )
+    preprocessing_version = next(
+        (
+            str(getattr(metadata_by_duration[duration], "preprocessing_version"))
+            for duration in ("1s", "3s", "7s")
+            if duration in metadata_by_duration
+            and getattr(metadata_by_duration[duration], "preprocessing_version", None)
+        ),
+        str(
+            getattr(
+                model_provider,
+                "preprocessing_version",
+                getattr(provider, "preprocessing_version", "foveacast-preprocess-v1"),
+            )
+        ),
+    )
+    precision = str(
+        getattr(
+            model_provider,
+            "precision",
+            getattr(provider, "precision", "fp16"),
+        )
+    )
+    cache_key = getattr(provider, "cache_key", None)
+    if not isinstance(cache_key, str):
+        cache_key = None
+    if cache_key is None and captured is not None and model_provider is not None:
+        request_builder = getattr(provider, "_request", None)
+        key_builder = getattr(provider, "_request_cache_key", None)
+        if callable(request_builder) and callable(key_builder):
+            try:
+                request = request_builder(captured.capture, model_provider)
+                key = key_builder(request, model_provider)
+                digest = getattr(key, "digest", None)
+                if isinstance(digest, str):
+                    cache_key = digest
+            except Exception:
+                cache_key = None
+    return _SaliencyRuntimeMetadata(
+        provider_id=provider_id,
+        model_checksums=tuple(checksums),
+        execution_provider=execution_provider,
+        preprocessing_version=preprocessing_version,
+        precision=precision,
+        cache_key=cache_key,
+        timings_ms=tuple(timings) if len(timings) == 3 else (),
+        warnings=tuple(warnings),
+    )
+
+
 def _require_application_state(state: object) -> ApplicationState:
     if not isinstance(state, ApplicationState):
         raise RuntimeError("application state transition returned invalid state")
@@ -1627,6 +2263,9 @@ def _safe_action(validated: ValidatedAction) -> dict[str, object]:
     direction = getattr(action, "direction", None)
     if isinstance(direction, str):
         result["direction"] = direction
+    platform_action_kind = getattr(validated.platform_action, "kind", None)
+    if isinstance(platform_action_kind, str):
+        result["platform_action_kind"] = platform_action_kind
     return result
 
 

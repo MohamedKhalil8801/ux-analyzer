@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import struct
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,7 +18,9 @@ from ux_analyzer.application.evaluation import (
     evaluate_run,
     evaluation_target_for,
 )
+from ux_analyzer.application.experiment import ExperimentFailure, ExperimentResult
 from ux_analyzer.application.run_agent import RunAgent, RunFinalizationError
+from ux_analyzer.application.saliency import ProminenceBatch
 from ux_analyzer.domain.attention import (
     Abandon,
     AttentionState,
@@ -39,10 +43,28 @@ from ux_analyzer.domain.interface import (
     BoundingBox,
     ElementSnapshot,
     PrivateExecutionReference,
+    RegionSnapshot,
     ViewportSnapshot,
 )
-from ux_analyzer.domain.run import VerificationResult
-from ux_analyzer.ports.artifacts import ArtifactReference, BundleManifest
+from ux_analyzer.domain.run import ProviderManifest, VerificationResult
+from ux_analyzer.domain.saliency import (
+    AttentionDuration,
+    SaliencyGeometry,
+    SaliencyPlane,
+    SaliencyPrediction,
+    SaliencyPredictionMetadata,
+    SaliencyPredictionRequest,
+    SaliencyPredictionSet,
+    SearchStage,
+)
+from ux_analyzer.ports.artifacts import (
+    ArtifactReference,
+    BundleManifest,
+    ProminenceRecordedEvent,
+    SaliencyArtifactKind,
+    SaliencyFallbackRecordedEvent,
+    SaliencyProfilesRecordedEvent,
+)
 from ux_analyzer.ports.models import (
     CognitiveRunContext,
     ModelCallRecord,
@@ -55,10 +77,12 @@ from ux_analyzer.ports.observation import (
     ObservationCapture,
     ObservationProviderError,
     ObservationSessionConfig,
+    OpenMenuAction,
     PlatformAction,
     PlatformActionResult,
     SafetyBlocked,
     SessionHandle,
+    ToggleAction,
     ViewportSize,
 )
 from ux_analyzer.ports.observation import TestAccountId as AccountId
@@ -66,7 +90,9 @@ from ux_analyzer.providers.attention_policy import ObservationSelection
 from ux_analyzer.providers.cognitive import CognitiveDecision
 from ux_analyzer.providers.finding_rules import FindingRuleSet
 from ux_analyzer.providers.prominence import ProminenceResult
+from ux_analyzer.providers.saliency_prominence import FoveacastProminenceProvider
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
+from ux_analyzer.storage.saliency_cache import SaliencyCache
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,11 +114,15 @@ class FakeObservationProvider:
         results: tuple[PlatformActionResult, ...] = (),
         failure: BaseException | None = None,
         start_failure: BaseException | None = None,
+        screenshot: bytes | None = None,
+        screenshots: tuple[bytes, ...] = (),
     ) -> None:
         self.snapshots = snapshots
         self.results = list(results)
         self.failure = failure
         self.start_failure = start_failure
+        self.screenshot = screenshot
+        self.screenshots = screenshots
         self.started = 0
         self.reset_count = 0
         self.capture_count = 0
@@ -125,7 +155,11 @@ class FakeObservationProvider:
             url="http://fixture.test/app/run/improved",
             title="Fixture",
             viewport=session.viewport,
-            screenshot=f"screenshot-{snapshot.id}".encode(),
+            screenshot=(
+                self.screenshots[min(self.capture_count - 1, len(self.screenshots) - 1)]
+                if self.screenshots
+                else self.screenshot or f"screenshot-{snapshot.id}".encode()
+            ),
             snapshot=snapshot,
         )
 
@@ -159,6 +193,166 @@ class FakeProminenceProvider:
                 feature_contributions={"contrast": probability},
             )
             for element in snapshot.elements
+        )
+
+
+class FakeSaliencyProminenceProvider:
+    id = "foveacast-prominence"
+    version = "foveacast-prominence-v1"
+    model_checksums = {"1s": "1" * 64, "3s": "2" * 64, "7s": "3" * 64}
+    actual_execution_provider = "CPUExecutionProvider"
+    preprocessing_version = "foveacast-preprocess-v1"
+    precision = "fp16"
+    cache_key = "a" * 64
+
+    def __init__(self, *, fallback_reason: str | None = None) -> None:
+        self.fallback_reason = fallback_reason
+        self.calls: list[tuple[str, SearchStage, object]] = []
+
+    def score(
+        self,
+        capture: ObservationCapture,
+        snapshot: ViewportSnapshot,
+        stage: SearchStage,
+        artifacts: object,
+    ) -> ProminenceBatch:
+        self.calls.append((capture.viewport_id, SearchStage(stage), artifacts))
+        scores = FakeProminenceProvider().score(snapshot)
+        configured_mixture = getattr(self, "stage_selector", None)
+        mixtures = getattr(configured_mixture, "mixtures", {})
+        selected_mixture = tuple(
+            (str(getattr(duration, "value", duration)), float(weight))
+            for duration, weight in mixtures.get(
+                stage, mixtures.get(str(stage), {})
+            ).items()
+        )
+        if self.fallback_reason is not None:
+            return ProminenceBatch(
+                scores=scores,
+                provider_id=self.id,
+                active_provider_id="heuristic-prominence",
+                stage=stage,
+                heuristic_scores=scores,
+                learned_available=False,
+                learned_unavailable_reason=self.fallback_reason,
+                fallback_reason=self.fallback_reason,
+                cache_state="fallback",
+                selected_mixture=selected_mixture,
+            )
+        return ProminenceBatch(
+            scores=scores,
+            provider_id=self.id,
+            active_provider_id="foveacast",
+            stage=stage,
+            learned_scores=scores,
+            learned_available=True,
+            cache_state="miss",
+            selected_mixture=selected_mixture,
+        )
+
+
+class MaterializingFakeSaliencyProminenceProvider(FakeSaliencyProminenceProvider):
+    def score(
+        self,
+        capture: ObservationCapture,
+        snapshot: ViewportSnapshot,
+        stage: SearchStage,
+        artifacts: object,
+    ) -> ProminenceBatch:
+        batch = super().score(capture, snapshot, stage, artifacts)
+        write_saliency_artifact = getattr(artifacts, "write_saliency_artifact", None)
+        if callable(write_saliency_artifact):
+            for filename, kind in (
+                ("1s.npz", SaliencyArtifactKind.NATIVE_MAP),
+                ("3s.npz", SaliencyArtifactKind.NATIVE_MAP),
+                ("7s.npz", SaliencyArtifactKind.NATIVE_MAP),
+                ("1s-heatmap.png", SaliencyArtifactKind.HEATMAP),
+                ("3s-heatmap.png", SaliencyArtifactKind.HEATMAP),
+                ("7s-heatmap.png", SaliencyArtifactKind.HEATMAP),
+                ("profiles.json", SaliencyArtifactKind.PROFILES),
+                ("metadata.json", SaliencyArtifactKind.METADATA),
+            ):
+                write_saliency_artifact(
+                    f"saliency/native-inference/{filename}",
+                    f"artifact-{filename}".encode(),
+                    kind,
+                )
+        return batch
+
+
+class NoArtifactSaliencyProminenceProvider(FakeSaliencyProminenceProvider):
+    """Model path that claims learned output but materializes no bundle evidence."""
+
+
+class ValidFakeSaliencyModel:
+    id = "foveacast"
+    model_id = "foveacast-v0.2.0"
+    model_version = "v0.2.0"
+    provider_version = "foveacast-adapter-v1"
+    precision = "fp16"
+    preprocessing_version = "foveacast-preprocess-v1"
+    actual_execution_provider = "CPUExecutionProvider"
+    requested_execution_provider = "cpu"
+    model_checksums = {
+        AttentionDuration.ONE_SECOND: "a" * 64,
+        AttentionDuration.THREE_SECONDS: "b" * 64,
+        AttentionDuration.SEVEN_SECONDS: "c" * 64,
+    }
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def predict(self, request: SaliencyPredictionRequest) -> SaliencyPredictionSet:
+        self.calls += 1
+        metadata = request.metadata
+        geometry = SaliencyGeometry(
+            geometry_version="saliency-geometry-v1",
+            source_dimensions=metadata.screenshot_dimensions,
+            native_dimensions=(4, 4),
+            content_dimensions=(4, 4),
+            pad_left=0,
+            pad_top=0,
+            pad_right=0,
+            pad_bottom=0,
+            scale=4 / metadata.screenshot_width,
+            scale_x=4 / metadata.screenshot_width,
+            scale_y=4 / metadata.screenshot_height,
+            device_pixel_ratio=metadata.device_pixel_ratio,
+            zoom=metadata.zoom,
+        )
+        predictions = tuple(
+            SaliencyPrediction(
+                viewport_id=metadata.viewport_id,
+                duration=duration,
+                plane=SaliencyPlane(
+                    width=4,
+                    height=4,
+                    values=struct.pack("<16f", *([value] * 16)),
+                ),
+                metadata=SaliencyPredictionMetadata(
+                    provider_id=self.id,
+                    model_id=self.model_id,
+                    provider_version=self.provider_version,
+                    model_version=self.model_version,
+                    model_checksum=self.model_checksums[duration],
+                    input_dimensions=(4, 4),
+                    output_dimensions=(4, 4),
+                    geometry=geometry,
+                    preprocessing_version=self.preprocessing_version,
+                    inference_duration_ms=1.0,
+                    execution_provider=self.actual_execution_provider,
+                ),
+            )
+            for duration, value in (
+                (AttentionDuration.ONE_SECOND, 0.25),
+                (AttentionDuration.THREE_SECONDS, 0.5),
+                (AttentionDuration.SEVEN_SECONDS, 0.75),
+            )
+        )
+        return SaliencyPredictionSet(
+            viewport_id=metadata.viewport_id,
+            predictions=predictions,
+            request_metadata=metadata,
         )
 
 
@@ -401,12 +595,17 @@ class FakeFixtureStateClient:
 class FakeBundle:
     def __init__(self) -> None:
         self.events: list[object] = []
+        self.saliency_contents: dict[str, bytes] = {}
         self.finalized = False
         self.aborted = False
         self.final_result: object | None = None
         self.finalize_error: BaseException | None = None
 
     def append_event(self, event: object) -> int:
+        self.events.append(event)
+        return len(self.events)
+
+    def append_saliency_event(self, event: object) -> int:
         self.events.append(event)
         return len(self.events)
 
@@ -418,6 +617,33 @@ class FakeBundle:
             size=len(raw),
             name=name,
         )
+
+    def write_saliency_artifact(
+        self,
+        name: str,
+        content: bytes | str,
+        kind: SaliencyArtifactKind,
+    ) -> ArtifactReference:
+        del kind
+        raw = content.encode() if isinstance(content, str) else content
+        self.saliency_contents[name] = raw
+        return ArtifactReference(
+            path=name,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            size=len(raw),
+            name=name,
+        )
+
+    def verify_artifact(self, reference: ArtifactReference) -> None:
+        content = self.saliency_contents.get(reference.path)
+        if content is None:
+            raise RuntimeError(f"materialized artifact is missing: {reference.path}")
+        if len(content) != reference.size:
+            raise RuntimeError(f"materialized artifact size mismatch: {reference.path}")
+        if hashlib.sha256(content).hexdigest() != reference.sha256:
+            raise RuntimeError(
+                f"materialized artifact checksum mismatch: {reference.path}"
+            )
 
     def finalize(self, result: object) -> str:
         if self.finalize_error is not None:
@@ -442,8 +668,13 @@ class FakeBundleFactory:
 
 
 class FilesystemBundleFactory:
-    def __init__(self, output: Path) -> None:
+    def __init__(
+        self,
+        output: Path,
+        provider_manifests: tuple[ProviderManifest, ...] = (),
+    ) -> None:
         self.output = output
+        self.provider_manifests = provider_manifests
 
     def start(self, spec) -> FilesystemRunBundleWriter:
         return FilesystemRunBundleWriter.start(
@@ -454,6 +685,7 @@ class FilesystemBundleFactory:
                 model_ids={"cognitive": "cognitive-model"},
                 prompt_versions={"cognitive": "cognitive-v1"},
                 package_version="0.1.0",
+                provider_manifests=self.provider_manifests,
             ),
         )
 
@@ -507,6 +739,8 @@ def _snapshot(
     lineage_id: str | None = None,
     second_lineage_id: str | None = None,
     label: str = "Invite teammate",
+    region_id: str | None = None,
+    region_label: str = "Main content",
 ) -> ViewportSnapshot:
     elements = [
         ElementSnapshot(
@@ -516,6 +750,7 @@ def _snapshot(
             bounds=BoundingBox(x=10, y=10, width=100, height=30),
             visibility_fraction=1,
             actionable=True,
+            region_id=region_id,
             provider_id="fake-observer",
             lineage_id=lineage_id,
             execution_reference=PrivateExecutionReference(
@@ -534,6 +769,7 @@ def _snapshot(
                 bounds=BoundingBox(x=130, y=10, width=100, height=30),
                 visibility_fraction=1,
                 actionable=True,
+                region_id=region_id,
                 provider_id="fake-observer",
                 lineage_id=second_lineage_id,
                 execution_reference=PrivateExecutionReference(
@@ -547,6 +783,17 @@ def _snapshot(
         id=viewport_id,
         provider_id="fake-observer",
         elements=tuple(elements),
+        regions=(
+            (
+                RegionSnapshot(
+                    id=region_id,
+                    label=region_label,
+                    element_ids=tuple(element.id for element in elements),
+                ),
+            )
+            if region_id is not None
+            else ()
+        ),
     )
 
 
@@ -555,6 +802,7 @@ def _spec(
     max_steps: int = 6,
     max_model_calls: int = 64,
     timeout_seconds: float | None = 1,
+    sensitive_fixture: bool = False,
 ) -> object:
     version = ApplicationVersion(
         id="improved",
@@ -567,7 +815,12 @@ def _spec(
         goal="Invite teammate",
         application_version_ids=(version.id,),
         start_state="dashboard",
-        fixture_inputs=FixtureInputs(values={"invite_email": "person@example.com"}),
+        fixture_inputs=FixtureInputs(
+            values={"invite_email": "person@example.com"},
+            sensitive_keys=frozenset({"invite_email"})
+            if sensitive_fixture
+            else frozenset(),
+        ),
         budget=Budget(
             max_steps=max_steps,
             max_observations=max_steps,
@@ -628,13 +881,12 @@ def _agent(
     attention_policy: object | None = None,
     full_scent_evaluator: object | None = None,
     max_model_calls: int = 64,
+    prominence_provider: object | None = None,
 ) -> RunAgent:
-    spec = _spec(
-        timeout_seconds=timeout_seconds, max_model_calls=max_model_calls
-    )
+    spec = _spec(timeout_seconds=timeout_seconds, max_model_calls=max_model_calls)
     return RunAgent(
         observation_provider=provider,
-        prominence_provider=FakeProminenceProvider(),
+        prominence_provider=prominence_provider or FakeProminenceProvider(),
         attention_policy=attention_policy or FakeAttentionPolicy(),
         cognitive_agent=cognitive,
         verifier=verifier,
@@ -644,6 +896,917 @@ def _agent(
         result_evaluator=result_evaluator,
         full_scent_evaluator=full_scent_evaluator,
     )
+
+
+@pytest.mark.asyncio
+async def test_saliency_run_uses_capture_stage_and_typed_ordered_events(
+    tmp_path: Path,
+) -> None:
+    saliency = MaterializingFakeSaliencyProminenceProvider()
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [
+        (viewport_id, stage, getattr(artifacts, "_writer", artifacts))
+        for viewport_id, stage, artifacts in saliency.calls
+    ] == [("viewport-1", SearchStage.INITIAL, bundles.bundle)]
+    typed_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(
+            event,
+            (SaliencyProfilesRecordedEvent, ProminenceRecordedEvent),
+        )
+    ]
+    assert [event.kind for event in typed_events] == [
+        "saliency-profiles-recorded",
+        "prominence-recorded",
+    ]
+    prominence = typed_events[-1]
+    assert isinstance(prominence, ProminenceRecordedEvent)
+    payload = prominence.to_dict()
+    assert "scores" not in payload
+    assert "raw_map" not in payload
+    assert "normalized_probability" not in payload
+
+
+@pytest.mark.asyncio
+async def test_saliency_stage_changes_after_observation_without_new_capture(
+    tmp_path: Path,
+) -> None:
+    saliency = FakeSaliencyProminenceProvider()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(second_element_id="second"),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "inspect", "element_id": "target"},
+                    reason="Inspect target.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."}, reason="Stop."
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [stage for _, stage, _ in saliency.calls] == [
+        SearchStage.INITIAL,
+        SearchStage.EXPLORATION,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exact_same_capture_reuses_saliency_artifact_paths(
+    tmp_path: Path,
+) -> None:
+    saliency = MaterializingFakeSaliencyProminenceProvider()
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(second_element_id="second"),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "inspect", "element_id": "target"},
+                    reason="Inspect target.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        prominence_provider=saliency,
+    )
+
+    await agent.execute(_spec(timeout_seconds=None))
+
+    profile_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, SaliencyProfilesRecordedEvent)
+    ]
+    assert len(profile_events) == 2
+    assert profile_events[0].artifact_ids == profile_events[1].artifact_ids
+    assert "native-inference" not in profile_events[0].viewport_id
+
+
+@pytest.mark.asyncio
+async def test_distinct_captures_get_distinct_saliency_artifact_paths(
+    tmp_path: Path,
+) -> None:
+    saliency = MaterializingFakeSaliencyProminenceProvider()
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider(
+            (
+                _snapshot("viewport-1", second_element_id="second"),
+                _snapshot("viewport-2", second_element_id="second"),
+            ),
+            screenshots=(b"first-capture", b"second-capture"),
+        ),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "scroll", "direction": "down"},
+                    reason="Scroll.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        prominence_provider=saliency,
+    )
+
+    await agent.execute(_spec(timeout_seconds=None))
+
+    profile_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, SaliencyProfilesRecordedEvent)
+    ]
+    assert len(profile_events) == 2
+    assert set(profile_events[0].artifact_ids).isdisjoint(
+        profile_events[1].artifact_ids
+    )
+    assert profile_events[0].viewport_id != profile_events[1].viewport_id
+
+
+@pytest.mark.asyncio
+async def test_learned_batch_without_artifacts_is_recorded_invalid_not_fabricated(
+    tmp_path: Path,
+) -> None:
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        prominence_provider=NoArtifactSaliencyProminenceProvider(),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.ux_sample_valid is False
+    assert result.ux_sample_invalid_reason == (
+        "saliency-fallback: learned saliency artifact evidence unavailable"
+    )
+    assert not any(
+        isinstance(event, SaliencyProfilesRecordedEvent)
+        for event in bundles.bundle.events
+    )
+    fallback = next(
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, SaliencyFallbackRecordedEvent)
+    )
+    assert fallback.reason == "learned saliency artifact evidence unavailable"
+
+
+@pytest.mark.asyncio
+async def test_saliency_profile_event_uses_materialized_artifact_references(
+    tmp_path: Path,
+) -> None:
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        prominence_provider=MaterializingFakeSaliencyProminenceProvider(),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    profile_event = next(
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, SaliencyProfilesRecordedEvent)
+    )
+    assert profile_event.viewport_id.startswith("inference-")
+    assert profile_event.viewport_id != "native-inference"
+    assert profile_event.artifact_ids == tuple(
+        sorted(
+            f"saliency/{profile_event.viewport_id}/{filename}"
+            for filename in (
+                "1s.npz",
+                "3s.npz",
+                "7s.npz",
+                "1s-heatmap.png",
+                "3s-heatmap.png",
+                "7s-heatmap.png",
+                "profiles.json",
+                "metadata.json",
+            )
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_saliency_persistent_stage_uses_recovery_threshold_on_same_viewport(
+    tmp_path: Path,
+) -> None:
+    saliency = FakeSaliencyProminenceProvider()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider(
+            (
+                _snapshot("viewport-1", second_element_id="second"),
+                _snapshot("viewport-2", second_element_id="second"),
+                _snapshot("viewport-3", second_element_id="second"),
+            )
+        ),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."}, reason="Stop."
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        attention_policy=RepeatingAttentionPolicy(),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [stage for _, stage, _ in saliency.calls] == [
+        SearchStage.INITIAL,
+        SearchStage.EXPLORATION,
+        SearchStage.PERSISTENT,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_custom_stage_mixture_weights_are_recorded_for_each_search_stage(
+    tmp_path: Path,
+) -> None:
+    mixtures = {
+        "initial": {"7s": 1.0},
+        "exploration": {"1s": 0.2, "3s": 0.3, "7s": 0.5},
+        "persistent": {"1s": 0.1, "7s": 0.9},
+    }
+    saliency = FakeSaliencyProminenceProvider()
+    saliency.stage_selector = SimpleNamespace(mixtures=mixtures)
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider(
+            (
+                _snapshot("viewport-1", second_element_id="second"),
+                _snapshot("viewport-2", second_element_id="second"),
+                _snapshot("viewport-3", second_element_id="second"),
+            )
+        ),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        attention_policy=RepeatingAttentionPolicy(),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, ProminenceRecordedEvent)
+    ]
+    assert [event.search_stage for event in events] == [
+        "initial",
+        "exploration",
+        "persistent",
+    ]
+    assert [dict(event.selected_mixture) for event in events] == [
+        mixtures["initial"],
+        mixtures["exploration"],
+        mixtures["persistent"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scroll_recapture_resets_saliency_stage_to_initial(
+    tmp_path: Path,
+) -> None:
+    saliency = FakeSaliencyProminenceProvider()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider(
+            (
+                _snapshot("viewport-1"),
+                _snapshot("viewport-2"),
+            )
+        ),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "scroll", "direction": "down"},
+                    reason="Scroll.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."}, reason="Stop."
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        attention_policy=RepeatingAttentionPolicy(),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [stage for _, stage, _ in saliency.calls] == [
+        SearchStage.INITIAL,
+        SearchStage.INITIAL,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "platform_action",
+    (OpenMenuAction(element_id="target"), ToggleAction(element_id="target")),
+    ids=("open-menu", "toggle"),
+)
+async def test_modal_like_recapture_resets_stage_for_unchanged_semantic_snapshot(
+    tmp_path: Path,
+    platform_action: object,
+) -> None:
+    saliency = MaterializingFakeSaliencyProminenceProvider()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot("viewport-1"), _snapshot("viewport-2"))),
+        FakeCognitiveAgent(
+            (
+                ClaimingDecision(action=platform_action, reason="Open modal."),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."}, reason="Stop."
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        attention_policy=RepeatingAttentionPolicy(),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None, max_steps=10))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [stage for _, stage, _ in saliency.calls] == [
+        SearchStage.INITIAL,
+        SearchStage.INITIAL,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_configured_recovery_threshold_reaches_persistent_stage_at_threshold(
+    tmp_path: Path,
+) -> None:
+    from ux_analyzer.cli import _AttentionPolicyAdapter
+    from ux_analyzer.providers.attention_policy import AttentionPolicyConfig
+
+    saliency = FakeSaliencyProminenceProvider()
+    attention = RepeatingAttentionPolicy()
+    policy = _AttentionPolicyAdapter(
+        attention,
+        config=AttentionPolicyConfig(recovery_after_misses=1),
+    )
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider(
+            (_snapshot("viewport-1"), _snapshot("viewport-2")),
+            results=(
+                PlatformActionResult(
+                    True,
+                    "http://fixture.test",
+                    1,
+                    state_changed=False,
+                ),
+            ),
+        ),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."}, reason="Stop."
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        attention_policy=policy,
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert [stage for _, stage, _ in saliency.calls] == [
+        SearchStage.INITIAL,
+        SearchStage.PERSISTENT,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capture_aware_saliency_timeline_finalizes_in_filesystem_bundle(
+    tmp_path: Path,
+) -> None:
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FilesystemBundleFactory(tmp_path),
+        prominence_provider=FakeSaliencyProminenceProvider(),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert isinstance(result.bundle_path, Path)
+    timeline = [
+        json.loads(line)
+        for line in (result.bundle_path / "timeline.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    typed_kinds = [
+        event["kind"]
+        for event in timeline
+        if event["kind"]
+        in {
+            "saliency-fallback-recorded",
+            "saliency-profiles-recorded",
+            "prominence-recorded",
+        }
+    ]
+    assert typed_kinds == ["saliency-fallback-recorded", "prominence-recorded"]
+    assert all(
+        "scores" not in event
+        for event in timeline
+        if event["kind"] == "prominence-recorded"
+    )
+
+
+def _saliency_manifest() -> ProviderManifest:
+    return ProviderManifest(
+        provider_id="foveacast",
+        role="prominence",
+        model_id="foveacast-v0.2.0",
+        endpoint_origin="internal",
+        version="v0.2.0",
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_cache_miss_and_hit_materialize_learned_filesystem_evidence(
+    tmp_path: Path,
+) -> None:
+    model = ValidFakeSaliencyModel()
+    saliency = FoveacastProminenceProvider(
+        model_provider=model,
+        cache=SaliencyCache(tmp_path / "experiment"),
+    )
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider(
+            (
+                _snapshot("viewport-1", "target-1", lineage_id="target-lineage"),
+                _snapshot("viewport-2", "target-2", lineage_id="target-lineage"),
+            ),
+            screenshots=(b"same-screenshot", b"same-screenshot"),
+        ),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FilesystemBundleFactory(
+            tmp_path / "bundles", provider_manifests=(_saliency_manifest(),)
+        ),
+        attention_policy=RepeatingAttentionPolicy(),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.ux_sample_valid is True
+    assert model.calls == 1
+    assert isinstance(result.bundle_path, Path)
+    timeline = [
+        json.loads(line)
+        for line in (result.bundle_path / "timeline.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    saliency_events = [
+        event
+        for event in timeline
+        if event["kind"]
+        in {
+            "saliency-inference-recorded",
+            "saliency-cache-hit",
+            "saliency-profiles-recorded",
+            "prominence-recorded",
+        }
+    ]
+    assert [event["kind"] for event in saliency_events] == [
+        "saliency-inference-recorded",
+        "saliency-profiles-recorded",
+        "prominence-recorded",
+        "saliency-cache-hit",
+        "saliency-profiles-recorded",
+        "prominence-recorded",
+    ]
+    profiles = [
+        event
+        for event in saliency_events
+        if event["kind"] == "saliency-profiles-recorded"
+    ]
+    prominence = [
+        event for event in saliency_events if event["kind"] == "prominence-recorded"
+    ]
+    assert [event["source_viewport_id"] for event in profiles] == [
+        "viewport-1",
+        "viewport-2",
+    ]
+    assert [event["source_viewport_id"] for event in prominence] == [
+        "viewport-1",
+        "viewport-2",
+    ]
+    assert [event["cache_state"] for event in prominence] == ["miss", "hit"]
+    assert all(event["selected_element_ids"] for event in prominence)
+    assert [event["source_event_id"] for event in prominence] == [
+        f"event-{profiles[0]['sequence']}",
+        f"event-{profiles[1]['sequence']}",
+    ]
+    assert [event["artifact_namespace"] for event in prominence] == [
+        profiles[0]["artifact_namespace"],
+        profiles[1]["artifact_namespace"],
+    ]
+    for profile in profiles:
+        for artifact_id in profile["artifact_ids"]:
+            artifact = result.bundle_path / artifact_id
+            assert artifact.is_file()
+            assert artifact.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_cache_disabled_inference_materializes_explicit_miss_evidence(
+    tmp_path: Path,
+) -> None:
+    model = ValidFakeSaliencyModel()
+    saliency = FoveacastProminenceProvider(
+        model_provider=model,
+        cache_enabled=False,
+    )
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),), screenshot=b"direct-inference"),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FilesystemBundleFactory(
+            tmp_path / "bundles", provider_manifests=(_saliency_manifest(),)
+        ),
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.ux_sample_valid is True
+    assert model.calls == 1
+    assert isinstance(result.bundle_path, Path)
+    timeline = [
+        json.loads(line)
+        for line in (result.bundle_path / "timeline.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    inference = next(
+        event for event in timeline if event["kind"] == "saliency-inference-recorded"
+    )
+    profile = next(
+        event for event in timeline if event["kind"] == "saliency-profiles-recorded"
+    )
+    assert inference["cache_state"] == "disabled"
+    assert profile["cache_state"] == "disabled"
+    assert len(profile["artifact_ids"]) == 8
+    assert not any(event["kind"] == "saliency-fallback-recorded" for event in timeline)
+
+
+@pytest.mark.asyncio
+async def test_capture_scoped_ids_preserve_semantic_exploration_and_persistent_stage(
+    tmp_path: Path,
+) -> None:
+    saliency = MaterializingFakeSaliencyProminenceProvider()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider(
+            (
+                _snapshot("viewport-1", "target-1", region_id="region-1"),
+                _snapshot("viewport-2", "target-2", region_id="region-2"),
+                _snapshot("viewport-3", "target-3", region_id="region-3"),
+            )
+        ),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(action={"kind": "wait"}, reason="Wait."),
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        attention_policy=RepeatingAttentionPolicy(),
+        prominence_provider=saliency,
+    )
+
+    await agent.execute(_spec(timeout_seconds=None))
+
+    assert [stage for _, stage, _ in saliency.calls] == [
+        SearchStage.INITIAL,
+        SearchStage.EXPLORATION,
+        SearchStage.PERSISTENT,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_callable_capture_aware_score_provider_is_supported(
+    tmp_path: Path,
+) -> None:
+    delegate = MaterializingFakeSaliencyProminenceProvider()
+
+    class CallableScore:
+        def __call__(
+            self,
+            capture: ObservationCapture,
+            snapshot: ViewportSnapshot,
+            stage: SearchStage,
+            artifacts: object,
+        ) -> ProminenceBatch:
+            return delegate.score(capture, snapshot, stage, artifacts)
+
+    class CallableProvider:
+        id = delegate.id
+        version = delegate.version
+        model_checksums = delegate.model_checksums
+        actual_execution_provider = delegate.actual_execution_provider
+        preprocessing_version = delegate.preprocessing_version
+        precision = delegate.precision
+        cache_key = delegate.cache_key
+        score = CallableScore()
+
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+            ),
+        )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        FakeBundleFactory(),
+        prominence_provider=CallableProvider(),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert delegate.calls[0][0] == "viewport-1"
+
+
+@pytest.mark.asyncio
+async def test_in_memory_writer_detects_tampered_saliency_reference(
+    tmp_path: Path,
+) -> None:
+    class TamperingBundle(FakeBundle):
+        def write_saliency_artifact(
+            self,
+            name: str,
+            content: bytes | str,
+            kind: SaliencyArtifactKind,
+        ) -> ArtifactReference:
+            reference = super().write_saliency_artifact(name, content, kind)
+            if name.endswith("profiles.json"):
+                self.saliency_contents[name] += b"tampered"
+            return reference
+
+    class TamperingFactory(FakeBundleFactory):
+    def __init__(self) -> None:
+            self.bundle = TamperingBundle()
+
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+                ),
+            )
+            ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        TamperingFactory(),
+        prominence_provider=MaterializingFakeSaliencyProminenceProvider(),
+        )
+
+    with pytest.raises(RuntimeError, match="artifact size mismatch"):
+        await agent.execute(_spec(timeout_seconds=None))
+
+
+@pytest.mark.asyncio
+async def test_saliency_fallback_records_typed_event_and_invalidates_sample(
+    tmp_path: Path,
+) -> None:
+    saliency = FakeSaliencyProminenceProvider(
+        fallback_reason="model runtime unavailable; selector=[data-secret]"
+    )
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+            ),
+        )
+                ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        prominence_provider=saliency,
+            )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.ux_sample_valid is False
+    assert result.ux_sample_invalid_reason == (
+        "saliency-fallback: model runtime unavailable; selector=[REDACTED]"
+        )
+    typed_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(
+            event,
+            (SaliencyFallbackRecordedEvent, ProminenceRecordedEvent),
+    )
+    ]
+    assert [event.kind for event in typed_events] == [
+        "saliency-fallback-recorded",
+        "prominence-recorded",
+    ]
+    fallback = typed_events[0]
+    assert isinstance(fallback, SaliencyFallbackRecordedEvent)
+    assert "[data-secret]" not in json.dumps(fallback.to_dict())
+
+
+@pytest.mark.asyncio
+async def test_saliency_fallback_redacts_exact_fixture_secret_from_result_and_report(
+    tmp_path: Path,
+) -> None:
+    secret = "person@example.com"
+    saliency = FakeSaliencyProminenceProvider(
+        fallback_reason=f"model runtime unavailable; {secret}"
+    )
+    bundles = FakeBundleFactory()
+    spec = _spec(timeout_seconds=None, sensitive_fixture=True)
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "Stop."},
+                    reason="Stop.",
+        ),
+    )
+        ),
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        prominence_provider=saliency,
+    )
+
+    result = await agent.execute(spec)
+
+    assert secret not in (result.ux_sample_invalid_reason or "")
+    fallback = next(
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, SaliencyFallbackRecordedEvent)
+    )
+    assert secret not in json.dumps(fallback.to_dict())
+
+    from ux_analyzer.cli import _complete_experiment
+
+    summary_path, report_path = _complete_experiment(
+        ExperimentResult(
+            specs=(spec,),
+            results=(result,),
+            failures=(
+                ExperimentFailure(
+                    run_id=spec.run_id,
+                    error_type="RunFailure",
+                    message=f"fallback {secret}",
+                    spec=spec,
+                ),
+            ),
+        ),
+        output=tmp_path / "report-output",
+        runtime=None,
+    )
+    assert secret not in summary_path.read_text(encoding="utf-8")
+    assert secret not in report_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -908,9 +2071,7 @@ async def test_model_call_budget_counts_calls_without_an_audit_source(
         bundles,
     )
 
-    result = await agent.execute(
-        _spec(max_model_calls=1, timeout_seconds=None)
-    )
+    result = await agent.execute(_spec(max_model_calls=1, timeout_seconds=None))
 
     assert result.outcome.kind == "budget-exhausted"
     assert result.terminal_reason == "model call budget exhausted"
@@ -1101,9 +2262,7 @@ async def test_parallel_cognitive_validation_failure_keeps_full_scent_evidence(
     tmp_path: Path,
 ) -> None:
     records = ConcurrentModelRecordSource()
-    full = CoordinatedFullScentEvaluator(
-        records, asyncio.Event(), asyncio.Event()
-    )
+    full = CoordinatedFullScentEvaluator(records, asyncio.Event(), asyncio.Event())
     full.release.set()
     cognitive = CoordinatedCognitiveAgent(
         records,
@@ -1141,12 +2300,8 @@ async def test_parallel_cancellation_cancels_both_model_tasks_and_records_calls(
     records = ConcurrentModelRecordSource()
     full_cancelled = asyncio.Event()
     cognitive_cancelled = asyncio.Event()
-    full = BlockingFullScentEvaluator(
-        records, asyncio.Event(), full_cancelled
-    )
-    cognitive = BlockingCognitiveAgent(
-        records, asyncio.Event(), cognitive_cancelled
-    )
+    full = BlockingFullScentEvaluator(records, asyncio.Event(), full_cancelled)
+    cognitive = BlockingCognitiveAgent(records, asyncio.Event(), cognitive_cancelled)
     bundles = FakeBundleFactory()
     agent = _agent(
         tmp_path,
@@ -1193,18 +2348,10 @@ async def test_meaningful_fixture_progress_resets_scroll_repetition(
     provider = FakeObservationProvider(
         snapshots,
         results=(
-            PlatformActionResult(
-                True, "http://fixture.test", 1, state_changed=True
-            ),
-            PlatformActionResult(
-                True, "http://fixture.test", 1, state_changed=True
-            ),
-            PlatformActionResult(
-                True, "http://fixture.test", 1, state_changed=True
-            ),
-            PlatformActionResult(
-                True, "http://fixture.test", 1, state_changed=True
-            ),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=True),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=True),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=True),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=True),
         ),
     )
     attention = RepeatingAttentionPolicy()
@@ -1251,8 +2398,7 @@ async def test_meaningful_fixture_progress_resets_scroll_repetition(
     assert result.terminal_reason == "Test complete."
     assert attention.recovery_levels == [0, 1, 0, 1, 2]
     assert not any(
-        isinstance(event, dict)
-        and event.get("kind") == "repeated-action-detected"
+        isinstance(event, dict) and event.get("kind") == "repeated-action-detected"
         for event in bundles.bundle.events
     )
 
@@ -1272,9 +2418,7 @@ async def test_three_consecutive_semantic_stalls_recover_then_abandon(
     provider = FakeObservationProvider(
         snapshots,
         results=tuple(
-            PlatformActionResult(
-                True, "http://fixture.test", 1, state_changed=True
-            )
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=True)
             for _ in range(3)
         ),
     )
@@ -1446,7 +2590,9 @@ async def test_failed_action_breaks_semantic_cycle_history(tmp_path: Path) -> No
 
     assert result.terminal_reason != "repeated semantic action cycle detected"
     assert len(provider.executed) == 5
-    assert not any(event.kind == "repeated-action-cycle" for event in result.state.events)
+    assert not any(
+        event.kind == "repeated-action-cycle" for event in result.state.events
+    )
 
 
 @pytest.mark.asyncio
@@ -2060,7 +3206,9 @@ async def test_evaluator_failure_still_publishes_closed_immutable_bundle(
     bundle = output / "runs" / result.run_id
     assert result.state.is_finalized
     assert result.outcome.kind == (
-        "provider-failure" if failure_point == "before-observation" else "agent-abandoned"
+        "provider-failure"
+        if failure_point == "before-observation"
+        else "agent-abandoned"
     )
     assert result.ux_sample_valid is False
     assert result.metrics is None

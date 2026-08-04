@@ -6,6 +6,7 @@ import hashlib
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Protocol, cast
 
 from ux_analyzer.application.saliency import ProminenceBatch, ProminenceResult
@@ -34,6 +35,7 @@ from ux_analyzer.storage.saliency_cache import (
     SaliencyCacheKey,
     SaliencyCacheMetadata,
     SaliencyCachePayload,
+    materialize_saliency_payload_into_bundle,
 )
 
 
@@ -56,6 +58,7 @@ class _SaliencyCache(Protocol):
         writer: RunBundleWriter,
         *,
         provider_manifests: Sequence[ProviderManifest] = (),
+        source_viewport_id: str | None = None,
     ) -> object: ...
 
 
@@ -84,10 +87,21 @@ _CacheSource = _SaliencyCache | Callable[[], _SaliencyCache]
 class AttentionStageSelector:
     """Select one normalized learned prominence distribution per search stage."""
 
-    def __init__(self, *, temperature: float = 1.0) -> None:
+    def __init__(
+        self,
+        *,
+        version: str = "saliency-stage-selector-v1",
+        temperature: float = 1.0,
+        mixtures: Mapping[SearchStage | str, Mapping[AttentionDuration | str, float]]
+        | None = None,
+    ) -> None:
+        if not version.strip():
+            raise ValueError("stage selector version must not be empty")
         if not math.isfinite(temperature) or temperature <= 0:
             raise ValueError("stage selector temperature must be greater than zero")
+        self.version = version
         self.temperature = temperature
+        self.mixtures = _normalize_stage_mixtures(mixtures)
 
     def select(
         self,
@@ -95,7 +109,7 @@ class AttentionStageSelector:
         stage: SearchStage | str,
     ) -> tuple[ProminenceResult, ...]:
         normalized_stage = SearchStage(stage)
-        mixture = STAGE_MIXTURES[normalized_stage]
+        mixture = self.mixtures[normalized_stage]
         profile_items = tuple(profiles)
         element_ids = tuple(profile.element_id for profile in profile_items)
         if len(element_ids) != len(set(element_ids)):
@@ -284,7 +298,7 @@ class FoveacastProminenceProvider:
     def __init__(
         self,
         model_provider: _ModelProviderSource,
-        cache: _CacheSource,
+        cache: _CacheSource | None = None,
         *,
         aggregation_config: SaliencyAggregationConfig | None = None,
         aggregator: Callable[
@@ -295,6 +309,13 @@ class FoveacastProminenceProvider:
         heuristic_provider: _HeuristicProvider | None = None,
         device_pixel_ratio: float = 1.0,
         zoom: float = 1.0,
+        cache_enabled: bool = True,
+        cache_scope: str = "experiment",
+        model_set: Sequence[str] | None = None,
+        precision: str | None = None,
+        execution_provider_preference: str | None = None,
+        fallback_enabled: bool = True,
+        fallback_provider_id: str = "heuristic",
     ) -> None:
         self._model_provider_source = model_provider
         self._cache_source = cache
@@ -303,11 +324,29 @@ class FoveacastProminenceProvider:
         self.aggregation_config = aggregation_config or SaliencyAggregationConfig()
         self.aggregator = aggregator
         self.stage_selector = stage_selector or AttentionStageSelector(
-            temperature=self.aggregation_config.temperature
+            temperature=self.aggregation_config.temperature,
         )
         self.heuristic_provider = heuristic_provider
         self.device_pixel_ratio = device_pixel_ratio
         self.zoom = zoom
+        if type(cache_enabled) is not bool:
+            raise ValueError("cache_enabled must be boolean")
+        if cache_scope != "experiment":
+            raise ValueError("saliency cache scope must be 'experiment'")
+        self.cache_enabled = cache_enabled
+        self.cache_scope = cache_scope
+        self.model_set = _normalize_model_set(model_set)
+        self.precision = _normalize_optional_text(precision, "saliency precision")
+        self.execution_provider_preference = _normalize_optional_text(
+            execution_provider_preference,
+            "execution provider preference",
+        )
+        if type(fallback_enabled) is not bool:
+            raise ValueError("fallback_enabled must be boolean")
+        if fallback_provider_id not in {"heuristic", "heuristic-prominence"}:
+            raise ValueError("saliency fallback provider must be 'heuristic'")
+        self.fallback_enabled = fallback_enabled
+        self.fallback_provider_id = fallback_provider_id
         if not math.isfinite(device_pixel_ratio) or device_pixel_ratio <= 0:
             raise ValueError("device_pixel_ratio must be greater than zero")
         if not math.isfinite(zoom) or zoom <= 0:
@@ -326,11 +365,17 @@ class FoveacastProminenceProvider:
                 "saliency capture and snapshot belong to different viewports"
             )
         try:
+            if not self.cache_enabled and artifacts is None:
+                raise RuntimeError(
+                    "cache-disabled saliency requires typed artifact writer"
+                )
             model_provider = self._get_model_provider()
             request = self._request(capture, model_provider)
             cache_key = self._request_cache_key(request, model_provider)
-            cache = self._get_cache()
-            if cache_key is not None:
+            cache = self._get_cache() if self.cache_enabled else None
+            if self.cache_enabled and cache_key is not None:
+                if cache is None:
+                    raise RuntimeError("saliency cache is unavailable")
                 entry = cache.load(cache_key)
                 if entry is not None:
                     native_predictions = _rebind_prediction_set(
@@ -343,7 +388,9 @@ class FoveacastProminenceProvider:
                             self.aggregation_config,
                         )
                     )
-                    self._materialize(entry, artifacts)
+                    self._materialize(
+                        entry, artifacts, cache, source_viewport_id=snapshot.id
+                    )
                     return self._learned_batch(
                         snapshot,
                         normalized_stage,
@@ -355,28 +402,46 @@ class FoveacastProminenceProvider:
             profiles = tuple(
                 self.aggregator(snapshot, predictions, self.aggregation_config)
             )
+            cache_state = "miss"
             cache_predictions = _rebind_prediction_set(
                 predictions, _INFERENCE_CACHE_VIEWPORT_ID
             )
-            cache_key = SaliencyCacheKey.from_prediction_set(
-                cache_predictions,
-                aggregation_version=self.aggregation_config.version,
-            )
+            cache_profiles = _rebind_profiles(profiles, _INFERENCE_CACHE_VIEWPORT_ID)
+            if cache_key is None:
+                raise RuntimeError("saliency model checksums are required")
             payload = SaliencyCachePayload(
                 predictions=cache_predictions,
-                profiles=_rebind_profiles(profiles, _INFERENCE_CACHE_VIEWPORT_ID),
+                profiles=cache_profiles,
                 metadata=SaliencyCacheMetadata(
                     provider_manifests=(self._provider_manifest(),),
                     aggregation_version=self.aggregation_config.version,
                 ),
             )
+            if self.cache_enabled:
+                if cache is None:
+                    raise RuntimeError("saliency cache is unavailable")
             entry = cache.store(cache_key, payload)
-            self._materialize(entry, artifacts)
+                self._materialize(
+                    entry, artifacts, cache, source_viewport_id=snapshot.id
+                )
+                cache_state = entry.cache_state
+            else:
+                if artifacts is None:
+                    raise RuntimeError(
+                        "cache-disabled saliency requires artifact writer"
+                    )
+                materialize_saliency_payload_into_bundle(
+                    payload,
+                    cache_key,
+                    artifacts,
+                    provider_manifests=(self._provider_manifest(),),
+                )
+                cache_state = "disabled"
             return self._learned_batch(
                 snapshot,
                 normalized_stage,
                 profiles,
-                cache_state=entry.cache_state,
+                cache_state=cache_state,
             )
         except Exception as error:
             return self._fallback_batch(snapshot, normalized_stage, error)
@@ -388,13 +453,14 @@ class FoveacastProminenceProvider:
     ) -> SaliencyPredictionRequest:
         provider = model_provider or self._get_model_provider()
         model_id = str(getattr(provider, "model_id", "foveacast-v0.2.0"))
-        precision = str(getattr(provider, "precision", "fp16"))
-        preference = str(
-            getattr(
-                provider,
-                "requested_execution_provider",
-                "cpu",
+        configured_model_set = self.model_set
+        if configured_model_set is not None and model_id not in configured_model_set:
+            raise ValueError(
+                f"configured saliency model set does not include provider model {model_id!r}"
             )
+        precision = self.precision or str(getattr(provider, "precision", "fp16"))
+        preference = self.execution_provider_preference or str(
+            getattr(provider, "requested_execution_provider", "cpu")
         )
         metadata = SaliencyRequestMetadata(
             viewport_id=capture.viewport_id,
@@ -408,7 +474,7 @@ class FoveacastProminenceProvider:
                 AttentionDuration.THREE_SECONDS,
                 AttentionDuration.SEVEN_SECONDS,
             ),
-            model_set=(model_id,),
+            model_set=configured_model_set or (model_id,),
             precision=precision,
             execution_provider_preference=preference,
         )
@@ -459,12 +525,16 @@ class FoveacastProminenceProvider:
         self,
         entry: SaliencyCacheEntry,
         artifacts: RunBundleWriter | None,
+        cache: _SaliencyCache | None = None,
+        *,
+        source_viewport_id: str | None = None,
     ) -> None:
         if artifacts is not None:
-            self._get_cache().materialize_into_bundle(
+            (cache or self._get_cache()).materialize_into_bundle(
                 entry,
                 artifacts,
                 provider_manifests=(self._provider_manifest(),),
+                source_viewport_id=source_viewport_id,
             )
 
     def _provider_manifest(self) -> ProviderManifest:
@@ -502,6 +572,7 @@ class FoveacastProminenceProvider:
             provider_id=self.id,
             active_provider_id="foveacast",
             stage=stage,
+            selected_mixture=_selected_mixture(self.stage_selector, stage),
             learned_profiles=profiles,
             unavailable_learned_profiles=unavailable_profiles,
             learned_scores=scores,
@@ -516,6 +587,8 @@ class FoveacastProminenceProvider:
         error: Exception,
     ) -> ProminenceBatch:
         reason = str(error).strip() or type(error).__name__
+        if not self.fallback_enabled:
+            raise RuntimeError(f"saliency fallback disabled: {reason}") from error
         heuristic = self.heuristic_provider
         if heuristic is None:
             from ux_analyzer.providers.prominence import HeuristicProminenceProvider
@@ -531,6 +604,7 @@ class FoveacastProminenceProvider:
             provider_id=self.id,
             active_provider_id=str(getattr(heuristic, "id", "heuristic-prominence")),
             stage=stage,
+            selected_mixture=_selected_mixture(self.stage_selector, stage),
             heuristic_scores=scores,
             learned_available=False,
             learned_unavailable_reason=reason,
@@ -553,12 +627,89 @@ class FoveacastProminenceProvider:
 
     def _get_cache(self) -> _SaliencyCache:
         if self._cache is None:
+            if self._cache_source is None:
+                raise TypeError("saliency cache is required when cache is enabled")
             source = self._cache_source
             candidate = source() if callable(source) else source
             if not hasattr(candidate, "load") or not hasattr(candidate, "store"):
                 raise TypeError("saliency cache must expose load and store")
             self._cache = candidate
         return self._cache
+
+
+def _normalize_stage_mixtures(
+    mixtures: Mapping[SearchStage | str, Mapping[AttentionDuration | str, float]]
+    | None,
+) -> Mapping[SearchStage, Mapping[AttentionDuration, float]]:
+    configured = dict(STAGE_MIXTURES)
+    if mixtures is not None:
+        for raw_stage, raw_mixture in mixtures.items():
+            try:
+                stage = SearchStage(raw_stage)
+            except (TypeError, ValueError) as error:
+                raise ValueError("stage mixtures contain unsupported stage") from error
+            if not raw_mixture:
+                raise ValueError(f"stage mixture for {stage.value} must not be empty")
+            normalized: dict[AttentionDuration, float] = {}
+            for raw_duration, raw_weight in raw_mixture.items():
+                try:
+                    duration = AttentionDuration(raw_duration)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        "stage mixtures contain unsupported attention duration"
+                    ) from error
+                if duration is AttentionDuration.GENERAL:
+                    raise ValueError("stage mixtures must use timed durations")
+                if (
+                    type(raw_weight) is bool
+                    or not math.isfinite(raw_weight)
+                    or raw_weight < 0
+                ):
+                    raise ValueError(
+                        "stage mixture weights must be finite and non-negative"
+                    )
+                normalized[duration] = float(raw_weight)
+            if sum(normalized.values()) <= 0:
+                raise ValueError(
+                    f"stage mixture for {stage.value} needs positive weight"
+                )
+            configured[stage] = normalized
+    return MappingProxyType(
+        {
+            stage: MappingProxyType(dict(mixture))
+            for stage, mixture in configured.items()
+        }
+    )
+
+
+def _selected_mixture(
+    selector: AttentionStageSelector, stage: SearchStage
+) -> tuple[tuple[str, float], ...]:
+    return tuple(
+        (duration.value, float(weight))
+        for duration, weight in selector.mixtures[stage].items()
+        if weight > 0
+    )
+
+
+def _normalize_model_set(model_set: Sequence[str] | None) -> tuple[str, ...] | None:
+    if model_set is None:
+        return None
+    normalized = tuple(model_set)
+    if not normalized or any(not model_id.strip() for model_id in normalized):
+        raise ValueError("saliency model set must contain non-empty IDs")
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("saliency model set must contain unique IDs")
+    return normalized
+
+
+def _normalize_optional_text(value: str | None, name: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{name} must not be empty")
+    return normalized
 
 
 def _fallback_estimate(

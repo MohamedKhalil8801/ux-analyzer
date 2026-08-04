@@ -344,8 +344,10 @@ def _normalize(values: Sequence[float], reverse: bool) -> tuple[float, ...]:
 
 
 def _softmax(logits: Sequence[float], temperature: float) -> tuple[float, ...]:
-    scaled = [value / temperature for value in logits]
-    maximum = max(scaled)
-    exponentials = [math.exp(value - maximum) for value in scaled]
+    if not logits:
+        return ()
+    safe_temperature = max(temperature, 1e-12)
+    maximum = max(logits)
+    exponentials = [math.exp((value - maximum) / safe_temperature) for value in logits]
     total = sum(exponentials)
     return tuple(value / total for value in exponentials)

@@ -13,7 +13,7 @@ import stat
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -726,6 +726,91 @@ def _artifact_kind(relative_path: str) -> SaliencyArtifactKind:
     raise SaliencyCacheCorruptionError("unknown saliency artifact path")
 
 
+def _replace_artifact_viewport(relative_path: str, viewport_id: str) -> str:
+    normalized = validate_saliency_artifact_path(relative_path)
+    return f"saliency/{viewport_id}/{normalized.name}"
+
+
+def _rebind_materialized_content(
+    kind: SaliencyArtifactKind,
+    content: bytes,
+    *,
+    source_viewport_id: str,
+    target_viewport_id: str,
+    redaction: RedactionPolicy,
+) -> bytes:
+    """Rebind JSON references while preserving native bytes and cache provenance."""
+
+    if kind is SaliencyArtifactKind.NATIVE_MAP or kind is SaliencyArtifactKind.HEATMAP:
+        return content
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SaliencyCacheCorruptionError("cache JSON cannot be rebound") from error
+    if kind is SaliencyArtifactKind.PROFILES:
+        if not isinstance(value, list):
+            raise SaliencyCacheCorruptionError("cache profiles cannot be rebound")
+        for profile in cast(list[object], value):
+            if not isinstance(profile, dict):
+                raise SaliencyCacheCorruptionError("cache profile cannot be rebound")
+            profile_mapping = cast(dict[str, object], profile)
+            if profile_mapping.get("viewport_id") != source_viewport_id:
+                raise SaliencyCacheCorruptionError(
+                    "cache profile viewport is inconsistent"
+                )
+            profile_mapping["viewport_id"] = target_viewport_id
+            aggregates = profile_mapping.get("aggregates")
+            if not isinstance(aggregates, list):
+                raise SaliencyCacheCorruptionError("cache aggregates cannot be rebound")
+            for aggregate in cast(list[object], aggregates):
+                if not isinstance(aggregate, dict):
+                    raise SaliencyCacheCorruptionError(
+                        "cache aggregate cannot be rebound"
+                    )
+                aggregate_mapping = cast(dict[str, object], aggregate)
+                if aggregate_mapping.get("viewport_id") != source_viewport_id:
+                    raise SaliencyCacheCorruptionError(
+                        "cache aggregate viewport is inconsistent"
+                    )
+                aggregate_mapping["viewport_id"] = target_viewport_id
+    elif kind is SaliencyArtifactKind.METADATA:
+        if not isinstance(value, dict):
+            raise SaliencyCacheCorruptionError("cache metadata cannot be rebound")
+        metadata_mapping = cast(dict[str, object], value)
+        if metadata_mapping.get("viewport_id") != source_viewport_id:
+            raise SaliencyCacheCorruptionError(
+                "cache metadata viewport is inconsistent"
+            )
+        metadata_mapping["viewport_id"] = target_viewport_id
+        cache_key = metadata_mapping.get("cache_key")
+        if not isinstance(cache_key, dict):
+            raise SaliencyCacheCorruptionError("cache key cannot be rebound")
+        cache_key_mapping = cast(dict[str, object], cache_key)
+        if cache_key_mapping.get("viewport_id") != source_viewport_id:
+            raise SaliencyCacheCorruptionError("cache key viewport is inconsistent")
+        cache_key_mapping["viewport_id"] = target_viewport_id
+        metadata_mapping["cache_key_digest"] = hashlib.sha256(
+            json.dumps(cache_key_mapping, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        paths = metadata_mapping.get("artifact_paths")
+        if not isinstance(paths, list):
+            raise SaliencyCacheCorruptionError("cache artifact paths cannot be rebound")
+        metadata_mapping["artifact_paths"] = [
+            _replace_artifact_viewport(path, target_viewport_id)
+            for path in cast(list[str], paths)
+        ]
+    return canonicalize_saliency_artifact_content(
+        kind,
+        json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8"),
+        redaction=redaction,
+        expected_viewport_id=target_viewport_id,
+    )
+
+
 def _manifest_identity(
     manifest: ProviderManifest,
 ) -> tuple[str, str, str | None, str, str, str | None, str | None]:
@@ -858,6 +943,136 @@ def _profile_dict(profile: ElementAttentionProfile) -> dict[str, object]:
             for provenance in profile.prediction_provenance
         ],
     }
+
+
+def _payload_artifact_contents(
+    key: SaliencyCacheKey,
+    payload: SaliencyCachePayload,
+    *,
+    viewport_id: str,
+    redaction: RedactionPolicy,
+) -> dict[str, bytes]:
+    relative_paths = _artifact_paths(viewport_id)
+    files: dict[str, bytes] = {}
+    for prediction in payload.predictions.predictions:
+        duration = AttentionDuration(prediction.duration).value
+        files[f"saliency/{viewport_id}/{duration}.npz"] = _native_npz(prediction)
+        files[f"saliency/{viewport_id}/{duration}-heatmap.png"] = _heatmap_png(
+            prediction
+        )
+    metadata = {
+        "cache_version": CACHE_VERSION,
+        "cache_key": {**key.to_dict(), "viewport_id": viewport_id},
+        "cache_key_digest": hashlib.sha256(
+            json.dumps(
+                {**key.to_dict(), "viewport_id": viewport_id},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "viewport_id": viewport_id,
+        "aggregation_version": key.aggregation_version,
+        "predictions": [
+            {
+                "duration": AttentionDuration(prediction.duration).value,
+                "metadata": _prediction_metadata_dict(prediction.metadata),
+            }
+            for prediction in payload.predictions.predictions
+        ],
+        "saliency_metadata": payload.metadata.to_dict(),
+        "warnings": sorted(
+            {"overlay-redacted", *payload.metadata.warnings, *payload.warnings}
+        ),
+        "artifact_paths": list(relative_paths),
+    }
+    files[f"saliency/{viewport_id}/profiles.json"] = _canonical_saliency_json_bytes(
+        [
+            _profile_dict(
+                replace(
+                    profile,
+                    viewport_id=viewport_id,
+                    aggregates=tuple(
+                        replace(aggregate, viewport_id=viewport_id)
+                        for aggregate in profile.aggregates
+                    ),
+                )
+            )
+            for profile in payload.profiles
+        ],
+        SaliencyArtifactKind.PROFILES,
+        redaction,
+        expected_viewport_id=viewport_id,
+    )
+    files[f"saliency/{viewport_id}/metadata.json"] = _canonical_saliency_json_bytes(
+        metadata,
+        SaliencyArtifactKind.METADATA,
+        redaction,
+        expected_viewport_id=viewport_id,
+    )
+    return files
+
+
+def materialize_saliency_payload_into_bundle(
+    payload: SaliencyCachePayload,
+    key: SaliencyCacheKey,
+    writer: RunBundleWriter,
+    *,
+    provider_manifests: Sequence[ProviderManifest] = (),
+    redaction: RedactionPolicy | None = None,
+) -> tuple[ArtifactReference, ...]:
+    """Write direct-inference evidence without publishing a cache entry."""
+
+    context = writer.saliency_artifact_context
+    if context is None:
+        raise ValueError("saliency artifact context is required")
+    manifests = tuple(
+        coerce_saliency_provider_manifest(manifest)
+        for manifest in (provider_manifests or payload.metadata.provider_manifests)
+    )
+    if not manifests:
+        raise ValueError("provider/model manifest is required for saliency evidence")
+    bundle_manifests = {
+        _manifest_identity(manifest) for manifest in writer.manifest.provider_manifests
+    }
+    if any(
+        _manifest_identity(manifest) not in bundle_manifests for manifest in manifests
+    ):
+        raise ValueError("bundle manifest must include saliency provider manifests")
+    files = _payload_artifact_contents(
+        key,
+        payload,
+        viewport_id=context.artifact_namespace,
+        redaction=redaction or RedactionPolicy(),
+    )
+    references: list[ArtifactReference] = []
+    for relative_path in sorted(files):
+        kind = _artifact_kind(relative_path)
+        reference = writer.write_saliency_artifact(
+            relative_path, files[relative_path], kind
+        )
+        if reference.path != relative_path or reference.name != relative_path:
+            raise SaliencyCacheCorruptionError(
+                f"bundle artifact path differs from direct inference: {relative_path}"
+            )
+        references.append(reference)
+    writer.append_saliency_event(
+        SaliencyCacheHitEvent(
+            cache_key=key.digest,
+            viewport_id=context.artifact_namespace,
+            execution_provider=key.execution_provider,
+            model_checksums=key.model_checksums,
+            preprocessing_version=key.preprocessing_version,
+            precision=key.precision,
+            provider_manifests=manifests,
+            artifact_checksums=tuple(references),
+            warnings=("cache-disabled", "overlay-redacted"),
+            cache_state="disabled",
+            source_viewport_id=context.source_viewport_id,
+            artifact_namespace=context.artifact_namespace,
+            source_event_id=context.source_event_id,
+        )
+    )
+    return tuple(references)
 
 
 def _native_npz(prediction: SaliencyPrediction) -> bytes:
@@ -1673,6 +1888,7 @@ class SaliencyCache:
         writer: RunBundleWriter,
         *,
         provider_manifests: Sequence[ProviderManifest] = (),
+        source_viewport_id: str | None = None,
     ) -> tuple[ArtifactReference, ...]:
         """Materialize typed evidence and record hit or inference provenance."""
 
@@ -1714,32 +1930,50 @@ class SaliencyCache:
             raise ValueError("bundle manifest must include saliency provider manifests")
 
         references: list[ArtifactReference] = []
+        artifact_context = writer.saliency_artifact_context
+        target_viewport_id = (
+            artifact_context.artifact_namespace
+            if artifact_context is not None
+            else entry.viewport_id
+        )
         for relative_path in sorted(entry.artifact_paths):
-            content = self._read_secure_bytes(
+            source_content = self._read_secure_bytes(
                 entry.root, entry.artifact_paths[relative_path]
             )
             artifact_kind = _artifact_kind(relative_path)
             canonical_content = canonicalize_saliency_artifact_content(
                 artifact_kind,
-                content,
+                source_content,
                 redaction=self.redaction,
                 expected_viewport_id=entry.viewport_id,
             )
-            if canonical_content != content:
+            if canonical_content != source_content:
                 raise SaliencyCacheCorruptionError(
                     f"cache artifact is not canonical for {relative_path}"
                 )
+            if target_viewport_id != entry.viewport_id:
+                canonical_content = _rebind_materialized_content(
+                    artifact_kind,
+                    canonical_content,
+                    source_viewport_id=entry.viewport_id,
+                    target_viewport_id=target_viewport_id,
+                    redaction=self.redaction,
+                )
+            target_path = _replace_artifact_viewport(relative_path, target_viewport_id)
             reference = writer.write_saliency_artifact(
-                relative_path,
+                target_path,
                 canonical_content,
                 artifact_kind,
             )
-            if reference.path != relative_path or reference.name != relative_path:
+            if reference.path != target_path or reference.name != target_path:
                 raise SaliencyCacheCorruptionError(
-                    f"bundle artifact path differs from cache for {relative_path}"
+                    f"bundle artifact path differs from cache for {target_path}"
                 )
             expected_checksum = entry.checksums[relative_path]
-            if reference.sha256 != expected_checksum:
+            if (
+                target_viewport_id == entry.viewport_id
+                and reference.sha256 != expected_checksum
+            ):
                 raise SaliencyCacheCorruptionError(
                     f"bundle artifact sha256 differs from cache for {relative_path}"
                 )
@@ -1758,7 +1992,7 @@ class SaliencyCache:
         writer.append_saliency_event(
             SaliencyCacheHitEvent(
                 cache_key=entry.key.digest,
-                viewport_id=entry.viewport_id,
+                viewport_id=target_viewport_id,
                 execution_provider=entry.key.execution_provider,
                 model_checksums=entry.key.model_checksums,
                 preprocessing_version=entry.key.preprocessing_version,
@@ -1767,6 +2001,20 @@ class SaliencyCache:
                 artifact_checksums=tuple(references),
                 warnings=warnings + ("overlay-redacted",),
                 cache_state=cache_state,
+                source_viewport_id=(
+                    source_viewport_id
+                    or (
+                        artifact_context.source_viewport_id
+                        if artifact_context is not None
+                        else target_viewport_id
+                    )
+                ),
+                artifact_namespace=target_viewport_id,
+                source_event_id=(
+                    artifact_context.source_event_id
+                    if artifact_context is not None
+                    else None
+                ),
             )
         )
         return tuple(references)
@@ -1869,49 +2117,11 @@ class SaliencyCache:
         key: SaliencyCacheKey,
         payload: SaliencyCachePayload,
     ) -> None:
-        viewport_id = payload.predictions.viewport_id
-        relative_paths = _artifact_paths(viewport_id)
-        files: dict[str, bytes] = {}
-        for prediction in payload.predictions.predictions:
-            duration = AttentionDuration(prediction.duration).value
-            files[f"saliency/{viewport_id}/{duration}.npz"] = _native_npz(prediction)
-            files[f"saliency/{viewport_id}/{duration}-heatmap.png"] = _heatmap_png(
-                prediction
-            )
-        metadata = {
-            "cache_version": CACHE_VERSION,
-            "cache_key": key.to_dict(),
-            "cache_key_digest": key.digest,
-            "viewport_id": viewport_id,
-            "aggregation_version": key.aggregation_version,
-            "predictions": [
-                {
-                    "duration": AttentionDuration(prediction.duration).value,
-                    "metadata": _prediction_metadata_dict(prediction.metadata),
-                }
-                for prediction in payload.predictions.predictions
-            ],
-            "saliency_metadata": payload.metadata.to_dict(),
-            "warnings": sorted(
-                {
-                    "overlay-redacted",
-                    *payload.metadata.warnings,
-                    *payload.warnings,
-                }
-            ),
-            "artifact_paths": list(relative_paths),
-        }
-        files[f"saliency/{viewport_id}/profiles.json"] = _canonical_saliency_json_bytes(
-            [_profile_dict(profile) for profile in payload.profiles],
-            SaliencyArtifactKind.PROFILES,
-            self.redaction,
-            expected_viewport_id=viewport_id,
-        )
-        files[f"saliency/{viewport_id}/metadata.json"] = _canonical_saliency_json_bytes(
-            metadata,
-            SaliencyArtifactKind.METADATA,
-            self.redaction,
-            expected_viewport_id=viewport_id,
+        files = _payload_artifact_contents(
+            key,
+            payload,
+            viewport_id=payload.predictions.viewport_id,
+            redaction=self.redaction,
         )
         for relative_path, content in files.items():
             self._write_secure_bytes(root, relative_path, content)

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 from ux_analyzer import __version__
@@ -1104,6 +1104,23 @@ class ArtifactReference:
     name: str
 
 
+@dataclass(frozen=True, slots=True)
+class SaliencyArtifactContext:
+    """Capture identity kept separate from artifact storage namespace."""
+
+    source_viewport_id: str
+    artifact_namespace: str
+    source_event_id: str
+
+    def __post_init__(self) -> None:
+        _validate_timeline_identifier("source_viewport_id", self.source_viewport_id)
+        _validate_timeline_identifier("artifact_namespace", self.artifact_namespace)
+        _validate_timeline_event_id("source_event_id", self.source_event_id)
+        validate_saliency_artifact_path(
+            f"saliency/{self.artifact_namespace}/metadata.json"
+        )
+
+
 class SaliencyArtifactKind(StrEnum):
     """Generated saliency evidence types with distinct sanitization rules."""
 
@@ -1220,6 +1237,9 @@ class SaliencyCacheHitEvent:
     artifact_checksums: tuple[ArtifactReference, ...]
     warnings: tuple[str, ...] = ()
     cache_state: str = "hit"
+    source_viewport_id: str | None = None
+    artifact_namespace: str | None = None
+    source_event_id: str | None = None
 
     def __post_init__(self) -> None:
         _require_sha256_text("cache_key", self.cache_key)
@@ -1250,8 +1270,21 @@ class SaliencyCacheHitEvent:
         artifact_checksums = tuple(self.artifact_checksums)
         if not artifact_checksums:
             raise ValueError("saliency cache event requires artifact checksums")
-        if self.cache_state not in {"hit", "miss"}:
-            raise ValueError("saliency event cache state must be hit or miss")
+        if self.cache_state not in {"hit", "miss", "disabled"}:
+            raise ValueError("saliency event cache state is invalid")
+        source_viewport_id = _validate_timeline_identifier(
+            "source_viewport_id", self.source_viewport_id or self.viewport_id
+        )
+        artifact_namespace = _validate_timeline_identifier(
+            "artifact_namespace", self.artifact_namespace or self.viewport_id
+        )
+        if artifact_namespace != self.viewport_id:
+            raise ValueError("saliency event artifact namespace must match viewport_id")
+        source_event_id = self.source_event_id
+        if source_event_id is not None:
+            source_event_id = _validate_timeline_event_id(
+                "source_event_id", source_event_id
+            )
         artifact_paths: set[str] = set()
         for reference in artifact_checksums:
             if type(reference) is not ArtifactReference:
@@ -1296,6 +1329,9 @@ class SaliencyCacheHitEvent:
         object.__setattr__(self, "provider_manifests", manifests)
         object.__setattr__(self, "artifact_checksums", artifact_checksums)
         object.__setattr__(self, "warnings", warnings)
+        object.__setattr__(self, "source_viewport_id", source_viewport_id)
+        object.__setattr__(self, "artifact_namespace", artifact_namespace)
+        object.__setattr__(self, "source_event_id", source_event_id)
 
     def to_dict(self) -> dict[str, object]:
         """Return JSON-only allowlisted event data."""
@@ -1309,6 +1345,9 @@ class SaliencyCacheHitEvent:
             "cache_state": self.cache_state,
             "cache_key": self.cache_key,
             "viewport_id": self.viewport_id,
+            "source_viewport_id": self.source_viewport_id,
+            "artifact_namespace": self.artifact_namespace,
+            "source_event_id": self.source_event_id,
             "execution_provider": self.execution_provider,
             "model_checksums": list(self.model_checksums),
             "preprocessing_version": self.preprocessing_version,
@@ -1330,6 +1369,447 @@ class SaliencyCacheHitEvent:
                 for warning in self.warnings
             ],
         }
+
+
+_SALIENCY_EVENT_DURATIONS = ("1s", "3s", "7s")
+_SALIENCY_EVENT_STAGES = frozenset({"initial", "exploration", "persistent"})
+
+
+def _timeline_items(name: str, value: object) -> tuple[object, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"saliency event {name} must be a list or tuple")
+    return tuple(cast(list[object] | tuple[object, ...], value))
+
+
+def _validate_timeline_text(name: str, value: object) -> str:
+    if type(value) is not str or not value.strip():
+        raise ValueError(f"saliency event {name} must be non-empty text")
+    if len(value) > _MAX_SALIENCY_WARNING_LENGTH or any(
+        character in value for character in "\x00\r\n"
+    ):
+        raise ValueError(f"saliency event {name} must be bounded single-line text")
+    return value
+
+
+def _validate_timeline_identifier(name: str, value: object) -> str:
+    identifier = _validate_timeline_text(name, value)
+    if any(marker in identifier for marker in ("/", "\\", "[", "]", "'", '"')):
+        raise ValueError(f"saliency event {name} contains unsupported identifier")
+    return identifier
+
+
+def _validate_timeline_event_id(name: str, value: object) -> str:
+    event_id = _validate_timeline_identifier(name, value)
+    if re.fullmatch(r"event-[1-9][0-9]*", event_id) is None:
+        raise ValueError(f"saliency event {name} must identify one prior event")
+    return event_id
+
+
+def _validate_timeline_stage(value: object) -> str:
+    stage = _validate_timeline_identifier("search_stage", value)
+    if stage not in _SALIENCY_EVENT_STAGES:
+        raise ValueError("saliency event search_stage is invalid")
+    return stage
+
+
+def _validate_timeline_checksums(
+    value: object, *, required: bool = True
+) -> tuple[str, ...]:
+    checksums = _timeline_items("model_checksums", value)
+    if not checksums and not required:
+        return ()
+    if len(checksums) != 3:
+        raise ValueError("saliency event requires three model checksums")
+    normalized = tuple(
+        _require_sha256_text("model checksum", checksum) for checksum in checksums
+    )
+    return normalized
+
+
+def _validate_timeline_durations(
+    name: str, value: object, *, exact: bool = False
+) -> tuple[str, ...]:
+    durations = _timeline_items(name, value)
+    if not durations or len(durations) != len(set(durations)):
+        raise ValueError(f"saliency event {name} must contain unique durations")
+    normalized = tuple(
+        _validate_timeline_identifier(f"{name} duration", duration)
+        for duration in durations
+    )
+    if any(duration not in _SALIENCY_EVENT_DURATIONS for duration in normalized):
+        raise ValueError(f"saliency event {name} contains unsupported duration")
+    if exact and normalized != _SALIENCY_EVENT_DURATIONS:
+        raise ValueError(f"saliency event {name} must cover 1s, 3s, and 7s")
+    return normalized
+
+
+def _validate_timeline_mixture(
+    value: object,
+) -> tuple[tuple[str, float], ...]:
+    items: tuple[tuple[object, object], ...]
+    if isinstance(value, Mapping):
+        items = tuple(cast(Mapping[object, object], value).items())
+    elif isinstance(value, (list, tuple)):
+        raw_items = _timeline_items("selected_mixture", cast(object, value))
+        if all(isinstance(item, str) for item in raw_items):
+            items = tuple((item, 1.0) for item in raw_items)
+        else:
+            pairs: list[tuple[object, object]] = []
+            for item in raw_items:
+                if not isinstance(item, (list, tuple)):
+                    raise ValueError(
+                        "saliency event selected_mixture must contain pairs"
+                    )
+                pair = _timeline_items("selected_mixture pair", cast(object, item))
+                if len(pair) != 2:
+                    raise ValueError(
+                        "saliency event selected_mixture must contain pairs"
+                    )
+                pairs.append((pair[0], pair[1]))
+            items = tuple(pairs)
+    else:
+        raise ValueError("saliency event selected_mixture must be a mapping or pairs")
+    if not items:
+        raise ValueError("saliency event selected_mixture must not be empty")
+    normalized: list[tuple[str, float]] = []
+    durations: set[str] = set()
+    total = 0.0
+    for raw_duration, raw_weight in items:
+        duration = _validate_timeline_identifier(
+            "selected_mixture duration", raw_duration
+        )
+        if duration not in _SALIENCY_EVENT_DURATIONS or duration in durations:
+            raise ValueError("saliency event selected_mixture duration is invalid")
+        if (
+            isinstance(raw_weight, bool)
+            or not isinstance(raw_weight, (int, float))
+            or not math.isfinite(raw_weight)
+            or raw_weight < 0
+        ):
+            raise ValueError("saliency event selected_mixture weight is invalid")
+        weight = float(raw_weight)
+        durations.add(duration)
+        total += weight
+        normalized.append((duration, weight))
+    if not math.isclose(total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError("saliency event selected_mixture must be normalized")
+    return tuple(normalized)
+
+
+def _validate_timeline_timings(value: object, duration_count: int) -> tuple[float, ...]:
+    timings = _timeline_items("timings_ms", value)
+    if timings and len(timings) != duration_count:
+        raise ValueError("saliency event timings must match duration count")
+    normalized: list[float] = []
+    for timing in timings:
+        if isinstance(timing, bool) or not isinstance(timing, (int, float)):
+            raise ValueError("saliency event timings must be finite numbers")
+        number = float(timing)
+        if not math.isfinite(number) or number < 0:
+            raise ValueError("saliency event timings must be finite and non-negative")
+        normalized.append(number)
+    return tuple(normalized)
+
+
+def _validate_timeline_artifact_ids(value: object, viewport_id: str) -> tuple[str, ...]:
+    artifact_ids = _timeline_items("artifact_ids", value)
+    normalized = tuple(
+        validate_saliency_artifact_path(
+            _validate_timeline_text("artifact ID", artifact_id)
+        ).as_posix()
+        for artifact_id in artifact_ids
+    )
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("saliency event artifact IDs must be unique")
+    if any(PurePosixPath(path).parts[1] != viewport_id for path in normalized):
+        raise ValueError("saliency event artifact ID viewport does not match event")
+    return normalized
+
+
+def _validate_timeline_warnings(value: object) -> tuple[str, ...]:
+    warnings = _timeline_items("warnings", value)
+    return tuple(_validate_timeline_text("warning", warning) for warning in warnings)
+
+
+@dataclass(frozen=True, slots=True)
+class SaliencyProfilesRecordedEvent:
+    """Allowlisted profile evidence summary without saliency values."""
+
+    viewport_id: str
+    provider_id: str
+    search_stage: str
+    model_checksums: tuple[str, str, str]
+    execution_provider: str
+    preprocessing_version: str
+    precision: str
+    cache_key: str | None = None
+    durations: tuple[str, ...] = _SALIENCY_EVENT_DURATIONS
+    timings_ms: tuple[float, ...] = ()
+    artifact_ids: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    source_viewport_id: str | None = None
+    artifact_namespace: str | None = None
+    source_event_id: str | None = None
+    cache_state: str = "miss"
+    kind: Literal["saliency-profiles-recorded"] = field(
+        default="saliency-profiles-recorded", init=False
+    )
+
+    def __post_init__(self) -> None:
+        viewport_id = _validate_timeline_identifier("viewport_id", self.viewport_id)
+        provider_id = _validate_timeline_identifier("provider_id", self.provider_id)
+        search_stage = _validate_timeline_stage(self.search_stage)
+        checksums = _validate_timeline_checksums(self.model_checksums)
+        execution_provider = _validate_timeline_text(
+            "execution_provider", self.execution_provider
+        )
+        preprocessing_version = _validate_timeline_text(
+            "preprocessing_version", self.preprocessing_version
+        )
+        precision = _validate_timeline_text("precision", self.precision)
+        cache_key = self.cache_key
+        if cache_key is not None:
+            cache_key = _require_sha256_text("cache_key", cache_key)
+        durations = _validate_timeline_durations(
+            "durations", self.durations, exact=True
+        )
+        timings = _validate_timeline_timings(self.timings_ms, len(durations))
+        artifact_ids = _validate_timeline_artifact_ids(self.artifact_ids, viewport_id)
+        warnings = _validate_timeline_warnings(self.warnings)
+        source_viewport_id = _validate_timeline_identifier(
+            "source_viewport_id", self.source_viewport_id or viewport_id
+        )
+        artifact_namespace = _validate_timeline_identifier(
+            "artifact_namespace", self.artifact_namespace or viewport_id
+        )
+        if artifact_namespace != viewport_id:
+            raise ValueError(
+                "saliency profile artifact namespace must match viewport_id"
+            )
+        source_event_id = self.source_event_id
+        if source_event_id is not None:
+            source_event_id = _validate_timeline_event_id(
+                "source_event_id", source_event_id
+            )
+        if self.cache_state not in {"hit", "miss", "disabled"}:
+            raise ValueError("saliency profile cache state is invalid")
+        object.__setattr__(self, "viewport_id", viewport_id)
+        object.__setattr__(self, "provider_id", provider_id)
+        object.__setattr__(self, "search_stage", search_stage)
+        object.__setattr__(self, "model_checksums", checksums)
+        object.__setattr__(self, "execution_provider", execution_provider)
+        object.__setattr__(self, "preprocessing_version", preprocessing_version)
+        object.__setattr__(self, "precision", precision)
+        object.__setattr__(self, "cache_key", cache_key)
+        object.__setattr__(self, "durations", durations)
+        object.__setattr__(self, "timings_ms", timings)
+        object.__setattr__(self, "artifact_ids", artifact_ids)
+        object.__setattr__(self, "warnings", warnings)
+        object.__setattr__(self, "source_viewport_id", source_viewport_id)
+        object.__setattr__(self, "artifact_namespace", artifact_namespace)
+        object.__setattr__(self, "source_event_id", source_event_id)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return JSON-only profile provenance; maps and scores stay in artifacts."""
+
+        payload: dict[str, object] = {
+            "kind": self.kind,
+            "viewport_id": self.viewport_id,
+            "source_viewport_id": self.source_viewport_id,
+            "artifact_namespace": self.artifact_namespace,
+            "source_event_id": self.source_event_id,
+            "cache_state": self.cache_state,
+            "provider_id": self.provider_id,
+            "search_stage": self.search_stage,
+            "model_checksums": list(self.model_checksums),
+            "execution_provider": self.execution_provider,
+            "preprocessing_version": self.preprocessing_version,
+            "precision": self.precision,
+            "durations": list(self.durations),
+            "timings_ms": list(self.timings_ms),
+            "artifact_ids": list(self.artifact_ids),
+            "warnings": [
+                sanitize_log_text(warning, RedactionPolicy())
+                for warning in self.warnings
+            ],
+        }
+        if self.cache_key is not None:
+            payload["cache_key"] = self.cache_key
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class SaliencyFallbackRecordedEvent:
+    """Allowlisted learned-provider fallback summary without model output."""
+
+    viewport_id: str
+    provider_id: str
+    fallback_provider_id: str
+    search_stage: str
+    reason: str
+    model_checksums: tuple[str, ...] = ()
+    execution_provider: str | None = None
+    cache_key: str | None = None
+    warnings: tuple[str, ...] = ()
+    source_viewport_id: str | None = None
+    artifact_namespace: str | None = None
+    source_event_id: str | None = None
+    cache_state: str = "fallback"
+    kind: Literal["saliency-fallback-recorded"] = field(
+        default="saliency-fallback-recorded", init=False
+    )
+
+    def __post_init__(self) -> None:
+        viewport_id = _validate_timeline_identifier("viewport_id", self.viewport_id)
+        provider_id = _validate_timeline_identifier("provider_id", self.provider_id)
+        fallback_provider_id = _validate_timeline_identifier(
+            "fallback_provider_id", self.fallback_provider_id
+        )
+        search_stage = _validate_timeline_stage(self.search_stage)
+        reason = _validate_timeline_text("reason", self.reason)
+        checksums = _validate_timeline_checksums(self.model_checksums, required=False)
+        execution_provider = self.execution_provider
+        if execution_provider is not None:
+            execution_provider = _validate_timeline_text(
+                "execution_provider", execution_provider
+            )
+        cache_key = self.cache_key
+        if cache_key is not None:
+            cache_key = _require_sha256_text("cache_key", cache_key)
+        warnings = _validate_timeline_warnings(self.warnings)
+        source_viewport_id = _validate_timeline_identifier(
+            "source_viewport_id", self.source_viewport_id or viewport_id
+        )
+        artifact_namespace = self.artifact_namespace
+        if artifact_namespace is not None:
+            artifact_namespace = _validate_timeline_identifier(
+                "artifact_namespace", artifact_namespace
+            )
+        source_event_id = self.source_event_id
+        if source_event_id is not None:
+            source_event_id = _validate_timeline_event_id(
+                "source_event_id", source_event_id
+            )
+        if self.cache_state != "fallback":
+            raise ValueError("saliency fallback cache state must be fallback")
+        object.__setattr__(self, "viewport_id", viewport_id)
+        object.__setattr__(self, "provider_id", provider_id)
+        object.__setattr__(self, "fallback_provider_id", fallback_provider_id)
+        object.__setattr__(self, "search_stage", search_stage)
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "model_checksums", checksums)
+        object.__setattr__(self, "execution_provider", execution_provider)
+        object.__setattr__(self, "cache_key", cache_key)
+        object.__setattr__(self, "warnings", warnings)
+        object.__setattr__(self, "source_viewport_id", source_viewport_id)
+        object.__setattr__(self, "artifact_namespace", artifact_namespace)
+        object.__setattr__(self, "source_event_id", source_event_id)
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "kind": self.kind,
+            "viewport_id": self.viewport_id,
+            "source_viewport_id": self.source_viewport_id,
+            "artifact_namespace": self.artifact_namespace,
+            "source_event_id": self.source_event_id,
+            "cache_state": self.cache_state,
+            "provider_id": self.provider_id,
+            "fallback_provider_id": self.fallback_provider_id,
+            "search_stage": self.search_stage,
+            "reason": sanitize_log_text(self.reason, RedactionPolicy()),
+            "warnings": [
+                sanitize_log_text(warning, RedactionPolicy())
+                for warning in self.warnings
+            ],
+        }
+        if self.model_checksums:
+            payload["model_checksums"] = list(self.model_checksums)
+        if self.execution_provider is not None:
+            payload["execution_provider"] = self.execution_provider
+        if self.cache_key is not None:
+            payload["cache_key"] = self.cache_key
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ProminenceRecordedEvent:
+    """Allowlisted operational prominence summary with no numeric saliency."""
+
+    viewport_id: str
+    provider_id: str
+    active_provider_id: str
+    search_stage: str
+    selected_mixture: tuple[tuple[str, float], ...]
+    selected_element_ids: tuple[str, ...] = ()
+    source_viewport_id: str | None = None
+    artifact_namespace: str | None = None
+    source_event_id: str | None = None
+    cache_state: str = "miss"
+    kind: Literal["prominence-recorded"] = field(
+        default="prominence-recorded", init=False
+    )
+
+    def __post_init__(self) -> None:
+        viewport_id = _validate_timeline_identifier("viewport_id", self.viewport_id)
+        provider_id = _validate_timeline_identifier("provider_id", self.provider_id)
+        active_provider_id = _validate_timeline_identifier(
+            "active_provider_id", self.active_provider_id
+        )
+        search_stage = _validate_timeline_stage(self.search_stage)
+        selected_mixture = _validate_timeline_mixture(self.selected_mixture)
+        selected_element_ids = tuple(
+            _validate_timeline_identifier("selected element ID", element_id)
+            for element_id in self.selected_element_ids
+        )
+        if len(selected_element_ids) != len(set(selected_element_ids)):
+            raise ValueError("saliency prominence element IDs must be unique")
+        source_viewport_id = _validate_timeline_identifier(
+            "source_viewport_id", self.source_viewport_id or viewport_id
+        )
+        artifact_namespace = self.artifact_namespace
+        if artifact_namespace is not None:
+            artifact_namespace = _validate_timeline_identifier(
+                "artifact_namespace", artifact_namespace
+            )
+        source_event_id = self.source_event_id
+        if source_event_id is not None:
+            source_event_id = _validate_timeline_event_id(
+                "source_event_id", source_event_id
+            )
+        if self.cache_state not in {"hit", "miss", "disabled", "fallback"}:
+            raise ValueError("saliency prominence cache state is invalid")
+        object.__setattr__(self, "viewport_id", viewport_id)
+        object.__setattr__(self, "provider_id", provider_id)
+        object.__setattr__(self, "active_provider_id", active_provider_id)
+        object.__setattr__(self, "search_stage", search_stage)
+        object.__setattr__(self, "selected_mixture", selected_mixture)
+        object.__setattr__(self, "selected_element_ids", selected_element_ids)
+        object.__setattr__(self, "source_viewport_id", source_viewport_id)
+        object.__setattr__(self, "artifact_namespace", artifact_namespace)
+        object.__setattr__(self, "source_event_id", source_event_id)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "viewport_id": self.viewport_id,
+            "source_viewport_id": self.source_viewport_id,
+            "artifact_namespace": self.artifact_namespace,
+            "source_event_id": self.source_event_id,
+            "cache_state": self.cache_state,
+            "provider_id": self.provider_id,
+            "active_provider_id": self.active_provider_id,
+            "search_stage": self.search_stage,
+            "selected_mixture": list(self.selected_mixture),
+            "selected_element_ids": list(self.selected_element_ids),
+        }
+
+
+type SaliencyTimelineEvent = (
+    SaliencyCacheHitEvent
+    | SaliencyProfilesRecordedEvent
+    | SaliencyFallbackRecordedEvent
+    | ProminenceRecordedEvent
+)
 
 
 class RunBundleWriter(Protocol):
@@ -1359,12 +1839,18 @@ class RunBundleWriter(Protocol):
 
         ...
 
+    @property
+    def saliency_artifact_context(self) -> SaliencyArtifactContext | None:
+        """Return capture-to-artifact namespace binding when materializing saliency."""
+
+        ...
+
     def append_event(self, event: object) -> int:
         """Append one redacted event and return its monotonic sequence."""
 
         ...
 
-    def append_saliency_event(self, event: SaliencyCacheHitEvent) -> int:
+    def append_saliency_event(self, event: SaliencyTimelineEvent) -> int:
         """Append one typed saliency event without arbitrary JSON values."""
 
         ...
@@ -1388,6 +1874,11 @@ class RunBundleWriter(Protocol):
         kind: SaliencyArtifactKind,
     ) -> ArtifactReference:
         """Write generated saliency evidence at its required logical path."""
+
+        ...
+
+    def verify_artifact(self, reference: ArtifactReference) -> None:
+        """Verify one reference against bytes owned by this writer."""
 
         ...
 

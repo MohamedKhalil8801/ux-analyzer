@@ -147,6 +147,7 @@ class ProminenceBatch:
     provider_id: str
     active_provider_id: str
     stage: SearchStage | str
+    selected_mixture: tuple[tuple[str, float], ...] = ()
     learned_profiles: tuple[ElementAttentionProfile, ...] = ()
     learned_scores: tuple[ProminenceResult, ...] = ()
     heuristic_scores: tuple[ProminenceResult, ...] = ()
@@ -164,10 +165,33 @@ class ProminenceBatch:
         learned_scores = tuple(self.learned_scores)
         heuristic_scores = tuple(self.heuristic_scores)
         hybrid_scores = tuple(self.hybrid_scores)
+        selected_mixture = tuple(self.selected_mixture)
         if not self.provider_id.strip() or not self.active_provider_id.strip():
             raise ValueError("prominence batch provider IDs must not be empty")
         stage = SearchStage(self.stage)
-        if self.cache_state not in {"hit", "miss", "fallback"}:
+        if not selected_mixture:
+            selected_mixture = {
+                SearchStage.INITIAL: (("1s", 1.0),),
+                SearchStage.EXPLORATION: (("3s", 1.0),),
+                SearchStage.PERSISTENT: (("3s", 0.25), ("7s", 0.75)),
+            }[stage]
+        mixture_durations: set[str] = set()
+        mixture_total = 0.0
+        normalized_mixture: list[tuple[str, float]] = []
+        for duration, weight in selected_mixture:
+            if duration not in {"1s", "3s", "7s"} or duration in mixture_durations:
+                raise ValueError(
+                    "prominence batch selected mixture duration is invalid"
+                )
+            if isinstance(weight, bool) or not math.isfinite(weight) or weight < 0:
+                raise ValueError("prominence batch selected mixture weight is invalid")
+            mixture_durations.add(duration)
+            normalized_weight = float(weight)
+            mixture_total += normalized_weight
+            normalized_mixture.append((duration, normalized_weight))
+        if not math.isclose(mixture_total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("prominence batch selected mixture must be normalized")
+        if self.cache_state not in {"hit", "miss", "disabled", "fallback"}:
             raise ValueError("prominence batch cache state is invalid")
         if self.learned_available and self.learned_unavailable_reason is not None:
             raise ValueError(
@@ -194,6 +218,7 @@ class ProminenceBatch:
         object.__setattr__(self, "heuristic_scores", heuristic_scores)
         object.__setattr__(self, "hybrid_scores", hybrid_scores)
         object.__setattr__(self, "stage", stage)
+        object.__setattr__(self, "selected_mixture", tuple(normalized_mixture))
 
     @property
     def results(self) -> tuple[ProminenceResult, ...]:

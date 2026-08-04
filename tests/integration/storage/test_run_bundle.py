@@ -25,10 +25,13 @@ from ux_analyzer.ports.artifacts import (
     BundleAlreadyFinalizedError,
     BundleManifest,
     BundleStateError,
+    ProminenceRecordedEvent,
     RedactionPolicy,
     RunBundleWriter,
     SaliencyArtifactKind,
     SaliencyCacheHitEvent,
+    SaliencyFallbackRecordedEvent,
+    SaliencyProfilesRecordedEvent,
     sanitize_artifact_content,
 )
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
@@ -506,6 +509,75 @@ def test_untyped_saliency_event_cannot_enter_jsonl(tmp_path: Path) -> None:
                 "selector": "[data-secret]",
                 "raw_map": [0.1, 0.2],
             }
+        )
+
+
+def test_typed_task11_events_are_allowlisted_and_value_free(tmp_path: Path) -> None:
+    writer = FilesystemRunBundleWriter.start(tmp_path, bundle_manifest())
+    profile_event = SaliencyProfilesRecordedEvent(
+        viewport_id="viewport-1",
+        provider_id="foveacast",
+        search_stage="initial",
+        model_checksums=("1" * 64, "2" * 64, "3" * 64),
+        execution_provider="CPUExecutionProvider",
+        preprocessing_version="foveacast-preprocess-v1",
+        precision="fp16",
+        cache_key="a" * 64,
+        timings_ms=(1.0, 2.0, 3.0),
+        artifact_ids=tuple(
+            sorted(
+                {
+                    "saliency/viewport-1/1s.npz",
+                    "saliency/viewport-1/3s.npz",
+                    "saliency/viewport-1/7s.npz",
+                    "saliency/viewport-1/1s-heatmap.png",
+                    "saliency/viewport-1/3s-heatmap.png",
+                    "saliency/viewport-1/7s-heatmap.png",
+                    "saliency/viewport-1/profiles.json",
+                    "saliency/viewport-1/metadata.json",
+                }
+            )
+        ),
+    )
+    prominence_event = ProminenceRecordedEvent(
+        viewport_id="viewport-1",
+        provider_id="foveacast-prominence",
+        active_provider_id="foveacast",
+        search_stage="initial",
+        selected_mixture=("1s",),
+    )
+    fallback_event = SaliencyFallbackRecordedEvent(
+        viewport_id="viewport-1",
+        provider_id="foveacast-prominence",
+        fallback_provider_id="heuristic-prominence",
+        search_stage="initial",
+        reason="runtime unavailable; selector=[data-secret]",
+    )
+
+    with pytest.raises(TypeError, match="typed append_saliency_event"):
+        writer.append_event(prominence_event)
+    writer.append_saliency_event(profile_event)
+    writer.append_saliency_event(prominence_event)
+    writer.append_saliency_event(fallback_event)
+
+    timeline = writer.timeline_path.read_text(encoding="utf-8")
+    assert '"kind":"saliency-profiles-recorded"' in timeline
+    assert '"kind":"prominence-recorded"' in timeline
+    assert '"kind":"saliency-fallback-recorded"' in timeline
+    assert '"scores"' not in timeline
+    assert '"raw_map"' not in timeline
+    assert "[data-secret]" not in timeline
+
+
+def test_task11_event_contract_rejects_selector_identifier() -> None:
+    with pytest.raises(ValueError, match="unsupported identifier"):
+        ProminenceRecordedEvent(
+            viewport_id="viewport-1",
+            provider_id="foveacast",
+            active_provider_id="foveacast",
+            search_stage="initial",
+            selected_mixture=("1s",),
+            selected_element_ids=("[data-secret]",),
         )
 
 
