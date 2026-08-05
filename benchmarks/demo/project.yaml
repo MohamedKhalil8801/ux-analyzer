@@ -228,3 +228,23 @@ experiments:
     seeds:
       - 0
     run_count: 1
+  - id: saliency-focused-validation
+    name: Focused heuristic versus Foveacast saliency validation
+    scenario_ids:
+      - invite-teammate
+      - enable-2fa
+    application_version_ids:
+      - fixture-app-defective
+      - fixture-app-improved
+    persona_ids:
+      - first-time-nontechnical
+    prominence_provider_ids:
+      - heuristic
+      - foveacast
+    policies:
+      - progressive-prominence-scent
+    seeds:
+      - 0
+    model_trials:
+      - 0
+    run_count: 1

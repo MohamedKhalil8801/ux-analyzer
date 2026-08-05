@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
@@ -467,3 +468,19 @@ def test_digest_is_stable_when_yaml_key_order_changes(tmp_path: Path) -> None:
     second = load_project(_write_project(tmp_path, reordered, "second.yaml"))
 
     assert first.config_digest == second.config_digest
+
+
+def test_additive_saliency_experiment_keeps_legacy_selected_digest(tmp_path: Path) -> None:
+    base_project = _read_project()
+    additive_project = copy.deepcopy(base_project)
+    additive_experiment = copy.deepcopy(additive_project["experiments"][0])
+    additive_experiment["id"] = "saliency-focused-validation"
+    additive_experiment["name"] = "Focused saliency validation"
+    additive_project["experiments"].append(additive_experiment)
+
+    base = load_project(_write_project(tmp_path, base_project, "base.yaml"))
+    additive = load_project(
+        _write_project(tmp_path, additive_project, "additive.yaml")
+    )
+
+    assert base.config_digest_for("smoke") == additive.config_digest_for("smoke")

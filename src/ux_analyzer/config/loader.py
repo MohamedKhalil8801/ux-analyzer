@@ -112,12 +112,21 @@ class LoadedProject:
     project: BenchmarkProject
     config_digest: str
     runtime: RuntimeConfig
+    experiment_digests: Mapping[str, str]
 
     @property
     def digest(self) -> str:
         """Return canonical SHA-256 digest for callers using the short name."""
 
         return self.config_digest
+
+    def config_digest_for(self, experiment_id: str) -> str:
+        """Return identity digest scoped to one selected experiment."""
+
+        try:
+            return self.experiment_digests[experiment_id]
+        except KeyError as error:
+            raise ValueError(f"unknown experiment ID: {experiment_id}") from error
 
 
 def load_project(path: Path) -> LoadedProject:
@@ -144,12 +153,22 @@ def load_project(path: Path) -> LoadedProject:
 
     _validate_references(config)
     project = _to_domain(config)
-    digest = _canonical_digest(config.model_dump(mode="json"))
+    digest_payload = config.model_dump(mode="json")
+    digest = _canonical_digest(digest_payload)
+    experiment_digests = MappingProxyType(
+        {
+            experiment.id: _canonical_digest_for_experiment(
+                digest_payload, experiment.id
+            )
+            for experiment in config.experiments
+        }
+    )
     runtime = _to_runtime(config)
     return LoadedProject(
         project=project,
         config_digest=digest,
         runtime=runtime,
+        experiment_digests=experiment_digests,
     )
 
 
@@ -484,6 +503,30 @@ def _to_experiment(experiment: ExperimentModel) -> ExperimentDefinition:
 
 def _canonical_digest(payload: dict[str, object]) -> str:
     normalized = _digest_compatibility_payload(payload)
+    return _digest_normalized_payload(normalized)
+
+
+def _canonical_digest_for_experiment(
+    payload: dict[str, object], experiment_id: str
+) -> str:
+    normalized = _digest_compatibility_payload(payload)
+    experiments_value = normalized.get("experiments")
+    if not isinstance(experiments_value, list):
+        raise ProjectConfigError("project config has no experiments")
+    selected: list[object] = []
+    for item in cast(list[object], experiments_value):
+        if (
+            isinstance(item, dict)
+            and cast(dict[object, object], item).get("id") == experiment_id
+        ):
+            selected.append(cast(dict[object, object], item))
+    if not selected:
+        raise ProjectConfigError(f"unknown experiment ID: {experiment_id}")
+    normalized["experiments"] = selected
+    return _digest_normalized_payload(normalized)
+
+
+def _digest_normalized_payload(normalized: dict[str, object]) -> str:
     canonical = json.dumps(
         normalized,
         ensure_ascii=True,

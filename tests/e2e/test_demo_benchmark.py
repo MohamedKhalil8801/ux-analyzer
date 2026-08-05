@@ -20,6 +20,8 @@ from typer.testing import CliRunner
 import ux_analyzer.cli as cli
 from fixture_app.app import app as fixture_app
 from tests.e2e.test_private_data_leakage import _snapshot
+from ux_analyzer.application.experiment import ExperimentContext, expand_experiment
+from ux_analyzer.config.loader import load_project
 from ux_analyzer.domain.attention import AttentionState
 from ux_analyzer.domain.benchmark import Budget
 from ux_analyzer.providers.attention_policy import (
@@ -30,6 +32,35 @@ from ux_analyzer.providers.prominence import HeuristicProminenceProvider
 
 DEMO_PROJECT = Path(__file__).parents[2] / "benchmarks" / "demo" / "project.yaml"
 CI_SEED = 7
+
+
+def test_legacy_focused_validation_keeps_four_cells_and_zero_model_trial() -> None:
+    loaded = load_project(DEMO_PROJECT)
+    experiment = next(
+        item for item in loaded.project.experiments if item.id == "focused-validation"
+    )
+
+    specs = expand_experiment(
+        ExperimentContext(
+            definition=experiment,
+            project=loaded.project,
+            config_digest=loaded.config_digest,
+        )
+    )
+
+    assert len(specs) == 4
+    assert {spec.scenario.id for spec in specs} == {"invite-teammate"}
+    assert {spec.application_version.id for spec in specs} == {
+        "fixture-app-defective",
+        "fixture-app-improved",
+    }
+    assert {spec.policy.value for spec in specs} == {
+        "full-list",
+        "progressive-prominence-scent",
+    }
+    assert {spec.prominence_provider_id for spec in specs} == {"heuristic"}
+    assert {spec.seed for spec in specs} == {0}
+    assert {spec.model_trial for spec in specs} == {0}
 
 
 def _free_port() -> int:
@@ -367,7 +398,9 @@ async def test_production_cli_report_is_interactive_and_causal(
     persisted = json.loads((run_path / "result.json").read_text(encoding="utf-8"))
     events = [
         json.loads(line)
-        for line in (run_path / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (run_path / "timeline.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     assert persisted["metrics"]["feedback_observed"] is True
     assert "missing-feedback" not in {

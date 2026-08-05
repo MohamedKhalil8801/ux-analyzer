@@ -574,7 +574,7 @@ def _resolve_matrix_or_exit(
             ExperimentContext(
                 definition=definition,
                 project=loaded.project,
-                config_digest=loaded.config_digest,
+                config_digest=loaded.config_digest_for(experiment_id),
             )
         )
     except ValueError as error:
@@ -1276,6 +1276,7 @@ def _complete_experiment(
     output: Path,
     runtime: RuntimeConfig,
     selected_specs: Sequence[RunSpec] | None = None,
+    render_report: bool = True,
 ) -> tuple[Path, Path]:
     del runtime
     completed: list[RunResult] = []
@@ -1334,8 +1335,29 @@ def _complete_experiment(
         encoding="utf-8",
     )
     temporary.replace(summary_path)
-    report_path = render_experiment_report(output, output / "report.html")
+    report_path = output / "report.html"
+    if render_report:
+        report_path = render_experiment_report(output, report_path)
     return summary_path, report_path
+
+
+def complete_experiment(
+    result: ExperimentResult,
+    *,
+    output: Path,
+    runtime: RuntimeConfig,
+    selected_specs: Sequence[RunSpec] | None = None,
+    render_report: bool = True,
+) -> tuple[Path, Path]:
+    """Persist production experiment evaluation and render its report."""
+
+    return _complete_experiment(
+        result,
+        output=output,
+        runtime=runtime,
+        selected_specs=selected_specs,
+        render_report=render_report,
+    )
 
 
 def _provider_cell_aggregates(

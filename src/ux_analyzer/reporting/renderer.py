@@ -263,6 +263,7 @@ def _load_experiment(root: Path) -> dict[str, Any]:
         "gate_rows": gate_rows,
         "failure_rows": [run for run in ordered_runs if run["failed"]],
         "evidence_summary": _evidence_summary(ordered_runs),
+        "focused_acceptance": _focused_acceptance(summary),
         "limitations": _unique(
             limitation for run in ordered_runs for limitation in run["limitations"]
         ),
@@ -658,6 +659,7 @@ def _report_context(
         "gate_rows": experiment["gate_rows"],
         "failure_rows": failure_rows,
         "evidence_summary": experiment["evidence_summary"],
+        "focused_acceptance": experiment["focused_acceptance"],
         "limitations": limitations,
         "initial_viewport_width": initial_width,
         "report_json": _safe_json(
@@ -668,6 +670,7 @@ def _report_context(
                 "gate_rows": experiment["gate_rows"],
                 "failure_rows": failure_rows,
                 "evidence_summary": experiment["evidence_summary"],
+                "focused_acceptance": experiment["focused_acceptance"],
                 "limitations": limitations,
             }
         ),
@@ -2693,6 +2696,43 @@ def _gate_for_run(
             "reason": "; ".join(reasons) or "Directional comparison failed.",
         }
     return {"label": "Gate pass", "reason": "All directional checks passed."}
+
+
+def _focused_acceptance(summary: dict[str, Any]) -> dict[str, Any]:
+    """Expose allowlisted focused-gate evidence in experiment reports."""
+
+    focused = _mapping(summary.get("focused_acceptance"))
+    if not focused:
+        return {}
+    gate = _mapping(focused.get("gate"))
+    cells: list[dict[str, Any]] = []
+    for raw_cell in _list_of_mappings(focused.get("cells")):
+        key = _mapping(raw_cell.get("key"))
+        operational = _mapping(raw_cell.get("operational"))
+        cells.append(
+            {
+                "scenario_id": _text(key.get("scenario_id"), "unknown"),
+                "version_id": _text(key.get("version_id"), "unknown"),
+                "provider_id": _text(key.get("provider_id"), "unknown"),
+                "status": _text(operational.get("status"), "unavailable"),
+                "latency_ms": _number(operational.get("latency_ms"), 0),
+                "peak_rss_bytes": _number(operational.get("peak_rss_bytes"), 0),
+                "sampler_provider": _text(
+                    operational.get("sampler_provider"), "unknown"
+                ),
+                "synthetic": bool(operational.get("synthetic", False)),
+            }
+        )
+    return {
+        "gate": {
+            "passed": bool(gate.get("passed", False)),
+            "reasons": _strings(gate.get("reasons")),
+            "cell_count": int(_number(gate.get("cell_count"), 0)),
+            "paired_cell_count": int(_number(gate.get("paired_cell_count"), 0)),
+            "learned_cell_count": int(_number(gate.get("learned_cell_count"), 0)),
+        },
+        "cells": cells,
+    }
 
 
 def _gate_rows(

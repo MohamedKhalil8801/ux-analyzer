@@ -119,6 +119,37 @@
       </details>
     </section>
 
+    {% if focused_acceptance %}
+    <section class="section focused-acceptance" aria-labelledby="focused-acceptance-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Focused saliency validation</p>
+          <h2 id="focused-acceptance-title">Focused saliency promotion gate</h2>
+        </div>
+        <strong>{{ "pass" if focused_acceptance.gate.passed else "fail" }}</strong>
+      </div>
+      <p>
+        Cells: {{ focused_acceptance.gate.cell_count }};
+        paired cells: {{ focused_acceptance.gate.paired_cell_count }};
+        learned cells: {{ focused_acceptance.gate.learned_cell_count }}.
+      </p>
+      {% if focused_acceptance.gate.reasons %}
+      <p>Gate reasons: {{ focused_acceptance.gate.reasons | join("; ") }}</p>
+      {% endif %}
+      <div class="table-wrap">
+        <table id="focused-operational-evidence">
+          <thead><tr><th>Scenario</th><th>Version</th><th>Provider</th><th>Status</th><th>Latency ms</th><th>Peak RSS bytes</th><th>Sampler</th><th>Synthetic</th></tr></thead>
+          <tbody>
+          {% for row in focused_acceptance.cells %}
+            <tr><td>{{ row.scenario_id }}</td><td>{{ row.version_id }}</td><td>{{ row.provider_id }}</td><td>{{ row.status }}</td><td>{{ row.latency_ms }}</td><td>{{ row.peak_rss_bytes }}</td><td>{{ row.sampler_provider }}</td><td>{{ "yes" if row.synthetic else "no" }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="method-note"><strong>Operational evidence:</strong> promotion requires measured OS high-water latency and peak RSS. Synthetic fake measurements validate orchestration only.</p>
+    </section>
+    {% endif %}
+
     <section class="section workspace-shell" id="playback-workspace" aria-labelledby="workspace-title">
       <div class="workspace-heading">
         <div>
