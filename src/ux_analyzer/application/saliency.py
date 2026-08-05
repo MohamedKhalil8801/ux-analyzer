@@ -22,6 +22,15 @@ def _empty_component_provenance_map() -> dict[str, str]:
     return {}
 
 
+def _prominence_number(name: str, value: object) -> float:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be finite")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
 @dataclass(frozen=True, slots=True)
 class FeatureMeasurement:
     """Raw feature, normalized feature, and its weighted contribution."""
@@ -54,17 +63,36 @@ class ProminenceResult:
     def __post_init__(self) -> None:
         if not self.element_id:
             raise ValueError("prominence element ID must not be empty")
-        for name, value in (
-            ("raw_score", self.raw_score),
-            ("normalized_probability", self.normalized_probability),
-        ):
-            if not math.isfinite(value):
-                raise ValueError(f"{name} must be finite")
+        raw_score = _prominence_number("raw_score", self.raw_score)
+        normalized_probability = _prominence_number(
+            "normalized_probability", self.normalized_probability
+        )
+        object.__setattr__(self, "raw_score", raw_score)
+        object.__setattr__(self, "normalized_probability", normalized_probability)
         if not 0 <= self.normalized_probability <= 1:
             raise ValueError("normalized_probability must be between 0 and 1")
         feature_contributions: dict[str, float] = dict(self.feature_contributions)
         raw_values: dict[str, float] = dict(self.raw_values)
         normalized_values: dict[str, float] = dict(self.normalized_values)
+        for name, values in (
+            ("feature contributions", feature_contributions),
+            ("raw values", raw_values),
+            ("normalized values", normalized_values),
+        ):
+            if any(
+                not str(key).strip()
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                for key, value in values.items()
+            ):
+                raise ValueError(f"prominence {name} must contain finite numbers")
+            values = {str(key): float(value) for key, value in values.items()}
+            if name == "feature contributions":
+                feature_contributions = values
+            elif name == "raw values":
+                raw_values = values
+            else:
+                normalized_values = values
         component_provenance = dict(self.component_provenance)
         if any(
             not name.strip() or not source.strip()
@@ -93,12 +121,18 @@ class ProminenceResult:
             ("first_notice_probability", first_notice),
             ("notice_within_budget_probability", within_budget),
         ):
-            if not math.isfinite(value) or not 0 <= value <= 1:
+            number = _prominence_number(name, value)
+            if not 0 <= number <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
+            object.__setattr__(self, name, number)
         if not self.provider_id.strip():
             raise ValueError("prominence provider ID must not be empty")
-        if self.stage is not None and not self.stage.strip():
-            raise ValueError("prominence stage must not be empty")
+        if self.stage is not None:
+            try:
+                stage = SearchStage(self.stage)
+            except ValueError as error:
+                raise ValueError("prominence stage is invalid") from error
+            object.__setattr__(self, "stage", stage.value)
         if self.evidence_kind not in {
             "predicted",
             "derived",

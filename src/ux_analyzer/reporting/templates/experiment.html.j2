@@ -160,12 +160,20 @@
         </section>
 
         <aside id="selected-element-evidence" class="element-pane" aria-labelledby="element-title">
-          <div class="pane-heading">
-            <h3 id="element-title">Element evidence</h3>
-            <span id="element-state">Paused</span>
-          </div>
-          <div id="element-detail"></div>
-        </aside>
+           <div class="pane-heading">
+             <h3 id="element-title">Element evidence</h3>
+             <span id="element-state">Paused</span>
+           </div>
+           <div id="element-detail"></div>
+           <section id="saliency-evidence" class="saliency-evidence" aria-labelledby="saliency-title">
+             <div class="pane-heading">
+               <h3 id="saliency-title">Saliency evidence</h3>
+               <span id="saliency-runtime-label">Unavailable</span>
+             </div>
+             <div id="saliency-tabs" class="saliency-tabs" role="tablist" aria-label="Saliency duration"></div>
+             <div id="saliency-detail"></div>
+           </section>
+         </aside>
       </div>
 
       <div class="timeline-rail" aria-labelledby="timeline-title">

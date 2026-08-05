@@ -177,3 +177,84 @@ def test_findings_explain_cause_metrics_references_actions_and_replay() -> None:
         "back: succeeded",
     )
     assert finding.replay_links == ("#run=run-1&element=target",)
+
+
+def test_prominence_finding_cites_provider_stage_profiles_and_limitations() -> None:
+    metrics = replace(
+        _metrics(),
+        prominence_provider_id="foveacast",
+        active_search_stage="persistent",
+        prominence_model_id="foveacast-v0.2.0",
+        prominence_model_version="v0.2.0",
+        prominence_profile_event_ids=("event-4",),
+        prominence_operational_event_ids=("event-5",),
+        target_prominence_profiles={
+            "immediate": 0.1,
+            "early": 0.2,
+            "eventual": 0.3,
+        },
+        target_prominence_sources={
+            "immediate": "foveacast-v0.2.0",
+            "early": "foveacast-v0.2.0",
+            "eventual": "foveacast-v0.2.0",
+        },
+    )
+
+    finding = next(
+        item
+        for item in findings_for_run(metrics)
+        if item.category == FindingCategory.WEAK_TARGET_PROMINENCE.value
+    )
+
+    text = f"{finding.generated_explanation} {finding.cause}"
+    assert "foveacast" in text
+    assert "persistent" in text
+    assert "event-4" in text
+    assert "event-5" in text
+    assert "foveacast-v0.2.0" in text
+    assert "1s" in text
+    assert "3s" in text
+    assert "7s" in text
+    assert "Heuristic prominence estimate for target." not in text
+    assert finding.limitations
+
+
+def test_prominence_finding_redacts_secret_like_provenance_identifiers() -> None:
+    metrics = replace(
+        _metrics(),
+        prominence_provider_id="foveacast",
+        prominence_model_id="api_key=provider-secret",
+        prominence_model_version="secret-token",
+        prominence_profile_event_ids=("event-4",),
+        prominence_operational_event_ids=("event-5",),
+        target_prominence_profiles={"immediate": 0.1},
+        target_prominence_sources={"immediate": "token=provider-secret"},
+    )
+
+    finding = next(
+        item
+        for item in findings_for_run(metrics)
+        if item.category == FindingCategory.WEAK_TARGET_PROMINENCE.value
+    )
+
+    text = f"{finding.generated_explanation} {finding.cause}"
+    assert "provider-secret" not in text
+    assert "api_key=" not in text
+
+
+def test_prominence_finding_redacts_secret_like_fallback_reason() -> None:
+    metrics = replace(
+        _metrics(),
+        prominence_fallback=True,
+        prominence_fallback_reason="api_key=provider-secret",
+    )
+
+    finding = next(
+        item
+        for item in findings_for_run(metrics)
+        if item.category == FindingCategory.WEAK_TARGET_PROMINENCE.value
+    )
+
+    text = f"{finding.generated_explanation} {finding.cause}"
+    assert "provider-secret" not in text
+    assert "api_key=" not in text

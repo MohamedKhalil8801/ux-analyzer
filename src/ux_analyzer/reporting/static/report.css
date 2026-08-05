@@ -113,6 +113,13 @@ select { min-height: 34px; max-width: 360px; border: 1px solid var(--line); bord
 .selected-element-title { display: block; margin-bottom: 8px; font-size: 1rem; }
 .feature-table { margin-top: 10px; background: #fff; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; }
 .feature-table th { position: static; }
+.saliency-evidence { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.saliency-tabs { display: flex; gap: 5px; margin: 6px 0 10px; overflow-x: auto; }
+.saliency-tab { min-width: 48px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: .72rem; }
+.saliency-tab[aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 800; }
+.saliency-heatmap { display: block; width: min(100%, 320px); max-height: 180px; margin-top: 10px; border: 1px solid var(--line); object-fit: contain; background: #17222a; }
+.saliency-warning { margin: 10px 0 0; padding: 8px; border-left: 4px solid var(--warning); background: var(--warning-soft); color: var(--warning); font-size: .74rem; }
+.saliency-table { width: max-content; min-width: 100%; }
 
 .timeline-rail { min-height: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); overflow: hidden; }
 .timeline-list { display: flex; gap: 7px; height: 116px; margin: 0; padding: 0 0 5px; overflow-x: auto; overflow-y: hidden; list-style: none; }

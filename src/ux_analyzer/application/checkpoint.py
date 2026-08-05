@@ -11,6 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from ux_analyzer.application.evaluation import persisted_comparison_sample_is_valid
+from ux_analyzer.ports.artifacts import validate_timeline_event_order
+from ux_analyzer.storage.run_bundle import (
+    secure_assert_ancestors,
+    secure_is_link_or_reparse,
+    secure_read_bytes,
+)
+
 _CHECKPOINT_NAME = "experiment-progress.json"
 _SCHEMA_VERSION = 1
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
@@ -262,6 +270,7 @@ def finalized_bundle_is_valid(
         bundle,
         expected_run_id=run_id,
         expected_prominence_provider_id=expected_prominence_provider_id,
+        require_persisted_validity=True,
     )
 
 
@@ -270,16 +279,28 @@ def finalized_bundle_failures(
     *,
     expected_run_id: str | None = None,
     expected_prominence_provider_id: str | None = None,
+    require_persisted_validity: bool = False,
 ) -> list[str]:
     """Return integrity and terminal-structure failures for a finalized bundle."""
 
     bundle = Path(bundle)
     checksum_path = bundle / "checksums.sha256"
-    if not bundle.is_dir() or not checksum_path.is_file():
+    if (
+        not bundle.is_dir()
+        or secure_is_link_or_reparse(bundle)
+        or secure_is_link_or_reparse(checksum_path)
+        or not checksum_path.is_file()
+    ):
         return ["missing checksum file: checksums.sha256"]
     try:
-        lines = checksum_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
+        secure_assert_ancestors(bundle, "finalized bundle")
+    except (OSError, RuntimeError, ValueError):
+        return ["finalized bundle path contains symlink or reparse point"]
+    try:
+        lines = secure_read_bytes(checksum_path, "finalized bundle checksums").decode(
+            "utf-8"
+        ).splitlines()
+    except (OSError, RuntimeError, UnicodeError):
         return ["unreadable checksum file: checksums.sha256"]
     failures: list[str] = []
     checksums: dict[str, str] = {}
@@ -303,11 +324,13 @@ def finalized_bundle_failures(
             continue
         checksums[relative] = digest
 
-    actual_files = {
-        candidate.relative_to(bundle).as_posix()
-        for candidate in bundle.rglob("*")
-        if candidate.is_file() and candidate.name != "checksums.sha256"
-    }
+    actual_files: set[str] = set()
+    for candidate in bundle.rglob("*"):
+        if secure_is_link_or_reparse(candidate):
+            failures.append("finalized bundle contains symlink or reparse point")
+            continue
+        if candidate.is_file() and candidate.name != "checksums.sha256":
+            actual_files.add(candidate.relative_to(bundle).as_posix())
     for required in sorted(_REQUIRED_BUNDLE_FILES):
         if required not in actual_files:
             failures.append(f"missing required bundle file: {required}")
@@ -321,11 +344,9 @@ def finalized_bundle_failures(
         path = bundle.joinpath(*PurePosixPath(relative).parts)
         try:
             digest = hashlib.sha256()
-            with path.open("rb") as source:
-                while chunk := source.read(1024 * 1024):
-                    digest.update(chunk)
+            digest.update(secure_read_bytes(path, "finalized bundle artifact"))
             actual = digest.hexdigest()
-        except OSError:
+        except (OSError, RuntimeError):
             failures.append(f"unreadable checksummed file: {relative}")
             continue
         if actual != checksums[relative]:
@@ -340,6 +361,23 @@ def finalized_bundle_failures(
             failures.append(
                 "manifest prominence provider ID does not match selected run"
             )
+    raw_metrics = result.get("metrics")
+    if require_persisted_validity and isinstance(raw_metrics, Mapping):
+        raw_metrics_mapping = cast(Mapping[str, object], raw_metrics)
+        expected_provider = expected_prominence_provider_id or manifest.get(
+            "prominence_provider_id", "heuristic"
+        )
+        if not isinstance(
+            expected_provider, str
+        ) or not persisted_comparison_sample_is_valid(
+            result,
+            raw_metrics_mapping,
+            manifest=manifest,
+            expected_run_id=expected_run_id or str(manifest.get("run_id", "")),
+            expected_prominence_provider_id=expected_provider,
+            timeline_events=events,
+        ):
+            failures.append("persisted comparison validity gate failed")
     embedded_ids = [
         value
         for value in (
@@ -354,6 +392,8 @@ def finalized_bundle_failures(
     selected_id = expected_run_id or (
         manifest.get("run_id") if isinstance(manifest.get("run_id"), str) else None
     )
+    if selected_id is not None and bundle.name != selected_id:
+        failures.append("bundle directory does not match embedded run ID")
     if (
         selected_id is None
         or not embedded_ids
@@ -382,8 +422,10 @@ def finalized_bundle_failures(
 
 def _read_json_object(path: Path, name: str, failures: list[str]) -> dict[str, object]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        if secure_is_link_or_reparse(path):
+            raise RuntimeError("bundle file is a symlink or reparse point")
+        value = json.loads(secure_read_bytes(path, f"bundle {name}").decode("utf-8"))
+    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError):
         failures.append(f"invalid JSON bundle file: {name}")
         return {}
     if not isinstance(value, dict):
@@ -394,8 +436,10 @@ def _read_json_object(path: Path, name: str, failures: list[str]) -> dict[str, o
 
 def _read_json_lines(path: Path, failures: list[str]) -> list[dict[str, object]]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
+        if secure_is_link_or_reparse(path):
+            raise RuntimeError("timeline is a symlink or reparse point")
+        lines = secure_read_bytes(path, "bundle timeline").decode("utf-8").splitlines()
+    except (OSError, RuntimeError, UnicodeError):
         failures.append("unreadable bundle file: timeline.jsonl")
         return []
     events: list[dict[str, object]] = []
@@ -413,4 +457,5 @@ def _read_json_lines(path: Path, failures: list[str]) -> list[dict[str, object]]
         events.append(cast(dict[str, object], value))
     if not events:
         failures.append("timeline.jsonl contains no events")
+    failures.extend(validate_timeline_event_order(events))
     return events

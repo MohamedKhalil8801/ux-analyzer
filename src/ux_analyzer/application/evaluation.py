@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ux_analyzer.domain.attention import (
     Back,
@@ -31,6 +32,7 @@ from ux_analyzer.domain.run import (
     ActionExecuted,
     AgentAbandoned,
     ObservationRecorded,
+    ProviderManifest,
     RunOutcome,
     RunOutcomeKind,
     ViewportCaptured,
@@ -42,10 +44,62 @@ if TYPE_CHECKING:
         RunResult,
         ScentEvidence,
     )
+    from ux_analyzer.application.saliency import ProminenceResult
 
 
 def _empty_float_mapping() -> dict[str, float]:
     return {}
+
+
+def _empty_text_mapping() -> dict[str, str]:
+    return {}
+
+
+def _empty_stage_score_mapping() -> dict[str, dict[str, float]]:
+    return {}
+
+
+_SAFE_PROVENANCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_SENSITIVE_PROVENANCE_MARKERS = (
+    "access_token",
+    "api_key",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
+_REDACTED_PROVENANCE = "[REDACTED]"
+
+
+def _safe_provenance_identifier(value: object) -> str:
+    """Keep provider evidence identifiers within public summary allowlists."""
+
+    text = str(value).strip()
+    lowered = text.casefold()
+    if (
+        not text
+        or ".." in text
+        or any(marker in lowered for marker in _SENSITIVE_PROVENANCE_MARKERS)
+        or _SAFE_PROVENANCE_PATTERN.fullmatch(text) is None
+    ):
+        return _REDACTED_PROVENANCE
+    return text
+
+
+def _safe_provenance_reason(value: object) -> str:
+    """Keep fallback diagnostics bounded and free of credential-like text."""
+
+    text = str(value).strip()
+    lowered = text.casefold()
+    if (
+        not text
+        or len(text) > 512
+        or any(character in text for character in "\x00\r\n")
+        or any(marker in lowered for marker in _SENSITIVE_PROVENANCE_MARKERS)
+    ):
+        return _REDACTED_PROVENANCE
+    return text
 
 
 class EvaluationMetric(StrEnum):
@@ -173,6 +227,9 @@ class RunEvaluationInputs:
     """Optional evidence unavailable in the current typed run event model."""
 
     prominence_scores: Mapping[str, float] = field(default_factory=_empty_float_mapping)
+    prominence_scores_by_stage: Mapping[str, Mapping[str, float]] = field(
+        default_factory=_empty_stage_score_mapping
+    )
     scent_scores: Mapping[str, float] = field(default_factory=_empty_float_mapping)
     target_prominence: float | None = None
     target_below_fold: bool | None = None
@@ -184,6 +241,22 @@ class RunEvaluationInputs:
     recovery_success: bool | None = None
     uncertainty: float | None = None
     model_dependent: bool = False
+    prominence_provider_id: str | None = None
+    active_search_stage: str | None = None
+    target_prominence_profiles: Mapping[str, float] = field(
+        default_factory=_empty_float_mapping
+    )
+    target_prominence_sources: Mapping[str, str] = field(
+        default_factory=_empty_text_mapping
+    )
+    prominence_profile_event_ids: tuple[str, ...] = ()
+    prominence_operational_event_ids: tuple[str, ...] = ()
+    prominence_lineage_event_ids: tuple[str, ...] = ()
+    prominence_model_id: str | None = None
+    prominence_model_version: str | None = None
+    prominence_provider_version: str | None = None
+    prominence_fallback: bool = False
+    prominence_fallback_reason: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("prominence_scores", "scent_scores"):
@@ -193,6 +266,86 @@ class RunEvaluationInputs:
                 if not key or not math.isfinite(value) or not 0 <= value <= 1:
                     raise ValueError(f"{name} must contain finite scores in [0, 1]")
             object.__setattr__(self, name, MappingProxyType(copied))
+        stage_scores: dict[str, Mapping[str, float]] = {}
+        for stage, scores in self.prominence_scores_by_stage.items():
+            stage_name = _safe_provenance_identifier(stage)
+            copied_scores = {str(key): float(value) for key, value in scores.items()}
+            if any(
+                not key.strip() or not math.isfinite(value) or not 0 <= value <= 1
+                for key, value in copied_scores.items()
+            ):
+                raise ValueError("prominence stage scores must be finite in [0, 1]")
+            stage_scores[stage_name] = MappingProxyType(copied_scores)
+        object.__setattr__(
+            self, "prominence_scores_by_stage", MappingProxyType(stage_scores)
+        )
+        profiles = {
+            str(key): float(value)
+            for key, value in self.target_prominence_profiles.items()
+        }
+        if any(
+            not key.strip() or not math.isfinite(value) or not 0 <= value <= 1
+            for key, value in profiles.items()
+        ):
+            raise ValueError("target prominence profiles must contain scores in [0, 1]")
+        sources = {
+            str(key): _safe_provenance_identifier(value)
+            for key, value in self.target_prominence_sources.items()
+        }
+        if any(not key.strip() or not value.strip() for key, value in sources.items()):
+            raise ValueError("target prominence sources need non-empty text")
+        object.__setattr__(
+            self, "target_prominence_profiles", MappingProxyType(profiles)
+        )
+        object.__setattr__(self, "target_prominence_sources", MappingProxyType(sources))
+        for name in (
+            "prominence_provider_id",
+            "active_search_stage",
+            "prominence_model_id",
+            "prominence_model_version",
+            "prominence_provider_version",
+            "prominence_fallback_reason",
+        ):
+            value = getattr(self, name)
+            if value is not None and not value.strip():
+                raise ValueError(f"{name} must not be empty")
+        for name in (
+            "prominence_provider_id",
+            "prominence_model_id",
+            "prominence_model_version",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                if name == "prominence_provider_id":
+                    value = _canonical_prominence_provider_id(value)
+                object.__setattr__(self, name, _safe_provenance_identifier(value))
+        if self.active_search_stage is not None:
+            object.__setattr__(
+                self,
+                "active_search_stage",
+                _safe_provenance_identifier(self.active_search_stage),
+            )
+        if self.prominence_fallback_reason is not None:
+            object.__setattr__(
+                self,
+                "prominence_fallback_reason",
+                _safe_provenance_reason(self.prominence_fallback_reason),
+            )
+        object.__setattr__(
+            self,
+            "prominence_profile_event_ids",
+            tuple(self.prominence_profile_event_ids),
+        )
+        object.__setattr__(
+            self,
+            "prominence_operational_event_ids",
+            tuple(self.prominence_operational_event_ids),
+        )
+        object.__setattr__(
+            self,
+            "prominence_lineage_event_ids",
+            tuple(self.prominence_lineage_event_ids),
+        )
         for name in ("target_prominence", "uncertainty"):
             value = getattr(self, name)
             if value is not None and (not math.isfinite(value) or not 0 <= value <= 1):
@@ -225,6 +378,8 @@ class RunMetrics:
     false_success: bool
     abandoned: bool
     model_trial: int = 0
+    prominence_provider_id: str = "heuristic"
+    active_search_stage: str | None = None
     target_prominence: float | None = None
     target_scent: float | None = None
     strongest_competing_scent: float | None = None
@@ -246,6 +401,21 @@ class RunMetrics:
     viewport_ids: tuple[str, ...] = ()
     element_ids: tuple[str, ...] = ()
     action_sequence: tuple[str, ...] = ()
+    target_prominence_profiles: Mapping[str, float] = field(
+        default_factory=_empty_float_mapping
+    )
+    target_prominence_sources: Mapping[str, str] = field(
+        default_factory=_empty_text_mapping
+    )
+    prominence_profile_event_ids: tuple[str, ...] = ()
+    prominence_operational_event_ids: tuple[str, ...] = ()
+    prominence_lineage_event_ids: tuple[str, ...] = ()
+    prominence_model_id: str | None = None
+    prominence_model_version: str | None = None
+    prominence_provider_version: str | None = None
+    prominence_fallback: bool = False
+    prominence_fallback_reason: str | None = None
+    comparison_valid: bool = True
 
     def __post_init__(self) -> None:
         for name in (
@@ -268,6 +438,77 @@ class RunMetrics:
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must not be negative")
+        if not self.prominence_provider_id.strip():
+            raise ValueError("prominence provider ID must not be empty")
+        object.__setattr__(
+            self,
+            "prominence_provider_id",
+            _safe_provenance_identifier(
+                _canonical_prominence_provider_id(self.prominence_provider_id)
+            ),
+        )
+        if (
+            self.active_search_stage is not None
+            and not self.active_search_stage.strip()
+        ):
+            raise ValueError("active search stage must not be empty")
+        if self.active_search_stage is not None:
+            object.__setattr__(
+                self,
+                "active_search_stage",
+                _safe_provenance_identifier(self.active_search_stage),
+            )
+        profiles = {
+            str(key): float(value)
+            for key, value in self.target_prominence_profiles.items()
+        }
+        if any(
+            not key.strip() or not math.isfinite(value) or not 0 <= value <= 1
+            for key, value in profiles.items()
+        ):
+            raise ValueError("target prominence profiles must contain scores in [0, 1]")
+        sources = {
+            str(key): _safe_provenance_identifier(value)
+            for key, value in self.target_prominence_sources.items()
+        }
+        if any(not key.strip() or not value.strip() for key, value in sources.items()):
+            raise ValueError("target prominence sources need non-empty text")
+        for name in (
+            "prominence_model_id",
+            "prominence_model_version",
+            "prominence_provider_version",
+            "prominence_fallback_reason",
+        ):
+            value = getattr(self, name)
+            if value is not None and not value.strip():
+                raise ValueError(f"{name} must not be empty")
+            if name != "prominence_fallback_reason" and value is not None:
+                object.__setattr__(self, name, _safe_provenance_identifier(value))
+        if self.prominence_fallback_reason is not None:
+            object.__setattr__(
+                self,
+                "prominence_fallback_reason",
+                _safe_provenance_reason(self.prominence_fallback_reason),
+            )
+        object.__setattr__(
+            self, "target_prominence_profiles", MappingProxyType(profiles)
+        )
+        object.__setattr__(self, "target_prominence_sources", MappingProxyType(sources))
+        object.__setattr__(
+            self,
+            "prominence_profile_event_ids",
+            tuple(self.prominence_profile_event_ids),
+        )
+        object.__setattr__(
+            self,
+            "prominence_operational_event_ids",
+            tuple(self.prominence_operational_event_ids),
+        )
+        object.__setattr__(
+            self,
+            "prominence_lineage_event_ids",
+            tuple(self.prominence_lineage_event_ids),
+        )
         for name in (
             "target_prominence",
             "target_scent",
@@ -383,6 +624,8 @@ class CellAggregate:
     reproducibility_summary: Mapping[str, int]
     evidence_ids: tuple[str, ...]
     model_trial: int = 0
+    prominence_provider_id: str = "heuristic"
+    active_search_stages: tuple[str, ...] = ()
 
     @property
     def run_count(self) -> int:
@@ -462,6 +705,19 @@ def evaluate_run(
     settings = inputs or RunEvaluationInputs()
     config = cost_config or DiscoveryCostConfig()
     state = result.state
+    prominence_provider_id = _canonical_prominence_provider_id(
+        settings.prominence_provider_id or state.spec.prominence_provider_id
+    )
+    active_search_stage = settings.active_search_stage
+    prominence_fallback = settings.prominence_fallback
+    if (
+        _is_learned_prominence_provider(prominence_provider_id)
+        and not result.ux_sample_valid
+    ):
+        prominence_fallback = True
+    comparison_valid = not (
+        _is_learned_prominence_provider(prominence_provider_id) and prominence_fallback
+    )
     observations = tuple(
         event.observation
         for event in state.events
@@ -505,14 +761,7 @@ def evaluate_run(
     )
     target_prominence = settings.target_prominence
     if target_prominence is None:
-        target_prominence = next(
-            (
-                settings.prominence_scores[element_id]
-                for element_id in reversed(tuple(settings.prominence_scores))
-                if element_id in target_ids
-            ),
-            None,
-        )
+        target_prominence = _active_target_prominence(settings, target_ids)
     target_scent = next(
         (
             settings.scent_scores[element_id]
@@ -529,14 +778,22 @@ def evaluate_run(
     strongest_competing_scent = max(competitor_scores, default=None)
     verified = result.verification.verified
     claimed = result.agent_claimed_success
-    model_dependent = settings.model_dependent or _has_model_manifest(
-        state.provider_manifests
+    model_dependent = (
+        settings.model_dependent
+        or _has_model_manifest(state.provider_manifests)
+        or _is_learned_prominence_provider(prominence_provider_id)
     )
     reproducibility = (
         Reproducibility.MODEL_DEPENDENT if model_dependent else Reproducibility.SEEDED
     )
     event_ids = _event_ids(result)
-    prominence_event_ids = _prominence_event_ids(result.evidence.prominence, target_ids)
+    prominence_event_ids = _unique_event_ids(
+        (
+            *settings.prominence_profile_event_ids,
+            *settings.prominence_operational_event_ids,
+            *_prominence_event_ids(result.evidence.prominence, target_ids),
+        )
+    )
     scent_event_ids = _scent_event_ids(result.evidence.scent, target_ids)
     evidence_records: list[Evidence] = []
     metric_records: list[Metric] = []
@@ -631,12 +888,13 @@ def evaluate_run(
         "Agent claim disagreed with verifier.",
     )
     if target_prominence is not None:
-        prominence_description = (
-            "Model-dependent prominence estimate for target "
-            f"(attention seed {state.spec.seed} and model trial "
-            f"{state.spec.model_trial})."
-            if model_dependent
-            else "Heuristic prominence estimate for target."
+        prominence_description = _prominence_evidence_description(
+            settings=settings,
+            provider_id=prominence_provider_id,
+            active_search_stage=active_search_stage,
+            model_dependent=model_dependent,
+            seed=state.spec.seed,
+            model_trial=state.spec.model_trial,
         )
         record(
             EvaluationMetric.TARGET_PROMINENCE,
@@ -744,6 +1002,8 @@ def evaluate_run(
         false_success=claimed and not verified,
         abandoned=abandoned,
         model_trial=state.spec.model_trial,
+        prominence_provider_id=prominence_provider_id,
+        active_search_stage=active_search_stage,
         target_prominence=target_prominence,
         target_scent=target_scent,
         strongest_competing_scent=strongest_competing_scent,
@@ -763,6 +1023,17 @@ def evaluate_run(
         viewport_ids=tuple(snapshot.id for snapshot in state.snapshots),
         element_ids=tuple(element.id for element in target_elements),
         action_sequence=_action_sequence(executed_actions),
+        target_prominence_profiles=settings.target_prominence_profiles,
+        target_prominence_sources=settings.target_prominence_sources,
+        prominence_profile_event_ids=settings.prominence_profile_event_ids,
+        prominence_operational_event_ids=settings.prominence_operational_event_ids,
+        prominence_lineage_event_ids=settings.prominence_lineage_event_ids,
+        prominence_model_id=settings.prominence_model_id,
+        prominence_model_version=settings.prominence_model_version,
+        prominence_provider_version=settings.prominence_provider_version,
+        prominence_fallback=prominence_fallback,
+        prominence_fallback_reason=settings.prominence_fallback_reason,
+        comparison_valid=comparison_valid,
     )
 
 
@@ -812,10 +1083,115 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
     target = evaluation_target_for(result)
     target_elements = _target_elements(result, target)
     target_ids = {element.id for element in target_elements}
+    visible_element_ids_by_viewport = {
+        snapshot.id: {element.id for element in snapshot.elements}
+        for snapshot in result.state.snapshots
+    }
+    target_viewport_ids = {
+        viewport_id
+        for viewport_id, element_ids in visible_element_ids_by_viewport.items()
+        if element_ids & target_ids
+    }
     prominence_scores: dict[str, float] = {}
+    prominence_scores_by_stage: dict[str, dict[str, float]] = {}
+    target_prominence_profiles: dict[str, float] = {}
+    target_prominence_sources: dict[str, str] = {}
+    active_search_stage: str | None = None
+    prominence_profile_event_ids: list[str] = []
+    prominence_operational_event_ids: list[str] = []
+    prominence_lineage_event_ids: list[str] = []
+    prominence_fallback = False
     for record in result.evidence.prominence:
-        for score in record.scores:
+        operational_event_id = record.operational_event_id or record.source_event_id
+        visible_ids = visible_element_ids_by_viewport.get(record.viewport_id, set())
+        scoped_scores = tuple(
+            score for score in record.scores if score.element_id in visible_ids
+        )
+        target_score_bearing = any(
+            score.element_id in target_ids for score in scoped_scores
+        )
+        target_profile_bearing = (
+            any(profile.element_id in target_ids for profile in record.profiles)
+            and record.viewport_id in target_viewport_ids
+        )
+        if (
+            target_score_bearing or target_profile_bearing
+        ) and record.profile_event_id is not None:
+            prominence_profile_event_ids.append(record.profile_event_id)
+            prominence_lineage_event_ids.append(record.profile_event_id)
+        if target_score_bearing and operational_event_id is not None:
+            prominence_operational_event_ids.append(operational_event_id)
+            prominence_lineage_event_ids.append(operational_event_id)
+        if record.stage is not None:
+            active_search_stage = record.stage
+        for score in scoped_scores:
             prominence_scores[score.element_id] = score.normalized_probability
+            score_stage = score.stage or record.stage
+            if score_stage is not None:
+                stage_scores = prominence_scores_by_stage.setdefault(score_stage, {})
+                stage_scores[score.element_id] = score.normalized_probability
+                if record.stage is None:
+                    active_search_stage = score_stage
+            if score.element_id in target_ids:
+                if score.evidence_kind == "fallback":
+                    prominence_fallback = True
+                for name, value in _profile_values(score).items():
+                    target_prominence_profiles.setdefault(name, value)
+                    target_prominence_sources.setdefault(
+                        name,
+                        _safe_provenance_identifier(
+                            score.evidence_source or score.provider_id
+                        ),
+                    )
+        for profile in record.profiles:
+            if (
+                profile.element_id not in target_ids
+                or record.viewport_id not in target_viewport_ids
+            ):
+                continue
+            for name, estimate in (
+                ("immediate", profile.immediate),
+                ("early", profile.early),
+                ("eventual", profile.eventual),
+            ):
+                if estimate is None or estimate.score is None:
+                    continue
+                target_prominence_profiles.setdefault(name, estimate.score)
+                target_prominence_sources.setdefault(
+                    name,
+                    _safe_provenance_identifier(estimate.source or "unavailable"),
+                )
+    provider_id = result.state.spec.prominence_provider_id
+    if _is_learned_prominence_provider(provider_id):
+        prominence_fallback = prominence_fallback or any(
+            score.provider_id not in {"foveacast", "foveacast-prominence"}
+            or score.evidence_kind == "fallback"
+            for record in result.evidence.prominence
+            for score in record.scores
+        )
+        invalid_reason = result.ux_sample_invalid_reason or ""
+        prominence_fallback = prominence_fallback or invalid_reason.startswith(
+            "saliency-fallback:"
+        )
+    target_prominence = _active_target_score(
+        prominence_scores,
+        prominence_scores_by_stage,
+        active_search_stage,
+        target_ids,
+    )
+    model_id, model_version, provider_version = _prominence_model_details(
+        result.state.provider_manifests, provider_id
+    )
+    if model_id is None:
+        model_id = next(
+            (
+                _safe_provenance_identifier(score.evidence_source)
+                for record in reversed(result.evidence.prominence)
+                for score in reversed(record.scores)
+                if score.evidence_source
+            ),
+            None,
+        )
     scent_scores: dict[str, float] = {}
     for record in result.evidence.scent:
         for score in record.scores:
@@ -832,14 +1208,6 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
     recovery_actions = sum(
         isinstance(event, ActionExecuted) and isinstance(event.action, Back)
         for event in result.state.events
-    )
-    target_prominence = next(
-        (
-            prominence_scores[element_id]
-            for element_id in reversed(tuple(prominence_scores))
-            if element_id in target_ids
-        ),
-        None,
     )
     target_below_fold = _target_below_fold(result, target_elements)
     path_labels = (
@@ -873,6 +1241,7 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
     )
     return RunEvaluationInputs(
         prominence_scores=prominence_scores,
+        prominence_scores_by_stage=prominence_scores_by_stage,
         scent_scores=scent_scores,
         target_prominence=target_prominence,
         target_below_fold=target_below_fold,
@@ -883,7 +1252,29 @@ def evaluation_inputs_for(result: RunResult) -> RunEvaluationInputs:
         recovery_actions=recovery_actions,
         recovery_success=(result.verification.verified if recovery_actions else None),
         uncertainty=max(0.0, 1.0 - result.state.attention.confidence),
-        model_dependent=bool(result.evidence.model_calls or result.evidence.scent),
+        model_dependent=bool(
+            result.evidence.model_calls
+            or result.evidence.scent
+            or _is_learned_prominence_provider(provider_id)
+        ),
+        prominence_provider_id=provider_id,
+        active_search_stage=active_search_stage,
+        target_prominence_profiles=target_prominence_profiles,
+        target_prominence_sources=target_prominence_sources,
+        prominence_operational_event_ids=_unique_event_ids(
+            prominence_operational_event_ids
+        ),
+        prominence_profile_event_ids=_unique_event_ids(prominence_profile_event_ids),
+        prominence_lineage_event_ids=_unique_event_ids(prominence_lineage_event_ids),
+        prominence_model_id=model_id,
+        prominence_model_version=model_version,
+        prominence_provider_version=provider_version,
+        prominence_fallback=prominence_fallback,
+        prominence_fallback_reason=(
+            result.ux_sample_invalid_reason.removeprefix("saliency-fallback: ").strip()
+            if prominence_fallback and result.ux_sample_invalid_reason
+            else None
+        ),
     )
 
 
@@ -1052,17 +1443,26 @@ def evaluate_experiment_results(results: Sequence[RunResult]) -> ExperimentEvalu
     """Aggregate evaluated production runs and apply exact paired-seed gates."""
 
     run_results = tuple(results)
-    metrics = tuple(
+    all_metrics = tuple(
         result.metrics for result in run_results if result.metrics is not None
     )
-    if len(metrics) != len(run_results):
+    if len(all_metrics) != len(run_results):
         raise ValueError("every completed run needs persisted metrics")
+    metrics = tuple(
+        metric
+        for result, metric in zip(run_results, all_metrics, strict=True)
+        if _comparison_sample_is_valid(result, metric)
+    )
     cells = aggregate_cells(metrics)
     grouped: dict[
-        tuple[str, str, str, str | None, int],
+        tuple[str, str, str, str | None, int, str],
         dict[ApplicationVersionKind, list[RunMetrics]],
     ] = {}
-    by_run_id = {result.run_id: result for result in run_results}
+    by_run_id = {
+        result.run_id: result
+        for result in run_results
+        if _comparison_sample_is_valid(result, result.metrics)
+    }
     for metric in metrics:
         result = by_run_id[metric.run_id]
         key = (
@@ -1071,6 +1471,7 @@ def evaluate_experiment_results(results: Sequence[RunResult]) -> ExperimentEvalu
             metric.policy,
             metric.config_digest,
             metric.model_trial,
+            metric.prominence_provider_id,
         )
         grouped.setdefault(key, {}).setdefault(
             result.state.spec.application_version.kind, []
@@ -1089,6 +1490,110 @@ def evaluate_experiment_results(results: Sequence[RunResult]) -> ExperimentEvalu
     return ExperimentEvaluation(metrics, cells, tuple(comparisons))
 
 
+def _comparison_sample_is_valid(result: RunResult, metric: RunMetrics | None) -> bool:
+    return comparison_sample_is_valid(result, metric)
+
+
+def comparison_sample_is_valid(result: RunResult, metric: RunMetrics | None) -> bool:
+    """Central validity gate for scorecard and comparison aggregation."""
+
+    if metric is None or metric.comparison_valid is not True:
+        return False
+    if metric.run_id != result.run_id:
+        return False
+    if metric.prominence_provider_id != _canonical_prominence_provider_id(
+        result.state.spec.prominence_provider_id
+    ):
+        return False
+    if result.ux_sample_valid is not True:
+        return False
+    if metric.prominence_fallback or metric.prominence_fallback_reason:
+        return False
+    invalid_reason = result.ux_sample_invalid_reason or ""
+    return not invalid_reason.startswith("saliency-fallback:")
+
+
+def persisted_comparison_sample_is_valid(
+    result: Mapping[str, object],
+    metrics: Mapping[str, object],
+    *,
+    manifest: Mapping[str, object] | None,
+    expected_run_id: str,
+    expected_prominence_provider_id: str,
+    timeline_events: Sequence[Mapping[str, object]] = (),
+) -> bool:
+    """Cross-check persisted validity fields before resume or scorecard use."""
+
+    expected_provider = _canonical_prominence_provider_id(
+        expected_prominence_provider_id
+    )
+    if (
+        result.get("run_id") != expected_run_id
+        or metrics.get("run_id") != expected_run_id
+    ):
+        return False
+    if manifest is not None and manifest.get("run_id") != expected_run_id:
+        return False
+    provider_values = (
+        metrics.get("prominence_provider_id"),
+        manifest.get("prominence_provider_id") if manifest is not None else None,
+    )
+    if any(
+        _canonical_prominence_provider_id(value) != expected_provider
+        for value in provider_values
+    ):
+        return False
+    state = result.get("state")
+    state_mapping: Mapping[str, object] = (
+        cast(Mapping[str, object], state) if isinstance(state, Mapping) else {}
+    )
+    spec = state_mapping.get("spec")
+    spec_mapping: Mapping[str, object] = (
+        cast(Mapping[str, object], spec) if isinstance(spec, Mapping) else {}
+    )
+    if "prominence_provider_id" in spec_mapping and (
+        _canonical_prominence_provider_id(spec_mapping.get("prominence_provider_id"))
+        != expected_provider
+    ):
+        return False
+    if (
+        type(result.get("ux_sample_valid")) is not bool
+        or result.get("ux_sample_valid") is not True
+    ):
+        return False
+    if (
+        type(metrics.get("comparison_valid")) is not bool
+        or metrics.get("comparison_valid") is not True
+    ):
+        return False
+    if (
+        type(metrics.get("prominence_fallback")) is not bool
+        or metrics.get("prominence_fallback") is not False
+    ):
+        return False
+    if metrics.get("prominence_fallback_reason") not in (None, ""):
+        return False
+    if _timeline_contains_prominence_fallback(timeline_events):
+        return False
+    invalid_reason = result.get("ux_sample_invalid_reason")
+    if invalid_reason not in (None, ""):
+        return False
+    return True
+
+
+def _timeline_contains_prominence_fallback(
+    events: Sequence[Mapping[str, object]],
+) -> bool:
+    return any(
+        event.get("kind") == "saliency-fallback-recorded"
+        or (
+            event.get("kind") == "prominence-recorded"
+            and event.get("cache_state") == "fallback"
+        )
+        for event in events
+    )
+
+
 def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
     """Aggregate repeated runs sharing one scenario/version/persona/policy cell."""
 
@@ -1102,6 +1607,7 @@ def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
         first.persona_id,
         first.policy,
         first.model_trial,
+        first.prominence_provider_id,
     )
     if any(
         (
@@ -1110,12 +1616,18 @@ def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
             item.persona_id,
             item.policy,
             item.model_trial,
+            item.prominence_provider_id,
         )
         != identity
         for item in ordered
     ):
         raise ValueError(
-            "cell runs must share scenario, version, persona, policy, and model trial"
+            "cell runs must share scenario, version, persona, policy, model trial, "
+            "and prominence provider"
+        )
+    if any(not run.comparison_valid for run in ordered):
+        raise ValueError(
+            "invalid prominence comparison sample cannot enter evaluation scorecard"
         )
     _reject_unsupported_metrics(ordered)
     metric_names = sorted(
@@ -1170,13 +1682,23 @@ def aggregate_cell(runs: Sequence[RunMetrics]) -> CellAggregate:
             evidence.evidence_id for run in ordered for evidence in run.evidence
         ),
         model_trial=first.model_trial,
+        prominence_provider_id=first.prominence_provider_id,
+        active_search_stages=tuple(
+            sorted(
+                {
+                    run.active_search_stage
+                    for run in ordered
+                    if run.active_search_stage is not None
+                }
+            )
+        ),
     )
 
 
 def aggregate_cells(runs: Sequence[RunMetrics]) -> tuple[CellAggregate, ...]:
     """Aggregate all cells in stable identity order."""
 
-    groups: dict[tuple[str, str, str, str, int], list[RunMetrics]] = {}
+    groups: dict[tuple[str, str, str, str, int, str], list[RunMetrics]] = {}
     for run in runs:
         key = (
             run.scenario_id,
@@ -1184,6 +1706,7 @@ def aggregate_cells(runs: Sequence[RunMetrics]) -> tuple[CellAggregate, ...]:
             run.persona_id,
             run.policy,
             run.model_trial,
+            run.prominence_provider_id,
         )
         groups.setdefault(key, []).append(run)
     return tuple(aggregate_cell(groups[key]) for key in sorted(groups))
@@ -1404,6 +1927,206 @@ def _has_model_manifest(manifests: Sequence[object]) -> bool:
     )
 
 
+def _is_learned_prominence_provider(provider_id: str) -> bool:
+    return _canonical_prominence_provider_id(provider_id) == "foveacast"
+
+
+def _profile_values(score: ProminenceResult) -> dict[str, float]:
+    raw_values = score.raw_values
+    values: dict[str, float] = {}
+    duration_names = {
+        "stage_1s": "immediate",
+        "stage_3s": "early",
+        "stage_7s": "eventual",
+    }
+    for raw_name, profile_name in duration_names.items():
+        raw_value = raw_values.get(raw_name)
+        if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+            if math.isfinite(float(raw_value)) and 0 <= raw_value <= 1:
+                values[profile_name] = float(raw_value)
+    if values:
+        return values
+    stage = score.stage
+    raw_score = score.raw_score
+    profile_name = {
+        "initial": "immediate",
+        "exploration": "early",
+        "persistent": "eventual",
+    }.get(str(stage))
+    if (
+        profile_name is not None
+        and math.isfinite(float(raw_score))
+        and 0 <= raw_score <= 1
+    ):
+        return {profile_name: float(raw_score)}
+    return {}
+
+
+def _active_target_score(
+    scores: Mapping[str, float],
+    scores_by_stage: Mapping[str, Mapping[str, float]],
+    active_stage: str | None,
+    target_ids: Collection[str],
+) -> float | None:
+    if active_stage is not None:
+        active_scores = scores_by_stage.get(active_stage, {})
+        for element_id in reversed(tuple(active_scores)):
+            if element_id in target_ids:
+                return active_scores[element_id]
+        return None
+    return next(
+        (
+            scores[element_id]
+            for element_id in reversed(tuple(scores))
+            if element_id in target_ids
+        ),
+        None,
+    )
+
+
+def _active_target_prominence(
+    settings: RunEvaluationInputs, target_ids: Collection[str]
+) -> float | None:
+    if settings.active_search_stage is not None:
+        return next(
+            (
+                settings.prominence_scores_by_stage[settings.active_search_stage][
+                    element_id
+                ]
+                for element_id in reversed(
+                    tuple(
+                        settings.prominence_scores_by_stage.get(
+                            settings.active_search_stage, {}
+                        )
+                    )
+                )
+                if element_id in target_ids
+            ),
+            None,
+        )
+    return next(
+        (
+            settings.prominence_scores[element_id]
+            for element_id in reversed(tuple(settings.prominence_scores))
+            if element_id in target_ids
+        ),
+        None,
+    )
+
+
+def _prominence_model_details(
+    manifests: Sequence[ProviderManifest], provider_id: str
+) -> tuple[str | None, str | None, str | None]:
+    canonical_provider = _canonical_prominence_provider_id(provider_id)
+    for manifest in manifests:
+        if manifest.role != "prominence":
+            continue
+        if (
+            _canonical_prominence_provider_id(manifest.provider_id)
+            != canonical_provider
+        ):
+            continue
+        if canonical_provider == "heuristic":
+            return None, None, _safe_provenance_identifier(manifest.version)
+        return (
+            _safe_provenance_identifier(manifest.model_id)
+            if manifest.model_id
+            else None,
+            _safe_provenance_identifier(manifest.version) if manifest.version else None,
+            None,
+        )
+    return None, None, None
+
+
+def _canonical_prominence_provider_id(provider_id: object) -> str:
+    return {
+        "heuristic": "heuristic",
+        "heuristic-prominence": "heuristic",
+        "foveacast": "foveacast",
+        "foveacast-prominence": "foveacast",
+    }.get(provider_id, provider_id)
+
+
+def format_prominence_provenance(
+    *,
+    provider_id: str,
+    active_search_stage: str | None,
+    target_prominence_profiles: Mapping[str, float],
+    target_prominence_sources: Mapping[str, str],
+    profile_event_ids: Sequence[str],
+    operational_event_ids: Sequence[str],
+    model_id: str | None,
+    model_version: str | None,
+    provider_version: str | None,
+) -> str:
+    """Format stable provider-aware prominence evidence provenance."""
+
+    profile_sources = (
+        ", ".join(
+            f"{name}={target_prominence_sources.get(name, 'source unavailable')}"
+            for name in ("immediate", "early", "eventual")
+            if name in target_prominence_profiles
+        )
+        or "profile source unavailable"
+    )
+    duration_labels = {
+        "immediate": "1s immediate",
+        "early": "3s early",
+        "eventual": "7s eventual",
+    }
+    durations = (
+        ", ".join(
+            duration_labels[name]
+            for name in ("immediate", "early", "eventual")
+            if name in target_prominence_profiles
+        )
+        or "unavailable"
+    )
+    return (
+        f"provider {provider_id}, active search stage "
+        f"{active_search_stage or 'unavailable'}, duration sources {durations} "
+        f"({profile_sources}); profile event(s) "
+        f"{', '.join(profile_event_ids) or 'unavailable'}; operational "
+        f"prominence event(s) {', '.join(operational_event_ids) or 'unavailable'}; "
+        f"provider model/version {model_id or 'not applicable'}/"
+        f"{model_version or 'unavailable'}; provider version "
+        f"{provider_version or 'unavailable'}"
+    )
+
+
+def _prominence_evidence_description(
+    *,
+    settings: RunEvaluationInputs,
+    provider_id: str,
+    active_search_stage: str | None,
+    model_dependent: bool,
+    seed: int,
+    model_trial: int,
+) -> str:
+    provenance = format_prominence_provenance(
+        provider_id=provider_id,
+        active_search_stage=active_search_stage,
+        target_prominence_profiles=settings.target_prominence_profiles,
+        target_prominence_sources=settings.target_prominence_sources,
+        profile_event_ids=settings.prominence_profile_event_ids,
+        operational_event_ids=settings.prominence_operational_event_ids,
+        model_id=settings.prominence_model_id,
+        model_version=settings.prominence_model_version,
+        provider_version=settings.prominence_provider_version,
+    )
+    limitation = "model-estimate evidence from simulated benchmark replay; not calibrated to human attention"
+    reproducibility = (
+        f"attention seed {seed} and model trial {model_trial}"
+        if model_dependent
+        else "deterministic configuration"
+    )
+    return (
+        "Operational prominence model estimate for target: "
+        f"{provenance}; "
+        f"{reproducibility}; limitation: {limitation}."
+    )
+
+
 def _event_ids(result: RunResult) -> tuple[str, ...]:
     event_ids = tuple(result.evidence.state_event_ids)
     if len(event_ids) != len(result.state.events):
@@ -1603,12 +2326,14 @@ def _validate_variant_identity(
         baseline[0].persona_id,
         baseline[0].policy,
         baseline[0].config_digest,
+        baseline[0].prominence_provider_id,
     )
     improved_identity = (
         improved[0].scenario_id,
         improved[0].persona_id,
         improved[0].policy,
         improved[0].config_digest,
+        improved[0].prominence_provider_id,
     )
     if baseline_identity != improved_identity:
         raise ValueError(

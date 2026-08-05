@@ -11,6 +11,7 @@
     eventIndex: 0,
     viewportId: "",
     elementId: "",
+    saliencyKey: "",
     playing: false,
     timer: null
   };
@@ -31,6 +32,9 @@
   var elementState = document.getElementById("element-state");
   var timelineList = document.getElementById("timeline-list");
   var timelineCount = document.getElementById("timeline-count");
+  var saliencyTabs = document.getElementById("saliency-tabs");
+  var saliencyDetail = document.getElementById("saliency-detail");
+  var saliencyRuntimeLabel = document.getElementById("saliency-runtime-label");
 
   function element(tag, className, text) {
     var node = document.createElement(tag);
@@ -180,6 +184,7 @@
       state.eventIndex = 0;
       state.viewportId = "";
       state.elementId = "";
+      state.saliencyKey = "";
     }
     runSelect.value = state.runId;
     scenarioSelect.value = state.scenarioId;
@@ -390,6 +395,140 @@
     addValues(elementDetail, "Linked evidence", linked.evidence.map(function (record) { return record.evidence_id + ": " + record.description; }));
   }
 
+  function saliencyEntries(run) {
+    var entries = [];
+    (run && run.saliency || []).forEach(function (group) {
+      (group.entries || []).forEach(function (entry) {
+        entries.push({ group: group, entry: entry, key: group.artifact_namespace + ":" + entry.duration });
+      });
+    });
+    return entries;
+  }
+
+  function appendRankedElements(parent, ranked, run, group) {
+    var block = element("div", "value-block");
+    block.appendChild(element("strong", "", "Ranked elements"));
+    if (!ranked || !ranked.length) {
+      block.appendChild(element("p", "empty", "Unavailable: no element aggregates recorded."));
+      parent.appendChild(block);
+      return;
+    }
+    var table = element("table", "feature-table saliency-table");
+    var head = element("thead", "");
+    var row = element("tr", "");
+    ["Rank", "Element", "Role", "Adjusted score", "Bounds"].forEach(function (label) {
+      row.appendChild(element("th", "", label));
+    });
+    head.appendChild(row);
+    table.appendChild(head);
+    var body = element("tbody", "");
+    ranked.forEach(function (item) {
+      var itemRow = element("tr", "");
+      itemRow.appendChild(element("td", "", item.rank));
+      itemRow.appendChild(element("td", "", item.label + " [" + item.element_id + "]"));
+      itemRow.appendChild(element("td", "", item.role));
+      itemRow.appendChild(element("td", "", exact(item.adjusted_score)));
+      var bounds = item.bounds || {};
+      itemRow.appendChild(element("td", "", bounds.x === undefined ? "unavailable" : "x=" + bounds.x + ", y=" + bounds.y + ", w=" + bounds.width + ", h=" + bounds.height));
+      itemRow.addEventListener("mouseenter", function () {
+        var snapshot = findSnapshot(run, group && group.viewport_id);
+        if (snapshot) selectElement(run, snapshot, currentEvent(run), item.element_id);
+      });
+      body.appendChild(itemRow);
+    });
+    table.appendChild(body);
+    block.appendChild(table);
+    parent.appendChild(block);
+  }
+
+  function appendAggregationComponents(parent, aggregates) {
+    var block = element("details", "value-block");
+    block.appendChild(element("summary", "", "Aggregation components"));
+    var table = element("table", "feature-table saliency-table");
+    var head = element("thead", "");
+    var row = element("tr", "");
+    ["Element", "Density", "P95 peak", "Mass share", "Raw", "Adjusted"].forEach(function (label) {
+      row.appendChild(element("th", "", label));
+    });
+    head.appendChild(row);
+    table.appendChild(head);
+    var body = element("tbody", "");
+    (aggregates || []).forEach(function (item) {
+      var itemRow = element("tr", "");
+      itemRow.appendChild(element("td", "", item.element_id));
+      itemRow.appendChild(element("td", "", exact(item.density)));
+      itemRow.appendChild(element("td", "", exact(item.robust_peak)));
+      itemRow.appendChild(element("td", "", exact(item.mass_share)));
+      itemRow.appendChild(element("td", "", exact(item.raw_score)));
+      itemRow.appendChild(element("td", "", exact(item.adjusted_score)));
+      body.appendChild(itemRow);
+    });
+    table.appendChild(body);
+    block.appendChild(table);
+    parent.appendChild(block);
+  }
+
+  function renderSaliency(run) {
+    while (saliencyTabs.firstChild) saliencyTabs.removeChild(saliencyTabs.firstChild);
+    while (saliencyDetail.firstChild) saliencyDetail.removeChild(saliencyDetail.firstChild);
+    var entries = saliencyEntries(run);
+    var runtime = run && run.saliency_runtime || {};
+    saliencyRuntimeLabel.textContent = runtime.total_inference_ms === undefined ? "Unavailable" : exact(runtime.total_inference_ms) + " ms inference";
+    var unavailable = (run && run.saliency || []).find(function (group) { return group.replay_available === false; });
+    if (unavailable) {
+      saliencyDetail.appendChild(element("p", "saliency-warning", unavailable.replay_error || "Saliency replay unavailable."));
+    }
+    if (!entries.length) {
+      saliencyDetail.appendChild(element("p", "empty", "Unavailable: no saliency replay artifacts recorded."));
+      return;
+    }
+    if (!entries.some(function (item) { return item.key === state.saliencyKey; })) state.saliencyKey = entries[0].key;
+    entries.forEach(function (item) {
+      var tab = element("button", "saliency-tab", item.entry.duration);
+      tab.type = "button";
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", item.key === state.saliencyKey ? "true" : "false");
+      tab.dataset.saliencyKey = item.key;
+      tab.addEventListener("click", function () { state.saliencyKey = item.key; renderSaliency(currentRun()); });
+      saliencyTabs.appendChild(tab);
+    });
+    var selected = entries.find(function (item) { return item.key === state.saliencyKey; }) || entries[0];
+    var group = selected.group;
+    var entry = selected.entry;
+    addFields(saliencyDetail, [
+      ["Viewport", group.viewport_id],
+      ["Duration", entry.duration],
+      ["Search stage", group.search_stage],
+      ["Provider", entry.provider_id || group.provider_id],
+      ["Execution provider", entry.execution_provider || group.execution_provider],
+      ["Cache status", group.cache_state],
+      ["Inference timing", exact(entry.inference_duration_ms) + " ms"],
+      ["Model", entry.model_id + " / " + entry.model_version],
+      ["Model checksum", entry.model_checksum],
+      ["Model checksums", (group.model_checksums || []).join(", ")],
+      ["Profile event IDs", (group.profile_event_ids || []).join(", ")],
+      ["Operational event IDs", (group.operational_event_ids || []).join(", ")]
+    ]);
+    if (group.overlay_message) saliencyDetail.appendChild(element("p", "saliency-warning", group.overlay_message));
+    if (entry.heatmap) {
+      var image = document.createElement("img");
+      image.className = "saliency-heatmap";
+      image.src = entry.heatmap;
+      image.alt = "Heatmap-only saliency artifact for " + entry.duration;
+      saliencyDetail.appendChild(image);
+    } else {
+      saliencyDetail.appendChild(element("p", "empty", "Unavailable: heatmap-only artifact was not recorded."));
+    }
+    appendRankedElements(saliencyDetail, entry.ranked_elements, run, group);
+    appendAggregationComponents(saliencyDetail, entry.aggregation_components);
+    addValues(saliencyDetail, "Selected mixture", (group.selected_mixture || []).map(function (item) { return item[0] + ": " + item[1]; }));
+    addValues(saliencyDetail, "Stage history", (group.stage_history || []).map(function (item) {
+      return item.event_id + ": " + item.kind + " | " + item.search_stage + " | cache " + item.cache_state;
+    }));
+    addValues(saliencyDetail, "Search-stage timeline", (run.saliency_stage_timeline || []).map(function (item) { return "Step " + item.sequence + ": " + item.kind + " | " + (item.search_stage || "unavailable"); }));
+    addValues(saliencyDetail, "Fallback warnings", (run.saliency_fallbacks || []).map(function (item) { return item.provider_id + " -> " + item.fallback_provider_id + ": " + item.reason; }), "Unavailable: no fallback recorded.");
+  }
+
   function selectElement(run, snapshot, event, elementId) {
     setPlaying(false);
     state.viewportId = snapshot.id;
@@ -426,7 +565,7 @@
       image.alt = "Recorded screenshot for " + snapshot.id;
       frame.appendChild(image);
     } else {
-      frame.appendChild(element("span", "empty", "Unavailable: screenshot artifact was not recorded."));
+      frame.appendChild(element("span", "empty", snapshot.screenshot_redacted ? "Overlay unavailable due redaction. Heatmap-only artifact retained." : "Unavailable: screenshot artifact was not recorded."));
     }
     var attention = noticedState(run, state.eventIndex);
     (snapshot.elements || []).filter(function (item) { return item.visibility_fraction > 0; }).forEach(function (item) {
@@ -601,6 +740,7 @@
     renderTimeline(run);
     renderEvent(run, record);
     renderViewport(run, snapshot, record);
+    renderSaliency(run);
     progress.max = String(Math.max(events.length - 1, 0));
     progress.value = String(state.eventIndex);
     progress.disabled = !events.length;

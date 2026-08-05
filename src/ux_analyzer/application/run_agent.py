@@ -28,7 +28,11 @@ from ux_analyzer.application.progress import (
     snapshot_progress_signature,
     transition_progress_signature,
 )
-from ux_analyzer.application.saliency import ProminenceBatch
+from ux_analyzer.application.saliency import (
+    ProminenceBatch,
+    ProminenceProvider,
+    ProminenceResult,
+)
 from ux_analyzer.application.state_updates import (
     ApplicationState,
     StateUpdateConfig,
@@ -74,6 +78,7 @@ from ux_analyzer.domain.run import (
 from ux_analyzer.domain.run import (
     SafetyBlocked as SafetyBlockedOutcome,
 )
+from ux_analyzer.domain.saliency import ElementAttentionProfile, SearchStage
 from ux_analyzer.ports.artifacts import (
     ArtifactReference,
     BundleManifest,
@@ -113,19 +118,6 @@ _ATTENTION_EXHAUSTED_MESSAGE = "no unobserved visible elements remain"
 _ATTENTION_EXHAUSTED_REASON = "all visible elements examined without progress"
 
 
-class ProminenceResult(Protocol):
-    """Application-facing prominence evidence shape."""
-
-    element_id: str
-    raw_score: float
-    normalized_probability: float
-    first_notice_probability: float | None
-    notice_within_budget_probability: float | None
-    feature_contributions: Mapping[str, float]
-    raw_values: Mapping[str, float]
-    normalized_values: Mapping[str, float]
-
-
 class ObservationSelection(Protocol):
     """Application-facing observation selection shape."""
 
@@ -139,12 +131,6 @@ class ObservationSelection(Protocol):
 
     @property
     def selected_ids(self) -> Sequence[str]: ...
-
-
-class ProminenceProvider(Protocol):
-    """Application-facing prominence scoring capability."""
-
-    score: Callable[..., object]
 
 
 class AttentionPolicy(Protocol):
@@ -392,6 +378,29 @@ class ProminenceEvidence:
     viewport_id: str
     scores: tuple[ProminenceResult, ...]
     source_event_id: str | None = None
+    profile_event_id: str | None = None
+    operational_event_id: str | None = None
+    stage: str | None = None
+    profiles: tuple[ElementAttentionProfile, ...] = ()
+
+    def __post_init__(self) -> None:
+        operational_event_id = self.operational_event_id or self.source_event_id
+        if (
+            self.operational_event_id is not None
+            and self.source_event_id is not None
+            and self.operational_event_id != self.source_event_id
+        ):
+            raise ValueError("prominence source and operational event IDs must match")
+        object.__setattr__(self, "source_event_id", operational_event_id)
+        object.__setattr__(self, "operational_event_id", operational_event_id)
+        if self.stage is not None:
+            try:
+                stage = SearchStage(self.stage)
+            except ValueError as error:
+                raise ValueError("prominence evidence stage is invalid") from error
+            object.__setattr__(self, "stage", stage.value)
+        object.__setattr__(self, "scores", tuple(self.scores))
+        object.__setattr__(self, "profiles", tuple(self.profiles))
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,6 +448,9 @@ class RunEvidence:
                 {
                     "viewport_id": record.viewport_id,
                     "source_event_id": record.source_event_id,
+                    "profile_event_id": record.profile_event_id,
+                    "operational_event_id": record.operational_event_id,
+                    "stage": record.stage,
                 }
                 for record in self.prominence
             ),
@@ -841,7 +853,7 @@ class RunAgent:
                     for reference in artifact_references
                     if reference.path not in known_paths
                 )
-            prominence_sequence = self._record_prominence(
+            prominence_sequence, profile_event_id = self._record_prominence(
                 context,
                 writer,
                 snapshot,
@@ -849,9 +861,22 @@ class RunAgent:
                 batch=prominence_batch,
                 artifact_references=artifact_references,
             )
+            prominence_stage = _search_stage(
+                self.attention_policy, context, snapshot
+            ).value
             context.prominence.append(
                 ProminenceEvidence(
-                    snapshot.id, scores, source_event_id=_event_id(prominence_sequence)
+                    snapshot.id,
+                    scores,
+                    source_event_id=_event_id(prominence_sequence),
+                    profile_event_id=profile_event_id,
+                    operational_event_id=_event_id(prominence_sequence),
+                    stage=prominence_stage,
+                    profiles=(
+                        prominence_batch.learned_profiles
+                        if prominence_batch is not None
+                        else ()
+                    ),
                 )
             )
             coarse_scent: object = ()
@@ -1048,11 +1073,11 @@ class RunAgent:
                 if parallel_model_calls:
                     context.model_call_count += 2
                     full_result, cognitive_result = await self._evaluate_parallel_calls(
-                            context,
-                            spec.scenario.goal,
-                            context.application_state.attention,
-                            snapshot,
-                            observation,
+                        context,
+                        spec.scenario.goal,
+                        context.application_state.attention,
+                        snapshot,
+                        observation,
                     )
                     if isinstance(full_result, BaseException):
                         raise full_result
@@ -1327,7 +1352,7 @@ class RunAgent:
                             "action": validated.domain_action,
                             "reason": "action succeeded but the recaptured interface did not change semantically",
                         }
-                )
+                    )
 
             if result.succeeded:
                 with context.profiler.measure("verification.run"):
@@ -1446,7 +1471,7 @@ class RunAgent:
             ),
             writer,
             context.state_event_ids,
-            )
+        )
         source_event_id = context.state_event_ids[-1]
         captured = _CapturedViewport(
             capture=capture,
@@ -1505,14 +1530,19 @@ class RunAgent:
         scores: tuple[ProminenceResult, ...],
         batch: ProminenceBatch | None,
         artifact_references: Sequence[ArtifactReference] = (),
-    ) -> int:
+    ) -> tuple[int, str | None]:
         if batch is None:
-            return writer.append_event(
-                {
-                    "kind": "prominence-recorded",
-                    "viewport_id": snapshot.id,
-                    "scores": tuple(_prominence_payload(score) for score in scores),
-                }
+            stage = _search_stage(self.attention_policy, context, snapshot)
+            return (
+                writer.append_event(
+                    {
+                        "kind": "prominence-recorded",
+                        "viewport_id": snapshot.id,
+                        "search_stage": stage.value,
+                        "scores": tuple(_prominence_payload(score) for score in scores),
+                    }
+                ),
+                None,
             )
 
         stage = _search_stage(self.attention_policy, context, snapshot)
@@ -1598,7 +1628,7 @@ class RunAgent:
                     cache_state="fallback",
                 ),
             )
-        return _append_typed_saliency_event(
+        prominence_sequence = _append_typed_saliency_event(
             writer,
             ProminenceRecordedEvent(
                 viewport_id=snapshot.id,
@@ -1620,6 +1650,9 @@ class RunAgent:
                     batch.cache_state if batch.learned_available else "fallback"
                 ),
             ),
+        )
+        return prominence_sequence, (
+            _event_id(profile_event_id) if profile_event_id is not None else None
         )
 
     async def _evaluate_parallel_calls(
@@ -1824,6 +1857,11 @@ class RunAgent:
                     ux_sample_valid=False,
                     ux_sample_invalid_reason=f"evaluation-failure: {evaluation_reason}",
                 )
+        result = _enforce_saliency_fallback_validity(
+            result,
+            context.saliency_fallback_reason,
+            context.redaction_policy,
+        )
         try:
             bundle_path = writer.finalize(result)
         except BaseException as error:
@@ -2422,6 +2460,34 @@ def _evaluation_failure_reason(error: BaseException) -> str:
     if isinstance(safe_reason, str) and safe_reason:
         return safe_reason
     return f"result evaluation failed: {error.__class__.__name__}"
+
+
+def _enforce_saliency_fallback_validity(
+    result: RunResult,
+    fallback_reason: str | None,
+    redaction_policy: RedactionPolicy,
+) -> RunResult:
+    """Make fallback invalidity authoritative after optional result evaluation."""
+
+    if fallback_reason is None:
+        return result
+    safe_reason = sanitize_log_text(fallback_reason, redaction_policy)
+    invalid_reason = f"saliency-fallback: {safe_reason}"
+    metrics = result.metrics
+    if metrics is not None:
+        metrics = replace(
+            metrics,
+            prominence_fallback=True,
+            prominence_fallback_reason=safe_reason,
+            comparison_valid=False,
+        )
+    return replace(
+        result,
+        metrics=metrics,
+        findings=None,
+        ux_sample_valid=False,
+        ux_sample_invalid_reason=invalid_reason,
+    )
 
 
 def _ux_sample_validity(

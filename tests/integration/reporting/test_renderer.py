@@ -3,14 +3,22 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 from playwright.async_api import Route, async_playwright
 
 import ux_analyzer.reporting.renderer as renderer
 from ux_analyzer.domain.run import RunStarted
-from ux_analyzer.ports.artifacts import BundleManifest, RedactionPolicy
+from ux_analyzer.ports.artifacts import (
+    BundleManifest,
+    RedactionPolicy,
+    SaliencyArtifactKind,
+    canonicalize_saliency_artifact_content,
+)
 from ux_analyzer.reporting.renderer import render_experiment_report
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
@@ -34,6 +42,272 @@ def _write_checksums(run: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _write_saliency_replay_evidence(
+    root: Path,
+    run_id: str,
+    *,
+    namespace: str = "inference-1",
+    source_viewport_id: str = "viewport-1",
+    source_event_id: str = "event-1",
+) -> None:
+    run = root / "runs" / run_id
+    saliency_root = run / "saliency" / namespace
+    saliency_root.mkdir(parents=True)
+    heatmap = BytesIO()
+    Image.new("L", (2, 2), color=180).save(heatmap, format="PNG")
+    for duration in ("1s", "3s", "7s"):
+        (saliency_root / f"{duration}-heatmap.png").write_bytes(heatmap.getvalue())
+    checksums = ["1" * 64, "2" * 64, "3" * 64]
+    geometry = {
+        "geometry_version": "saliency-geometry-v1",
+        "source_dimensions": [800, 600],
+        "native_dimensions": [2, 2],
+        "content_dimensions": [2, 2],
+        "pad_left": 0,
+        "pad_top": 0,
+        "pad_right": 0,
+        "pad_bottom": 0,
+        "scale": 1.0,
+        "scale_x": 1.0,
+        "scale_y": 1.0,
+        "device_pixel_ratio": 1.0,
+        "zoom": 1.0,
+    }
+    native_map = BytesIO()
+    np.savez_compressed(
+        native_map,
+        values=np.full((2, 2), 0.5, dtype=np.float32),
+        geometry=np.asarray(
+            (
+                *geometry["source_dimensions"],
+                *geometry["native_dimensions"],
+                *geometry["content_dimensions"],
+                geometry["pad_left"],
+                geometry["pad_top"],
+                geometry["pad_right"],
+                geometry["pad_bottom"],
+                geometry["scale"],
+                geometry["scale_x"],
+                geometry["scale_y"],
+                geometry["device_pixel_ratio"],
+                geometry["zoom"],
+            ),
+            dtype=np.float64,
+        ),
+    )
+    for duration in ("1s", "3s", "7s"):
+        (saliency_root / f"{duration}.npz").write_bytes(native_map.getvalue())
+
+    def prediction_metadata(index: int) -> dict[str, object]:
+        return {
+            "provider_id": "foveacast",
+            "model_id": "foveacast-v0.2.0",
+            "provider_version": "foveacast-adapter-v1",
+            "model_version": "v0.2.0",
+            "model_checksum": checksums[index],
+            "input_dimensions": [2, 2],
+            "output_dimensions": [2, 2],
+            "geometry": geometry,
+            "preprocessing_version": "foveacast-preprocess-v1",
+            "inference_duration_ms": float(index + 1),
+            "execution_provider": "CPUExecutionProvider",
+            "warnings": [],
+            "cache_state": "miss",
+        }
+
+    profiles = [
+        {
+            "viewport_id": namespace,
+            "element_id": "target",
+            "immediate": {
+                "kind": "predicted",
+                "score": 0.9,
+                "source": "foveacast-v0.2.0",
+            },
+            "early": {
+                "kind": "predicted",
+                "score": 0.7,
+                "source": "foveacast-v0.2.0",
+            },
+            "eventual": {
+                "kind": "predicted",
+                "score": 0.5,
+                "source": "foveacast-v0.2.0",
+            },
+            "general": None,
+            "aggregates": [
+                {
+                    "viewport_id": namespace,
+                    "element_id": "target",
+                    "duration": duration,
+                    "density": 0.4,
+                    "robust_peak": 0.8,
+                    "raw_mass": 4.0,
+                    "mass_share": 0.6,
+                    "clipped_area": 7200.0,
+                    "visibility_fraction": 1.0,
+                    "occlusion_fraction": 0.0,
+                    "raw_score": 0.5,
+                    "adjusted_score": 0.5,
+                }
+                for duration in ("1s", "3s", "7s")
+            ],
+            "aggregation_version": "element-saliency-aggregation-v1",
+            "prediction_provenance": [
+                {
+                    "duration": duration,
+                    "metadata": prediction_metadata(index),
+                }
+                for index, duration in enumerate(("1s", "3s", "7s"))
+            ],
+        }
+    ]
+    artifact_paths = [
+        f"saliency/{namespace}/{filename}"
+        for filename in (
+            "1s.npz",
+            "3s.npz",
+            "7s.npz",
+            "1s-heatmap.png",
+            "3s-heatmap.png",
+            "7s-heatmap.png",
+            "profiles.json",
+            "metadata.json",
+        )
+    ]
+    cache_key = {
+        "viewport_id": namespace,
+        "screenshot_sha256": "a" * 64,
+        "screenshot_dimensions": [800, 600],
+        "device_pixel_ratio": 1.0,
+        "zoom": 1.0,
+        "model_checksums": checksums,
+        "preprocessing_version": "foveacast-preprocess-v1",
+        "precision": "fp16",
+        "execution_provider": "CPUExecutionProvider",
+        "aggregation_version": "element-saliency-aggregation-v1",
+        "geometry_version": "saliency-geometry-v1",
+    }
+    metadata = {
+        "cache_version": "saliency-cache-v1",
+        "cache_key": cache_key,
+        "cache_key_digest": hashlib.sha256(
+            json.dumps(cache_key, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "viewport_id": namespace,
+        "aggregation_version": "element-saliency-aggregation-v1",
+        "predictions": [
+            {"duration": duration, "metadata": prediction_metadata(index)}
+            for index, duration in enumerate(("1s", "3s", "7s"))
+        ],
+        "saliency_metadata": {
+            "provider_manifests": [
+                {
+                    "provider_id": "foveacast",
+                    "role": "prominence",
+                    "model_id": "foveacast-v0.2.0",
+                    "endpoint_origin": "internal",
+                    "version": "v0.2.0",
+                    "prompt_version": None,
+                    "schema_version": None,
+                }
+            ],
+            "aggregation_version": "element-saliency-aggregation-v1",
+            "warnings": [],
+        },
+        "warnings": ["overlay-redacted"],
+        "artifact_paths": artifact_paths,
+    }
+    profiles_bytes = canonicalize_saliency_artifact_content(
+        SaliencyArtifactKind.PROFILES,
+        json.dumps(profiles, sort_keys=True, separators=(",", ":")).encode(),
+        expected_viewport_id=namespace,
+    )
+    metadata_bytes = canonicalize_saliency_artifact_content(
+        SaliencyArtifactKind.METADATA,
+        json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode(),
+        expected_viewport_id=namespace,
+    )
+    (saliency_root / "profiles.json").write_bytes(profiles_bytes)
+    (saliency_root / "metadata.json").write_bytes(metadata_bytes)
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    terminal = events.pop()
+    artifact_ids = [
+        f"saliency/{namespace}/{filename}"
+        for filename in (
+            "1s.npz",
+            "3s.npz",
+            "7s.npz",
+            "1s-heatmap.png",
+            "3s-heatmap.png",
+            "7s-heatmap.png",
+            "profiles.json",
+            "metadata.json",
+        )
+    ]
+    profile_event_id = f"event-{len(events) + 2}"
+    events.extend(
+        [
+            {
+                "kind": "saliency-inference-recorded",
+                "viewport_id": namespace,
+                "source_viewport_id": source_viewport_id,
+                "artifact_namespace": namespace,
+                "provider_id": "foveacast",
+                "search_stage": "initial",
+                "model_checksums": checksums,
+                "execution_provider": "CPUExecutionProvider",
+                "preprocessing_version": "foveacast-preprocess-v1",
+                "precision": "fp16",
+                "cache_state": "miss",
+                "timings_ms": [1.0, 2.0, 3.0],
+                "artifact_ids": artifact_ids,
+                "warnings": ["overlay-redacted"],
+            },
+            {
+                "kind": "saliency-profiles-recorded",
+                "viewport_id": namespace,
+                "source_viewport_id": source_viewport_id,
+                "artifact_namespace": namespace,
+                "source_event_id": source_event_id,
+                "provider_id": "foveacast",
+                "search_stage": "initial",
+                "model_checksums": checksums,
+                "execution_provider": "CPUExecutionProvider",
+                "preprocessing_version": "foveacast-preprocess-v1",
+                "precision": "fp16",
+                "cache_state": "miss",
+                "timings_ms": [1.0, 2.0, 3.0],
+                "artifact_ids": artifact_ids,
+                "warnings": ["overlay-redacted"],
+            },
+            {
+                "kind": "prominence-recorded",
+                "viewport_id": source_viewport_id,
+                "source_viewport_id": source_viewport_id,
+                "artifact_namespace": namespace,
+                "source_event_id": profile_event_id,
+                "provider_id": "foveacast-prominence",
+                "active_provider_id": "foveacast",
+                "search_stage": "initial",
+                "selected_mixture": [["1s", 1.0]],
+                "selected_element_ids": ["target"],
+                "cache_state": "miss",
+            },
+        ]
+    )
+    events.append(terminal)
+    for sequence, event in enumerate(events, start=1):
+        event["sequence"] = sequence
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
 
 
 def _write_run(
@@ -250,11 +524,16 @@ def _write_run(
                 "screenshot_artifacts": [],
             },
             "metrics": {
+                "run_id": run_id,
                 "scenario_id": "invite",
                 "application_version_id": version,
                 "persona_id": "persona",
                 "policy": "progressive-prominence-scent",
                 "model_trial": model_trial,
+                "prominence_provider_id": prominence_provider_id,
+                "comparison_valid": is_valid_sample,
+                "prominence_fallback": False,
+                "prominence_fallback_reason": None,
                 "reproducibility": "model-dependent",
                 "verified_completion": is_verified,
                 "wrong_actions": 0 if version == "improved" else 2,
@@ -397,18 +676,22 @@ def test_renderer_keeps_prominence_providers_separate_in_rows_and_gates(
 
     experiment = renderer._load_experiment(tmp_path)
 
-    assert {
-        run["prominence_provider_id"] for run in experiment["runs"]
-    } == {"heuristic", "foveacast"}
-    assert {
-        row["prominence_provider_id"] for row in experiment["run_rows"]
-    } == {"heuristic", "foveacast"}
-    assert {
-        row["prominence_provider_id"] for row in experiment["comparison_rows"]
-    } == {"heuristic", "foveacast"}
-    assert {
-        row["prominence_provider_id"] for row in experiment["gate_rows"]
-    } == {"heuristic", "foveacast"}
+    assert {run["prominence_provider_id"] for run in experiment["runs"]} == {
+        "heuristic",
+        "foveacast",
+    }
+    assert {row["prominence_provider_id"] for row in experiment["run_rows"]} == {
+        "heuristic",
+        "foveacast",
+    }
+    assert {row["prominence_provider_id"] for row in experiment["comparison_rows"]} == {
+        "heuristic",
+        "foveacast",
+    }
+    assert {row["prominence_provider_id"] for row in experiment["gate_rows"]} == {
+        "heuristic",
+        "foveacast",
+    }
 
     html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
         encoding="utf-8"
@@ -439,6 +722,8 @@ def test_overview_counts_executed_actions_and_formats_discovery_cost(
             "reason": "Duplicate representation of the proposed action.",
         },
     )
+    for sequence, event in enumerate(events, start=1):
+        event["sequence"] = sequence
     (run / "timeline.jsonl").write_text(
         "".join(json.dumps(event) + "\n" for event in events),
         encoding="utf-8",
@@ -458,6 +743,811 @@ def test_overview_counts_executed_actions_and_formats_discovery_cost(
     assert "simulated-task-time-v1" in html
     assert "Analysis cost is not user effort" in html
     assert "Monetary estimate unavailable" in html
+
+
+def test_renderer_replays_saliency_profiles_and_separates_inference_cost(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-saliency",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-saliency")
+
+    experiment = renderer._load_experiment(tmp_path)
+    run = experiment["runs"][0]
+
+    assert run["saliency_runtime"]["total_inference_ms"] == pytest.approx(6.0)
+    assert run["analysis_cost"]["latency_ms"] == 125
+    assert run["saliency"][0]["entries"][0]["overlay_available"] is False
+    assert run["saliency"][0]["entries"][0]["profiles"][0]["element_id"] == "target"
+    assert run["saliency"][0]["profile_event_ids"]
+    assert run["saliency"][0]["operational_event_ids"]
+    assert run["saliency"][0]["profiles"][0]["prediction_provenance"]
+    assert run["saliency_stage_timeline"][0]["search_stage"] == "initial"
+    assert run["saliency_fallbacks"] == []
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Saliency evidence" in html
+    assert "Overlay unavailable due redaction" in html
+    assert "Heatmap-only artifact" in html
+    assert "Aggregation components" in html
+    assert "CPUExecutionProvider" in html
+
+
+def test_renderer_accepts_production_saliency_source_event_chain(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-production-linkage",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-production-linkage")
+    run = tmp_path / "runs" / "run-production-linkage"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    inference = next(
+        item for item in events if item["kind"] == "saliency-inference-recorded"
+    )
+    profiles = next(
+        item for item in events if item["kind"] == "saliency-profiles-recorded"
+    )
+    inference["source_event_id"] = "event-1"
+    profiles["source_event_id"] = f"event-{inference['sequence']}"
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["trusted"] is True
+    assert loaded["saliency"][0]["replay_available"] is True
+
+
+@pytest.mark.parametrize(
+    ("source_event_id", "source_viewport_id"),
+    (
+        ("event-12", "viewport-1"),
+        ("event-2", "viewport-1"),
+        ("event-11", "viewport-2"),
+    ),
+)
+def test_renderer_rejects_forged_saliency_source_links(
+    tmp_path: Path,
+    source_event_id: str,
+    source_viewport_id: str,
+) -> None:
+    _write_run(tmp_path, "run-linkage", version="improved", discovery_cost=3)
+    _write_saliency_replay_evidence(tmp_path, "run-linkage")
+    run = tmp_path / "runs" / "run-linkage"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    prominence = next(item for item in events if item["kind"] == "prominence-recorded")
+    prominence["source_event_id"] = source_event_id
+    prominence["source_viewport_id"] = source_viewport_id
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["saliency"][0]["replay_available"] is False
+
+
+def test_renderer_rejects_saliency_metadata_provider_forgery(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-provider-forgery",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-provider-forgery")
+    metadata_path = (
+        tmp_path
+        / "runs"
+        / "run-provider-forgery"
+        / "saliency"
+        / "inference-1"
+        / "metadata.json"
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for prediction in metadata["predictions"]:
+        prediction["metadata"]["provider_id"] = "heuristic"
+    metadata["saliency_metadata"]["provider_manifests"][0]["provider_id"] = "heuristic"
+    metadata_path.write_bytes(
+        canonicalize_saliency_artifact_content(
+            SaliencyArtifactKind.METADATA,
+            json.dumps(metadata).encode(),
+            expected_viewport_id="inference-1",
+        )
+    )
+    _write_checksums(metadata_path.parents[2])
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["trusted"] is False
+    assert loaded["saliency"][0]["replay_available"] is False
+
+
+@pytest.mark.parametrize("mutation", ("duplicate", "after-terminal"))
+def test_renderer_rejects_malformed_timeline_order(
+    tmp_path: Path, mutation: str
+) -> None:
+    _write_run(tmp_path, "run-order", version="improved", discovery_cost=3)
+    run = tmp_path / "runs" / "run-order"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    if mutation == "duplicate":
+        events[1]["sequence"] = events[0]["sequence"]
+    else:
+        events.append({"sequence": 11, "kind": "run-started"})
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["trusted"] is False
+    assert any("timeline" in failure for failure in loaded["integrity_failures"])
+
+
+def test_renderer_rejects_malformed_native_map_from_saliency_replay(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-native-map",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-native-map")
+    native_map = (
+        tmp_path / "runs" / "run-native-map" / "saliency" / "inference-1" / "1s.npz"
+    )
+    native_map.write_bytes(b"not-a-native-map")
+    _write_checksums(native_map.parents[2])
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["saliency"][0]["replay_available"] is False
+    assert loaded["comparison_valid"] is False
+
+
+def test_renderer_rejects_out_of_range_saliency_aggregate(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-range", version="improved", discovery_cost=3)
+    _write_saliency_replay_evidence(tmp_path, "run-range")
+    profiles_path = (
+        tmp_path / "runs" / "run-range" / "saliency" / "inference-1" / "profiles.json"
+    )
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    profiles[0]["aggregates"][0]["density"] = 2.0
+    profiles_path.write_text(json.dumps(profiles), encoding="utf-8")
+    _write_checksums(profiles_path.parents[2])
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["saliency"][0]["replay_available"] is False
+
+
+def test_renderer_binds_bundle_directory_to_embedded_run_id(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-directory", version="improved", discovery_cost=3)
+    run = tmp_path / "runs" / "run-directory"
+    for name in ("manifest.json", "result.json"):
+        value = json.loads((run / name).read_text(encoding="utf-8"))
+        value["run_id"] = "run-embedded"
+        if name == "result.json":
+            value["metrics"]["run_id"] = "run-embedded"
+        _write_json(run / name, value)
+    _write_checksums(run)
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["trusted"] is False
+    assert any(
+        "bundle directory" in failure for failure in loaded["integrity_failures"]
+    )
+
+
+def test_renderer_ignores_symlinked_run_directory(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-real", version="improved", discovery_cost=3)
+    try:
+        (tmp_path / "runs" / "run-link").symlink_to(
+            tmp_path / "runs" / "run-real", target_is_directory=True
+        )
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+    directories = renderer._run_directories(tmp_path)
+
+    assert all(path.name != "run-link" for path in directories)
+
+
+def test_renderer_rejects_saliency_artifact_path_traversal(tmp_path: Path) -> None:
+    assert (
+        renderer._saliency_artifact_data_uri(
+            tmp_path,
+            "saliency/../artifacts/screenshot.png",
+        )
+        is None
+    )
+
+
+def test_renderer_rejects_symlinked_saliency_ancestor(tmp_path: Path) -> None:
+    real_root = tmp_path / "real-saliency"
+    real_root.mkdir()
+    try:
+        (tmp_path / "saliency").symlink_to(real_root, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+    heatmap = real_root / "viewport-1"
+    heatmap.mkdir()
+    image = BytesIO()
+    Image.new("L", (2, 2), color=180).save(image, format="PNG")
+    (heatmap / "1s-heatmap.png").write_bytes(image.getvalue())
+
+    assert (
+        renderer._saliency_artifact_data_uri(
+            tmp_path, "saliency/viewport-1/1s-heatmap.png"
+        )
+        is None
+    )
+
+
+def test_renderer_rejects_saliency_namespace_traversal_before_bundle_reads(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _write_json(outside / "profiles.json", [])
+    _write_json(outside / "metadata.json", {"warnings": ["OUTSIDE-DATA"]})
+
+    replay = renderer._saliency_replay(
+        tmp_path,
+        [
+            {
+                "kind": "saliency-profiles-recorded",
+                "viewport_id": "../outside",
+                "artifact_namespace": "../outside",
+            }
+        ],
+        [],
+    )
+
+    assert replay == []
+    assert "OUTSIDE-DATA" not in repr(replay)
+
+
+def test_renderer_omits_source_pixels_from_tampered_bundle(tmp_path: Path) -> None:
+    source = BytesIO()
+    Image.new("RGB", (2, 2), color=(20, 30, 40)).save(source, format="PNG")
+    secret = b"TAMPERED-SCREENSHOT-SECRET"
+    _write_run(
+        tmp_path,
+        "run-tampered-source",
+        version="defective",
+        discovery_cost=8,
+        screenshot=source.getvalue(),
+    )
+    screenshot = (
+        tmp_path / "runs" / "run-tampered-source" / "artifacts" / "screenshot.png"
+    )
+    screenshot.write_bytes(screenshot.read_bytes() + secret)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert secret.decode() not in html
+    assert base64.b64encode(secret).decode() not in html
+
+
+def test_renderer_rejects_inconsistent_persisted_provider_from_scorecards(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-provider-mismatch",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    result_path = tmp_path / "runs" / "run-provider-mismatch" / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["metrics"].update(
+        {
+            "run_id": "run-provider-mismatch",
+            "prominence_provider_id": "heuristic",
+            "comparison_valid": True,
+        }
+    )
+    result["ux_sample_valid"] = True
+    _write_json(result_path, result)
+    _write_checksums(result_path.parent)
+
+    experiment = renderer._load_experiment(tmp_path)
+
+    assert experiment["runs"][0]["comparison_valid"] is False
+    assert experiment["comparison_rows"] == []
+
+
+def test_renderer_redacts_invalid_manifest_provider_identity(tmp_path: Path) -> None:
+    _write_run(
+        tmp_path,
+        "run-invalid-provider",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="heuristic",
+    )
+    manifest_path = tmp_path / "runs" / "run-invalid-provider" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["prominence_provider_id"] = "token-provider-secret"
+    _write_json(manifest_path, manifest)
+    result_path = tmp_path / "runs" / "run-invalid-provider" / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["metrics"]["prominence_provider_id"] = "token-provider-secret"
+    _write_json(result_path, result)
+    _write_checksums(manifest_path.parent)
+
+    experiment = renderer._load_experiment(tmp_path)
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert experiment["runs"][0]["comparison_valid"] is False
+    assert "token-provider-secret" not in html
+
+
+def test_renderer_canonicalizes_real_heuristic_provider_aliases(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-heuristic-alias",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="heuristic",
+    )
+    run = tmp_path / "runs" / "run-heuristic-alias"
+    manifest_path = run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["prominence_provider_id"] = "heuristic-prominence"
+    manifest["provider_manifests"].append(
+        {
+            "provider_id": "heuristic-prominence",
+            "role": "prominence",
+            "model_id": None,
+            "endpoint_origin": "internal",
+            "version": "heuristic-prominence-v1",
+        }
+    )
+    _write_json(manifest_path, manifest)
+    result_path = run / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["metrics"]["prominence_provider_id"] = "heuristic-prominence"
+    _write_json(result_path, result)
+    _write_checksums(run)
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["trusted"] is True
+    assert loaded["prominence_provider_id"] == "heuristic"
+
+
+def test_renderer_marks_malformed_saliency_schema_unavailable(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-invalid-saliency", version="improved", discovery_cost=3)
+    _write_saliency_replay_evidence(tmp_path, "run-invalid-saliency")
+    profiles_path = (
+        tmp_path
+        / "runs"
+        / "run-invalid-saliency"
+        / "saliency"
+        / "inference-1"
+        / "profiles.json"
+    )
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    profiles[0]["unexpected"] = "invalid"
+    _write_json(profiles_path, profiles)
+    _write_checksums(profiles_path.parents[2])
+
+    run = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert run["saliency"][0]["replay_available"] is False
+    assert run["saliency"][0]["entries"] == []
+
+
+def test_renderer_rejects_incomplete_saliency_profile_duration_coverage(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-incomplete-profile",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-incomplete-profile")
+    profiles_path = (
+        tmp_path
+        / "runs"
+        / "run-incomplete-profile"
+        / "saliency"
+        / "inference-1"
+        / "profiles.json"
+    )
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    profiles[0]["early"] = None
+    profiles_path.write_bytes(
+        canonicalize_saliency_artifact_content(
+            SaliencyArtifactKind.PROFILES,
+            json.dumps(profiles).encode(),
+            expected_viewport_id="inference-1",
+        )
+    )
+    _write_checksums(profiles_path.parents[2])
+
+    run = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert run["saliency"][0]["replay_available"] is False
+
+
+def test_renderer_rejects_profile_prediction_provenance_mismatch(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-profile-provenance-mismatch",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-profile-provenance-mismatch")
+    profiles_path = (
+        tmp_path
+        / "runs"
+        / "run-profile-provenance-mismatch"
+        / "saliency"
+        / "inference-1"
+        / "profiles.json"
+    )
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    profiles[0]["prediction_provenance"][0]["metadata"]["model_checksum"] = "4" * 64
+    profiles_path.write_bytes(
+        canonicalize_saliency_artifact_content(
+            SaliencyArtifactKind.PROFILES,
+            json.dumps(profiles).encode(),
+            expected_viewport_id="inference-1",
+        )
+    )
+    _write_checksums(profiles_path.parents[2])
+
+    run = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert run["saliency"][0]["replay_available"] is False
+
+
+def test_renderer_rejects_oversized_saliency_heatmap(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-oversized-heatmap",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-oversized-heatmap")
+    heatmap_path = (
+        tmp_path
+        / "runs"
+        / "run-oversized-heatmap"
+        / "saliency"
+        / "inference-1"
+        / "1s-heatmap.png"
+    )
+    heatmap_path.write_bytes(b"oversized" * (8 * 1024 * 1024 // 8 + 1))
+    _write_checksums(heatmap_path.parents[2])
+
+    run = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert run["saliency"][0]["replay_available"] is False
+
+
+def test_renderer_rejects_non_screenshot_artifact_path(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-screenshot-allowlist",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-screenshot-allowlist")
+    run = tmp_path / "runs" / "run-screenshot-allowlist"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    capture = next(item for item in events if item["kind"] == "viewport-captured")
+    capture["snapshot"]["screenshot_artifact"] = "saliency/inference-1/1s-heatmap.png"
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
+
+    snapshot = renderer._load_experiment(tmp_path)["runs"][0]["snapshots"][0]
+
+    assert snapshot["screenshot"] is None
+
+
+def test_renderer_rejects_saliency_profile_element_without_snapshot_lineage(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-profile-lineage",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-profile-lineage")
+    profiles_path = (
+        tmp_path
+        / "runs"
+        / "run-profile-lineage"
+        / "saliency"
+        / "inference-1"
+        / "profiles.json"
+    )
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    profiles[0]["element_id"] = "not-in-snapshot"
+    for aggregate in profiles[0]["aggregates"]:
+        aggregate["element_id"] = "not-in-snapshot"
+    profiles_path.write_bytes(
+        canonicalize_saliency_artifact_content(
+            SaliencyArtifactKind.PROFILES,
+            json.dumps(profiles).encode(),
+            expected_viewport_id="inference-1",
+        )
+    )
+    _write_checksums(profiles_path.parents[2])
+
+    run = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert run["saliency"][0]["replay_available"] is False
+
+
+def test_renderer_preserves_repeated_saliency_stage_history() -> None:
+    group = {"stage_history": [], "warnings": [], "timings_ms": []}
+
+    renderer._merge_saliency_event(
+        group,
+        {
+            "kind": "saliency-profiles-recorded",
+            "sequence": 4,
+            "provider_id": "foveacast",
+            "search_stage": "initial",
+            "selected_mixture": [["1s", 1.0]],
+            "timings_ms": [1.0, 2.0, 3.0],
+        },
+    )
+    renderer._merge_saliency_event(
+        group,
+        {
+            "kind": "prominence-recorded",
+            "sequence": 8,
+            "provider_id": "foveacast-prominence",
+            "search_stage": "persistent",
+            "selected_mixture": [["3s", 0.25], ["7s", 0.75]],
+            "cache_state": "hit",
+        },
+    )
+
+    assert [item["search_stage"] for item in group["stage_history"]] == [
+        "initial",
+        "persistent",
+    ]
+    assert group["search_stage"] == "persistent"
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_browser_replays_saliency_tabs_and_selected_viewport(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-multi-viewport",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    run = tmp_path / "runs" / "run-multi-viewport"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    terminal = events.pop()
+    events.append(
+        {
+            "kind": "viewport-captured",
+            "viewport_width": 800,
+            "viewport_height": 600,
+            "snapshot": {
+                "id": "viewport-2",
+                "screenshot_artifact": "artifacts/screenshot.png",
+                "elements": [
+                    {
+                        "id": "target",
+                        "role": "button",
+                        "label": "Target",
+                        "bounds": {"x": 90, "y": 80, "width": 180, "height": 40},
+                        "visibility_fraction": 1,
+                        "actionable": True,
+                    }
+                ],
+                "regions": [],
+            },
+        }
+    )
+    events.append(terminal)
+    for sequence, event in enumerate(events, start=1):
+        event["sequence"] = sequence
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
+    _write_saliency_replay_evidence(tmp_path, "run-multi-viewport")
+    _write_saliency_replay_evidence(
+        tmp_path,
+        "run-multi-viewport",
+        namespace="inference-2",
+        source_viewport_id="viewport-2",
+        source_event_id="event-10",
+    )
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri())
+        tabs = page.locator(".saliency-tab")
+        assert await tabs.count() == 6, repr(
+            [
+                (
+                    group["artifact_namespace"],
+                    group["replay_available"],
+                    group["replay_error"],
+                    len(group["entries"]),
+                    group.get("profile_event_ids"),
+                    group.get("operational_event_ids"),
+                    group.get("source_event_ids"),
+                    [
+                        (event.get("sequence"), event.get("kind"))
+                        for event in json.loads(
+                            "["
+                            + ",".join(
+                                (run / "timeline.jsonl")
+                                .read_text(encoding="utf-8")
+                                .splitlines()
+                            )
+                            + "]"
+                        )
+                        if event.get("sequence") in {12, 13, 15, 16}
+                    ],
+                )
+                for group in renderer._load_experiment(tmp_path)["runs"][0]["saliency"]
+            ]
+        )
+        await tabs.nth(3).click()
+        assert await page.locator("#saliency-detail .saliency-heatmap").is_visible()
+        await (
+            page.locator("#saliency-detail .saliency-table")
+            .first.locator("tbody tr")
+            .first.hover()
+        )
+        assert "viewport-2" in (
+            await page.locator("#element-detail").text_content() or ""
+        )
+        await browser.close()
+
+
+def test_renderer_reports_redacted_source_and_keeps_heatmap_replay(
+    tmp_path: Path,
+) -> None:
+    blank = BytesIO()
+    Image.new("RGBA", (2, 2), color=(0, 0, 0, 255)).save(blank, format="PNG")
+    _write_run(
+        tmp_path,
+        "run-redacted-saliency",
+        version="improved",
+        discovery_cost=3,
+        screenshot=blank.getvalue(),
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-redacted-saliency")
+
+    experiment = renderer._load_experiment(tmp_path)
+    run = experiment["runs"][0]
+    snapshot = run["snapshots"][0]
+
+    assert snapshot["screenshot"] is None
+    assert snapshot["screenshot_redacted"] is True
+    assert run["saliency"][0]["entries"][0]["heatmap"]
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Overlay unavailable due redaction" in html
+    assert "Heatmap-only artifact" in html
+
+
+def test_renderer_excludes_fallback_learned_run_from_report_scorecards(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-fallback",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    run = tmp_path / "runs" / "run-fallback"
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    terminal = events.pop()
+    events.append(
+        {
+            "kind": "saliency-fallback-recorded",
+            "viewport_id": "viewport-1",
+            "provider_id": "foveacast",
+            "fallback_provider_id": "heuristic-prominence",
+            "search_stage": "initial",
+            "reason": "runtime unavailable",
+            "cache_state": "fallback",
+        }
+    )
+    events.append(terminal)
+    for sequence, event in enumerate(events, start=1):
+        event["sequence"] = sequence
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
+
+    experiment = renderer._load_experiment(tmp_path)
+    loaded = experiment["runs"][0]
+
+    assert loaded["ux_sample_valid"] is False
+    assert loaded["comparison_valid"] is False
+    assert loaded["saliency_fallbacks"]
+    assert experiment["comparison_rows"] == []
 
 
 def test_renderer_exposes_safe_model_and_progress_diagnostics(tmp_path: Path) -> None:

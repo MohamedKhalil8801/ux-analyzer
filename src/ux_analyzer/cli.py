@@ -37,10 +37,12 @@ from ux_analyzer.application.evaluation import (
     RunMetrics,
     aggregate_cells,
     compare_variants,
+    comparison_sample_is_valid,
     evaluate_experiment_results,
     evaluate_run,
     evaluation_inputs_for,
     evaluation_target_for,
+    persisted_comparison_sample_is_valid,
 )
 from ux_analyzer.application.experiment import (
     ExperimentContext,
@@ -1345,7 +1347,7 @@ def _provider_cell_aggregates(
     groups: dict[str, list[RunMetrics]] = {}
     for metric in metrics:
         spec = specs_by_run.get(metric.run_id)
-        if spec is not None:
+        if spec is not None and metric.comparison_valid:
             groups.setdefault(spec.prominence_provider_id, []).append(metric)
     rows: list[dict[str, object]] = []
     for provider_id in sorted(groups):
@@ -1365,9 +1367,7 @@ def _selected_finalized_evidence(
     returned_results: Sequence[RunResult],
 ) -> tuple[tuple[RunMetrics, ...], dict[str, object]]:
     selected_by_run = {spec.run_id: spec for spec in selected_specs}
-    returned_metric_run_ids = {
-        result.run_id for result in returned_results if result.metrics is not None
-    }
+    returned_run_ids = {result.run_id for result in returned_results}
     metrics_by_run: dict[str, RunMetrics] = {}
     findings_by_run: dict[str, object] = {}
     for result in returned_results:
@@ -1375,6 +1375,8 @@ def _selected_finalized_evidence(
         if spec is None or result.metrics is None:
             continue
         if result.state.spec.prominence_provider_id != spec.prominence_provider_id:
+            continue
+        if not comparison_sample_is_valid(result, result.metrics):
             continue
         if not finalized_bundle_is_valid(
             output,
@@ -1386,7 +1388,7 @@ def _selected_finalized_evidence(
         findings_by_run[result.run_id] = result.findings or ()
     adapter = TypeAdapter(RunMetrics)
     for spec in selected_specs:
-        if spec.run_id in metrics_by_run or spec.run_id in returned_metric_run_ids:
+        if spec.run_id in metrics_by_run or spec.run_id in returned_run_ids:
             continue
         if not finalized_bundle_is_valid(
             output,
@@ -1395,14 +1397,29 @@ def _selected_finalized_evidence(
         ):
             continue
         result_path = output / "runs" / spec.run_id / "result.json"
+        manifest_path = output / "runs" / spec.run_id / "manifest.json"
         try:
-            persisted = json.loads(result_path.read_text(encoding="utf-8"))
-            if not isinstance(persisted, dict):
+            persisted_value = json.loads(result_path.read_text(encoding="utf-8"))
+            manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(persisted_value, dict) or not isinstance(
+                manifest_value, dict
+            ):
                 raise ValueError("result must contain an object")
-            persisted_object = cast(dict[str, object], persisted)
+            persisted_object = cast(dict[str, object], persisted_value)
+            manifest_object = cast(dict[str, object], manifest_value)
             raw_metrics = persisted_object.get("metrics")
-            if raw_metrics is not None:
-                metrics_by_run[spec.run_id] = adapter.validate_python(raw_metrics)
+            if isinstance(
+                raw_metrics, Mapping
+            ) and persisted_comparison_sample_is_valid(
+                persisted_object,
+                cast(Mapping[str, object], raw_metrics),
+                manifest=manifest_object,
+                expected_run_id=spec.run_id,
+                expected_prominence_provider_id=spec.prominence_provider_id,
+            ):
+                persisted_metrics = adapter.validate_python(raw_metrics)
+                if persisted_metrics.comparison_valid:
+                    metrics_by_run[spec.run_id] = persisted_metrics
             findings_by_run[spec.run_id] = persisted_object.get("findings") or ()
         except (OSError, UnicodeError, ValueError) as error:
             raise CheckpointError(
@@ -1424,6 +1441,8 @@ def _compare_selected_variants(
         tuple[str, str, str, int, str], dict[ApplicationVersionKind, list[RunMetrics]]
     ] = {}
     for metric in metrics:
+        if not metric.comparison_valid:
+            continue
         spec = specs_by_run.get(metric.run_id)
         if spec is None:
             continue

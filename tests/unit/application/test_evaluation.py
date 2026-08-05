@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,7 @@ from ux_analyzer.application.evaluation import (
     evaluation_inputs_for,
     evaluation_target_for,
     interval_summary,
+    persisted_comparison_sample_is_valid,
 )
 from ux_analyzer.application.run_agent import (
     ProminenceEvidence,
@@ -452,6 +454,35 @@ def test_model_dependent_inputs_are_not_reported_as_seed_only() -> None:
     assert "attention seed 7 and model trial 3" in evidence.description
 
 
+def test_heuristic_prominence_persists_provider_version_without_model_id() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    result = replace(
+        base,
+        state=replace(
+            base.state,
+            provider_manifests=(
+                ProviderManifest(
+                    provider_id="heuristic-prominence",
+                    role="prominence",
+                    model_id=None,
+                    endpoint_origin="internal",
+                    version="heuristic-prominence-v1",
+                ),
+            ),
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+    metrics = evaluate_run(result, EvaluationTarget("target"), inputs=inputs)
+
+    assert inputs.prominence_model_id is None
+    assert inputs.prominence_provider_version == "heuristic-prominence-v1"
+    assert metrics.prominence_provider_version == "heuristic-prominence-v1"
+
+
 def test_production_inputs_derive_scores_and_fold_facts_from_recorded_evidence() -> (
     None
 ):
@@ -504,6 +535,253 @@ def test_production_inputs_derive_scores_and_fold_facts_from_recorded_evidence()
     assert inputs.model_dependent is True
 
 
+@pytest.mark.parametrize("provider_id", ("heuristic", "foveacast"))
+def test_evaluation_buckets_stage_from_record_when_score_has_no_stage(
+    provider_id: str,
+) -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    result = replace(
+        base,
+        state=replace(
+            base.state,
+            spec=replace(base.state.spec, prominence_provider_id=provider_id),
+        ),
+        evidence=RunEvidence(
+            prominence=(
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    stage="persistent",
+                    scores=(
+                        ProminenceResult(
+                            element_id="target",
+                            raw_score=0.7,
+                            normalized_probability=0.7,
+                            provider_id=(
+                                "foveacast"
+                                if provider_id == "foveacast"
+                                else "heuristic-prominence"
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+
+    assert inputs.active_search_stage == "persistent"
+    assert inputs.prominence_scores_by_stage["persistent"]["target"] == pytest.approx(
+        0.7
+    )
+    assert inputs.target_prominence == pytest.approx(0.7)
+
+
+def test_evaluation_uses_active_operational_score_and_retains_target_profiles() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    result = _result(version)
+    result = replace(
+        result,
+        state=replace(
+            result.state,
+            spec=replace(result.state.spec, prominence_provider_id="foveacast"),
+        ),
+        evidence=RunEvidence(
+            prominence=(
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    source_event_id="event-3",
+                    operational_event_id="event-3",
+                    profile_event_id="event-2",
+                    scores=(
+                        ProminenceResult(
+                            element_id="target",
+                            raw_score=0.2,
+                            normalized_probability=0.2,
+                            raw_values={"stage_1s": 0.2},
+                            provider_id="foveacast",
+                            stage="initial",
+                            evidence_kind="predicted",
+                            evidence_source="foveacast-v0.2.0",
+                        ),
+                    ),
+                ),
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    source_event_id="event-5",
+                    operational_event_id="event-5",
+                    profile_event_id="event-4",
+                    scores=(
+                        ProminenceResult(
+                            element_id="target",
+                            raw_score=0.8,
+                            normalized_probability=0.8,
+                            raw_values={"stage_3s": 0.8, "stage_7s": 0.6},
+                            provider_id="foveacast",
+                            stage="persistent",
+                            evidence_kind="predicted",
+                            evidence_source="foveacast-v0.2.0",
+                        ),
+                    ),
+                ),
+            )
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+
+    assert inputs.target_prominence == pytest.approx(0.8)
+    assert inputs.active_search_stage == "persistent"
+    assert inputs.prominence_provider_id == "foveacast"
+    assert inputs.prominence_profile_event_ids == ("event-2", "event-4")
+    assert inputs.prominence_operational_event_ids == ("event-3", "event-5")
+    assert inputs.target_prominence_profiles == {
+        "immediate": pytest.approx(0.2),
+        "early": pytest.approx(0.8),
+        "eventual": pytest.approx(0.6),
+    }
+    assert inputs.target_prominence_sources == {
+        "immediate": "foveacast-v0.2.0",
+        "early": "foveacast-v0.2.0",
+        "eventual": "foveacast-v0.2.0",
+    }
+
+    metrics = evaluate_run(result, EvaluationTarget("target"), inputs=inputs)
+    evidence = next(
+        item
+        for item in metrics.evidence
+        if item.evidence_id in metrics.metric("target-prominence").evidence_ids
+    )
+    assert metrics.target_prominence == pytest.approx(0.8)
+    assert metrics.prominence_provider_id == "foveacast"
+    assert metrics.active_search_stage == "persistent"
+    assert "event-3" in evidence.description
+    assert "event-5" in evidence.description
+    assert "1s" in evidence.description
+    assert "3s" in evidence.description
+    assert "7s" in evidence.description
+
+
+def test_evaluation_returns_unavailable_when_active_stage_has_no_target_score() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    result = replace(
+        base,
+        state=replace(
+            base.state,
+            spec=replace(base.state.spec, prominence_provider_id="foveacast"),
+        ),
+        evidence=RunEvidence(
+            prominence=(
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    source_event_id="event-3",
+                    scores=(
+                        ProminenceResult(
+                            element_id="target",
+                            raw_score=0.2,
+                            normalized_probability=0.2,
+                            provider_id="foveacast",
+                            stage="initial",
+                        ),
+                    ),
+                ),
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    source_event_id="event-5",
+                    scores=(
+                        ProminenceResult(
+                            element_id="competitor",
+                            raw_score=0.9,
+                            normalized_probability=0.9,
+                            provider_id="foveacast",
+                            stage="exploration",
+                        ),
+                    ),
+                ),
+            )
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+
+    assert inputs.active_search_stage == "exploration"
+    assert inputs.target_prominence is None
+
+
+def test_empty_latest_prominence_record_advances_stage_and_clears_target_score() -> (
+    None
+):
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    result = replace(
+        base,
+        state=replace(
+            base.state,
+            spec=replace(base.state.spec, prominence_provider_id="foveacast"),
+        ),
+        evidence=RunEvidence(
+            prominence=(
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    scores=(
+                        ProminenceResult(
+                            element_id="target",
+                            raw_score=0.8,
+                            normalized_probability=0.8,
+                            provider_id="foveacast",
+                            stage="initial",
+                        ),
+                    ),
+                    stage="initial",
+                ),
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    scores=(),
+                    stage="persistent",
+                ),
+            )
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+
+    assert inputs.active_search_stage == "persistent"
+    assert inputs.target_prominence is None
+
+
+def test_evaluate_run_marks_fallback_learned_sample_invalid_without_manual_override() -> (
+    None
+):
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    result = replace(
+        base,
+        state=replace(
+            base.state,
+            spec=replace(base.state.spec, prominence_provider_id="foveacast"),
+        ),
+        ux_sample_valid=False,
+        ux_sample_invalid_reason="saliency-fallback: runtime unavailable",
+    )
+
+    metrics = evaluate_run(result, EvaluationTarget("target"))
+
+    assert metrics.prominence_fallback is True
+    assert metrics.comparison_valid is False
+
+
 def test_evaluation_uses_scenario_target_after_wrong_action_and_abandonment() -> None:
     version = ApplicationVersion(
         id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
@@ -548,6 +826,380 @@ def test_evaluation_uses_scenario_target_after_wrong_action_and_abandonment() ->
     assert metrics.target.element_id.endswith("target")
     assert metrics.wrong_actions == 1
     assert metrics.abandoned is True
+
+
+def test_evaluation_cells_keep_prominence_provider_in_cell_identity() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    heuristic = evaluate_run(_result(version), EvaluationTarget("target"))
+    learned_result = _result(version)
+    learned_result = replace(
+        learned_result,
+        run_id="run-foveacast",
+        state=replace(
+            learned_result.state,
+            spec=replace(
+                learned_result.state.spec,
+                run_id="run-foveacast",
+                prominence_provider_id="foveacast",
+            ),
+        ),
+    )
+    learned = evaluate_run(
+        learned_result,
+        EvaluationTarget("target"),
+        inputs=RunEvaluationInputs(
+            prominence_provider_id="foveacast",
+            active_search_stage="initial",
+            model_dependent=True,
+        ),
+    )
+
+    evaluation = evaluate_experiment_results(
+        (
+            replace(_result(version), metrics=heuristic),
+            replace(learned_result, metrics=learned),
+        )
+    )
+
+    assert {cell.prominence_provider_id for cell in evaluation.cell_aggregates} == {
+        "heuristic",
+        "foveacast",
+    }
+
+
+def test_evaluation_canonicalizes_prominence_provider_aliases() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    result = _result(version)
+
+    metrics = evaluate_run(
+        result,
+        EvaluationTarget("target"),
+        inputs=RunEvaluationInputs(
+            prominence_provider_id="foveacast-prominence",
+        ),
+    )
+
+    assert metrics.prominence_provider_id == "foveacast"
+
+
+def test_prominence_event_ids_keep_target_lineage_separate_from_global_lineage() -> (
+    None
+):
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    result = replace(
+        base,
+        state=replace(
+            base.state,
+            spec=replace(base.state.spec, prominence_provider_id="foveacast"),
+        ),
+        evidence=RunEvidence(
+            prominence=(
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    scores=(
+                        ProminenceResult(
+                            element_id="target",
+                            raw_score=0.2,
+                            normalized_probability=0.2,
+                            provider_id="foveacast",
+                            stage="initial",
+                        ),
+                    ),
+                    source_event_id="event-target",
+                    profile_event_id="event-profile-target",
+                    stage="initial",
+                ),
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    scores=(
+                        ProminenceResult(
+                            element_id="competitor",
+                            raw_score=0.9,
+                            normalized_probability=0.9,
+                            provider_id="foveacast",
+                            stage="exploration",
+                        ),
+                    ),
+                    source_event_id="event-competitor",
+                    profile_event_id="event-profile-competitor",
+                    stage="exploration",
+                ),
+            )
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+
+    assert inputs.prominence_profile_event_ids == ("event-profile-target",)
+    assert inputs.prominence_operational_event_ids == ("event-target",)
+    assert inputs.prominence_lineage_event_ids == (
+        "event-profile-target",
+        "event-target",
+    )
+
+
+def test_profile_target_does_not_make_competitor_operational_event_target_bearing() -> (
+    None
+):
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    result = replace(
+        base,
+        state=replace(
+            base.state,
+            spec=replace(base.state.spec, prominence_provider_id="foveacast"),
+        ),
+        evidence=RunEvidence(
+            prominence=(
+                ProminenceEvidence(
+                    viewport_id="viewport-1",
+                    stage="exploration",
+                    profile_event_id="event-profile",
+                    operational_event_id="event-operational",
+                    profiles=(
+                        SimpleNamespace(
+                            viewport_id="inference-1",
+                            element_id="target",
+                            immediate=None,
+                            early=None,
+                            eventual=None,
+                        ),
+                    ),
+                    scores=(
+                        ProminenceResult(
+                            element_id="competitor",
+                            raw_score=0.8,
+                            normalized_probability=0.8,
+                            provider_id="foveacast",
+                        ),
+                    ),
+                ),
+            )
+        ),
+    )
+
+    inputs = evaluation_inputs_for(result)
+
+    assert inputs.prominence_profile_event_ids == ("event-profile",)
+    assert inputs.prominence_operational_event_ids == ()
+    assert inputs.prominence_lineage_event_ids == ("event-profile",)
+
+
+def test_run_evaluation_inputs_copy_score_mappings() -> None:
+    scores = {"target": 0.2}
+    stage_scores = {"initial": {"target": 0.2}}
+    inputs = RunEvaluationInputs(
+        prominence_scores=scores,
+        prominence_scores_by_stage=stage_scores,
+    )
+
+    scores["target"] = 0.9
+    stage_scores["initial"]["target"] = 0.9
+
+    assert inputs.prominence_scores["target"] == pytest.approx(0.2)
+    assert inputs.prominence_scores_by_stage["initial"]["target"] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    ("result", "metrics", "manifest", "expected"),
+    (
+        (
+            {"run_id": "run-1", "ux_sample_valid": True},
+            {
+                "run_id": "run-1",
+                "prominence_provider_id": "foveacast",
+                "comparison_valid": True,
+                "prominence_fallback": False,
+            },
+            {"run_id": "run-1", "prominence_provider_id": "foveacast"},
+            True,
+        ),
+        (
+            {"run_id": "run-1", "ux_sample_valid": True},
+            {"run_id": "run-1", "prominence_provider_id": "foveacast"},
+            {"run_id": "run-1", "prominence_provider_id": "foveacast"},
+            False,
+        ),
+        (
+            {"run_id": "run-1", "ux_sample_valid": False},
+            {
+                "run_id": "run-1",
+                "prominence_provider_id": "foveacast",
+                "comparison_valid": True,
+                "prominence_fallback": False,
+            },
+            {"run_id": "run-1", "prominence_provider_id": "foveacast"},
+            False,
+        ),
+        (
+            {"run_id": "run-1", "ux_sample_valid": True},
+            {
+                "run_id": "run-1",
+                "prominence_provider_id": "heuristic",
+                "comparison_valid": True,
+                "prominence_fallback": False,
+            },
+            {"run_id": "run-1", "prominence_provider_id": "foveacast"},
+            False,
+        ),
+        (
+            {
+                "run_id": "run-1",
+                "ux_sample_valid": True,
+                "ux_sample_invalid_reason": "saliency-fallback: runtime unavailable",
+            },
+            {
+                "run_id": "run-1",
+                "prominence_provider_id": "foveacast",
+                "comparison_valid": True,
+                "prominence_fallback": True,
+                "prominence_fallback_reason": "runtime unavailable",
+            },
+            {"run_id": "run-1", "prominence_provider_id": "foveacast"},
+            False,
+        ),
+    ),
+)
+def test_persisted_comparison_gate_cross_checks_all_validity_fields(
+    result: dict[str, object],
+    metrics: dict[str, object],
+    manifest: dict[str, object],
+    expected: bool,
+) -> None:
+    from ux_analyzer.application.evaluation import persisted_comparison_sample_is_valid
+
+    assert (
+        persisted_comparison_sample_is_valid(
+            result,
+            metrics,
+            manifest=manifest,
+            expected_run_id="run-1",
+            expected_prominence_provider_id="foveacast",
+        )
+        is expected
+    )
+
+
+def test_persisted_comparison_gate_rejects_typed_fallback_event_even_with_true_flags() -> (
+    None
+):
+    assert not persisted_comparison_sample_is_valid(
+        {"run_id": "run-1", "ux_sample_valid": True},
+        {
+            "run_id": "run-1",
+            "prominence_provider_id": "foveacast",
+            "comparison_valid": True,
+            "prominence_fallback": False,
+            "prominence_fallback_reason": None,
+        },
+        manifest={"run_id": "run-1", "prominence_provider_id": "foveacast"},
+        expected_run_id="run-1",
+        expected_prominence_provider_id="foveacast",
+        timeline_events=({"sequence": 4, "kind": "saliency-fallback-recorded"},),
+    )
+
+
+def test_cell_aggregate_reports_all_active_stages() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    first = evaluate_run(
+        _result(version),
+        EvaluationTarget("target"),
+        inputs=RunEvaluationInputs(active_search_stage="initial"),
+    )
+    second = replace(first, run_id="run-persistent", active_search_stage="persistent")
+
+    aggregate = aggregate_cell((first, second))
+
+    assert aggregate.active_search_stages == ("initial", "persistent")
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("raw_score", True),
+        ("normalized_probability", False),
+        ("first_notice_probability", True),
+        ("notice_within_budget_probability", False),
+    ),
+)
+def test_prominence_result_rejects_boolean_scores(field_name: str, value: bool) -> None:
+    with pytest.raises(ValueError):
+        ProminenceResult(
+            element_id="target",
+            raw_score=value if field_name == "raw_score" else 0.2,
+            normalized_probability=value
+            if field_name == "normalized_probability"
+            else 0.2,
+            first_notice_probability=value
+            if field_name == "first_notice_probability"
+            else 0.2,
+            notice_within_budget_probability=value
+            if field_name == "notice_within_budget_probability"
+            else 0.2,
+        )
+
+
+def test_prominence_result_rejects_unknown_search_stage() -> None:
+    with pytest.raises(ValueError, match="stage"):
+        ProminenceResult(
+            element_id="target",
+            raw_score=0.2,
+            normalized_probability=0.2,
+            stage="later",
+        )
+
+
+def test_fallback_learned_sample_is_excluded_from_foveacast_scorecards() -> None:
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    result = _result(version)
+    learned_result = replace(
+        result,
+        run_id="run-fallback",
+        state=replace(
+            result.state,
+            spec=replace(
+                result.state.spec,
+                run_id="run-fallback",
+                prominence_provider_id="foveacast",
+            ),
+        ),
+        ux_sample_valid=False,
+    )
+    fallback_metrics = replace(
+        evaluate_run(
+            learned_result,
+            EvaluationTarget("target"),
+            inputs=RunEvaluationInputs(
+                prominence_provider_id="foveacast",
+                active_search_stage="initial",
+                prominence_fallback=True,
+                prominence_fallback_reason="runtime unavailable",
+                model_dependent=True,
+            ),
+        ),
+        comparison_valid=False,
+    )
+
+    evaluation = evaluate_experiment_results(
+        (replace(learned_result, metrics=fallback_metrics),)
+    )
+
+    assert evaluation.run_metrics == ()
+    assert evaluation.cell_aggregates == ()
+    assert evaluation.variant_comparisons == ()
 
 
 def test_production_inputs_mark_target_below_fold_after_recorded_scroll() -> None:

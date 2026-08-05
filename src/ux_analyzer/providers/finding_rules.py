@@ -6,7 +6,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ux_analyzer.application.evaluation import RunMetrics
+from ux_analyzer.application.evaluation import (
+    RunMetrics,
+    format_prominence_provenance,
+)
 from ux_analyzer.domain.findings import (
     EvidenceClass,
     Finding,
@@ -108,7 +111,8 @@ class FindingRule:
             evidence_ids=evidence_ids,
             limitations=self.limitations,
             generated_explanation=(
-                f"Rule {category.value} triggered for run {metrics.run_id}."
+                f"Rule {category.value} triggered for run {metrics.run_id}. "
+                f"{_prominence_context(metrics)}"
             ),
             title=_title(category),
             cause=_cause(category, metrics),
@@ -410,4 +414,31 @@ def _cause(category: FindingCategory, metrics: RunMetrics) -> str:
             "Recorded recovery actions did not restore verified progress."
         ),
     }[category]
-    return f"{descriptions} Supporting metrics: {details}." if details else descriptions
+    context = _prominence_context(metrics)
+    if details:
+        return f"{descriptions} {context} Supporting metrics: {details}."
+    return f"{descriptions} {context}"
+
+
+def _prominence_context(metrics: RunMetrics) -> str:
+    provenance = format_prominence_provenance(
+        provider_id=metrics.prominence_provider_id,
+        active_search_stage=metrics.active_search_stage,
+        target_prominence_profiles=metrics.target_prominence_profiles,
+        target_prominence_sources=metrics.target_prominence_sources,
+        profile_event_ids=metrics.prominence_profile_event_ids,
+        operational_event_ids=metrics.prominence_operational_event_ids,
+        model_id=metrics.prominence_model_id,
+        model_version=metrics.prominence_model_version,
+        provider_version=metrics.prominence_provider_version,
+    )
+    fallback = (
+        f" Fallback warning: {metrics.prominence_fallback_reason}."
+        if metrics.prominence_fallback_reason
+        else ""
+    )
+    return (
+        "Prominence evidence: "
+        f"{provenance}; limitation=simulated model-estimate evidence, "
+        f"not human-attention calibration.{fallback}"
+    )

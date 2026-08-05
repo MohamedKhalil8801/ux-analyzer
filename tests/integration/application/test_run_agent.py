@@ -941,6 +941,10 @@ async def test_saliency_run_uses_capture_stage_and_typed_ordered_events(
     ]
     prominence = typed_events[-1]
     assert isinstance(prominence, ProminenceRecordedEvent)
+    prominence_evidence = result.evidence.prominence[0]
+    assert prominence_evidence.profile_event_id is not None
+    assert prominence_evidence.operational_event_id is not None
+    assert prominence_evidence.profile_event_id != prominence_evidence.operational_event_id
     payload = prominence.to_dict()
     assert "scores" not in payload
     assert "raw_map" not in payload
@@ -1524,7 +1528,8 @@ async def test_filesystem_result_projects_public_evidence_and_private_snapshot_f
     prominence = persisted["evidence"]["prominence"][0]
     assert prominence["viewport_id"] == "viewport-1"
     assert prominence["source_event_id"].startswith("event-")
-    assert set(prominence) == {"viewport_id", "source_event_id"}
+    assert prominence["profile_event_id"].startswith("event-")
+    assert prominence["operational_event_id"] == prominence["source_event_id"]
     selection = persisted["evidence"]["selections"][0]
     assert selection["source_event_id"].startswith("event-")
     assert "element_probabilities" not in selection

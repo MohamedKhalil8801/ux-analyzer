@@ -7,6 +7,7 @@ import pytest
 from ux_analyzer.application.checkpoint import (
     CheckpointError,
     ExperimentCheckpointStore,
+    finalized_bundle_failures,
     finalized_bundle_is_valid,
 )
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
@@ -32,6 +33,7 @@ def _write_finalized_bundle(
         "timeline.jsonl": (
             json.dumps(
                 {
+                    "sequence": 1,
                     "kind": "run-terminated" if terminal else "run-started",
                     "outcome": {"kind": "verified-success"} if terminal else None,
                 }
@@ -54,6 +56,20 @@ def _write_finalized_bundle(
         )
     )
     return run_path
+
+
+def _rewrite_checksums(run_path: Path) -> None:
+    files = tuple(
+        path
+        for path in sorted(run_path.iterdir())
+        if path.name != "checksums.sha256" and path.is_file()
+    )
+    (run_path / "checksums.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+            for path in files
+        )
+    )
 
 
 def test_checkpoint_updates_statuses_atomically(tmp_path: Path) -> None:
@@ -130,6 +146,82 @@ def test_resume_rejects_structurally_invalid_or_mismatched_bundle(
     _write_finalized_bundle(tmp_path, "run-1", **bundle_options)
 
     assert not finalized_bundle_is_valid(tmp_path, "run-1")
+
+
+def test_resume_rejects_checksum_consistent_duplicate_timeline_sequence(
+    tmp_path: Path,
+) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-1")
+    timeline = (
+        json.dumps(
+            {"sequence": 1, "kind": "run-started"}
+        ).encode()
+        + b"\n"
+        + json.dumps(
+            {
+                "sequence": 1,
+                "kind": "run-terminated",
+                "outcome": {"kind": "verified-success"},
+            }
+        ).encode()
+        + b"\n"
+    )
+    (run / "timeline.jsonl").write_bytes(timeline)
+    _rewrite_checksums(run)
+
+    failures = finalized_bundle_failures(run, expected_run_id="run-1")
+
+    assert any("timeline sequence" in failure for failure in failures)
+
+
+def test_resume_rejects_event_after_terminal_with_consistent_checksums(
+    tmp_path: Path,
+) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-1")
+    timeline = (
+        json.dumps(
+            {
+                "sequence": 1,
+                "kind": "run-terminated",
+                "outcome": {"kind": "verified-success"},
+            }
+        ).encode()
+        + b"\n"
+        + json.dumps({"sequence": 2, "kind": "run-started"}).encode()
+        + b"\n"
+    )
+    (run / "timeline.jsonl").write_bytes(timeline)
+    _rewrite_checksums(run)
+
+    failures = finalized_bundle_failures(run, expected_run_id="run-1")
+
+    assert any("after terminal" in failure for failure in failures)
+
+
+def test_resume_binds_bundle_directory_to_embedded_run_id(tmp_path: Path) -> None:
+    run = _write_finalized_bundle(
+        tmp_path,
+        "run-directory",
+        manifest_run_id="run-embedded",
+        result_run_id="run-embedded",
+    )
+
+    failures = finalized_bundle_failures(run)
+
+    assert any("bundle directory" in failure for failure in failures)
+
+
+def test_resume_rejects_symlinked_manifest_path(tmp_path: Path) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-symlink")
+    outside = tmp_path / "manifest-outside.json"
+    outside.write_bytes((run / "manifest.json").read_bytes())
+    (run / "manifest.json").unlink()
+    try:
+        (run / "manifest.json").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+    assert not finalized_bundle_is_valid(tmp_path, "run-symlink")
 
 
 def test_invalid_checksum_is_not_resumable(tmp_path: Path) -> None:

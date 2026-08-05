@@ -32,6 +32,16 @@ recovery. A finalized bundle cannot be mutated.
       timeline.jsonl
       artifacts/
         <sha256>
+      saliency/
+        <artifact-namespace>/
+          1s.npz
+          3s.npz
+          7s.npz
+          1s-heatmap.png
+          3s-heatmap.png
+          7s-heatmap.png
+          profiles.json
+          metadata.json
       result.json
       checksums.sha256
 ```
@@ -100,6 +110,18 @@ The current application also records provider/application events such as
 sanitized request/response, retries, latency, attempts, and token usage. The last
 lifecycle terminal event is `run-terminated`.
 
+Learned prominence uses typed allowlisted events. `saliency-inference-recorded`
+or `saliency-cache-hit` records viewport/artifact namespace, provider identity,
+three model checksums, execution provider, preprocessing version, precision,
+cache key/state, duration timings, artifact references, and bounded warnings.
+`saliency-profiles-recorded` links the same profile artifacts to search stage;
+`prominence-recorded` links operational prominence to its profile event through
+`source_event_id`, and records active provider, stage, selected duration mixture,
+and selected element IDs without numeric saliency. `saliency-fallback-recorded`
+records learned-provider failure, fallback provider, stage, and sanitized reason.
+`ProminenceEvidence` retains profile event ID and operational event ID as
+separate typed fields; legacy `source_event_id` aliases operational event ID.
+
 Typical terminal event fields include `outcome`, `verification`,
 `provider_manifests`, `configuration_digest`, and `artifact_checksums`.
 
@@ -109,6 +131,21 @@ Contains serialized `RunResult`, including run ID, terminal outcome,
 independent verification, agent claim, final state, replay evidence, per-run
 metrics, findings, and bundle path when available. JSON serialization converts
 domain dataclasses, enums, paths, bytes, and mappings at the storage boundary.
+
+Metrics and findings identify prominence provider and active search stage. Learned
+target prominence keeps immediate (`1s`), early (`3s`), and eventual (`7s`)
+profile evidence while scoring target prominence from active operational stage
+only. Missing active-stage target evidence is unavailable, not borrowed from
+another stage. Deterministic interface/action/geometry/verifier facts remain
+`deterministic-fact`; saliency, prominence, scent, policy, and cost estimates
+remain `model-estimate`.
+
+Fallback learned runs are operationally allowed to finish, but are not valid
+Foveacast comparison samples. `ux_sample_valid=false`, `comparison_valid=false`,
+and a sanitized `ux_sample_invalid_reason` persist through resume, evaluation,
+scorecard aggregation, and report grouping. Heuristic fallback evidence remains
+visible as diagnostic evidence. Learned samples with missing, malformed, or
+unlinked saliency replay artifacts are likewise excluded from comparison output.
 
 Experiment execution also writes `<output>/experiment.json` with per-run metrics,
 cell aggregates, paired variant comparisons, directional gates, findings, and
@@ -132,6 +169,21 @@ For finalized bundles it covers manifest, timeline, result, and files under
 `artifacts/`, but excludes `checksums.sha256` and `.active`. Aborted staging
 directories retain `crash.marker` for recovery and do not receive a finalized
 checksum file. Verify each published digest against bytes at its relative path.
+
+Saliency artifacts are checksum-covered generated evidence. Native `.npz` files
+contain normalized maps and geometry; grayscale `*-heatmap.png` files are
+heatmap-only and contain no source screenshot pixels; `profiles.json` contains
+element profiles and aggregation components; `metadata.json` contains cache key,
+provider/model/version, checksums, execution provider, geometry, warnings, and
+per-duration inference timing. Cache status is separate from runtime timing:
+cache hits still record provider/model identity and timing/artifact references.
+
+Reports may show a sanitized source screenshot overlay only when artifact policy
+permits it. Redaction never gets bypassed. When source pixels are blanked or
+unavailable, replay states `Overlay unavailable due redaction` and retains
+heatmap-only image, element geometry, ranked elements, and aggregation detail.
+Replay parser applies bounded JSON, timeline, image, and profile/aggregate limits;
+oversized or malformed evidence is unavailable rather than rendered.
 
 ## Redaction and Retention
 

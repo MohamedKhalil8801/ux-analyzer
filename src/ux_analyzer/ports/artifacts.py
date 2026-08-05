@@ -10,7 +10,7 @@ import re
 import struct
 import zipfile
 import zlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -18,9 +18,13 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
+import numpy as np
+from PIL import Image
+
 from ux_analyzer import __version__
 from ux_analyzer.domain.benchmark import FixtureInputs
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
+from ux_analyzer.domain.saliency import SALIENCY_GEOMETRY_VERSION
 
 REDACTED_VALUE = "[REDACTED]"
 
@@ -212,7 +216,135 @@ def canonicalize_saliency_artifact_content(
             policy=redaction or RedactionPolicy(),
             expected_viewport_id=expected_viewport_id,
         )
+    if kind is SaliencyArtifactKind.NATIVE_MAP:
+        validate_saliency_native_map_content(content)
+    elif kind is SaliencyArtifactKind.HEATMAP:
+        validate_saliency_heatmap_content(content)
     return content
+
+
+def parse_saliency_json_content(
+    kind: SaliencyArtifactKind,
+    content: bytes,
+    *,
+    expected_viewport_id: str | None = None,
+) -> object:
+    """Parse one canonical saliency JSON artifact through shared schema rules."""
+
+    canonical = canonicalize_saliency_artifact_content(
+        kind,
+        content,
+        expected_viewport_id=expected_viewport_id,
+    )
+    try:
+        return json.loads(canonical.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{kind.value} JSON is invalid") from error
+
+
+def _saliency_geometry_values(geometry: Mapping[str, object]) -> np.ndarray[Any, Any]:
+    if geometry.get("geometry_version") != SALIENCY_GEOMETRY_VERSION:
+        raise ValueError("native saliency geometry version is invalid")
+    return np.asarray(
+        (
+            *cast(list[object], geometry["source_dimensions"]),
+            *cast(list[object], geometry["native_dimensions"]),
+            *cast(list[object], geometry["content_dimensions"]),
+            geometry["pad_left"],
+            geometry["pad_top"],
+            geometry["pad_right"],
+            geometry["pad_bottom"],
+            geometry["scale"],
+            geometry["scale_x"],
+            geometry["scale_y"],
+            geometry["device_pixel_ratio"],
+            geometry["zoom"],
+        ),
+        dtype=np.float64,
+    )
+
+
+def validate_saliency_native_map_content(
+    content: bytes,
+    *,
+    expected_output_dimensions: tuple[int, int] | None = None,
+    expected_geometry: Mapping[str, object] | None = None,
+) -> None:
+    """Validate allowlisted float32 map and float64 geometry arrays."""
+
+    try:
+        with np.load(io.BytesIO(content), allow_pickle=False) as archive:
+            if set(archive.files) != {"values", "geometry"}:
+                raise ValueError("native saliency map arrays are not allowlisted")
+            values = archive["values"]
+            geometry = archive["geometry"]
+    except (OSError, ValueError, zipfile.BadZipFile) as error:
+        raise ValueError("native saliency map is invalid") from error
+    if (
+        values.dtype != np.dtype("float32")
+        or values.ndim != 2
+        or values.size == 0
+        or not np.isfinite(values).all()
+        or not ((values >= 0.0) & (values <= 1.0)).all()
+    ):
+        raise ValueError("native saliency map must be finite float32 values")
+    if (
+        geometry.dtype != np.dtype("float64")
+        or geometry.ndim != 1
+        or geometry.size != 15
+        or not np.isfinite(geometry).all()
+    ):
+        raise ValueError("native saliency geometry is invalid")
+    if expected_output_dimensions is not None:
+        width, height = expected_output_dimensions
+        if values.shape != (height, width):
+            raise ValueError("native saliency map shape does not match metadata")
+    if expected_geometry is not None:
+        geometry_values = _saliency_geometry_values(expected_geometry)
+        if not np.array_equal(geometry, geometry_values):
+            raise ValueError("native saliency geometry does not match metadata")
+
+
+def validate_saliency_heatmap_content(content: bytes) -> None:
+    """Validate grayscale heatmap PNG without accepting source pixels."""
+
+    if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("heatmap must be a PNG")
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(content)) as image:
+            if image.format != "PNG" or image.mode != "L":
+                raise ValueError("heatmap must be grayscale without source pixels")
+            if image.width <= 0 or image.height <= 0:
+                raise ValueError("heatmap dimensions must be positive")
+    except (OSError, ValueError) as error:
+        raise ValueError("heatmap is invalid") from error
+
+
+def validate_timeline_event_order(
+    events: Sequence[Mapping[str, object]],
+) -> tuple[str, ...]:
+    """Reject duplicate, non-monotonic, and post-terminal timeline events."""
+
+    failures: list[str] = []
+    terminal_seen = False
+    for expected_sequence, event in enumerate(events, start=1):
+        sequence = event.get("sequence")
+        if type(sequence) is not int or sequence != expected_sequence:
+            failures.append(
+                f"timeline sequence is not strict at event {expected_sequence}"
+            )
+        kind = event.get("kind")
+        if terminal_seen:
+            failures.append(
+                f"timeline event {expected_sequence} appears after terminal event"
+            )
+        if kind == "run-terminated":
+            if terminal_seen:
+                failures.append("timeline contains duplicate terminal event")
+            terminal_seen = True
+    return tuple(dict.fromkeys(failures))
 
 
 _SALiency_PROFILE_KEYS = frozenset(
@@ -361,6 +493,13 @@ def _json_number(value: object, name: str) -> float:
     number = float(value)
     if not math.isfinite(number):
         raise ValueError(f"{name} must be finite number")
+    return number
+
+
+def _json_probability(value: object, name: str) -> float:
+    number = _json_number(value, name)
+    if not 0.0 <= number <= 1.0:
+        raise ValueError(f"{name} must be normalized")
     return number
 
 
@@ -525,9 +664,13 @@ def _validate_saliency_profiles(
                 raise ValueError("estimate kind is invalid")
             score = estimate_mapping["score"]
             if score is not None:
-                score_value = _json_number(score, "estimate score")
-                if not 0.0 <= score_value <= 1.0:
-                    raise ValueError("estimate score must be normalized")
+                _json_probability(score, "estimate score")
+            if kind == "unavailable" and score is not None:
+                raise ValueError("unavailable estimate must not carry a score")
+            if kind != "unavailable" and (
+                score is None or estimate_mapping["source"] is None
+            ):
+                raise ValueError("available estimate needs score and source")
             source = estimate_mapping["source"]
             if source is not None:
                 _json_text(source, "estimate source")
@@ -535,6 +678,7 @@ def _validate_saliency_profiles(
         if not isinstance(aggregates, list):
             raise ValueError("profile aggregates must be a list")
         aggregate_values = cast(list[object], aggregates)
+        aggregate_durations: set[str] = set()
         for aggregate_index, raw_aggregate in enumerate(aggregate_values):
             aggregate = _json_mapping(
                 raw_aggregate,
@@ -551,17 +695,38 @@ def _validate_saliency_profiles(
             duration = _json_text(aggregate["duration"], "aggregate duration")
             if duration not in _SALiency_DURATIONS:
                 raise ValueError("aggregate duration is invalid")
+            if duration in aggregate_durations:
+                raise ValueError("profile aggregate durations must be unique")
+            aggregate_durations.add(duration)
             for field_name in _SALiency_AGGREGATE_KEYS - {
                 "viewport_id",
                 "element_id",
                 "duration",
             }:
-                _json_number(aggregate[field_name], f"aggregate {field_name}")
+                if field_name in {
+                    "density",
+                    "robust_peak",
+                    "mass_share",
+                    "visibility_fraction",
+                    "occlusion_fraction",
+                    "raw_score",
+                    "adjusted_score",
+                }:
+                    _json_probability(
+                        aggregate[field_name], f"aggregate {field_name}"
+                    )
+                else:
+                    number = _json_number(
+                        aggregate[field_name], f"aggregate {field_name}"
+                    )
+                    if number < 0:
+                        raise ValueError(f"aggregate {field_name} must not be negative")
         _json_text(profile["aggregation_version"], "profile aggregation_version")
         provenance = profile["prediction_provenance"]
         if not isinstance(provenance, list):
             raise ValueError("profile prediction_provenance must be a list")
         provenance_values = cast(list[object], provenance)
+        provenance_durations: set[str] = set()
         for provenance_index, raw_provenance in enumerate(provenance_values):
             item = _json_mapping(
                 raw_provenance,
@@ -572,6 +737,9 @@ def _validate_saliency_profiles(
             duration = _json_text(item["duration"], "provenance duration")
             if duration not in _SALiency_DURATIONS:
                 raise ValueError("provenance duration is invalid")
+            if duration in provenance_durations:
+                raise ValueError("prediction provenance durations must be unique")
+            provenance_durations.add(duration)
             _validate_saliency_prediction_metadata(
                 item["metadata"], f"profile provenance {provenance_index}.metadata"
             )

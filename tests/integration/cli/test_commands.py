@@ -109,6 +109,10 @@ def _write_resumable_metrics_bundle(
         "claimed_completion": True,
         "false_success": False,
         "abandoned": False,
+        "prominence_provider_id": spec.prominence_provider_id,
+        "comparison_valid": True,
+        "prominence_fallback": False,
+        "prominence_fallback_reason": None,
         "discovery_cost": {
             "inspection_cost": cost,
             "region_cost": 0,
@@ -146,6 +150,8 @@ def _write_resumable_metrics_bundle(
                 "outcome": {"kind": "verified-success"},
                 "verification": {"verified": True},
                 "agent_claimed_success": True,
+                "ux_sample_valid": True,
+                "ux_sample_invalid_reason": None,
                 "metrics": metrics,
                 "findings": [],
             }
@@ -552,9 +558,7 @@ def test_resume_completion_rejects_mismatched_manifest_or_returned_provider(
     persisted = json.loads(
         (tmp_path / "runs" / foveacast_spec.run_id / "result.json").read_text()
     )
-    returned_spec = replace(
-        foveacast_spec, prominence_provider_id=returned_provider_id
-    )
+    returned_spec = replace(foveacast_spec, prominence_provider_id=returned_provider_id)
     returned = RunResult(
         run_id=foveacast_spec.run_id,
         outcome=VerifiedSuccess(),
@@ -565,9 +569,7 @@ def test_resume_completion_rejects_mismatched_manifest_or_returned_provider(
     )
 
     summary_path, _ = cli._complete_experiment(
-        ExperimentResult(
-            specs=(foveacast_spec,), results=(returned,), failures=()
-        ),
+        ExperimentResult(specs=(foveacast_spec,), results=(returned,), failures=()),
         output=tmp_path,
         runtime=matrix.loaded.runtime,
         selected_specs=(foveacast_spec,),
