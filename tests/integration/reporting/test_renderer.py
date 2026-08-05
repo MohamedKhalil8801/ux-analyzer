@@ -911,6 +911,23 @@ def test_renderer_rejects_malformed_timeline_order(
     assert any("timeline" in failure for failure in loaded["integrity_failures"])
 
 
+def test_renderer_rejects_duplicate_bundle_json_fields(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-duplicate-json", version="improved", discovery_cost=3)
+    run = tmp_path / "runs" / "run-duplicate-json"
+    manifest = (run / "manifest.json").read_text(encoding="utf-8")
+    manifest = manifest.replace(
+        '"run_id": "run-duplicate-json",',
+        '"run_id": "run-duplicate-json", "run_id": "run-duplicate-json",',
+        1,
+    )
+    (run / "manifest.json").write_text(manifest, encoding="utf-8")
+    _write_checksums(run)
+
+    loaded = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert loaded["trusted"] is False
+
+
 def test_renderer_rejects_malformed_native_map_from_saliency_replay(
     tmp_path: Path,
 ) -> None:
@@ -1244,6 +1261,26 @@ def test_renderer_rejects_profile_prediction_provenance_mismatch(
         )
     )
     _write_checksums(profiles_path.parents[2])
+
+    run = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert run["saliency"][0]["replay_available"] is False
+
+
+def test_renderer_rejects_saliency_screenshot_digest_mismatch(
+    tmp_path: Path,
+) -> None:
+    screenshot = BytesIO()
+    Image.new("RGB", (2, 2), color="white").save(screenshot, format="PNG")
+    _write_run(
+        tmp_path,
+        "run-screenshot-digest",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+        screenshot=screenshot.getvalue(),
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-screenshot-digest")
 
     run = renderer._load_experiment(tmp_path)["runs"][0]
 

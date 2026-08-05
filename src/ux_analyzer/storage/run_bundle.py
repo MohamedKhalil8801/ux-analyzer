@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image
 
 from ux_analyzer.domain.run import ProviderManifest
+from ux_analyzer.domain.saliency import SALIENCY_GEOMETRY_VERSION
 from ux_analyzer.ports.artifacts import (
     REDACTED_VALUE,
     ArtifactReference,
@@ -46,6 +47,10 @@ from ux_analyzer.ports.artifacts import (
 _CHECKSUMS_FILE = "checksums.sha256"
 _CRASH_MARKER = "crash.marker"
 _ACTIVE_MARKER = ".active"
+_MAX_SALIENCY_ARTIFACT_BYTES = 8 * 1024 * 1024
+_MAX_SALIENCY_HEATMAP_PIXELS = 16 * 1024 * 1024
+_MAX_SALIENCY_NPZ_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+_MAX_SALIENCY_MAP_ELEMENTS = 16 * 1024 * 1024
 _PRIVATE_PERSISTENCE_KEYS = frozenset(
     {
         "execution_reference",
@@ -60,6 +65,7 @@ _PRIVATE_PERSISTENCE_KEYS = frozenset(
 
 def _is_private_persistence_key(value: object) -> bool:
     return str(value) in _PRIVATE_PERSISTENCE_KEYS
+
 
 def _json_value(value: object) -> Any:
     """Convert domain values to JSON data at infrastructure boundary."""
@@ -235,7 +241,7 @@ def _write_chunks(path: Path, chunks: Iterable[bytes], label: str) -> None:
         raise
 
 
-def _read_bytes(path: Path, label: str) -> bytes:
+def _read_bytes(path: Path, label: str, *, max_bytes: int | None = None) -> bytes:
     path = _absolute_lexical(path)
     _assert_secure_ancestors(path, label)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -245,11 +251,18 @@ def _read_bytes(path: Path, label: str) -> bytes:
         _assert_secure_ancestors(path, label)
         if _is_link_or_reparse(path):
             raise BundleStateError(f"{label} must not be a symlink or reparse point")
+        if max_bytes is not None and os.fstat(descriptor).st_size > max_bytes:
+            raise BundleStateError(f"{label} exceeds size limit")
     except BaseException:
         os.close(descriptor)
         raise
     with os.fdopen(descriptor, "rb") as handle:
-        return handle.read()
+        if max_bytes is None:
+            return handle.read()
+        content = handle.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise BundleStateError(f"{label} exceeds size limit")
+        return content
 
 
 def _secure_replace(source: Path, destination: Path, label: str) -> None:
@@ -575,9 +588,65 @@ def _secure_make_temporary_directory(parent: Path, prefix: str, label: str) -> P
     return path
 
 
-def _validate_native_map(content: bytes) -> None:
-    """Validate native map arrays at filesystem storage boundary."""
+def _saliency_geometry_values(geometry: Mapping[str, object]) -> np.ndarray[Any, Any]:
+    if geometry.get("geometry_version") != SALIENCY_GEOMETRY_VERSION:
+        raise ValueError("native saliency geometry version is invalid")
+    return np.asarray(
+        (
+            *cast(list[object], geometry["source_dimensions"]),
+            *cast(list[object], geometry["native_dimensions"]),
+            *cast(list[object], geometry["content_dimensions"]),
+            geometry["pad_left"],
+            geometry["pad_top"],
+            geometry["pad_right"],
+            geometry["pad_bottom"],
+            geometry["scale"],
+            geometry["scale_x"],
+            geometry["scale_y"],
+            geometry["device_pixel_ratio"],
+            geometry["zoom"],
+        ),
+        dtype=np.float64,
+    )
 
+
+def validate_saliency_native_map_content(
+    content: bytes,
+    *,
+    expected_output_dimensions: tuple[int, int] | None = None,
+    expected_geometry: Mapping[str, object] | None = None,
+) -> None:
+    """Validate bounded float32 map and float64 geometry arrays."""
+
+    if len(content) > _MAX_SALIENCY_ARTIFACT_BYTES:
+        raise ValueError("native saliency map exceeds resource limit")
+    try:
+        with zipfile.ZipFile(io.BytesIO(content), "r") as archive:
+            infos = archive.infolist()
+            if {info.filename for info in infos} != {"values.npy", "geometry.npy"}:
+                raise ValueError("native saliency map arrays are not allowlisted")
+            if len(infos) != 2 or any(
+                info.file_size > _MAX_SALIENCY_NPZ_UNCOMPRESSED_BYTES for info in infos
+            ):
+                raise ValueError("native saliency map exceeds resource limit")
+            if (
+                sum(info.file_size for info in infos)
+                > _MAX_SALIENCY_NPZ_UNCOMPRESSED_BYTES
+            ):
+                raise ValueError("native saliency map exceeds resource limit")
+            values_shape, values_dtype = _read_npy_header(archive, "values.npy")
+            geometry_shape, geometry_dtype = _read_npy_header(archive, "geometry.npy")
+    except (OSError, ValueError, EOFError, KeyError, zipfile.BadZipFile) as error:
+        raise ValueError("native saliency map is invalid") from error
+    if (
+        len(values_shape) != 2
+        or any(dimension <= 0 for dimension in values_shape)
+        or values_shape[0] * values_shape[1] > _MAX_SALIENCY_MAP_ELEMENTS
+        or values_dtype != np.dtype("float32")
+        or geometry_shape != (15,)
+        or geometry_dtype != np.dtype("float64")
+    ):
+        raise ValueError("native saliency map exceeds resource limit")
     try:
         with np.load(io.BytesIO(content), allow_pickle=False) as archive:
             if set(archive.files) != {"values", "geometry"}:
@@ -586,28 +655,58 @@ def _validate_native_map(content: bytes) -> None:
             geometry = archive["geometry"]
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         raise ValueError("native saliency map is invalid") from error
-    if (
-        values.dtype != np.dtype("float32")
-        or values.ndim != 2
-        or values.size == 0
-        or not np.isfinite(values).all()
-        or not ((values >= 0.0) & (values <= 1.0)).all()
-    ):
+    if not np.isfinite(values).all() or not ((values >= 0.0) & (values <= 1.0)).all():
         raise ValueError("native saliency map must be finite float32 values")
-    if (
-        geometry.dtype != np.dtype("float64")
-        or geometry.ndim != 1
-        or geometry.size != 15
-        or not np.isfinite(geometry).all()
-    ):
+    if not np.isfinite(geometry).all():
         raise ValueError("native saliency geometry is invalid")
+    if expected_output_dimensions is not None:
+        width, height = expected_output_dimensions
+        if values.shape != (height, width):
+            raise ValueError("native saliency map shape does not match metadata")
+    if expected_geometry is not None and not np.array_equal(
+        geometry, _saliency_geometry_values(expected_geometry)
+    ):
+        raise ValueError("native saliency geometry does not match metadata")
+
+
+def _read_npy_header(
+    archive: zipfile.ZipFile, name: str
+) -> tuple[tuple[int, ...], np.dtype[Any]]:
+    with archive.open(name, "r") as stream:
+        major, _minor = np.lib.format.read_magic(stream)
+        if major == 1:
+            shape, _fortran_order, dtype = np.lib.format.read_array_header_1_0(stream)
+        elif major == 2:
+            shape, _fortran_order, dtype = np.lib.format.read_array_header_2_0(stream)
+        else:
+            raise ValueError("native saliency map NPY version is unsupported")
+    return tuple(int(dimension) for dimension in shape), np.dtype(dtype)
+
+
+def _validate_native_map(content: bytes) -> None:
+    """Validate native map arrays at filesystem storage boundary."""
+
+    validate_saliency_native_map_content(content)
 
 
 def _validate_heatmap(content: bytes) -> None:
     """Validate grayscale heatmap bytes at filesystem storage boundary."""
 
+    validate_saliency_heatmap_content(content)
+
+
+def validate_saliency_heatmap_content(content: bytes) -> None:
+    """Validate grayscale heatmap bytes at filesystem storage boundary."""
+
     if not content.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ValueError("heatmap must be a PNG")
+    if len(content) > _MAX_SALIENCY_ARTIFACT_BYTES:
+        raise ValueError("heatmap exceeds resource limit")
+    if len(content) < 24:
+        raise ValueError("heatmap PNG is truncated")
+    width, height = struct.unpack(">II", content[16:24])
+    if width <= 0 or height <= 0 or width * height > _MAX_SALIENCY_HEATMAP_PIXELS:
+        raise ValueError("heatmap dimensions exceed resource limit")
     chunks: list[bytes] = []
     offset = 8
     try:

@@ -101,6 +101,15 @@ def test_checkpoint_rejects_malformed_existing_state(tmp_path: Path) -> None:
         ExperimentCheckpointStore(tmp_path, ("run-1",)).initialize(resume=True)
 
 
+def test_checkpoint_rejects_duplicate_json_fields(tmp_path: Path) -> None:
+    (tmp_path / "experiment-progress.json").write_text(
+        '{"schema_version":1,"schema_version":1}', encoding="utf-8"
+    )
+
+    with pytest.raises(CheckpointError, match="invalid checkpoint"):
+        ExperimentCheckpointStore(tmp_path, ("run-1",)).initialize(resume=True)
+
+
 def test_resume_marks_staging_and_validates_finalized_bundle(tmp_path: Path) -> None:
     _write_finalized_bundle(tmp_path, "run-1")
     staging = tmp_path / ".staging" / "run-2"
@@ -153,9 +162,7 @@ def test_resume_rejects_checksum_consistent_duplicate_timeline_sequence(
 ) -> None:
     run = _write_finalized_bundle(tmp_path, "run-1")
     timeline = (
-        json.dumps(
-            {"sequence": 1, "kind": "run-started"}
-        ).encode()
+        json.dumps({"sequence": 1, "kind": "run-started"}).encode()
         + b"\n"
         + json.dumps(
             {
@@ -172,6 +179,42 @@ def test_resume_rejects_checksum_consistent_duplicate_timeline_sequence(
     failures = finalized_bundle_failures(run, expected_run_id="run-1")
 
     assert any("timeline sequence" in failure for failure in failures)
+
+
+def test_resume_accepts_checksum_valid_unsequenced_legacy_timeline(
+    tmp_path: Path,
+) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-legacy")
+    timeline = (
+        json.dumps(
+            {"kind": "run-terminated", "outcome": {"kind": "verified-success"}}
+        ).encode()
+        + b"\n"
+    )
+    (run / "timeline.jsonl").write_bytes(timeline)
+    _rewrite_checksums(run)
+
+    assert finalized_bundle_is_valid(tmp_path, "run-legacy")
+
+
+def test_resume_rejects_mixed_legacy_and_sequenced_timeline(
+    tmp_path: Path,
+) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-mixed")
+    timeline = (
+        json.dumps({"sequence": 1, "kind": "run-started"}).encode()
+        + b"\n"
+        + json.dumps(
+            {"kind": "run-terminated", "outcome": {"kind": "verified-success"}}
+        ).encode()
+        + b"\n"
+    )
+    (run / "timeline.jsonl").write_bytes(timeline)
+    _rewrite_checksums(run)
+
+    failures = finalized_bundle_failures(run, expected_run_id="run-mixed")
+
+    assert any("mixes" in failure for failure in failures)
 
 
 def test_resume_rejects_event_after_terminal_with_consistent_checksums(

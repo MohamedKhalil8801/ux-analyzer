@@ -32,6 +32,7 @@ from ux_analyzer.application.checkpoint import (
     CheckpointError,
     ExperimentCheckpointStore,
     finalized_bundle_is_valid,
+    read_finalized_bundle,
 )
 from ux_analyzer.application.evaluation import (
     RunMetrics,
@@ -1418,17 +1419,14 @@ def _selected_finalized_evidence(
             expected_prominence_provider_id=spec.prominence_provider_id,
         ):
             continue
-        result_path = output / "runs" / spec.run_id / "result.json"
-        manifest_path = output / "runs" / spec.run_id / "manifest.json"
         try:
-            persisted_value = json.loads(result_path.read_text(encoding="utf-8"))
-            manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(persisted_value, dict) or not isinstance(
-                manifest_value, dict
-            ):
-                raise ValueError("result must contain an object")
-            persisted_object = cast(dict[str, object], persisted_value)
-            manifest_object = cast(dict[str, object], manifest_value)
+            persisted_snapshot = read_finalized_bundle(
+                output / "runs" / spec.run_id,
+                expected_run_id=spec.run_id,
+                expected_prominence_provider_id=spec.prominence_provider_id,
+            )
+            persisted_object = persisted_snapshot.result
+            manifest_object = persisted_snapshot.manifest
             raw_metrics = persisted_object.get("metrics")
             if isinstance(
                 raw_metrics, Mapping
@@ -1438,6 +1436,7 @@ def _selected_finalized_evidence(
                 manifest=manifest_object,
                 expected_run_id=spec.run_id,
                 expected_prominence_provider_id=spec.prominence_provider_id,
+                timeline_events=persisted_snapshot.events,
             ):
                 persisted_metrics = adapter.validate_python(raw_metrics)
                 if persisted_metrics.comparison_valid:

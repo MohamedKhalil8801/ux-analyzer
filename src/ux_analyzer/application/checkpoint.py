@@ -23,6 +23,21 @@ _CHECKPOINT_NAME = "experiment-progress.json"
 _SCHEMA_VERSION = 1
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
 _QUARANTINE_DIR = ".quarantine"
+_MAX_BUNDLE_JSON_BYTES = 8 * 1024 * 1024
+_MAX_BUNDLE_TIMELINE_BYTES = 16 * 1024 * 1024
+_MAX_BUNDLE_CHECKSUM_BYTES = 8 * 1024 * 1024
+_MAX_BUNDLE_EVENTS = 100_000
+
+
+def _json_object_without_duplicates(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("JSON contains duplicate fields")
+        result[key] = value
+    return result
 
 
 class CheckpointError(ValueError):
@@ -38,6 +53,16 @@ class ExperimentCheckpoint:
     failed_run_ids: tuple[str, ...]
     interrupted_run_ids: tuple[str, ...]
     pending_run_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizedBundleSnapshot:
+    """Securely parsed finalized evidence reused by resume and evaluation."""
+
+    bundle: Path
+    manifest: dict[str, object]
+    result: dict[str, object]
+    events: tuple[dict[str, object], ...]
 
 
 class ExperimentCheckpointStore:
@@ -168,8 +193,20 @@ class ExperimentCheckpointStore:
 
     def _load(self) -> None:
         try:
-            raw_value = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            secure_assert_ancestors(self.path, "experiment checkpoint")
+            if secure_is_link_or_reparse(self.path):
+                raise RuntimeError(
+                    "experiment checkpoint is a symlink or reparse point"
+                )
+            raw_value = json.loads(
+                secure_read_bytes(
+                    self.path,
+                    "experiment checkpoint",
+                    max_bytes=_MAX_BUNDLE_JSON_BYTES,
+                ).decode("utf-8"),
+                object_pairs_hook=_json_object_without_duplicates,
+            )
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
             raise CheckpointError(f"invalid checkpoint: {error}") from error
         if not isinstance(raw_value, dict):
             raise CheckpointError("invalid checkpoint: expected object")
@@ -270,7 +307,7 @@ def finalized_bundle_is_valid(
         bundle,
         expected_run_id=run_id,
         expected_prominence_provider_id=expected_prominence_provider_id,
-        require_persisted_validity=True,
+        require_persisted_validity=False,
     )
 
 
@@ -297,9 +334,15 @@ def finalized_bundle_failures(
     except (OSError, RuntimeError, ValueError):
         return ["finalized bundle path contains symlink or reparse point"]
     try:
-        lines = secure_read_bytes(checksum_path, "finalized bundle checksums").decode(
-            "utf-8"
-        ).splitlines()
+        lines = (
+            secure_read_bytes(
+                checksum_path,
+                "finalized bundle checksums",
+                max_bytes=_MAX_BUNDLE_CHECKSUM_BYTES,
+            )
+            .decode("utf-8")
+            .splitlines()
+        )
     except (OSError, RuntimeError, UnicodeError):
         return ["unreadable checksum file: checksums.sha256"]
     failures: list[str] = []
@@ -325,7 +368,10 @@ def finalized_bundle_failures(
         checksums[relative] = digest
 
     actual_files: set[str] = set()
-    for candidate in bundle.rglob("*"):
+    for candidate_index, candidate in enumerate(bundle.rglob("*"), start=1):
+        if candidate_index > _MAX_BUNDLE_EVENTS:
+            failures.append("finalized bundle contains too many files")
+            break
         if secure_is_link_or_reparse(candidate):
             failures.append("finalized bundle contains symlink or reparse point")
             continue
@@ -344,7 +390,13 @@ def finalized_bundle_failures(
         path = bundle.joinpath(*PurePosixPath(relative).parts)
         try:
             digest = hashlib.sha256()
-            digest.update(secure_read_bytes(path, "finalized bundle artifact"))
+            digest.update(
+                secure_read_bytes(
+                    path,
+                    "finalized bundle artifact",
+                    max_bytes=_MAX_BUNDLE_TIMELINE_BYTES,
+                )
+            )
             actual = digest.hexdigest()
         except (OSError, RuntimeError):
             failures.append(f"unreadable checksummed file: {relative}")
@@ -424,8 +476,15 @@ def _read_json_object(path: Path, name: str, failures: list[str]) -> dict[str, o
     try:
         if secure_is_link_or_reparse(path):
             raise RuntimeError("bundle file is a symlink or reparse point")
-        value = json.loads(secure_read_bytes(path, f"bundle {name}").decode("utf-8"))
-    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError):
+        value = json.loads(
+            secure_read_bytes(
+                path,
+                f"bundle {name}",
+                max_bytes=_MAX_BUNDLE_JSON_BYTES,
+            ).decode("utf-8"),
+            object_pairs_hook=_json_object_without_duplicates,
+        )
+    except (OSError, RuntimeError, UnicodeError, ValueError):
         failures.append(f"invalid JSON bundle file: {name}")
         return {}
     if not isinstance(value, dict):
@@ -438,7 +497,15 @@ def _read_json_lines(path: Path, failures: list[str]) -> list[dict[str, object]]
     try:
         if secure_is_link_or_reparse(path):
             raise RuntimeError("timeline is a symlink or reparse point")
-        lines = secure_read_bytes(path, "bundle timeline").decode("utf-8").splitlines()
+        lines = (
+            secure_read_bytes(
+                path,
+                "bundle timeline",
+                max_bytes=_MAX_BUNDLE_TIMELINE_BYTES,
+            )
+            .decode("utf-8")
+            .splitlines()
+        )
     except (OSError, RuntimeError, UnicodeError):
         failures.append("unreadable bundle file: timeline.jsonl")
         return []
@@ -447,15 +514,46 @@ def _read_json_lines(path: Path, failures: list[str]) -> list[dict[str, object]]
         if not line.strip():
             continue
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
+            value = json.loads(line, object_pairs_hook=_json_object_without_duplicates)
+        except ValueError:
             failures.append(f"invalid timeline JSON at line {line_number}")
             continue
         if not isinstance(value, dict):
             failures.append(f"timeline entry is not object at line {line_number}")
             continue
+        if len(events) >= _MAX_BUNDLE_EVENTS:
+            failures.append("timeline.jsonl contains too many events")
+            break
         events.append(cast(dict[str, object], value))
     if not events:
         failures.append("timeline.jsonl contains no events")
     failures.extend(validate_timeline_event_order(events))
     return events
+
+
+def read_finalized_bundle(
+    bundle: Path,
+    *,
+    expected_run_id: str | None = None,
+    expected_prominence_provider_id: str | None = None,
+) -> FinalizedBundleSnapshot:
+    """Validate and securely parse one finalized bundle for trusted reuse."""
+
+    failures = finalized_bundle_failures(
+        bundle,
+        expected_run_id=expected_run_id,
+        expected_prominence_provider_id=expected_prominence_provider_id,
+    )
+    if failures:
+        raise CheckpointError("invalid finalized bundle: " + "; ".join(failures))
+    parsed_failures: list[str] = []
+    manifest = _read_json_object(
+        Path(bundle) / "manifest.json", "manifest.json", parsed_failures
+    )
+    result = _read_json_object(
+        Path(bundle) / "result.json", "result.json", parsed_failures
+    )
+    events = _read_json_lines(Path(bundle) / "timeline.jsonl", parsed_failures)
+    if parsed_failures:
+        raise CheckpointError("invalid finalized bundle: " + "; ".join(parsed_failures))
+    return FinalizedBundleSnapshot(Path(bundle), manifest, result, tuple(events))

@@ -103,15 +103,13 @@ evidence. Report projections keep private execution fields out.
 
 Foveacast saliency contracts, registry, adapter, aggregation, stage selection,
 cache, fallback, and replay paths are implemented as model-dependent
-extensions. No real-model focused promotion, human calibration, production API,
-or issue-tracker adapter is part of current evidence. Task 14 initially found
-the CPU runtime missing; an autonomous `uv sync --extra saliency-cpu` attempt
-installed `onnxruntime`, after which the real CPU gate reached session loading
-but failed before valid inference because the pinned model exposed a symbolic
-input shape while the adapter requires fixed positive integers. DirectML remains
-an optional Windows/AMD path; this environment reported no DirectML provider.
-No valid real saliency output or focused comparison exists. Deferred contracts
-are recorded in [roadmap](roadmap.md).
+extensions. The pinned CPU known-screenshot gate now produces stable finite
+outputs for all three durations after symbolic input dimensions were handled.
+No real-model focused promotion, human calibration, production API, or
+issue-tracker adapter is part of current evidence. DirectML remains an optional
+Windows/AMD path; this environment reported no DirectML provider. No real
+focused comparison, latency/RSS budget, or paired completion result exists.
+Deferred contracts are recorded in [roadmap](roadmap.md).
 
 ## Saliency evidence boundary
 

@@ -563,6 +563,21 @@ class FoveacastProminenceProvider:
         cache_state: str,
     ) -> ProminenceBatch:
         scores = self.stage_selector.select(profiles, stage)
+        fallback_sources = tuple(
+            dict.fromkeys(
+                score.evidence_source or "missing-duration"
+                for score in scores
+                if score.evidence_kind == "fallback"
+            )
+        )
+        if fallback_sources:
+            reason = "learned duration fallback: " + ", ".join(fallback_sources)
+            return self._fallback_batch(
+                snapshot,
+                stage,
+                RuntimeError(reason),
+                learned_profiles=profiles,
+            )
         scored_ids = {score.element_id for score in scores}
         unavailable_profiles = tuple(
             profile for profile in profiles if profile.element_id not in scored_ids
@@ -585,6 +600,8 @@ class FoveacastProminenceProvider:
         snapshot: ViewportSnapshot,
         stage: SearchStage,
         error: Exception,
+        *,
+        learned_profiles: Sequence[ElementAttentionProfile] = (),
     ) -> ProminenceBatch:
         reason = str(error).strip() or type(error).__name__
         if not self.fallback_enabled:
@@ -610,6 +627,8 @@ class FoveacastProminenceProvider:
             learned_unavailable_reason=reason,
             fallback_reason=reason,
             cache_state="fallback",
+            learned_profiles=tuple(learned_profiles),
+            unavailable_learned_profiles=tuple(learned_profiles),
         )
 
     def _get_model_provider(self) -> _SaliencyModelProvider:

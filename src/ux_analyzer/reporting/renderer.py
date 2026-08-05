@@ -28,14 +28,14 @@ from ux_analyzer.ports.artifacts import (
     parse_saliency_json_content,
     required_saliency_artifact_paths,
     validate_saliency_artifact_path,
-    validate_saliency_heatmap_content,
-    validate_saliency_native_map_content,
     validate_timeline_event_order,
 )
 from ux_analyzer.storage.run_bundle import (
     secure_assert_ancestors,
     secure_is_link_or_reparse,
     secure_read_bytes,
+    validate_saliency_heatmap_content,
+    validate_saliency_native_map_content,
 )
 
 DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
@@ -73,6 +73,19 @@ _METRIC_IDENTITY_KEYS = frozenset(
     }
 )
 _SALIENCY_DURATIONS = ("1s", "3s", "7s")
+
+
+def _json_object_without_duplicates(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("JSON contains duplicate fields")
+        result[key] = value
+    return result
+
+
 _SALIENCY_ARTIFACT_FILENAMES = frozenset(
     {
         "1s.npz",
@@ -703,7 +716,9 @@ def _read_object(path: Path, *, required: bool = True) -> dict[str, Any]:
     content = secure_read_bytes(path, "report JSON")
     if len(content) > _MAX_REPORT_JSON_BYTES:
         raise ValueError(f"report JSON exceeds {_MAX_REPORT_JSON_BYTES} bytes")
-    value = json.loads(content.decode("utf-8"))
+    value = json.loads(
+        content.decode("utf-8"), object_pairs_hook=_json_object_without_duplicates
+    )
     return _mapping(value)
 
 
@@ -717,8 +732,11 @@ def _read_object_safely(
         content = secure_read_bytes(path, "report JSON")
         if len(content) > _MAX_REPORT_JSON_BYTES:
             return {}, [f"report JSON exceeds size limit: {path.name}"]
-        value = json.loads(content.decode("utf-8"))
-    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError):
+        value = json.loads(
+            content.decode("utf-8"),
+            object_pairs_hook=_json_object_without_duplicates,
+        )
+    except (OSError, RuntimeError, UnicodeError, ValueError, json.JSONDecodeError):
         return {}, [f"invalid JSON bundle file: {path.name}"]
     if not isinstance(value, dict):
         return {}, [f"bundle file must contain object: {path.name}"]
@@ -741,8 +759,8 @@ def _read_jsonl_safely(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
         if not line.strip():
             continue
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
+            value = json.loads(line, object_pairs_hook=_json_object_without_duplicates)
+        except (ValueError, json.JSONDecodeError):
             failures.append(f"invalid timeline JSON at line {line_number}")
             continue
         if not isinstance(value, dict):
@@ -1045,6 +1063,11 @@ def _saliency_replay(
                 run_path / "saliency" / namespace / "metadata.json",
                 namespace,
             )
+            source_viewport_id = _text(group.get("viewport_id"), namespace)
+            source_snapshot = next(
+                (item for item in snapshots if item["id"] == source_viewport_id),
+                None,
+            )
             _validate_saliency_replay_linkage(
                 run_path,
                 events,
@@ -1052,12 +1075,8 @@ def _saliency_replay(
                 profiles,
                 metadata,
                 namespace,
+                source_snapshot=source_snapshot,
                 expected_provider_id=expected_provider_id,
-            )
-            source_viewport_id = _text(group.get("viewport_id"), namespace)
-            source_snapshot = next(
-                (item for item in snapshots if item["id"] == source_viewport_id),
-                None,
             )
             _validate_saliency_profile_lineage(profiles, source_snapshot)
         except SaliencyReplayUnavailable as error:
@@ -1365,7 +1384,8 @@ def _read_saliency_metadata(path: Path, namespace: str) -> dict[str, Any]:
         predictions.append({"duration": duration, "metadata": metadata})
     return {
         "viewport_id": _safe_identifier(metadata_value.get("viewport_id"), namespace),
-        "cache_key": _safe_checksum(metadata_value.get("cache_key")),
+        "cache_key": _mapping(metadata_value.get("cache_key")),
+        "cache_key_digest": _safe_checksum(metadata_value.get("cache_key_digest")),
         "artifact_paths": [
             path
             for path in _strings(metadata_value.get("artifact_paths"))
@@ -1374,6 +1394,41 @@ def _read_saliency_metadata(path: Path, namespace: str) -> dict[str, Any]:
         "predictions": predictions,
         "warnings": _strings(metadata_value.get("warnings")),
     }
+
+
+def _source_screenshot_digest(
+    run_path: Path, snapshot: dict[str, Any] | None
+) -> str | None:
+    if snapshot is None:
+        return None
+    artifact = _optional_text(
+        snapshot.get("artifact") or snapshot.get("screenshot_artifact")
+    )
+    if not artifact:
+        return None
+    relative = PurePosixPath(artifact.replace("\\", "/"))
+    if not _is_allowed_screenshot_artifact(relative):
+        return None
+    candidate = _secure_bundle_file(run_path, relative)
+    if candidate is None:
+        return None
+    try:
+        content = secure_read_bytes(candidate, "saliency source screenshot")
+    except (OSError, RuntimeError):
+        return None
+    if len(content) > _MAX_SOURCE_SCREENSHOT_BYTES or _looks_redacted_source_png(
+        content
+    ):
+        return None
+    if content.startswith(b"\x89PNG"):
+        try:
+            with Image.open(BytesIO(content)) as image:
+                image.verify()
+        except (OSError, ValueError):
+            return None
+    elif not content.startswith((b"\xff\xd8", b"GIF8")):
+        return None
+    return hashlib.sha256(content).hexdigest()
 
 
 def _read_saliency_json(
@@ -1451,12 +1506,27 @@ def _validate_saliency_replay_linkage(
     metadata: dict[str, Any],
     namespace: str,
     *,
+    source_snapshot: dict[str, Any] | None,
     expected_provider_id: str = "unavailable",
 ) -> None:
     expected_paths = set(required_saliency_artifact_paths(namespace))
     metadata_paths = set(_strings(metadata.get("artifact_paths")))
     if metadata_paths != expected_paths:
         raise SaliencyReplayUnavailable("metadata artifact paths are incomplete")
+    cache_key = _mapping(metadata.get("cache_key"))
+    expected_screenshot_digest = _safe_checksum(cache_key.get("screenshot_sha256"))
+    if expected_screenshot_digest == "unavailable":
+        raise SaliencyReplayUnavailable("saliency screenshot digest is missing")
+    actual_screenshot_digest = _source_screenshot_digest(run_path, source_snapshot)
+    if (
+        actual_screenshot_digest is not None
+        and actual_screenshot_digest != expected_screenshot_digest
+    ):
+        raise SaliencyReplayUnavailable("saliency screenshot digest does not match")
+    if actual_screenshot_digest is None and "overlay-redacted" not in _strings(
+        group.get("warnings")
+    ):
+        raise SaliencyReplayUnavailable("saliency screenshot digest is unavailable")
     try:
         event_paths = {
             validate_saliency_artifact_path(path).as_posix()

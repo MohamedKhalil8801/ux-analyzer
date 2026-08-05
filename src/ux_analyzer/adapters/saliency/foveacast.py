@@ -352,17 +352,37 @@ def _node_name(node: _OrtValueInfo, kind: str) -> str:
     return name
 
 
-def _node_shape(node: _OrtValueInfo, kind: str) -> tuple[int, ...]:
+def _node_shape(node: _OrtValueInfo, kind: str) -> tuple[object, ...]:
     try:
         shape = tuple(node.shape)
     except TypeError as error:
-        raise ValueError(f"{kind} shape must be fixed") from error
-    if any(
-        isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0
-        for dimension in shape
-    ):
-        raise ValueError(f"{kind} shape must be fixed positive integers")
-    return cast(tuple[int, ...], shape)
+        raise ValueError(f"{kind} shape must expose a compatible rank") from error
+    if not shape:
+        raise ValueError(f"{kind} shape must not be empty")
+    for dimension in shape:
+        if isinstance(dimension, bool):
+            raise ValueError(f"{kind} shape contains invalid dimension")
+        if isinstance(dimension, int) and dimension == 0:
+            raise ValueError(f"{kind} shape contains invalid dimension")
+        if not isinstance(dimension, (int, str, type(None))):
+            raise ValueError(f"{kind} shape contains unsupported dimension")
+    return shape
+
+
+def _compatible_shape(
+    actual: tuple[object, ...], expected: tuple[int, ...], kind: str
+) -> tuple[int, ...]:
+    if len(actual) != len(expected):
+        raise ValueError(f"{kind} shape must have rank {len(expected)}")
+    for actual_dimension, expected_dimension in zip(actual, expected, strict=True):
+        if isinstance(actual_dimension, int) and actual_dimension > 0:
+            if actual_dimension != expected_dimension:
+                raise ValueError(
+                    f"{kind} shape must be compatible with {expected}, got {actual}"
+                )
+        elif actual_dimension is not None and not isinstance(actual_dimension, str):
+            raise ValueError(f"{kind} shape contains invalid dimension")
+    return expected
 
 
 def _validate_session(session: _OrtSession) -> tuple[str, str, tuple[int, ...]]:
@@ -374,16 +394,14 @@ def _validate_session(session: _OrtSession) -> tuple[str, str, tuple[int, ...]]:
         raise ValueError("Foveacast model must expose exactly one output")
     input_name = _node_name(inputs[0], "input")
     output_name = _node_name(outputs[0], "output")
-    input_shape = _node_shape(inputs[0], "input")
-    output_shape = _node_shape(outputs[0], "output")
+    _compatible_shape(_node_shape(inputs[0], "input"), _INPUT_SHAPE, "input")
+    output_shape = _compatible_shape(
+        _node_shape(outputs[0], "output"), _OUTPUT_SHAPE, "output"
+    )
     if input_name != INPUT_NAME:
         raise ValueError(f"input name must be {INPUT_NAME!r}, got {input_name!r}")
     if output_name != OUTPUT_NAME:
         raise ValueError(f"output name must be {OUTPUT_NAME!r}, got {output_name!r}")
-    if input_shape != _INPUT_SHAPE:
-        raise ValueError(f"input shape must be {_INPUT_SHAPE}, got {input_shape}")
-    if output_shape != _OUTPUT_SHAPE:
-        raise ValueError(f"output shape must be {_OUTPUT_SHAPE}, got {output_shape}")
     return input_name, output_name, output_shape
 
 

@@ -18,13 +18,9 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
-import numpy as np
-from PIL import Image
-
 from ux_analyzer import __version__
 from ux_analyzer.domain.benchmark import FixtureInputs
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
-from ux_analyzer.domain.saliency import SALIENCY_GEOMETRY_VERSION
 
 REDACTED_VALUE = "[REDACTED]"
 
@@ -242,92 +238,60 @@ def parse_saliency_json_content(
         raise ValueError(f"{kind.value} JSON is invalid") from error
 
 
-def _saliency_geometry_values(geometry: Mapping[str, object]) -> np.ndarray[Any, Any]:
-    if geometry.get("geometry_version") != SALIENCY_GEOMETRY_VERSION:
-        raise ValueError("native saliency geometry version is invalid")
-    return np.asarray(
-        (
-            *cast(list[object], geometry["source_dimensions"]),
-            *cast(list[object], geometry["native_dimensions"]),
-            *cast(list[object], geometry["content_dimensions"]),
-            geometry["pad_left"],
-            geometry["pad_top"],
-            geometry["pad_right"],
-            geometry["pad_bottom"],
-            geometry["scale"],
-            geometry["scale_x"],
-            geometry["scale_y"],
-            geometry["device_pixel_ratio"],
-            geometry["zoom"],
-        ),
-        dtype=np.float64,
-    )
-
-
 def validate_saliency_native_map_content(
     content: bytes,
     *,
     expected_output_dimensions: tuple[int, int] | None = None,
     expected_geometry: Mapping[str, object] | None = None,
 ) -> None:
-    """Validate allowlisted float32 map and float64 geometry arrays."""
+    """Validate binary saliency content in infrastructure adapter."""
 
-    try:
-        with np.load(io.BytesIO(content), allow_pickle=False) as archive:
-            if set(archive.files) != {"values", "geometry"}:
-                raise ValueError("native saliency map arrays are not allowlisted")
-            values = archive["values"]
-            geometry = archive["geometry"]
-    except (OSError, ValueError, zipfile.BadZipFile) as error:
-        raise ValueError("native saliency map is invalid") from error
-    if (
-        values.dtype != np.dtype("float32")
-        or values.ndim != 2
-        or values.size == 0
-        or not np.isfinite(values).all()
-        or not ((values >= 0.0) & (values <= 1.0)).all()
-    ):
-        raise ValueError("native saliency map must be finite float32 values")
-    if (
-        geometry.dtype != np.dtype("float64")
-        or geometry.ndim != 1
-        or geometry.size != 15
-        or not np.isfinite(geometry).all()
-    ):
-        raise ValueError("native saliency geometry is invalid")
-    if expected_output_dimensions is not None:
-        width, height = expected_output_dimensions
-        if values.shape != (height, width):
-            raise ValueError("native saliency map shape does not match metadata")
-    if expected_geometry is not None:
-        geometry_values = _saliency_geometry_values(expected_geometry)
-        if not np.array_equal(geometry, geometry_values):
-            raise ValueError("native saliency geometry does not match metadata")
+    from ux_analyzer.storage.run_bundle import validate_saliency_native_map_content
+
+    validate_saliency_native_map_content(
+        content,
+        expected_output_dimensions=expected_output_dimensions,
+        expected_geometry=expected_geometry,
+    )
 
 
 def validate_saliency_heatmap_content(content: bytes) -> None:
-    """Validate grayscale heatmap PNG without accepting source pixels."""
+    """Validate grayscale heatmap content in infrastructure adapter."""
 
-    if not content.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError("heatmap must be a PNG")
-    try:
-        with Image.open(io.BytesIO(content)) as image:
-            image.verify()
-        with Image.open(io.BytesIO(content)) as image:
-            if image.format != "PNG" or image.mode != "L":
-                raise ValueError("heatmap must be grayscale without source pixels")
-            if image.width <= 0 or image.height <= 0:
-                raise ValueError("heatmap dimensions must be positive")
-    except (OSError, ValueError) as error:
-        raise ValueError("heatmap is invalid") from error
+    from ux_analyzer.storage.run_bundle import validate_saliency_heatmap_content
+
+    validate_saliency_heatmap_content(content)
 
 
 def validate_timeline_event_order(
     events: Sequence[Mapping[str, object]],
 ) -> tuple[str, ...]:
-    """Reject duplicate, non-monotonic, and post-terminal timeline events."""
+    """Validate current timelines and supported unsequenced legacy timelines."""
 
     failures: list[str] = []
+    has_sequence = ["sequence" in event for event in events]
+    if has_sequence and any(has_sequence) and not all(has_sequence):
+        return ("timeline mixes sequenced and unsequenced events",)
+    if events and not any(has_sequence):
+        terminal_indexes = [
+            index
+            for index, event in enumerate(events)
+            if event.get("kind") == "run-terminated"
+        ]
+        if len(terminal_indexes) != 1:
+            failures.append("legacy timeline must contain exactly one terminal event")
+        elif terminal_indexes[0] != len(events) - 1:
+            failures.append("legacy timeline contains events after terminal event")
+        if any(
+            event.get("kind", "").startswith("saliency-")
+            or (
+                event.get("kind") == "prominence-recorded"
+                and event.get("provider_id") in {"foveacast", "foveacast-prominence"}
+            )
+            for event in events
+        ):
+            failures.append("unsequenced learned timeline is not supported")
+        return tuple(dict.fromkeys(failures))
     terminal_seen = False
     for expected_sequence, event in enumerate(events, start=1):
         sequence = event.get("sequence")
@@ -712,15 +676,15 @@ def _validate_saliency_profiles(
                     "raw_score",
                     "adjusted_score",
                 }:
-                    _json_probability(
-                        aggregate[field_name], f"aggregate {field_name}"
-                    )
+                    _json_probability(aggregate[field_name], f"aggregate {field_name}")
                 else:
                     number = _json_number(
                         aggregate[field_name], f"aggregate {field_name}"
                     )
                     if number < 0:
                         raise ValueError(f"aggregate {field_name} must not be negative")
+        if aggregate_durations != _SALiency_DURATIONS:
+            raise ValueError("profile aggregate durations must cover 1s, 3s, and 7s")
         _json_text(profile["aggregation_version"], "profile aggregation_version")
         provenance = profile["prediction_provenance"]
         if not isinstance(provenance, list):
@@ -742,6 +706,10 @@ def _validate_saliency_profiles(
             provenance_durations.add(duration)
             _validate_saliency_prediction_metadata(
                 item["metadata"], f"profile provenance {provenance_index}.metadata"
+            )
+        if provenance_durations != _SALiency_DURATIONS:
+            raise ValueError(
+                "profile prediction provenance durations must cover 1s, 3s, and 7s"
             )
 
 

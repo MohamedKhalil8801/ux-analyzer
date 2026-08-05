@@ -181,6 +181,27 @@ def test_missing_duration_uses_explicit_fallback_provenance() -> None:
     assert selected[0].evidence_source == "missing-3s:foveacast"
 
 
+def test_duration_fallback_invalidates_learned_batch_and_uses_heuristic_scores() -> (
+    None
+):
+    model = _ModelProvider()
+    provider = FoveacastProminenceProvider(
+        model_provider=model,
+        cache=_Cache(),
+        aggregator=lambda snapshot, predictions, config: (
+            _profile("first", immediate=0.8, early=None, eventual=None),
+        ),
+        heuristic_provider=HeuristicProminenceProvider(),
+    )
+
+    batch = provider.score(_capture(), _snapshot(), SearchStage.EXPLORATION, None)
+
+    assert batch.learned_available is False
+    assert batch.cache_state == "fallback"
+    assert batch.fallback_reason == "learned duration fallback: missing-3s:foveacast"
+    assert batch.active_provider_id == HeuristicProminenceProvider.id
+
+
 def _snapshot(viewport_id: str = "viewport-1") -> ViewportSnapshot:
     return ViewportSnapshot(
         id=viewport_id,

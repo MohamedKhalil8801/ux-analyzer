@@ -127,13 +127,12 @@ Foveacast provider cells and `--resume`:
 rtk uv run uxa run benchmarks/demo/project.yaml --experiment saliency-focused-validation --workers 4 --fixture-origin http://127.0.0.1:8000 --output reports/saliency-focused-validation --resume
 ```
 
-It was not executed. CPU adapter validation failed before valid learned output
-and DirectML was unavailable, so a real eight-cell run could not produce
-learned output. No LLM endpoint result, completion result, paired rank result,
-or focused report from real Foveacast cells is claimed here. The CLI has no
-provider-selection option; a future gate must set explicit CPU or DirectML
-configuration and record requested versus actual provider rather than relying
-on `auto`.
+It was not executed. DirectML was unavailable, and no real eight-cell run could
+produce focused learned comparison evidence. No LLM endpoint result, completion
+result, paired rank result, or focused report from real Foveacast cells is
+claimed here. The CLI has no provider-selection option; a future gate must set
+explicit CPU or DirectML configuration and record requested versus actual
+provider rather than relying on `auto`.
 
 ## Evidence collected
 
@@ -164,16 +163,15 @@ real model behavior.
 
 ```text
 rtk uv run pytest tests/integration/saliency/test_foveacast_cpu.py -m live -rs -q
-1 failed, 13 deselected in 0.95s
-ValueError: input shape must be fixed positive integers
+1 passed, 14 deselected in 3.56s
 ```
 
-The real CPU test reached pinned model session validation but failed before valid
-inference because the model exposed a symbolic input shape and the adapter
-requires fixed positive integers. Actual valid maps, model-load completion,
-adapter/device ID, cold load, sequential 1s/3s/7s warm latency, peak RSS, output
-parity, map alignment, ranked elements, target/distractor behavior, and real
-cache reuse are unavailable.
+The real CPU known-screenshot test produced stable finite maps for all three
+durations after the adapter accepted symbolic spatial dimensions. This confirms
+adapter/runtime behavior for one pinned input. Focused comparison, adapter/device
+ID, cold load, sequential warm latency, peak RSS, output parity budget, map
+alignment against UI targets, ranked target/distractor behavior, and real cache
+reuse measurements remain unavailable.
 
 ### DirectML evidence
 
@@ -256,35 +254,27 @@ deferred. Synthetic acceptance is never treated as human truth.
 
 ## Carry-forward findings and impact
 
-Six inherited Task 12 CLI tests still fail and remain visible:
+CLI resume/completion/provider-axis tests now pass:
 
 ```text
 rtk uv run pytest tests/integration/cli/test_commands.py -q
-6 failed, 28 passed
+34 passed
 ```
 
-The final requested non-live, non-DirectML suite preserved the same six
-failures:
+The final requested non-live, non-DirectML suite must still be rerun after this
+bounded correction batch. Earlier baseline recorded:
 
 ```text
 rtk uv run pytest -m "not live and not directml" -q
 6 failed, 628 passed, 4 deselected in 136.62s (0:02:16)
 ```
 
-Failures:
-
-- `test_resume_matrix_skips_only_valid_finalized_runs`
-- `test_resume_default_config_reuses_legacy_manifest_without_model_trial`
-- `test_resume_completion_evaluates_all_selected_finalized_bundles[0]`
-- `test_resume_completion_evaluates_all_selected_finalized_bundles[1]`
-- `test_resume_completion_keeps_model_trials_separate_for_variant_comparisons`
-- `test_resume_report_groups_variant_comparisons_by_prominence_provider`
-
-These failures affect confidence in resume, direct/legacy bundle compatibility,
+Those baseline failures affected resume, direct/legacy bundle compatibility,
 completion aggregation, provider identity consistency, and provider comparison
-reporting. They are not fixed or hidden by this ADR. Existing fallback validity
-checks, report redaction/trust checks, and resource/format validation remain
-required; they do not substitute for missing real gate evidence.
+reporting. They are addressed by current focused tests; final suite evidence is
+still required. Existing fallback validity checks, report redaction/trust checks,
+and resource/format validation remain required; they do not substitute for
+missing real gate evidence.
 
 Final repository checks also recorded a pre-existing format gap:
 
@@ -309,7 +299,7 @@ not evidence for or against Foveacast quality, but remains a release concern.
 | Default provider | `heuristic-prominence-v1` |
 | Learned provider | `foveacast`, explicit opt-in only |
 | Hybrid | Not justified; disabled |
-| CPU | Required execution path; runtime installed, real adapter gate blocked before valid inference |
+| CPU | Required execution path; runtime installed, pinned known-screenshot gate passes |
 | DirectML | Optional Windows path; no hardware evidence |
 | Fallback | Operational failures continue with heuristic and invalidate learned comparison |
 | ADR status | Proposed; not Accepted |
@@ -322,11 +312,11 @@ does not alter provider defaults.
 Reopen this ADR when all of these are available and reviewed:
 
 1. `saliency-cpu` is installed and `uxa models status foveacast-v0.2.0 --provider cpu` reports ready for all six pinned artifacts.
-2. CPU known-screenshot evidence loads and runs all three models, records actual provider, model checksums, sequential warm latency, peak RSS, finite output, alignment, and repeatability, and resolves the current symbolic-input-shape adapter failure. Review must separately resolve requested provider preference, adapter/device ID, session options, and cold-load timing, which are not currently persisted, or explicitly accept those gaps before changing this ADR.
+2. CPU known-screenshot evidence records actual provider, model checksums, sequential warm latency, peak RSS, finite output, UI alignment, and repeatability. Review must separately resolve requested provider preference, adapter/device ID, session options, and cold-load timing, which are not currently persisted, or explicitly accept those gaps before changing this ADR.
 3. The exact eight-cell focused experiment runs with explicit Foveacast cells, `--resume`, complete LLM settings, no fallback substitution, and persisted report/evaluation output.
 4. All eight comparison cells are valid; all four Foveacast cells have learned output; completion does not regress; one preregistered prominence defect improves; no material unexplained paired regression exists.
 5. A real latency/RSS budget is supplied and all operational measurements pass it. Synthetic measurements cannot satisfy this item.
-6. The six inherited CLI failures and their direct/legacy bundle, provider identity, resume, completion, and comparison impacts are resolved or explicitly accepted by a separate review.
+6. Full non-live verification confirms direct/legacy bundle, provider identity, resume, completion, and comparison behavior after this correction batch.
 7. DirectML AMD parity/stability is reviewed separately when the optional runtime and hardware exist; unavailable hardware remains explicitly unavailable.
 
 Only after that review may status become Accepted and a later ADR revision

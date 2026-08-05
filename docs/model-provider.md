@@ -83,17 +83,15 @@ status returned `unsupported provider` with available providers
 SHA-256 values, release tag, and license chain are recorded in
 [`docs/adr/0001-provisional-saliency-provider.md`](adr/0001-provisional-saliency-provider.md).
 
-The real CPU test then failed before valid inference with
-`ValueError: input shape must be fixed positive integers` because the pinned
-model exposed a symbolic input shape. No valid real map, model-load completion,
-sequential 1s/3s/7s warm latency, peak RSS, output parity, or real cache
-measurement exists. Fake runtime tests verify orchestration and provider-
-selection contracts only. They do not prove model quality or operational
-acceptability.
+The real CPU known-screenshot test now produces stable finite maps for all three
+durations after the adapter accepted symbolic spatial dimensions. This proves
+adapter/runtime behavior for one pinned input only. It does not establish model
+quality, focused comparison, sequential warm latency, peak RSS, output parity
+budget, or real cache measurement. Fake runtime tests verify orchestration and
+provider-selection contracts only.
 
-The focused real experiment was not run. CPU adapter validation blocked valid
-learned output, DirectML was unavailable, and no real comparison could be
-produced. `uxa validate --check-env` separately reported configured LLM
+The focused real experiment was not run. DirectML was unavailable, and no real
+comparison could be produced. `uxa validate --check-env` separately reported configured LLM
 settings; no real endpoint result is claimed. The deterministic Task 13 fake
 path passed and remains separate from real promotion evidence. Foveacast
 fallback preserves normal UX execution through

@@ -278,6 +278,31 @@ def test_cpu_provider_validates_session_names_and_fixed_shapes(
         _provider(InvalidOrt(), _registry(tmp_path))
 
 
+def test_cpu_provider_accepts_symbolic_spatial_session_dimensions(
+    tmp_path: Path,
+) -> None:
+    class SymbolicSession(FakeSession):
+        def get_inputs(self) -> list[FakeNode]:
+            return [FakeNode(name="input", shape=(1, 3, "height", "width"))]  # type: ignore[arg-type]
+
+        def get_outputs(self) -> list[FakeNode]:
+            return [FakeNode(name="output", shape=(1, 1, "height", "width"))]  # type: ignore[arg-type]
+
+    class SymbolicOrt(FakeOrt):
+        def InferenceSession(
+            self, path: str, *, providers: list[str]
+        ) -> SymbolicSession:
+            duration = next(label for label in ("1s", "3s", "7s") if label in path)
+            session = SymbolicSession(duration)
+            session.run_started = self.run_order
+            self.sessions.append(session)
+            return session
+
+    provider = _provider(SymbolicOrt(), _registry(tmp_path))
+
+    assert len(provider.predict(_request()).predictions) == 3
+
+
 def test_cpu_provider_rejects_tampered_model_before_session_creation(
     tmp_path: Path,
 ) -> None:

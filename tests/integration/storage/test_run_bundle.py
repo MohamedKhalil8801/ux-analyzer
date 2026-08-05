@@ -32,6 +32,7 @@ from ux_analyzer.ports.artifacts import (
     SaliencyCacheHitEvent,
     SaliencyFallbackRecordedEvent,
     SaliencyProfilesRecordedEvent,
+    canonicalize_saliency_artifact_content,
     sanitize_artifact_content,
 )
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
@@ -135,9 +136,14 @@ def _saliency_profile_bytes(
         "early": None,
         "eventual": None,
         "general": None,
-        "aggregates": [aggregate],
+        "aggregates": [
+            {**aggregate, "duration": duration} for duration in ("1s", "3s", "7s")
+        ],
         "aggregation_version": "element-saliency-aggregation-v1",
-        "prediction_provenance": [{"duration": "1s", "metadata": metadata}],
+        "prediction_provenance": [
+            {"duration": duration, "metadata": metadata}
+            for duration in ("1s", "3s", "7s")
+        ],
     }
     return json.dumps([profile]).encode("utf-8")
 
@@ -935,7 +941,8 @@ def test_typed_saliency_json_recursively_redacts_identifiers_sources_and_warning
     profile = profiles[0]
     sensitive_element_id = "secret-element-internal-value"
     profile["element_id"] = sensitive_element_id
-    profile["aggregates"][0]["element_id"] = sensitive_element_id
+    for aggregate in profile["aggregates"]:
+        aggregate["element_id"] = sensitive_element_id
     profile["immediate"]["source"] = "artifacts/token/internal-source-value"
     profile["prediction_provenance"][0]["metadata"]["warnings"] = [
         "runtime error reading password internal-warning-value"
@@ -1177,6 +1184,33 @@ def test_saliency_artifact_rejects_source_pixel_heatmap(tmp_path: Path) -> None:
         )
 
 
+def test_saliency_artifact_rejects_oversized_heatmap_dimensions(
+    tmp_path: Path,
+) -> None:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    oversized = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 100_000, 100_000, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", b"")
+        + chunk(b"IEND", b"")
+    )
+    writer = FilesystemRunBundleWriter.start(tmp_path, bundle_manifest())
+
+    with pytest.raises(ValueError, match="resource|dimensions"):
+        writer.write_saliency_artifact(
+            "saliency/viewport-1/1s-heatmap.png",
+            oversized,
+            SaliencyArtifactKind.HEATMAP,
+        )
+
+
 def test_saliency_artifact_accepts_valid_native_map_and_heatmap(
     tmp_path: Path,
 ) -> None:
@@ -1195,6 +1229,47 @@ def test_saliency_artifact_accepts_valid_native_map_and_heatmap(
 
     assert native.size > 0
     assert heatmap.size > 0
+
+
+def test_saliency_artifact_rejects_oversized_native_map_shape(
+    tmp_path: Path,
+) -> None:
+    values_header = io.BytesIO()
+    np.lib.format.write_array_header_1_0(
+        values_header,
+        {
+            "descr": np.dtype("float32").str,
+            "fortran_order": False,
+            "shape": (20_000_000, 1),
+        },
+    )
+    geometry = io.BytesIO()
+    np.save(geometry, np.zeros(15, dtype=np.float64), allow_pickle=False)
+    native = io.BytesIO()
+    with zipfile.ZipFile(native, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("values.npy", values_header.getvalue())
+        archive.writestr("geometry.npy", geometry.getvalue())
+    writer = FilesystemRunBundleWriter.start(tmp_path, bundle_manifest())
+
+    with pytest.raises(ValueError, match="resource"):
+        writer.write_saliency_artifact(
+            "saliency/viewport-1/1s.npz",
+            native.getvalue(),
+            SaliencyArtifactKind.NATIVE_MAP,
+        )
+
+
+def test_saliency_profiles_require_typed_three_duration_coverage() -> None:
+    profiles = json.loads(_saliency_profile_bytes())
+    profiles[0]["aggregates"].pop()
+    profiles[0]["prediction_provenance"].pop()
+
+    with pytest.raises(ValueError, match="duration"):
+        canonicalize_saliency_artifact_content(
+            SaliencyArtifactKind.PROFILES,
+            json.dumps(profiles).encode("utf-8"),
+            expected_viewport_id="viewport-1",
+        )
 
 
 def test_binary_artifacts_redact_sensitive_values_before_persistence(

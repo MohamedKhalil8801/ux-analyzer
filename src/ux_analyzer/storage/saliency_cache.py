@@ -53,6 +53,7 @@ from ux_analyzer.storage.run_bundle import (
     secure_make_temporary_directory,
     secure_remove_tree,
     secure_unlink,
+    validate_saliency_native_map_content,
 )
 
 CACHE_VERSION = "saliency-cache-v1"
@@ -1408,6 +1409,10 @@ def _prediction_from_files(
     npz_content: bytes,
     metadata: Mapping[str, object],
 ) -> SaliencyPrediction:
+    try:
+        validate_saliency_native_map_content(npz_content)
+    except ValueError as error:
+        raise SaliencyCacheCorruptionError("native saliency map is invalid") from error
     try:
         with np.load(io.BytesIO(npz_content), allow_pickle=False) as data:
             names = set(data.files)
