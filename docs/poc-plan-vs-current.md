@@ -19,6 +19,9 @@ produce interpretable evidence before scaling the full matrix. The largest
 changes are exact single-run execution, checkpoint/resume, additional terminal
 guards, progressive-attention recovery, separate attention seed and external
 model-trial identity, and separate UX-effort and benchmark-cost reporting.
+Task 14 also added a conditional Foveacast provider decision record without
+changing the heuristic default because real model and operational gate evidence
+was unavailable.
 
 ## Execution And Reliability Changes
 
@@ -83,11 +86,49 @@ the four-cell `focused-validation` experiment plus exact `run-one` retries.
 This verifies execution and failure classification, but it does not satisfy the
 original full-matrix statistical acceptance condition.
 
+## Saliency Integration Status
+
+Foveacast is no longer only a deferred contract. The current implementation has
+an explicit provider boundary, pinned six-artifact registry, CPU/DirectML
+selection, three-duration maps, element aggregation, search-stage selection,
+experiment-scoped cache, replay artifacts, redaction, and heuristic fallback.
+`ElementSnapshot` remains deterministic; saliency maps, profiles, operational
+prominence, timings, provider identity, and cache state remain model-dependent
+evidence.
+
+Task 13 deterministic fake acceptance passed:
+
+```text
+rtk uv run pytest tests/e2e/test_saliency_benchmark.py -m "not live and not directml" -q
+13 passed, 1 deselected
+```
+
+It exercised all eight focused cells through production orchestration and
+evaluation, but its synthetic maps and operational measurements cannot promote
+a provider or support human claims. Task 14 explicitly installed all six
+pinned artifacts. Initial status reported `runtime missing`; an autonomous
+`uv sync --extra saliency-cpu` then installed the CPU runtime. The real CPU
+known-screenshot gate reached session validation but failed before valid
+inference because the pinned model exposed a symbolic input shape while the
+adapter requires fixed positive integers. DirectML status reported no available
+provider. The exact real eight-cell run with `--resume` was not executed, so no
+real paired completion, rank, alignment, latency, RSS, parity, or fallback
+result exists. LLM environment validation separately reported configured
+settings, but no real endpoint call is claimed.
+
+The conditional ADR retains `heuristic-prominence-v1` as default and keeps
+Foveacast explicit opt-in. Hybrid is not justified without concrete reviewed
+complementary errors. SUM, full saliency matrix, full UEyes reproduction,
+frozen expectations, human calibration, and statistical calibration remain
+deferred. Six inherited Task 12 CLI tests fail around resume, legacy bundle
+compatibility, completion aggregation, and provider comparison grouping; they
+remain visible and are part of the next review trigger.
+
 ## Unchanged Deferred Boundaries
 
-The following remain deferred exactly as the original POC plan intended:
+The following remain deferred or out of current saliency decision scope:
 
-- Pretrained saliency such as UMSI++.
+- Additional pretrained saliency challengers such as UMSI++ and SUM.
 - Frozen expected-path generation before interface exposure.
 - Desktop and mobile observation providers.
 - Human and statistical calibration.

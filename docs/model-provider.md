@@ -52,10 +52,63 @@ must be installed explicitly through model management. DirectML sessions use
 sequential execution and disable ONNX Runtime memory-pattern optimization;
 the three sessions are never run concurrently.
 
-Inference metadata records requested and actual provider, fallback reason,
-DirectML adapter/device ID when exposed by ONNX Runtime, and session options.
-These fields belong to the model-evidence manifest; CPU behavior and
+The adapter computes requested provider preference, actual provider, fallback
+reason, DirectML adapter/device ID when exposed by ONNX Runtime, session options,
+and cold-load timing. Current persisted saliency evidence is narrower: each
+duration records actual execution provider, model/version/checksum, input/output
+and geometry metadata, preprocessing version, per-duration inference timing,
+cache state, and warnings; cache and bundle metadata also retain aggregate
+provenance and artifact checksums. Requested preference, adapter/device ID,
+session options, and cold-load timing are currently unavailable/not persisted.
+They are review triggers, not fields this document infers. CPU behavior and
 deterministic interface snapshots remain unchanged.
+
+## Saliency validation status
+
+Foveacast model management is explicit. Inference never downloads a model or
+runtime. Task 14 ran:
+
+```text
+rtk uv run uxa models install foveacast-v0.2.0 --precision fp16
+rtk uv run uxa models status foveacast-v0.2.0
+```
+
+Install returned success and downloaded all six pinned model/parity artifacts.
+Initial Task 14 status returned `runtime missing` with diagnostic `install
+saliency-cpu or saliency-directml extra`. The autonomous dependency attempt
+`rtk uv sync --extra saliency-cpu` returned success and installed
+`onnxruntime==1.28.0`; subsequent CPU status returned `ready`, while DirectML
+status returned `unsupported provider` with available providers
+`AzureExecutionProvider, CPUExecutionProvider`. The complete artifact table,
+SHA-256 values, release tag, and license chain are recorded in
+[`docs/adr/0001-provisional-saliency-provider.md`](adr/0001-provisional-saliency-provider.md).
+
+The real CPU test then failed before valid inference with
+`ValueError: input shape must be fixed positive integers` because the pinned
+model exposed a symbolic input shape. No valid real map, model-load completion,
+sequential 1s/3s/7s warm latency, peak RSS, output parity, or real cache
+measurement exists. Fake runtime tests verify orchestration and provider-
+selection contracts only. They do not prove model quality or operational
+acceptability.
+
+The focused real experiment was not run. CPU adapter validation blocked valid
+learned output, DirectML was unavailable, and no real comparison could be
+produced. `uxa validate --check-env` separately reported configured LLM
+settings; no real endpoint result is claimed. The deterministic Task 13 fake
+path passed and remains separate from real promotion evidence. Foveacast
+fallback preserves normal UX execution through
+`heuristic-prominence-v1`, records a sanitized reason, and invalidates the
+learned comparison sample. A fallback is not a valid learned result.
+
+Numeric maps and scores remain model-estimate evidence. They are not sent to
+the cognitive role. Source overlays remain subject to existing redaction; when
+redacted, reports retain heatmap-only artifacts and geometry/ranking evidence.
+No human calibration or real-user claim follows synthetic or model output.
+
+Current default remains `heuristic-prominence-v1`. Foveacast is explicit
+opt-in pending the conditional review in the ADR. DirectML AMD parity and
+stability remain a separate optional hardware gate; no unavailable adapter or
+device result is inferred.
 
 DirectML parity and stability coverage is hardware-marked and skips when
 Windows, `onnxruntime-directml`, or local model files are unavailable. It never

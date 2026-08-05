@@ -34,7 +34,9 @@ state transitions. Outer adapters translate external types at boundaries.
 | `src/ux_analyzer/config` | YAML validation, reference checks, canonical config digest, domain conversion | Pydantic and PyYAML stay at configuration boundary. |
 | `src/ux_analyzer/ports` | Observation, verification, model, and artifact contracts | Contracts use platform-neutral/domain types. |
 | `src/ux_analyzer/application` | Run orchestration, action validation, state updates, matrix expansion, evaluation, report use case | `run_agent.py` consumes ports; it does not import Playwright, HTTPX, filesystem, or OpenAI adapter classes. |
-| `src/ux_analyzer/providers` | Heuristic prominence, seeded attention, memory, scent roles, cognitive role, finding rules | Provider implementations expose domain/application-facing behavior and model ports. |
+| `src/ux_analyzer/providers` | Heuristic prominence, staged saliency prominence, seeded attention, memory, scent roles, cognitive role, finding rules | Provider implementations expose domain/application-facing behavior and model ports. Learned failures preserve explicit heuristic fallback. |
+| `src/ux_analyzer/adapters/saliency` | Foveacast preprocessing, ONNX Runtime sessions, CPU/DirectML selection, model timing metadata | Runtime and model files stay outside domain/application policy. DirectML is optional and never silently replaces an explicit failure. |
+| `src/ux_analyzer/saliency` | Versioned model manifest, content-addressed artifact install, checksum and runtime status | Model downloads occur only through explicit CLI commands. |
 | `src/ux_analyzer/adapters/web` | Playwright sessions, fail-closed network policy, extraction, fixture verification | Browser and HTTP details stop at adapter boundary. |
 | `src/ux_analyzer/adapters/openai.py` | OpenAI-compatible structured HTTP client | API key and HTTPX stay here; role records are sanitized before persistence/logging. |
 | `src/ux_analyzer/storage` | Staging, append-only timeline, artifacts, checksums, atomic publication | Filesystem details stay outside application policy. |
@@ -52,10 +54,16 @@ One `RunAgent.execute` call performs:
 2. Start isolated browser session with fixed viewport and test account.
 3. Reset fixture state with scenario fixture inputs.
 4. Capture and normalize current viewport.
-5. Score visible elements with heuristic prominence.
-6. Optionally call coarse scent provider.
-7. Sample bounded progressive observation using run seed, or preserve the complete
-   persona-safe list for unrestricted list policies.
+5. Resolve configured prominence provider. Heuristic scoring stays deterministic;
+   explicit Foveacast opt-in predicts 1s, 3s, and 7s maps, aggregates element
+   evidence, selects the current search-stage mixture, and uses experiment-scoped
+   cache entries.
+6. On learned model, cache, or aggregation failure, record sanitized fallback
+   evidence and continue with heuristic prominence; invalid learned samples are
+   excluded from comparison scorecards.
+7. Optionally call coarse scent provider. Sample bounded progressive observation
+   using run seed, or preserve the complete persona-safe list for unrestricted
+   list policies.
 8. Call cognitive role with persona-visible observation and memory.
 9. Validate action against noticed/remembered/actionable/stale-snapshot rules.
 10. Resolve typed input through scenario fixture values, then execute platform action.
@@ -78,7 +86,9 @@ evidence. Report projections keep private execution fields out.
 
 - Web platform: Playwright Chromium only.
 - Extraction: deterministic DOM/layout/rendered visibility facts.
-- Prominence: `heuristic-prominence-v1`, inspectable feature contributions.
+- Prominence default: `heuristic-prominence-v1`, inspectable feature
+  contributions. Foveacast is an explicit opt-in provider pending real focused
+  gate review; it does not change the default automatically.
 - Attention: `progressive-attention-v4`, region-first seeded softmax sampling,
   default batch size two, and bounded recovery observations after no progress.
 - Unrestricted baselines: `full-list` and `prominence-ranked-list` expose every
@@ -91,8 +101,30 @@ evidence. Report projections keep private execution fields out.
   cognitive claim.
 - Replay: static HTML, inline CSS/JavaScript, embedded image data when present.
 
-No pretrained saliency, expectation generator, desktop provider, mobile
-provider, human calibration, production API, or issue-tracker adapter is part of
-current POC. Deferred contracts are recorded in [roadmap](roadmap.md).
+Foveacast saliency contracts, registry, adapter, aggregation, stage selection,
+cache, fallback, and replay paths are implemented as model-dependent
+extensions. No real-model focused promotion, human calibration, production API,
+or issue-tracker adapter is part of current evidence. Task 14 initially found
+the CPU runtime missing; an autonomous `uv sync --extra saliency-cpu` attempt
+installed `onnxruntime`, after which the real CPU gate reached session loading
+but failed before valid inference because the pinned model exposed a symbolic
+input shape while the adapter requires fixed positive integers. DirectML remains
+an optional Windows/AMD path; this environment reported no DirectML provider.
+No valid real saliency output or focused comparison exists. Deferred contracts
+are recorded in [roadmap](roadmap.md).
+
+## Saliency evidence boundary
+
+`ViewportSnapshot` and `ElementSnapshot` remain deterministic interface facts.
+Saliency maps, element aggregates, attention profiles, operational prominence,
+provider identity, model checksums, execution provider, timings, cache state,
+and fallback reasons are model-estimate or operational evidence. The stage
+selector uses immediate, early, and eventual estimates without wall-clock
+simulation; all three maps are eagerly cached for one screenshot. Cache scope is
+one experiment output, never global.
+
+The report may show ranked elements, aggregation components, duration tabs, and
+heatmaps. It must keep numeric saliency outside cognitive prompts and obey
+source-image redaction. Missing source overlays produce heatmap-only replay.
 Intentional changes from the original implementation plan are recorded in
 [POC plan versus current implementation](poc-plan-vs-current.md).

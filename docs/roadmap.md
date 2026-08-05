@@ -1,26 +1,34 @@
 # Roadmap and Deferred Contracts
 
-Current POC is complete only within its declared boundary: Chromium web
-automation, bundled fixture, deterministic extraction, heuristic prominence,
-seeded attention, optional structured model roles, independent verification,
-immutable bundles, and static replay. Items below are deferred extensions, not
-current implementation placeholders.
+Current POC is complete only within its declared evidence boundary: Chromium web
+automation, bundled fixture, deterministic extraction, heuristic prominence as
+default, seeded attention, optional structured model roles, independent
+verification, immutable bundles, static replay, and model-dependent Foveacast
+paths that remain explicit opt-in. Items below are deferred extensions or
+conditional work, not unsupported promotion claims.
 
-## Active Next Phase: Foveacast Saliency Integration
+## Foveacast Saliency Integration: Conditional Review Status
 
 Planning basis approved on 2026-08-01. Detailed implementation sequence is in
 [`docs/superpowers/plans/2026-08-01-foveacast-saliency-integration.md`](superpowers/plans/2026-08-01-foveacast-saliency-integration.md).
 
-This phase closes the current post-reliability POC baseline, then adds
-Foveacast v0.2.0 FP16 ONNX models for 1-second, 3-second, and 7-second visual
-attention. Learned outputs remain model-dependent evidence separate from
-deterministic element snapshots. Existing heuristic prominence remains
-available as baseline and runtime fallback.
+This phase adds Foveacast v0.2.0 FP16 ONNX model contracts, registry, CPU and
+optional DirectML adapters, three-duration element evidence, stage selection,
+experiment-scoped cache, replay, and operational fallback. Learned outputs
+remain model-dependent evidence separate from deterministic element snapshots.
+The Task 14 ADR is Proposed: heuristic prominence remains default and Foveacast
+remains explicit opt-in because real runtime and focused comparison evidence
+were unavailable.
 
 Approved boundaries:
 
 - Web and bundled fixture only.
-- CPU inference required; optional DirectML acceleration on Windows.
+- CPU inference is the required path; optional DirectML acceleration is a
+  separately marked Windows/AMD path. Task 14 initially lacked the ONNX
+  runtime; after `uv sync --extra saliency-cpu`, CPU status became ready but the
+  real adapter gate failed on the pinned model's symbolic input shape. DirectML
+  status reported no available provider, so neither valid real CPU output nor
+  DirectML output was measured.
 - Exact experiment-scoped screenshot cache.
 - Immediate, early, and eventual element attention remain separate.
 - Search stage selects operational prominence without exposing scores to the
@@ -28,13 +36,23 @@ Approved boundaries:
 - Focused heuristic-versus-Foveacast comparison precedes any provisional
   default change.
 - Full learned-provider matrix is deferred beyond this phase.
-- SUM is deferred because its Linux/Mamba stack is not a justified target for
-  current Windows/AMD environment.
+- SUM remains deferred as a plan-scoped non-goal. No quality or platform claim
+  is made because it was not evaluated.
 - Frozen expectations become a separate later phase.
 
 Provider promotion is conditional. An ADR must preserve exact model checksums,
 execution provider, focused comparison evidence, failures, limitations, and
 review trigger whether Foveacast is promoted or heuristic remains default.
+
+Task 13 fake acceptance passed its deterministic orchestration checks, including
+the exact eight-cell matrix, cache/fallback wiring, report redaction, and
+provider identity. It is synthetic acceptance, not real-model or human truth.
+Task 14 real CPU known-screenshot reached model session validation after the
+runtime install but failed before valid inference on symbolic input shape.
+DirectML hardware tests reported no available provider. No real latency, peak
+RSS, output parity, target ranking, completion, or paired regression result
+exists. Six inherited Task 12 CLI resume/completion/provider-comparison tests
+still fail; their impact remains a review blocker and is recorded in the ADR.
 
 ## Pretrained Saliency Provider
 
@@ -45,10 +63,11 @@ hardware requirements, and configuration. It must be comparable with
 `heuristic-prominence-v1` through the same evaluation cells and must not be
 treated as ground truth.
 
-Current planned provider is Foveacast v0.2.0 FP16 with separate 1s, 3s, and 7s
-models. Initial comparison uses existing heuristic provider and evaluates a
-simple hybrid only when focused evidence shows complementary errors. SUM and
-full UEyes metric reproduction are not part of active phase.
+Current candidate provider is Foveacast v0.2.0 FP16 with separate 1s, 3s, and 7s
+models. Comparison uses existing heuristic provider and evaluates a simple
+hybrid only when real focused evidence shows complementary errors. No such
+paired error review exists, so hybrid remains disabled. SUM and full UEyes
+metric reproduction are not part of active phase.
 
 Required comparison: heuristic, learned, and any hybrid provider use identical
 scenario, version, persona, policy, seed, fixture state, and model settings.

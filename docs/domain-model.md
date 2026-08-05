@@ -9,8 +9,8 @@
 | `ApplicationVersion` | One presentation variant. POC requires `defective` and `improved` kinds. |
 | `Scenario` | Fixed goal, start state, fixture inputs, budgets, safeguards, eligible personas, and verifier contract. |
 | `Persona` | Explicit simulation parameters: working-memory capacity, confidence, frustration, abandonment threshold, and attention temperature. |
-| `ExperimentDefinition` | Cartesian-product selection of scenarios, versions, personas, policies, attention seeds, and external model trials. |
-| `RunSpec` | One immutable assignment of scenario, application version, persona, policy, attention seed, model trial, and config digest. |
+| `ExperimentDefinition` | Cartesian-product selection of scenarios, versions, personas, policies, prominence providers, attention seeds, and external model trials. |
+| `RunSpec` | One immutable assignment of scenario, application version, persona, policy, prominence provider, attention seed, model trial, and config digest. |
 | `Run` | Runtime state for one `RunSpec`, ordered events, snapshots, verification, manifests, and terminal outcome. |
 | `ViewportSnapshot` | Immutable capture identity plus element snapshots, regions, graph edges, screenshot reference, and private provider references. |
 | `ElementSnapshot` | One rendered element in one viewport, including private execution metadata. |
@@ -18,6 +18,12 @@
 | `AttentionState` | Noticed and inspected IDs, focus region, budgets, bounded memory, confidence, frustration, failed candidates, subgoal, and current viewport. |
 | `ProgressiveObservation` | One bounded public reveal with one to three new elements, remembered elements, and optional region context. |
 | `CompleteObservation` | One complete visible persona-safe list used only by `full-list` and `prominence-ranked-list`. |
+| `SaliencyPrediction` | One model-dependent normalized saliency plane with duration, model identity, geometry, provider, and timing provenance. |
+| `ElementSaliencyAggregate` | Model-dependent evidence derived by sampling one saliency plane inside viewport-clipped element bounds. |
+| `ElementAttentionProfile` | Immediate, early, eventual, and optional general element estimates plus aggregate provenance. |
+| `OperationalProminence` | Search-stage selection from attention profiles, with provider and stage provenance. |
+| `SearchStage` | `initial`, `exploration`, or `persistent` selection context; duration labels are not wall-clock timers. |
+| `SaliencyCache` | Experiment-scoped, checksum-covered cache keyed by screenshot, geometry, model, preprocessing, precision, and actual execution provider. |
 | `Finding` | Evidence-backed category/severity/reproducibility record. Unsupported human claims cannot become findings. |
 
 Relationship:
@@ -35,6 +41,8 @@ BenchmarkProject
                     +--> Run
                            +-- ViewportSnapshots
                            +-- AttentionState
+                           +-- SaliencyPrediction / ElementAttentionProfile
+                           +-- OperationalProminence
                            +-- Ordered RunEvents
                            +-- VerificationResult
                            +-- ProviderManifests
@@ -76,6 +84,29 @@ URLs, provider IDs, execution references, numeric prominence, or numeric scent.
 The coarse scent role receives glance-level element ID, role, label, region
 label, and actionability. Full scent receives the same visible meaning plus
 disabled state, and only for noticed elements.
+
+## Saliency evidence boundary
+
+`ViewportSnapshot` and `ElementSnapshot` remain deterministic interface facts and
+are not modified by model output. `SaliencyPrediction`,
+`ElementSaliencyAggregate`, `ElementAttentionProfile`, and
+`OperationalProminence` are model-estimate evidence. Provider manifests retain
+model version, checksums, preprocessing, execution provider, timing, cache, and
+fallback provenance.
+
+The configured stage mixtures are:
+
+```text
+initial:     immediate 1.00
+exploration: early     1.00
+persistent:  early     0.25, eventual 0.75
+```
+
+All three duration maps are inferred and cached together for one exact
+screenshot, so changing search stage does not infer again. Cache entries stay
+under the experiment output. If runtime, cache, or aggregation fails, the
+operational provider returns explicit heuristic fallback, records the reason,
+and the learned comparison sample is invalid.
 
 ## Attention and Action Rules
 
@@ -139,6 +170,7 @@ Current controlled matrices:
 core-pair: 8 specs
 ablation: 8 specs
 baseline replication: 4 semantic cells x 2 model trials = 8 specs
+saliency-focused-validation: 2 scenarios x 2 versions x 2 prominence providers = 8 specs
 ```
 
 Attention `seed` and external `model_trial` are separate axes. Core and ablation
@@ -148,10 +180,19 @@ The former 88-run matrix with ten seeds is historical evidence, not current
 matrix semantics.
 
 Run IDs are SHA-256 hashes of experiment ID, scenario ID, application version
-ID, persona ID, policy, attention seed, model trial, and config digest. Matrix
-order is deterministic. Compared variant cells must share scenario, persona,
-policy, config digest, and matching attention-seed/model-trial assignments;
-only application version changes. The directional gate is:
+ID, persona ID, policy, attention seed, and config digest. Non-default
+`model_trial` and non-default `prominence_provider_id` are added conditionally.
+Default `model_trial=0` and heuristic prominence therefore retain legacy run-ID
+encoding for migration and resume compatibility. This is an intentional
+deviation from the plan's unconditional axis encoding; manifests and reports
+still record those axes.
+
+Comparison pairing fixes all axes except axis under comparison. Version pairs
+keep prominence provider fixed and vary only application version. Provider pairs
+keep application version fixed and vary only prominence provider. Model-trial
+pairs keep both version and provider fixed and vary only model trial. Scenario,
+persona, policy, config digest, attention seed, and every other non-compared axis
+remain fixed. The directional gate is:
 
 1. Verified completion rate does not regress.
 2. For pairs where both variants complete, improved paired-seed median
