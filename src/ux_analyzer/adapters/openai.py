@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from ux_analyzer.ports.models import (
     ModelRole,
     RetryEvent,
     RetryPolicy,
+    StructuredModelClient,
     TokenUsage,
 )
 
@@ -458,19 +460,19 @@ def _structured_content(body: object) -> object:
     return cast(dict[str, object], parsed)
 
 
-class OpenAICompatibleStructuredClient:
-    """HTTP adapter with local schema validation and bounded safe retries."""
+class _StructuredCallSupport:
+    """Shared safe records, manifests, retry events, and delay mechanics."""
 
     def __init__(
         self,
         settings: OpenAICompatibleSettings,
         *,
-        http_client: httpx.AsyncClient | None = None,
+        provider_id: str,
+        provider_version: str,
     ) -> None:
         self.settings = settings
-        self._http_client = http_client or httpx.AsyncClient(
-            timeout=settings.timeout_seconds
-        )
+        self._provider_id = provider_id
+        self._provider_version = provider_version
         self._records: list[ModelCallRecord] = []
         self._retry_events: list[RetryEvent] = []
 
@@ -501,12 +503,105 @@ class OpenAICompatibleStructuredClient:
             ModelRole.COGNITIVE: "cognitive-v1",
         }[role_value]
         return ModelManifest(
-            provider_id="openai-compatible-structured",
+            provider_id=self._provider_id,
             role=role_value,
             model_id=model,
             endpoint_origin=self.endpoint_origin,
             prompt_version=prompt_version or default_prompt,
             schema_version=schema_version,
+            provider_version=self._provider_version,
+        )
+
+    def _retry(
+        self,
+        role: ModelRole,
+        model: str,
+        attempt: int,
+        reason: str,
+        status_code: int | None,
+        policy: RetryPolicy,
+        retry_number: int,
+    ) -> RetryEvent:
+        event = RetryEvent(
+            role=role,
+            model=model,
+            attempt=attempt,
+            reason=reason,
+            status_code=status_code,
+            delay_seconds=policy.delay_for_retry(retry_number),
+        )
+        self._retry_events.append(event)
+        return event
+
+    async def _sleep(self, delay_seconds: float) -> None:
+        if delay_seconds:
+            await asyncio.sleep(delay_seconds)
+
+    def _record(
+        self,
+        role: ModelRole,
+        model: str,
+        prompt_digest: str,
+        schema_version: str,
+        attempts: int,
+        started: float,
+        request_payload: Mapping[str, object],
+        response_payload: Mapping[str, object],
+        token_usage: TokenUsage,
+        retries: Sequence[RetryEvent],
+    ) -> ModelCallRecord:
+        record = ModelCallRecord(
+            role=role,
+            model=model,
+            endpoint_origin=self.endpoint_origin,
+            prompt_digest=prompt_digest,
+            schema_version=schema_version,
+            attempts=max(attempts, 1),
+            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
+            token_usage=token_usage,
+            request=cast(
+                dict[str, Any],
+                sanitize_for_log(
+                    request_payload,
+                    secrets=(self.settings.api_key, *self.settings.redaction_values),
+                ),
+            ),
+            response=cast(
+                dict[str, Any],
+                sanitize_for_log(
+                    response_payload,
+                    secrets=(self.settings.api_key, *self.settings.redaction_values),
+                ),
+            ),
+            retries=tuple(retries),
+        )
+        self._records.append(record)
+        logger.info(
+            "structured model call role=%s model=%s endpoint_origin=%s attempts=%d",
+            record.role.value,
+            record.model,
+            record.endpoint_origin,
+            record.attempts,
+        )
+        return record
+
+
+class OpenAICompatibleStructuredClient(_StructuredCallSupport):
+    """HTTP adapter with local schema validation and bounded safe retries."""
+
+    def __init__(
+        self,
+        settings: OpenAICompatibleSettings,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(
+            settings,
+            provider_id="openai-compatible-structured",
+            provider_version="openai-compatible-v1",
+        )
+        self._http_client = http_client or httpx.AsyncClient(
+            timeout=settings.timeout_seconds
         )
 
     async def complete(
@@ -714,75 +809,211 @@ class OpenAICompatibleStructuredClient:
             payload["response_format"] = {"type": "json_object"}
         return payload
 
-    def _retry(
-        self,
-        role: ModelRole,
-        model: str,
-        attempt: int,
-        reason: str,
-        status_code: int | None,
-        policy: RetryPolicy,
-        retry_number: int,
-    ) -> RetryEvent:
-        event = RetryEvent(
-            role=role,
-            model=model,
-            attempt=attempt,
-            reason=reason,
-            status_code=status_code,
-            delay_seconds=policy.delay_for_retry(retry_number),
+
+class _CodexAttemptError(RuntimeError):
+    """Sanitized failure category from one Codex subprocess attempt."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
+    return json.dumps(
+        [message.model_dump() for message in messages],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+class CodexStructuredClient(_StructuredCallSupport):
+    """Codex CLI adapter with local schema validation and bounded retries."""
+
+    def __init__(self, settings: OpenAICompatibleSettings) -> None:
+        super().__init__(
+            settings,
+            provider_id="codex-cli",
+            provider_version="codex-cli",
         )
-        self._retry_events.append(event)
-        return event
 
-    async def _sleep(self, delay_seconds: float) -> None:
-        if delay_seconds:
-            await asyncio.sleep(delay_seconds)
-
-    def _record(
+    async def complete(
         self,
+        schema: type[SchemaT],
+        messages: Sequence[ChatMessage | Mapping[str, object]],
+        model: str,
+        role: ModelRole,
+    ) -> SchemaT:
+        normalized_messages = _normalize_messages(messages)
+        role_value = ModelRole(role)
+        prompt_digest = _prompt_digest(normalized_messages)
+        schema_version = _schema_version(schema)
+        retry_policy = self.settings.retry_policy
+        retries: list[RetryEvent] = []
+        attempts = 0
+        started = time.perf_counter()
+        last_reason = "model call failed"
+        response_metadata: dict[str, object] = {"failure": last_reason}
+        request_metadata = self._request_metadata(
+            role_value, model, normalized_messages, schema_version
+        )
+
+        while attempts < retry_policy.max_attempts:
+            attempts += 1
+            request_metadata = self._request_metadata(
+                role_value, model, normalized_messages, schema_version
+            )
+            try:
+                parsed = await self._run_attempt(schema, normalized_messages, model)
+                result = schema.model_validate(parsed)
+            except _CodexAttemptError as error:
+                last_reason = error.reason
+                response_metadata = {"failure": last_reason}
+                if attempts >= retry_policy.max_attempts:
+                    break
+                retries.append(
+                    self._retry(
+                        role_value,
+                        model,
+                        attempts,
+                        last_reason,
+                        None,
+                        retry_policy,
+                        len(retries) + 1,
+                    )
+                )
+                await self._sleep(retries[-1].delay_seconds)
+                continue
+            except (ValueError, TypeError, ValidationError):
+                last_reason = "invalid structured output"
+                response_metadata = {"failure": "invalid-structured-output"}
+                if attempts >= retry_policy.max_attempts:
+                    break
+                retries.append(
+                    self._retry(
+                        role_value,
+                        model,
+                        attempts,
+                        "invalid-structured-output",
+                        None,
+                        retry_policy,
+                        len(retries) + 1,
+                    )
+                )
+                await self._sleep(retries[-1].delay_seconds)
+                continue
+
+            self._record(
+                role_value,
+                model,
+                prompt_digest,
+                schema_version,
+                attempts,
+                started,
+                request_metadata,
+                {"status": "success"},
+                TokenUsage(),
+                retries,
+            )
+            return result
+
+        self._record(
+            role_value,
+            model,
+            prompt_digest,
+            schema_version,
+            attempts,
+            started,
+            request_metadata,
+            response_metadata,
+            TokenUsage(),
+            retries,
+        )
+        raise ModelFailureError(last_reason)
+
+    @staticmethod
+    def _request_metadata(
         role: ModelRole,
         model: str,
-        prompt_digest: str,
+        messages: Sequence[ChatMessage],
         schema_version: str,
-        attempts: int,
-        started: float,
-        request_payload: Mapping[str, object],
-        response_payload: Mapping[str, object],
-        token_usage: TokenUsage,
-        retries: Sequence[RetryEvent],
-    ) -> ModelCallRecord:
-        record = ModelCallRecord(
-            role=role,
-            model=model,
-            endpoint_origin=self.endpoint_origin,
-            prompt_digest=prompt_digest,
-            schema_version=schema_version,
-            attempts=max(attempts, 1),
-            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
-            token_usage=token_usage,
-            request=cast(
-                dict[str, Any],
-                sanitize_for_log(
-                    request_payload,
-                    secrets=(self.settings.api_key, *self.settings.redaction_values),
-                ),
-            ),
-            response=cast(
-                dict[str, Any],
-                sanitize_for_log(
-                    response_payload,
-                    secrets=(self.settings.api_key, *self.settings.redaction_values),
-                ),
-            ),
-            retries=tuple(retries),
-        )
-        self._records.append(record)
-        logger.info(
-            "structured model call role=%s model=%s endpoint_origin=%s attempts=%d",
-            record.role.value,
-            record.model,
-            record.endpoint_origin,
-            record.attempts,
-        )
-        return record
+    ) -> dict[str, object]:
+        return {
+            "role": role.value,
+            "model": model,
+            "messages": [message.model_dump() for message in messages],
+            "schema_version": schema_version,
+        }
+
+    async def _run_attempt(
+        self,
+        schema: type[BaseModel],
+        messages: Sequence[ChatMessage],
+        model: str,
+    ) -> object:
+        prompt = _serialize_codex_messages(messages)
+        output = ""
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                schema_path = Path(temp_dir) / "schema.json"
+                response_path = Path(temp_dir) / "response.json"
+                schema_path.write_text(
+                    json.dumps(schema.model_json_schema(), ensure_ascii=True),
+                    encoding="utf-8",
+                )
+                process = await asyncio.create_subprocess_exec(
+                    "codex",
+                    "exec",
+                    "--ephemeral",
+                    "--sandbox",
+                    "read-only",
+                    "--model",
+                    model,
+                    "--output-schema",
+                    str(schema_path),
+                    "--output-last-message",
+                    str(response_path),
+                    "-",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                try:
+                    await asyncio.wait_for(
+                        process.communicate(input=prompt),
+                        timeout=self.settings.timeout_seconds,
+                    )
+                except TimeoutError as error:
+                    try:
+                        process.kill()
+                        await process.communicate()
+                    except OSError:
+                        pass
+                    raise _CodexAttemptError("timeout") from error
+                if process.returncode != 0:
+                    raise _CodexAttemptError("process-exit")
+                try:
+                    output = response_path.read_text(encoding="utf-8")
+                except OSError as error:
+                    raise _CodexAttemptError("process-error") from error
+        except _CodexAttemptError:
+            raise
+        except OSError as error:
+            raise _CodexAttemptError("process-error") from error
+
+        parsed = json.loads(output)
+        if not isinstance(parsed, Mapping):
+            raise ValueError("structured response must be one JSON object")
+        return cast(dict[str, object], parsed)
+
+
+def create_structured_model_client(
+    settings: OpenAICompatibleSettings,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> StructuredModelClient:
+    if settings.mode == "codex":
+        return cast(StructuredModelClient, CodexStructuredClient(settings))
+    return cast(
+        StructuredModelClient,
+        OpenAICompatibleStructuredClient(settings, http_client=http_client),
+    )

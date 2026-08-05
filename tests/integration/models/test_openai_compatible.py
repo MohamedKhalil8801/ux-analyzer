@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 from pydantic import BaseModel
 
 from ux_analyzer.adapters.openai import (
+    CodexStructuredClient,
     ModelFailureError,
     OpenAICompatibleSettings,
     OpenAICompatibleStructuredClient,
+    create_structured_model_client,
 )
 from ux_analyzer.ports.models import ChatMessage, ModelRole
 from ux_analyzer.providers.scent import CoarseScentResponse
@@ -25,6 +29,199 @@ def _settings(**overrides: object) -> OpenAICompatibleSettings:
     }
     values.update(overrides)
     return OpenAICompatibleSettings.model_validate(values)
+
+
+class _FakeCodexProcess:
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+        self.input: bytes | None = None
+
+    async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+        self.input = input
+        return (
+            b"codex stdout must not be recorded",
+            b"codex stderr must not be recorded",
+        )
+
+
+def _patch_codex_process(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[tuple[tuple[object, ...], dict[str, object]]],
+    processes: list[_FakeCodexProcess],
+    schemas: list[object],
+    *,
+    output: str | None,
+    returncode: int,
+) -> None:
+    async def create_subprocess_exec(
+        *args: object, **kwargs: object
+    ) -> _FakeCodexProcess:
+        calls.append((args, kwargs))
+        schema_path = Path(args[args.index("--output-schema") + 1])
+        schemas.append(json.loads(schema_path.read_text(encoding="utf-8")))
+        output_path = Path(args[args.index("--output-last-message") + 1])
+        if output is not None:
+            output_path.write_text(output, encoding="utf-8")
+        process = _FakeCodexProcess(returncode)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
+
+
+@pytest.mark.asyncio
+async def test_codex_structured_client_runs_read_only_command_and_validates_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    processes: list[_FakeCodexProcess] = []
+    schemas: list[object] = []
+    _patch_codex_process(
+        monkeypatch,
+        calls,
+        processes,
+        schemas,
+        output=json.dumps({"scores": [{"element_id": "target", "score": 0.7}]}),
+        returncode=0,
+    )
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
+        )
+    )
+
+    result = await client.complete(
+        CoarseScentResponse,
+        (ChatMessage(role="user", content="Find invite"),),
+        model="gpt-scent",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    assert result.scores[0].element_id == "target"
+    assert result.scores[0].score == pytest.approx(0.7)
+    args, kwargs = calls[0]
+    assert args[0:8] == (
+        "codex",
+        "exec",
+        "--ephemeral",
+        "--sandbox",
+        "read-only",
+        "--model",
+        "gpt-scent",
+        "--output-schema",
+    )
+    assert args[-1] == "-"
+    assert "--output-last-message" in args
+    response_path = Path(args[args.index("--output-last-message") + 1])
+    assert schemas == [CoarseScentResponse.model_json_schema()]
+    assert response_path.name == "response.json"
+    assert kwargs["stdin"] is asyncio.subprocess.PIPE
+    assert kwargs["stdout"] is asyncio.subprocess.PIPE
+    assert kwargs["stderr"] is asyncio.subprocess.PIPE
+    assert json.loads(processes[0].input.decode("utf-8")) == [
+        {"role": "user", "content": "Find invite"}
+    ]
+    assert client.endpoint_origin == "codex-cli"
+    manifest = client.manifest(ModelRole.COARSE_SCENT, "gpt-scent")
+    assert manifest.provider_id == "codex-cli"
+    assert manifest.provider_version == "codex-cli"
+    assert manifest.endpoint_origin == "codex-cli"
+    assert client.records[0].request["role"] == ModelRole.COARSE_SCENT.value
+    assert client.records[0].request["model"] == "gpt-scent"
+    assert client.records[0].request["messages"] == [
+        {"role": "user", "content": "Find invite"}
+    ]
+    assert client.records[0].request["schema_version"] == "scent-coarse-v1"
+    assert client.records[0].response == {"status": "success"}
+    assert "codex stdout" not in json.dumps(client.records[0].request)
+    assert "codex stderr" not in json.dumps(client.records[0].response)
+
+
+@pytest.mark.asyncio
+async def test_codex_process_exit_retries_until_attempt_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    processes: list[_FakeCodexProcess] = []
+    schemas: list[object] = []
+    _patch_codex_process(
+        monkeypatch,
+        calls,
+        processes,
+        schemas,
+        output=None,
+        returncode=1,
+    )
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 2, "base_delay_seconds": 0},
+        )
+    )
+
+    with pytest.raises(ModelFailureError, match="process-exit"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="Find invite"),),
+            model="gpt-scent",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    assert len(calls) == 2
+    assert len(client.retry_events) == 1
+    assert client.retry_events[0].reason == "process-exit"
+    assert client.records[0].attempts == 2
+    assert client.records[0].response == {"failure": "process-exit"}
+
+
+@pytest.mark.asyncio
+async def test_codex_invalid_json_retries_with_existing_structured_output_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    processes: list[_FakeCodexProcess] = []
+    schemas: list[object] = []
+    _patch_codex_process(
+        monkeypatch,
+        calls,
+        processes,
+        schemas,
+        output="not json",
+        returncode=0,
+    )
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 2, "base_delay_seconds": 0},
+        )
+    )
+
+    with pytest.raises(ModelFailureError, match="invalid structured output"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="Find invite"),),
+            model="gpt-scent",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    assert len(calls) == 2
+    assert len(client.retry_events) == 1
+    assert client.retry_events[0].reason == "invalid-structured-output"
+    assert client.records[0].response == {"failure": "invalid-structured-output"}
+
+
+@pytest.mark.asyncio
+async def test_structured_model_client_factory_selects_codex_or_http_transport() -> (
+    None
+):
+    codex_client = create_structured_model_client(_settings(mode="codex"))
+    http_client = httpx.AsyncClient()
+    api_client = create_structured_model_client(_settings(), http_client=http_client)
+
+    assert isinstance(codex_client, CodexStructuredClient)
+    assert isinstance(api_client, OpenAICompatibleStructuredClient)
+    await http_client.aclose()
 
 
 @pytest.mark.asyncio
