@@ -2,9 +2,17 @@
 
 ## Environment Contract
 
-OpenAI-compatible settings come from exactly these required names:
+`UXA_LLM_MODE` selects LLM transport and defaults to `api`:
+
+| Mode | Required configuration | Transport |
+| --- | --- | --- |
+| `api` | mode, base URL, API key, scent model, cognitive model | OpenAI-compatible HTTP |
+| `codex` | mode, scent model, cognitive model, logged-in Codex CLI | `codex exec` subprocess |
+
+API mode uses these environment names:
 
 ```text
+UXA_LLM_MODE          mode selector; defaults to api
 UXA_LLM_BASE_URL       HTTP(S) base URL without credentials
 UXA_LLM_API_KEY        secret sent as Bearer authorization header
 UXA_SCENT_MODEL        model ID for coarse and full scent roles
@@ -14,17 +22,23 @@ UXA_COGNITIVE_MODEL    model ID for cognitive role
 Use placeholders in configuration examples:
 
 ```powershell
+$env:UXA_LLM_MODE = "api"
 $env:UXA_LLM_BASE_URL = "https://<provider-host>/v1"
 $env:UXA_LLM_API_KEY = "<api-key>"
 $env:UXA_SCENT_MODEL = "<scent-model-id>"
 $env:UXA_COGNITIVE_MODEL = "<cognitive-model-id>"
 ```
 
-The adapter posts to `<base-url>/chat/completions` with JSON. It records only
-endpoint origin, never URL credentials or API key. `uxa validate --check-env`
-checks presence without printing values. Non-dry `uxa run` requires all four
-settings. Dry-run matrix expansion can run without them unless `--check-env` is
-also supplied.
+Codex mode is opt-in. Set `UXA_LLM_MODE=codex`, keep the two model variables,
+and install and log in to Codex before running. The `codex` executable must be
+available on `PATH`. Account mode uses the logged-in CLI and does not read or
+print account credentials.
+
+In API mode, the adapter posts to `<base-url>/chat/completions` with JSON. It
+records only endpoint origin, never URL credentials or API key.
+`uxa validate --check-env` checks presence without printing values. Non-dry
+`uxa run` requires the settings for selected mode. Dry-run matrix expansion can
+run without them unless `--check-env` is also supplied.
 
 ## Saliency Execution Providers
 
@@ -190,13 +204,18 @@ record role, model, endpoint origin, and attempt count only.
 
 ## Live Compatibility Test
 
-Live calls are opt-in. Set `UXA_RUN_LIVE_TESTS=1` plus the four required model
-variables, then run:
+Live calls are opt-in. API mode requires `UXA_RUN_LIVE_TESTS=1` plus its mode,
+base URL, API key, and two model variables. Codex mode requires the same live
+gate, `UXA_LLM_MODE=codex`, two model variables, and an installed, logged-in
+Codex CLI. Codex mode does not read or print account credentials.
+
+API mode runs:
 
 ```powershell
 uv run pytest tests/live/test_openai_endpoint.py -m live -q
 ```
 
-The test makes one coarse-scent, one full-scent, and one cognitive call; checks
-structured outputs, role order, endpoint origin, and non-empty sanitized records.
-It does not record live response fixtures automatically.
+Both modes use this test's same structured-role assertions: one coarse-scent,
+one full-scent, and one cognitive call; structured outputs, role order, endpoint
+origin, and non-empty sanitized records. It does not record live response
+fixtures automatically.

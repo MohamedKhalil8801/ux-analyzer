@@ -179,6 +179,18 @@ Compared cells keep scenario, persona, seed, configuration, fixture state, and
 model configuration aligned. Variant comparison pairs exact seeds and applies
 the directional gate described in [evaluation docs](docs/domain-model.md).
 
+## LLM modes
+
+`UXA_LLM_MODE=api` is default. Choose transport with this mode matrix:
+
+| Mode | Required configuration | Transport |
+| --- | --- | --- |
+| `api` | `UXA_LLM_MODE`, `UXA_LLM_BASE_URL`, `UXA_LLM_API_KEY`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL` | OpenAI-compatible HTTP transport |
+| `codex` | `UXA_LLM_MODE`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`, logged-in Codex CLI | `codex exec` subprocess transport |
+
+Codex mode is opt-in. Codex must already be installed, logged in, and available
+as `codex` on `PATH`. Account mode does not read or print credentials.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
