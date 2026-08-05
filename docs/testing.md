@@ -30,6 +30,7 @@ UXA_LLM_BASE_URL=https://<provider-host>/v1
 UXA_LLM_API_KEY=<api-key>
 UXA_SCENT_MODEL=<scent-model-id>
 UXA_COGNITIVE_MODEL=<cognitive-model-id>
+UXA_RUN_LIVE_TESTS=1
 uv run pytest -m live -q
 ```
 
