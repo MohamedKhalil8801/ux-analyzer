@@ -993,21 +993,38 @@ class _BundleFactory:
         output: Path,
         settings: OpenAICompatibleSettings,
         runtime: RuntimeConfig,
+        client: object | None = None,
     ) -> None:
         self._output = output
         self._settings = settings
         self._runtime = runtime
+        self._client = client
 
     def start(self, spec: RunSpec) -> RunBundleWriter:
         resolve_prominence_provider_id(spec.prominence_provider_id)
         scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
+        default_provider_id = (
+            "codex-cli"
+            if self._settings.mode == "codex"
+            else "openai-compatible-structured"
+        )
+        default_provider_version = (
+            "codex-cli" if self._settings.mode == "codex" else "openai-compatible-v1"
+        )
+        provider_id = str(getattr(self._client, "provider_id", default_provider_id))
+        provider_version = str(
+            getattr(self._client, "provider_version", default_provider_version)
+        )
+        endpoint_origin = str(
+            getattr(self._client, "endpoint_origin", self._settings.endpoint_origin)
+        )
         model_manifests = [
             ProviderManifest(
-                provider_id="openai-compatible-structured",
+                provider_id=provider_id,
                 role="cognitive",
                 model_id=self._settings.cognitive_model,
-                endpoint_origin=self._settings.endpoint_origin,
-                version="openai-compatible-v1",
+                endpoint_origin=endpoint_origin,
+                version=provider_version,
                 prompt_version="cognitive-v1",
                 schema_version="cognitive-v1",
             )
@@ -1015,11 +1032,11 @@ class _BundleFactory:
         if scent_enabled:
             model_manifests.extend(
                 ProviderManifest(
-                    provider_id="openai-compatible-structured",
+                    provider_id=provider_id,
                     role=role,
                     model_id=self._settings.scent_model,
-                    endpoint_origin=self._settings.endpoint_origin,
-                    version="openai-compatible-v1",
+                    endpoint_origin=endpoint_origin,
+                    version=provider_version,
                     prompt_version=prompt_version,
                     schema_version=schema_version,
                 )
@@ -1040,7 +1057,7 @@ class _BundleFactory:
             )
         manifest = BundleManifest.from_run_spec(
             spec,
-            endpoint_origin=self._settings.endpoint_origin,
+            endpoint_origin=endpoint_origin,
             model_ids={
                 **({"scent": self._settings.scent_model} if scent_enabled else {}),
                 "cognitive": self._settings.cognitive_model,
@@ -1058,7 +1075,7 @@ class _BundleFactory:
             },
             provider_versions={
                 "observation": "fixture-web-v1",
-                "models": "openai-compatible-v1",
+                "models": provider_version,
                 "prominence": self._runtime.prominence.version,
                 "prominence-provider": spec.prominence_provider_id,
                 "attention": self._runtime.attention.version,
@@ -1241,7 +1258,7 @@ def _build_agent(
         attention_policy=cast(AttentionPolicy, policy),
         cognitive_agent=cast(RunCognitiveAgent, cognitive),
         verifier=verifier,
-        bundle_factory=_BundleFactory(output, settings, runtime),
+        bundle_factory=_BundleFactory(output, settings, runtime, client=client),
         session_config_factory=lambda current_spec: _session_config(
             current_spec, output=output, fixture_origin=fixture_origin
         ),

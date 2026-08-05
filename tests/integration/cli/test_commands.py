@@ -13,7 +13,7 @@ import yaml
 from typer.testing import CliRunner
 
 import ux_analyzer.cli as cli
-from ux_analyzer.adapters.openai import OpenAICompatibleSettings
+from ux_analyzer.adapters.openai import CodexStructuredClient, OpenAICompatibleSettings
 from ux_analyzer.application.experiment import (
     ExperimentContext,
     ExperimentFailure,
@@ -733,6 +733,56 @@ def test_bundle_manifest_records_prominence_provider_id(tmp_path: Path) -> None:
     writer.abort("test complete")
 
     assert manifest["prominence_provider_id"] == "foveacast"
+    assert manifest["endpoint_origin"] == "https://llm.example.test"
+    assert manifest["provider_versions"]["models"] == "openai-compatible-v1"
+    assert all(
+        item["provider_id"] == "openai-compatible-structured"
+        and item["version"] == "openai-compatible-v1"
+        and item["endpoint_origin"] == "https://llm.example.test"
+        for item in manifest["provider_manifests"]
+        if item["role"] != "prominence"
+    )
+
+
+def test_codex_bundle_manifest_uses_selected_client_provider_metadata(
+    tmp_path: Path,
+) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    definition = next(
+        item for item in loaded.project.experiments if item.id == "core-pair"
+    )
+    spec = next(
+        item
+        for item in expand_experiment(
+            ExperimentContext(definition, loaded.project, loaded.config_digest)
+        )
+        if item.policy.value == "progressive-prominence-scent"
+    )
+    settings = OpenAICompatibleSettings(
+        base_url="",
+        api_key="",
+        scent_model="scent-model",
+        cognitive_model="cognitive-model",
+        mode="codex",
+    )
+    client = CodexStructuredClient(settings)
+
+    writer = cli._BundleFactory(
+        tmp_path, settings, loaded.runtime, client=client
+    ).start(spec)
+    manifest = json.loads((writer.staging_path / "manifest.json").read_text())
+    writer.abort("test complete")
+
+    assert manifest["endpoint_origin"] == "codex-cli"
+    assert manifest["provider_versions"]["models"] == "codex-cli"
+    assert {
+        (item["role"], item["provider_id"], item["version"], item["endpoint_origin"])
+        for item in manifest["provider_manifests"]
+    } == {
+        ("cognitive", "codex-cli", "codex-cli", "codex-cli"),
+        ("coarse-scent", "codex-cli", "codex-cli", "codex-cli"),
+        ("full-scent", "codex-cli", "codex-cli", "codex-cli"),
+    }
 
 
 def test_resume_trust_requires_matching_prominence_provider_id(tmp_path: Path) -> None:

@@ -113,12 +113,15 @@ def _manifest(
     schema_version: str,
 ) -> ModelManifest:
     return ModelManifest(
-        provider_id="openai-compatible-structured",
+        provider_id=str(getattr(client, "provider_id", "openai-compatible-structured")),
         role=role,
         model_id=model,
         endpoint_origin=client.endpoint_origin,
         prompt_version=prompt_version,
         schema_version=schema_version,
+        provider_version=str(
+            getattr(client, "provider_version", "openai-compatible-v1")
+        ),
     )
 
 
@@ -146,8 +149,7 @@ class StructuredCoarseScentEvaluator:
         self, goal: str, snapshot: ViewportSnapshot
     ) -> tuple[CoarseScent, ...]:
         model_elements = tuple(
-            (f"e{index}", element)
-            for index, element in enumerate(snapshot.elements)
+            (f"e{index}", element) for index, element in enumerate(snapshot.elements)
         )
         payload = CoarseScentRequest(
             goal=goal,

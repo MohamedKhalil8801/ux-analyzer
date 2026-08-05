@@ -178,12 +178,15 @@ def _normalize_model_response(response: CognitiveModelResponse) -> CognitiveDeci
 
 def _manifest(client: StructuredModelClient, model: str) -> ModelManifest:
     return ModelManifest(
-        provider_id="openai-compatible-structured",
+        provider_id=str(getattr(client, "provider_id", "openai-compatible-structured")),
         role=ModelRole.COGNITIVE,
         model_id=model,
         endpoint_origin=client.endpoint_origin,
         prompt_version="cognitive-v2",
         schema_version=CognitiveDecision.schema_version,
+        provider_version=str(
+            getattr(client, "provider_version", "openai-compatible-v1")
+        ),
     )
 
 

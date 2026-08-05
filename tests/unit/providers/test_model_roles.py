@@ -142,6 +142,25 @@ def test_model_environment_loads_separate_role_models_without_logging_key() -> N
     assert "secret-key" not in repr(settings)
 
 
+def test_role_manifests_use_selected_client_provider_metadata() -> None:
+    class CodexRecordingClient(RecordingClient):
+        endpoint_origin = "codex-cli"
+        provider_id = "codex-cli"
+        provider_version = "codex-cli"
+
+    client = CodexRecordingClient()
+    coarse = StructuredCoarseScentEvaluator(client, model="scent-model")
+    full = StructuredFullScentEvaluator(client, model="scent-model")
+    cognitive = StructuredCognitiveAgent(client, model="cognitive-model")
+
+    assert coarse.manifest.provider_id == "codex-cli"
+    assert coarse.manifest.provider_version == "codex-cli"
+    assert full.manifest.provider_id == "codex-cli"
+    assert full.manifest.provider_version == "codex-cli"
+    assert cognitive.manifest.provider_id == "codex-cli"
+    assert cognitive.manifest.provider_version == "codex-cli"
+
+
 @pytest.mark.asyncio
 async def test_role_providers_keep_models_and_payloads_separate() -> None:
     client = RecordingClient()
