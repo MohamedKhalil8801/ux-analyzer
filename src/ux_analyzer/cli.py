@@ -20,7 +20,7 @@ from ux_analyzer import __version__
 from ux_analyzer.adapters.openai import (
     ModelConfigurationError,
     OpenAICompatibleSettings,
-    OpenAICompatibleStructuredClient,
+    create_structured_model_client,
     load_environment_file,
 )
 from ux_analyzer.adapters.saliency.foveacast import FoveacastSaliencyProvider
@@ -54,6 +54,7 @@ from ux_analyzer.application.experiment import (
 )
 from ux_analyzer.application.run_agent import (
     AttentionPolicy,
+    ModelRecordSource,
     ProminenceProvider,
     RunAgent,
     RunProfiler,
@@ -714,11 +715,17 @@ def _model_settings_or_exit() -> OpenAICompatibleSettings:
     except ModelConfigurationError as error:
         typer.echo(f"model environment error: {error}")
         raise typer.Exit(1) from error
-    typer.echo(
-        "model environment: configured "
-        f"(endpoint origin: {settings.endpoint_origin}; "
-        "API key present; scent and cognitive models configured)"
-    )
+    if settings.mode == "codex":
+        typer.echo(
+            "model environment: configured "
+            "(mode: codex; scent and cognitive models configured)"
+        )
+    else:
+        typer.echo(
+            "model environment: configured "
+            f"(endpoint origin: {settings.endpoint_origin}; "
+            "API key present; scent and cognitive models configured)"
+        )
     return settings
 
 
@@ -1094,7 +1101,7 @@ async def _execute_matrix(
         try:
 
             def factory(spec: RunSpec) -> RunAgent:
-                client = OpenAICompatibleStructuredClient(
+                client = create_structured_model_client(
                     settings, http_client=client_http
                 )
                 return _build_agent(
@@ -1139,7 +1146,7 @@ def _build_agent(
     spec: RunSpec,
     *,
     adapter: PlaywrightSessionAdapter,
-    client: OpenAICompatibleStructuredClient,
+    client: StructuredModelClient,
     output: Path,
     fixture_origin: str,
     settings: OpenAICompatibleSettings,
@@ -1164,21 +1171,17 @@ def _build_agent(
     )
     scent_enabled = spec.policy is ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT
     coarse = (
-        StructuredCoarseScentEvaluator(
-            cast(StructuredModelClient, client), model=settings.scent_model
-        )
+        StructuredCoarseScentEvaluator(client, model=settings.scent_model)
         if scent_enabled
         else None
     )
     full = (
-        StructuredFullScentEvaluator(
-            cast(StructuredModelClient, client), model=settings.scent_model
-        )
+        StructuredFullScentEvaluator(client, model=settings.scent_model)
         if scent_enabled
         else None
     )
     cognitive = StructuredCognitiveAgent(
-        cast(StructuredModelClient, client),
+        client,
         model=settings.cognitive_model,
         fixture_keys=tuple(sorted(spec.scenario.fixture_inputs.values)),
     )
@@ -1248,7 +1251,7 @@ def _build_agent(
             runtime.state_updates,
             abandonment_threshold=spec.persona.abandonment_threshold,
         ),
-        model_record_source=client,
+        model_record_source=cast(ModelRecordSource, client),
         result_evaluator=lambda result: _evaluate_result(result, runtime),
         profile_path=(profile_output / f"{spec.run_id}.json")
         if profile_output is not None

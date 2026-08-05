@@ -201,6 +201,49 @@ def test_env_check_never_prints_secret_values(monkeypatch, tmp_path: Path) -> No
     assert "UXA_LLM_API_KEY" not in result.stdout
 
 
+def test_env_check_reports_api_mode_without_secret_value(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    secret = "super-secret-api-key"
+    monkeypatch.setenv("UXA_LLM_MODE", "api")
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", secret)
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+
+    result = runner.invoke(
+        app,
+        ["validate", str(DEMO_PROJECT), "--check-env"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "endpoint origin: https://llm.example.test" in result.stdout
+    assert "API key present" in result.stdout
+    assert secret not in result.stdout
+
+
+def test_env_check_reports_codex_mode_without_api_key_claim(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UXA_LLM_MODE", "codex")
+    monkeypatch.delenv("UXA_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("UXA_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+
+    result = runner.invoke(
+        app,
+        ["validate", str(DEMO_PROJECT), "--check-env"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "mode: codex" in result.stdout
+    assert "scent and cognitive models configured" in result.stdout
+    assert "API key present" not in result.stdout
+
+
 def test_run_dry_run_prints_matrix_model_calls_and_serial_default(
     monkeypatch, tmp_path: Path
 ) -> None:
