@@ -16,7 +16,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -138,6 +138,15 @@ def _normalize_reasoning_effort(value: str | None, *, name: str) -> str | None:
     return normalized_effort
 
 
+def _normalize_llm_mode(value: object) -> Literal["api", "codex"]:
+    if not isinstance(value, str):
+        raise ModelConfigurationError("UXA_LLM_MODE must be one of: api, codex")
+    normalized_mode = value.strip().lower()
+    if normalized_mode not in {"api", "codex"}:
+        raise ModelConfigurationError("UXA_LLM_MODE must be one of: api, codex")
+    return cast(Literal["api", "codex"], normalized_mode)
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class OpenAICompatibleSettings:
     """Validated model endpoint settings loaded from environment variables."""
@@ -146,6 +155,7 @@ class OpenAICompatibleSettings:
     api_key: str = field(repr=False)
     scent_model: str
     cognitive_model: str
+    mode: Literal["api", "codex"] = "api"
     scent_reasoning_effort: str | None = None
     cognitive_reasoning_effort: str | None = None
     timeout_seconds: float = 30.0
@@ -153,12 +163,19 @@ class OpenAICompatibleSettings:
     redaction_values: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        normalized_url = self.base_url.rstrip("/")
-        if not normalized_url:
-            raise ModelConfigurationError("base_url must not be empty")
-        _endpoint_origin(normalized_url)
+        normalized_mode = _normalize_llm_mode(self.mode)
+        object.__setattr__(self, "mode", normalized_mode)
+        if normalized_mode == "api":
+            normalized_url = self.base_url.rstrip("/")
+            if not normalized_url:
+                raise ModelConfigurationError("base_url must not be empty")
+            _endpoint_origin(normalized_url)
+            required_values = (("api_key", self.api_key),)
+        else:
+            normalized_url = ""
+            required_values = ()
         for name, value in (
-            ("api_key", self.api_key),
+            *required_values,
             ("scent_model", self.scent_model),
             ("cognitive_model", self.cognitive_model),
         ):
@@ -177,6 +194,8 @@ class OpenAICompatibleSettings:
 
     @property
     def endpoint_origin(self) -> str:
+        if self.mode == "codex":
+            return "codex-cli"
         return _endpoint_origin(self.base_url)
 
     @classmethod
@@ -193,9 +212,15 @@ class OpenAICompatibleSettings:
             merged_values = dict(environ)
             load_environment_file(dotenv_path, environ=merged_values)
             values = merged_values
+        mode = _normalize_llm_mode(values.get("UXA_LLM_MODE", "api"))
         names = (
-            "UXA_LLM_BASE_URL",
-            "UXA_LLM_API_KEY",
+            (
+                "UXA_LLM_BASE_URL",
+                "UXA_LLM_API_KEY",
+            )
+            if mode == "api"
+            else ()
+        ) + (
             "UXA_SCENT_MODEL",
             "UXA_COGNITIVE_MODEL",
         )
@@ -204,11 +229,18 @@ class OpenAICompatibleSettings:
             raise ModelConfigurationError(
                 "missing model environment variables: " + ", ".join(missing)
             )
+        if mode == "api":
+            base_url = values["UXA_LLM_BASE_URL"]
+            api_key = values["UXA_LLM_API_KEY"]
+        else:
+            base_url = ""
+            api_key = ""
         return cls(
-            base_url=values["UXA_LLM_BASE_URL"],
-            api_key=values["UXA_LLM_API_KEY"],
+            base_url=base_url,
+            api_key=api_key,
             scent_model=values["UXA_SCENT_MODEL"],
             cognitive_model=values["UXA_COGNITIVE_MODEL"],
+            mode=mode,
             scent_reasoning_effort=(
                 values.get("UXA_LLM_SCENT_REASONING_EFFORT") or None
             ),
@@ -248,11 +280,19 @@ class OpenAICompatibleSettings:
             redaction_value, (str, bytes)
         ):
             raise ModelConfigurationError("redaction_values must be a sequence")
+        mode = _normalize_llm_mode(value.get("mode", "api"))
+        if mode == "api":
+            base_url = str(value["base_url"])
+            api_key = str(value["api_key"])
+        else:
+            base_url = ""
+            api_key = ""
         return cls(
-            base_url=str(value["base_url"]),
-            api_key=str(value["api_key"]),
+            base_url=base_url,
+            api_key=api_key,
             scent_model=str(value["scent_model"]),
             cognitive_model=str(value["cognitive_model"]),
+            mode=mode,
             scent_reasoning_effort=(
                 None
                 if value.get("scent_reasoning_effort") is None

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ux_analyzer.adapters.openai import OpenAICompatibleSettings
+import pytest
+
+from ux_analyzer.adapters.openai import (
+    ModelConfigurationError,
+    OpenAICompatibleSettings,
+)
 
 
 def _dotenv_values(path: Path) -> dict[str, str]:
@@ -68,10 +73,52 @@ def test_explicit_environment_overrides_dotenv_values(tmp_path: Path) -> None:
     assert settings.cognitive_model == "file-cognitive-model"
 
 
+def test_codex_mode_does_not_require_endpoint_credentials() -> None:
+    settings = OpenAICompatibleSettings.from_env(
+        {
+            "UXA_LLM_MODE": " CoDeX ",
+            "UXA_SCENT_MODEL": "gpt-scent",
+            "UXA_COGNITIVE_MODEL": "gpt-cognitive",
+        },
+        dotenv_path=Path("missing-test.env"),
+    )
+
+    assert settings.mode == "codex"
+    assert settings.scent_model == "gpt-scent"
+    assert settings.cognitive_model == "gpt-cognitive"
+    assert settings.endpoint_origin == "codex-cli"
+
+
+def test_codex_model_validate_does_not_require_endpoint_credentials() -> None:
+    settings = OpenAICompatibleSettings.model_validate(
+        {
+            "mode": " CODEX ",
+            "scent_model": "gpt-scent",
+            "cognitive_model": "gpt-cognitive",
+        }
+    )
+
+    assert settings.mode == "codex"
+    assert settings.endpoint_origin == "codex-cli"
+
+
+def test_unknown_llm_mode_is_rejected() -> None:
+    with pytest.raises(ModelConfigurationError, match="UXA_LLM_MODE"):
+        OpenAICompatibleSettings.from_env(
+            {
+                "UXA_LLM_MODE": "browser",
+                "UXA_SCENT_MODEL": "gpt-scent",
+                "UXA_COGNITIVE_MODEL": "gpt-cognitive",
+            },
+            dotenv_path=Path("missing-test.env"),
+        )
+
+
 def test_env_example_contains_placeholder_values_only() -> None:
     env_example = Path(__file__).parents[2] / ".env.example"
 
     assert _dotenv_values(env_example) == {
+        "UXA_LLM_MODE": "api",
         "UXA_LLM_BASE_URL": "https://<provider-host>/v1",
         "UXA_LLM_API_KEY": "<api-key>",
         "UXA_SCENT_MODEL": "<scent-model-id>",
