@@ -16,6 +16,7 @@ from ux_analyzer.adapters.openai import (
     create_structured_model_client,
 )
 from ux_analyzer.ports.models import ChatMessage, ModelRole
+from ux_analyzer.providers.cognitive import CognitiveModelResponse
 from ux_analyzer.providers.scent import CoarseScentResponse
 
 
@@ -136,6 +137,55 @@ async def test_codex_structured_client_runs_read_only_command_and_validates_outp
     assert client.records[0].response == {"status": "success"}
     assert "codex stdout" not in json.dumps(client.records[0].request)
     assert "codex stderr" not in json.dumps(client.records[0].response)
+
+
+@pytest.mark.asyncio
+async def test_codex_cognitive_schema_requires_nullable_root_fields_without_changing_pydantic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    processes: list[_FakeCodexProcess] = []
+    schemas: list[object] = []
+    _patch_codex_process(
+        monkeypatch,
+        calls,
+        processes,
+        schemas,
+        output=json.dumps(
+            {
+                "action": "inspect",
+                "element_id": "target",
+                "reason": "Inspect visible control.",
+            }
+        ),
+        returncode=0,
+    )
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
+        )
+    )
+
+    result = await client.complete(
+        CognitiveModelResponse,
+        (ChatMessage(role="user", content="Choose an action"),),
+        model="gpt-cognitive",
+        role=ModelRole.COGNITIVE,
+    )
+
+    emitted_schema = schemas[0]
+    assert isinstance(emitted_schema, dict)
+    properties = emitted_schema["properties"]
+    assert isinstance(properties, dict)
+    assert emitted_schema["required"] == list(properties)
+    assert all(
+        any(option.get("type") == "null" for option in property_schema["anyOf"])
+        for property_schema in properties.values()
+    )
+    assert CognitiveModelResponse.model_json_schema().get("required") is None
+    assert result.action == "inspect"
+    assert result.element_id == "target"
 
 
 @pytest.mark.asyncio

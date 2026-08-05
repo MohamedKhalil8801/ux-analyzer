@@ -481,6 +481,14 @@ class _StructuredCallSupport:
         return self.settings.endpoint_origin
 
     @property
+    def provider_id(self) -> str:
+        return self._provider_id
+
+    @property
+    def provider_version(self) -> str:
+        return self._provider_version
+
+    @property
     def records(self) -> tuple[ModelCallRecord, ...]:
         return tuple(self._records)
 
@@ -826,6 +834,51 @@ def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
     ).encode("utf-8")
 
 
+def _schema_allows_null(schema: object) -> bool:
+    if not isinstance(schema, Mapping):
+        return False
+    schema_mapping = cast(Mapping[object, object], schema)
+    if schema_mapping.get("type") == "null":
+        return True
+    types = schema_mapping.get("type")
+    if isinstance(types, Sequence) and not isinstance(types, (str, bytes)):
+        if "null" in types:
+            return True
+    any_of = schema_mapping.get("anyOf")
+    if isinstance(any_of, Sequence) and not isinstance(any_of, (str, bytes)):
+        return any(_schema_allows_null(item) for item in cast(Sequence[object], any_of))
+    return False
+
+
+def _codex_transport_schema(schema: type[BaseModel]) -> dict[str, object]:
+    """Adapt root optional fields to Codex strict-schema requirements only."""
+
+    payload = cast(
+        dict[str, object],
+        json.loads(json.dumps(schema.model_json_schema(), ensure_ascii=True)),
+    )
+    properties_value = payload.get("properties")
+    if not isinstance(properties_value, dict):
+        return payload
+    properties = cast(dict[str, object], properties_value)
+    current_required = payload.get("required")
+    required_names: set[str] = set()
+    if isinstance(current_required, Sequence) and not isinstance(
+        current_required, (str, bytes)
+    ):
+        required_names = {
+            name
+            for name in cast(Sequence[object], current_required)
+            if isinstance(name, str)
+        }
+    for name, property_schema in tuple(properties.items()):
+        if name in required_names or _schema_allows_null(property_schema):
+            continue
+        properties[name] = {"anyOf": [property_schema, {"type": "null"}]}
+    payload["required"] = list(properties)
+    return payload
+
+
 class CodexStructuredClient(_StructuredCallSupport):
     """Codex CLI adapter with local schema validation and bounded retries."""
 
@@ -957,7 +1010,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                 schema_path = Path(temp_dir) / "schema.json"
                 response_path = Path(temp_dir) / "response.json"
                 schema_path.write_text(
-                    json.dumps(schema.model_json_schema(), ensure_ascii=True),
+                    json.dumps(_codex_transport_schema(schema), ensure_ascii=True),
                     encoding="utf-8",
                 )
                 process = await asyncio.create_subprocess_exec(
