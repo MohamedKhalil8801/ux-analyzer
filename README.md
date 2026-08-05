@@ -189,6 +189,7 @@ the directional gate described in [evaluation docs](docs/domain-model.md).
 - [Roadmap and deferred contracts](docs/roadmap.md)
 - [Original POC plan versus current implementation](docs/poc-plan-vs-current.md)
 - [Testing](docs/testing.md)
+- [Glossary](docs/glossary.md)
 
 ## Verification
 
