@@ -1,23 +1,30 @@
 from __future__ import annotations
 
 import os
+from typing import Protocol, cast
 
 import httpx
 import pytest
 
 from ux_analyzer.adapters.openai import (
+    ModelConfigurationError,
     OpenAICompatibleSettings,
-    OpenAICompatibleStructuredClient,
+    create_structured_model_client,
 )
 from ux_analyzer.domain.attention import AttentionState, ProgressiveObservation
 from ux_analyzer.domain.benchmark import Budget
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
-from ux_analyzer.ports.models import ModelRole
+from ux_analyzer.ports.models import ModelCallRecord, ModelRole, StructuredModelClient
 from ux_analyzer.providers.cognitive import CognitiveDecision, StructuredCognitiveAgent
 from ux_analyzer.providers.scent import (
     StructuredCoarseScentEvaluator,
     StructuredFullScentEvaluator,
 )
+
+
+class _RecordedStructuredModelClient(StructuredModelClient, Protocol):
+    @property
+    def records(self) -> tuple[ModelCallRecord, ...]: ...
 
 
 def _snapshot() -> ViewportSnapshot:
@@ -41,18 +48,21 @@ def _snapshot() -> ViewportSnapshot:
 async def test_openai_compatible_endpoint_supports_all_structured_roles() -> None:
     if os.environ.get("UXA_RUN_LIVE_TESTS") != "1":
         pytest.skip("set UXA_RUN_LIVE_TESTS=1 to run live endpoint tests")
-    required = (
-        "UXA_LLM_BASE_URL",
-        "UXA_LLM_API_KEY",
-        "UXA_SCENT_MODEL",
-        "UXA_COGNITIVE_MODEL",
+    try:
+        settings = OpenAICompatibleSettings.from_env()
+    except ModelConfigurationError as error:
+        if str(error).startswith("missing model environment variables:"):
+            pytest.skip(str(error))
+        raise
+    http_client = (
+        httpx.AsyncClient(timeout=settings.timeout_seconds)
+        if settings.mode == "api"
+        else None
     )
-    missing = tuple(name for name in required if not os.environ.get(name))
-    if missing:
-        pytest.skip("missing live model environment variables: " + ", ".join(missing))
-    settings = OpenAICompatibleSettings.from_env()
-    http_client = httpx.AsyncClient(timeout=settings.timeout_seconds)
-    client = OpenAICompatibleStructuredClient(settings, http_client=http_client)
+    client = cast(
+        _RecordedStructuredModelClient,
+        create_structured_model_client(settings, http_client=http_client),
+    )
     snapshot = _snapshot()
     state = AttentionState.initial(
         Budget(max_steps=5, max_observations=3, max_interactions=2, timeout_seconds=10),
@@ -77,7 +87,8 @@ async def test_openai_compatible_endpoint_supports_all_structured_roles() -> Non
             ),
         )
     finally:
-        await http_client.aclose()
+        if http_client is not None:
+            await http_client.aclose()
 
     assert coarse and 0 <= coarse[0].score <= 1
     assert full and 0 <= full[0].score <= 1

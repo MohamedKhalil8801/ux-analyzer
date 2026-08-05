@@ -21,7 +21,7 @@ prominence contributions, causal findings, and process cards are checked.
 Browser extraction and fixture-only network safety remain covered by
 `tests/integration/web` and install Chromium before running those suites.
 
-Live endpoint checks stay skipped unless `UXA_RUN_LIVE_TESTS=1` and all four
+Live API endpoint checks stay skipped unless `UXA_RUN_LIVE_TESTS=1` and all four
 variables exist:
 
 ```text
@@ -30,6 +30,16 @@ UXA_LLM_API_KEY=<secret>
 UXA_SCENT_MODEL=<scent-model>
 UXA_COGNITIVE_MODEL=<cognitive-model>
 uv run pytest -m live -q
+```
+
+Credential-free Codex live coverage uses logged-in Codex CLI:
+
+```powershell
+$env:UXA_LLM_MODE = "codex"
+$env:UXA_SCENT_MODEL = "<scent-model-id>"
+$env:UXA_COGNITIVE_MODEL = "<cognitive-model-id>"
+$env:UXA_RUN_LIVE_TESTS = "1"
+uv run pytest tests/live/test_openai_endpoint.py -m live -q
 ```
 
 Live responses are checked in memory and never recorded automatically. Fixture
