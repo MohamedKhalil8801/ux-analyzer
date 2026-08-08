@@ -12,6 +12,8 @@
     viewportId: "",
     elementId: "",
     saliencyKey: "",
+    comparisonKey: "",
+    comparisonDuration: "1s",
     playing: false,
     timer: null
   };
@@ -35,6 +37,10 @@
   var saliencyTabs = document.getElementById("saliency-tabs");
   var saliencyDetail = document.getElementById("saliency-detail");
   var saliencyRuntimeLabel = document.getElementById("saliency-runtime-label");
+  var comparisonSelect = document.getElementById("provider-comparison-select");
+  var comparisonDurationSelect = document.getElementById("provider-comparison-duration");
+  var comparisonOutput = document.getElementById("provider-comparison-output");
+  var providerComparisons = data.provider_comparisons || [];
 
   function element(tag, className, text) {
     var node = document.createElement(tag);
@@ -260,6 +266,21 @@
     }
   }
 
+  function jumpToSequence(runId, sequence) {
+    var run = runs.find(function (item) { return item.run_id === runId; });
+    if (!run) return;
+    if (!(run.timeline || []).length) {
+      if (run.run_page) window.location.href = run.run_page + "#run=" + encodeURIComponent(run.run_id) + "&event=event-" + encodeURIComponent(sequence);
+      return;
+    }
+    selectRun(runId, false);
+    var index = run.timeline.findIndex(function (record) {
+      return Number(record.sequence) === Number(sequence);
+    });
+    setEventIndex(index >= 0 ? index : 0, false);
+    document.getElementById("playback-workspace").scrollIntoView({ block: "start" });
+  }
+
   function findSnapshot(run, viewportId) {
     return run && (run.snapshots || []).find(function (snapshot) { return snapshot.id === viewportId; }) || null;
   }
@@ -403,6 +424,185 @@
       });
     });
     return entries;
+  }
+
+  function appendComparisonRankings(parent, title, rankings) {
+    var block = element("div", "comparison-block");
+    block.appendChild(element("strong", "", title));
+    if (!rankings || !rankings.length) {
+      block.appendChild(element("p", "empty", "No ranking."));
+      parent.appendChild(block);
+      return;
+    }
+    var table = element("table", "feature-table comparison-ranking-table");
+    var head = element("thead", "");
+    var headRow = element("tr", "");
+    ["Rank", "Element", "Role", "Score", "Probability"].forEach(function (label) {
+      headRow.appendChild(element("th", "", label));
+    });
+    head.appendChild(headRow);
+    table.appendChild(head);
+    var body = element("tbody", "");
+    rankings.forEach(function (item) {
+      var row = element("tr", "");
+      row.appendChild(element("td", "", item.rank));
+      row.appendChild(element("td", "", (item.label || "Unlabelled element") + " [" + exact(item.element_id) + "]"));
+      row.appendChild(element("td", "", item.role));
+      row.appendChild(element("td", "", exact(item.adjusted_score !== undefined ? item.adjusted_score : item.score)));
+      row.appendChild(element("td", "", exact(item.normalized_probability)));
+      body.appendChild(row);
+    });
+    table.appendChild(body);
+    block.appendChild(table);
+    parent.appendChild(block);
+  }
+
+  function appendComparisonHeatmap(parent, provider, duration) {
+    var block = element("div", "comparison-block");
+    block.appendChild(element("strong", "", "Exact generated heatmap"));
+    var heatmap = (provider.heatmaps || []).find(function (item) {
+      return item.duration === duration;
+    });
+    if (!heatmap || !heatmap.heatmap) {
+      block.appendChild(element("p", "empty", provider.provider_id === "heuristic"
+        ? "Heuristic has no pixel heatmap."
+        : "No validated heatmap recorded."));
+      parent.appendChild(block);
+      return;
+    }
+    var image = document.createElement("img");
+    image.className = "provider-heatmap exact-heatmap";
+    image.src = heatmap.heatmap;
+    image.alt = "Exact " + provider.provider_id + " heatmap for " + heatmap.duration;
+    block.appendChild(image);
+    var link = document.createElement("a");
+    link.href = heatmap.heatmap;
+    link.target = "_blank";
+    link.textContent = "Open exact generated heatmap";
+    block.appendChild(link);
+    addFields(block, [
+      ["Artifact path", heatmap.heatmap_path],
+      ["Viewport", heatmap.viewport_id],
+      ["Inference timing", exact(heatmap.inference_duration_ms) + " ms"],
+      ["Execution provider", heatmap.execution_provider],
+      ["Cache status", heatmap.cache_state]
+    ]);
+    appendComparisonRankings(block, "Foveacast element ranking", heatmap.ranked_elements || []);
+    parent.appendChild(block);
+  }
+
+  function appendComparisonPath(parent, provider) {
+    var block = element("div", "comparison-block");
+    block.appendChild(element("strong", "", "Recorded action path"));
+    var path = provider.action_path || [];
+    if (!path.length) {
+      block.appendChild(element("p", "empty", "No recorded actions."));
+      parent.appendChild(block);
+      return;
+    }
+    var list = element("ol", "comparison-path");
+    path.forEach(function (item) {
+      var row = element("li", "");
+      var button = element("button", "path-step");
+      button.type = "button";
+      button.textContent = "Step " + item.sequence + " | " + titleCase(item.kind) + " | " + item.element_label;
+      button.addEventListener("click", function () {
+        jumpToSequence(provider.run_id, item.sequence);
+      });
+      row.appendChild(button);
+      var status = item.succeeded === true ? "succeeded" : item.succeeded === false ? "failed" : "recorded";
+      row.appendChild(element("span", "path-status path-status-" + status, status));
+      if (item.error) row.appendChild(element("span", "path-error", item.error));
+      list.appendChild(row);
+    });
+    block.appendChild(list);
+    parent.appendChild(block);
+  }
+
+  function renderProviderCard(parent, provider, duration) {
+    var card = element("article", "provider-card");
+    var heading = element("div", "provider-card-heading");
+    var title = element("h3", "", titleCase(provider.provider_id));
+    heading.appendChild(title);
+    var status = element("span", "provider-status", provider.outcome);
+    heading.appendChild(status);
+    card.appendChild(heading);
+    if (provider.run_page) {
+      var runLink = document.createElement("a");
+      runLink.href = provider.run_page + "#run=" + encodeURIComponent(provider.run_id);
+      runLink.textContent = "Open run workspace";
+      card.appendChild(runLink);
+    }
+    addFields(card, [
+      ["Verified", provider.verified],
+      ["Failure", provider.failure_reason || "None recorded"]
+    ]);
+    appendComparisonHeatmap(card, provider, duration);
+    if (provider.provider_id === "heuristic") {
+      var prominence = (provider.prominence || [])[0];
+      appendComparisonRankings(card, "Heuristic prominence ranking", prominence ? prominence.rankings : []);
+    }
+    appendComparisonPath(card, provider);
+    parent.appendChild(card);
+  }
+
+  function selectedProviderComparison() {
+    return providerComparisons.find(function (item) { return item.key === state.comparisonKey; }) || null;
+  }
+
+  function fillComparisonDurationOptions(comparison) {
+    if (!comparisonDurationSelect) return;
+    var durations = [];
+    (comparison ? comparison.providers || [] : []).forEach(function (provider) {
+      (provider.heatmaps || []).forEach(function (item) {
+        if (durations.indexOf(item.duration) === -1) durations.push(item.duration);
+      });
+    });
+    durations.sort(function (left, right) { return ["1s", "3s", "7s"].indexOf(left) - ["1s", "3s", "7s"].indexOf(right); });
+    while (comparisonDurationSelect.firstChild) comparisonDurationSelect.removeChild(comparisonDurationSelect.firstChild);
+    durations.forEach(function (duration) {
+      var option = document.createElement("option");
+      option.value = duration;
+      option.textContent = duration;
+      comparisonDurationSelect.appendChild(option);
+    });
+    comparisonDurationSelect.disabled = !durations.length;
+    if (durations.indexOf(state.comparisonDuration) === -1) state.comparisonDuration = durations[0] || "1s";
+    comparisonDurationSelect.value = state.comparisonDuration;
+  }
+
+  function renderProviderComparison() {
+    if (!comparisonOutput) return;
+    while (comparisonOutput.firstChild) comparisonOutput.removeChild(comparisonOutput.firstChild);
+    var comparison = selectedProviderComparison();
+    if (!comparison) {
+      comparisonOutput.appendChild(element("p", "empty", "No paired provider runs recorded."));
+      return;
+    }
+    var heading = element("div", "comparison-cell-heading");
+    heading.appendChild(element("h3", "", comparison.scenario_label + " | " + comparison.version_label));
+    heading.appendChild(element("p", "muted", "Seed " + comparison.seed + " | " + comparison.policy));
+    comparisonOutput.appendChild(heading);
+    var grid = element("div", "provider-comparison-grid");
+    (comparison.providers || []).forEach(function (provider) {
+      renderProviderCard(grid, provider, state.comparisonDuration);
+    });
+    comparisonOutput.appendChild(grid);
+  }
+
+  function fillProviderComparisonOptions() {
+    if (!comparisonSelect) return;
+    while (comparisonSelect.firstChild) comparisonSelect.removeChild(comparisonSelect.firstChild);
+    providerComparisons.forEach(function (comparison) {
+      var option = document.createElement("option");
+      option.value = comparison.key;
+      option.textContent = comparison.scenario_label + " | " + comparison.version_label + " | seed " + comparison.seed;
+      comparisonSelect.appendChild(option);
+    });
+    state.comparisonKey = providerComparisons.length ? providerComparisons[0].key : "";
+    comparisonSelect.value = state.comparisonKey;
+    fillComparisonDurationOptions(selectedProviderComparison());
+    renderProviderComparison();
   }
 
   function appendRankedElements(parent, ranked, run, group) {
@@ -768,6 +968,7 @@
   }
 
   fillScenarioOptions();
+  fillProviderComparisonOptions();
   applyHash();
   renderRunOptions();
   renderWorkspace();
@@ -777,6 +978,19 @@
     var visible = visibleRuns();
     selectRun(visible.length ? visible[0].run_id : "", false);
   });
+  if (comparisonSelect) {
+    comparisonSelect.addEventListener("change", function () {
+      state.comparisonKey = comparisonSelect.value;
+      fillComparisonDurationOptions(selectedProviderComparison());
+      renderProviderComparison();
+    });
+  }
+  if (comparisonDurationSelect) {
+    comparisonDurationSelect.addEventListener("change", function () {
+      state.comparisonDuration = comparisonDurationSelect.value;
+      renderProviderComparison();
+    });
+  }
   runSelect.addEventListener("change", function () { selectRun(runSelect.value, false); });
   playPause.addEventListener("click", function () { setPlaying(!state.playing); });
   document.getElementById("step-back").addEventListener("click", function () { setEventIndex(state.eventIndex - 1, false); });

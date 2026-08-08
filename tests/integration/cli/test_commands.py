@@ -6,6 +6,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,7 +24,7 @@ from ux_analyzer.application.experiment import (
 from ux_analyzer.cli import app
 from ux_analyzer.config.loader import load_project
 from ux_analyzer.domain.attention import AttentionState
-from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy
+from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy, FixtureInputs
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
 from ux_analyzer.ports.observation import (
     ObservationCapture,
@@ -36,6 +37,42 @@ from ux_analyzer.providers.full_list_policy import FullListPolicy
 
 DEMO_PROJECT = Path(__file__).parents[3] / "benchmarks" / "demo" / "project.yaml"
 runner = CliRunner()
+
+
+def _live_run_spec(tmp_path: Path):
+    source = Path(__file__).parents[2] / "fixtures" / "config" / "minimal-project.yaml"
+    project = yaml.safe_load(source.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project["applications"][0]["versions"] = [
+        {
+            "id": "portfolio-live",
+            "kind": "live",
+            "label": "Production",
+            "start_url": "https://portfolio.example/work",
+            "allowed_origins": ["https://fonts.example"],
+            "navigation_settle_ms": 2000,
+            "action_settle_ms": 900,
+        }
+    ]
+    project["scenarios"][0]["application_version_ids"] = ["portfolio-live"]
+    project["scenarios"][0]["fixture_inputs"] = {}
+    project["scenarios"][0]["verifier"] = {
+        "type": "visible-result",
+        "text": "Frontend Engineer",
+    }
+    project["scenarios"][0]["evaluation_target"]["labels_by_version"] = {
+        "live": "Work"
+    }
+    project["experiments"][0]["application_version_ids"] = ["portfolio-live"]
+    project_path = tmp_path / "live-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    loaded = load_project(project_path)
+    definition = loaded.project.experiments[0]
+    specs = expand_experiment(
+        ExperimentContext(definition, loaded.project, loaded.config_digest)
+    )
+    assert len(specs) == 1
+    return specs[0], loaded
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -701,13 +738,25 @@ def test_provider_axis_dry_run_expands_eight_cells_and_prints_provider(
     assert "prominence-provider=foveacast" in result.stdout
 
 
-def test_bundle_manifest_records_prominence_provider_id(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("provider_id", "expected_provider_version"),
+    (
+        ("heuristic", "heuristic-project-v2"),
+        ("foveacast", "foveacast-prominence-v1"),
+    ),
+)
+def test_bundle_manifest_records_active_provider_and_prompt_provenance(
+    tmp_path: Path,
+    provider_id: str,
+    expected_provider_version: str,
+) -> None:
     project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
     assert isinstance(project, dict)
+    project["providers"]["prominence"]["version"] = "heuristic-project-v2"
     experiment = next(
         item for item in project["experiments"] if item["id"] == "focused-validation"
     )
-    experiment["prominence_provider_ids"] = ["heuristic", "foveacast"]
+    experiment["prominence_provider_ids"] = [provider_id]
     project_path = tmp_path / "provider-axis.yaml"
     project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
     loaded = load_project(project_path)
@@ -719,7 +768,7 @@ def test_bundle_manifest_records_prominence_provider_id(tmp_path: Path) -> None:
         for item in expand_experiment(
             ExperimentContext(definition, loaded.project, loaded.config_digest)
         )
-        if item.prominence_provider_id == "foveacast"
+        if item.prominence_provider_id == provider_id
     )
     settings = OpenAICompatibleSettings(
         base_url="https://llm.example.test/v1",
@@ -732,9 +781,16 @@ def test_bundle_manifest_records_prominence_provider_id(tmp_path: Path) -> None:
     manifest = json.loads((writer.staging_path / "manifest.json").read_text())
     writer.abort("test complete")
 
-    assert manifest["prominence_provider_id"] == "foveacast"
+    assert manifest["prominence_provider_id"] == provider_id
     assert manifest["endpoint_origin"] == "https://llm.example.test"
     assert manifest["provider_versions"]["models"] == "openai-compatible-v1"
+    assert manifest["provider_versions"]["prominence"] == expected_provider_version
+    assert manifest["prompt_versions"]["cognitive"] == "cognitive-v2"
+    cognitive_manifest = next(
+        item for item in manifest["provider_manifests"] if item["role"] == "cognitive"
+    )
+    assert cognitive_manifest["prompt_version"] == "cognitive-v2"
+    assert cognitive_manifest["schema_version"] == "cognitive-v1"
     assert all(
         item["provider_id"] == "openai-compatible-structured"
         and item["version"] == "openai-compatible-v1"
@@ -969,6 +1025,86 @@ def test_session_config_uses_scenario_viewport(tmp_path: Path) -> None:
     assert config.viewport == ViewportSize(width=900, height=700)
 
 
+def test_session_config_uses_live_start_url_and_settle_timings(tmp_path: Path) -> None:
+    spec, _ = _live_run_spec(tmp_path)
+
+    config = cli._session_config(
+        spec,
+        output=tmp_path,
+        fixture_origin="http://127.0.0.1:8000",
+    )
+
+    assert config.start_url == "https://portfolio.example/work"
+    assert config.navigation_origins == ("https://portfolio.example",)
+    assert config.resource_origins == ("https://fonts.example",)
+    assert config.navigation_settle_ms == 2000
+    assert config.action_settle_ms == 900
+
+
+def test_live_agent_uses_visible_verification_without_fixture_state_client(
+    tmp_path: Path,
+) -> None:
+    spec, loaded = _live_run_spec(tmp_path)
+
+    class FakeClient:
+        endpoint_origin = "https://llm.example.test"
+        records: tuple[object, ...] = ()
+
+    settings = OpenAICompatibleSettings(
+        base_url="https://llm.example.test/v1",
+        api_key="secret",
+        scent_model="scent-model",
+        cognitive_model="cognitive-model",
+    )
+    agent = cli._build_agent(
+        spec,
+        adapter=object(),
+        client=FakeClient(),
+        output=tmp_path,
+        fixture_origin="http://127.0.0.1:8000",
+        settings=settings,
+        runtime=loaded.runtime,
+    )
+
+    assert agent.verifier.spec.type == "visible-result"
+    assert agent.verifier._fixture_state_client is None
+    assert agent.observation_provider._fixture_control_enabled is False
+
+
+def test_live_agent_drops_fixture_values_and_keys_defensively(tmp_path: Path) -> None:
+    spec, loaded = _live_run_spec(tmp_path)
+    spec = replace(
+        spec,
+        scenario=replace(
+            spec.scenario,
+            fixture_inputs=FixtureInputs(values={"unexpected": "secret"}),
+        ),
+    )
+
+    class FakeClient:
+        endpoint_origin = "https://llm.example.test"
+        records: tuple[object, ...] = ()
+
+    settings = OpenAICompatibleSettings(
+        base_url="https://llm.example.test/v1",
+        api_key="secret",
+        scent_model="scent-model",
+        cognitive_model="cognitive-model",
+    )
+    agent = cli._build_agent(
+        spec,
+        adapter=object(),
+        client=FakeClient(),
+        output=tmp_path,
+        fixture_origin="http://127.0.0.1:8000",
+        settings=settings,
+        runtime=loaded.runtime,
+    )
+
+    assert agent.observation_provider._fixture_inputs == {}
+    assert agent.cognitive_agent.fixture_keys == ()
+
+
 def test_full_list_bundle_manifest_omits_unused_scent_roles(tmp_path: Path) -> None:
     loaded = load_project(DEMO_PROJECT)
     definition = next(
@@ -993,7 +1129,7 @@ def test_full_list_bundle_manifest_omits_unused_scent_roles(tmp_path: Path) -> N
     writer.abort("test complete")
 
     assert manifest["model_ids"] == {"cognitive": "cognitive-model"}
-    assert manifest["prompt_versions"] == {"cognitive": "cognitive-v1"}
+    assert manifest["prompt_versions"] == {"cognitive": "cognitive-v2"}
     assert [item["role"] for item in manifest["provider_manifests"]] == ["cognitive"]
 
 
@@ -1081,16 +1217,23 @@ async def test_fixture_provider_extracts_against_current_page_state(
             del session
             return page
 
-    async def fake_capture_snapshot(
+    async def fake_capture_snapshot_with_diagnostics(
         extraction_page: object,
         viewport_id: str,
         **kwargs: object,
-    ) -> ViewportSnapshot:
+    ) -> SimpleNamespace:
         extracted.append(kwargs)
         assert extraction_page is page
-        return ViewportSnapshot(id=viewport_id, elements=())
+        return SimpleNamespace(
+            snapshot=ViewportSnapshot(id=viewport_id, elements=()),
+            screenshot=b"extractor-artifact",
+        )
 
-    monkeypatch.setattr(cli, "capture_snapshot", fake_capture_snapshot)
+    monkeypatch.setattr(
+        cli,
+        "capture_snapshot_with_diagnostics",
+        fake_capture_snapshot_with_diagnostics,
+    )
     provider = cli._FixtureObservationProvider(
         FakeAdapter(),  # type: ignore[arg-type]
         "http://fixture.test",
@@ -1109,6 +1252,50 @@ async def test_fixture_provider_extracts_against_current_page_state(
     assert extracted == [{}]
     assert capture.snapshot is not None
     assert capture.snapshot.id == "viewport-1"
+    assert capture.screenshot == b"extractor-artifact"
+
+
+@pytest.mark.asyncio
+async def test_live_provider_reloads_browser_without_fixture_control_calls(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    class FakeAdapter:
+        async def reset(self, session: SessionHandle) -> None:
+            del session
+            events.append("browser-reset")
+
+        async def end_session(self, session: SessionHandle) -> None:
+            del session
+            events.append("browser-end")
+
+    class ForbiddenClient:
+        async def post(self, url: str, json: object) -> None:
+            raise AssertionError(f"unexpected fixture POST: {url} {json}")
+
+        async def delete(self, url: str) -> None:
+            raise AssertionError(f"unexpected fixture DELETE: {url}")
+
+    provider = cli._FixtureObservationProvider(
+        FakeAdapter(),  # type: ignore[arg-type]
+        "http://127.0.0.1:8000",
+        {},
+        ForbiddenClient(),  # type: ignore[arg-type]
+        fixture_control_enabled=False,
+    )
+    session = SessionHandle(
+        session_id="live-run",
+        test_account_id=AccountId("test-live-run"),
+        viewport=ViewportSize(900, 700),
+        trace_path=tmp_path / "trace.zip",
+        blocked_events=[],
+    )
+
+    await provider.reset(session)
+    await provider.end_session(session)
+
+    assert events == ["browser-reset", "browser-end"]
 
 
 def test_report_regenerates_from_finalized_bundles(tmp_path: Path) -> None:

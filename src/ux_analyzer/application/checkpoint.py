@@ -25,6 +25,7 @@ _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.j
 _QUARANTINE_DIR = ".quarantine"
 _MAX_BUNDLE_JSON_BYTES = 8 * 1024 * 1024
 _MAX_BUNDLE_TIMELINE_BYTES = 16 * 1024 * 1024
+_MAX_BUNDLE_ARTIFACT_BYTES = 256 * 1024 * 1024
 _MAX_BUNDLE_CHECKSUM_BYTES = 8 * 1024 * 1024
 _MAX_BUNDLE_EVENTS = 100_000
 
@@ -394,7 +395,7 @@ def finalized_bundle_failures(
                 secure_read_bytes(
                     path,
                     "finalized bundle artifact",
-                    max_bytes=_MAX_BUNDLE_TIMELINE_BYTES,
+                    max_bytes=_MAX_BUNDLE_ARTIFACT_BYTES,
                 )
             )
             actual = digest.hexdigest()

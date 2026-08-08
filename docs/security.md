@@ -4,7 +4,7 @@
 
 | Boundary | Trusted side | Untrusted or restricted side | Control |
 | --- | --- | --- | --- |
-| Browser to target | Playwright session policy | Every browser request, redirect, popup, form submission, image, fetch, or XHR | Exact bundled fixture-origin allowlist; fail closed. |
+| Browser to target | Playwright session policy | Every browser request, redirect, popup, form submission, image, fetch, or XHR | Exact per-session origin allowlist; fixture sessions are fixture-only and live sessions are explicitly configured; fail closed. |
 | Fixture state | Local FastAPI fixture process | Scenario input and browser actions | Test account IDs, isolated in-memory sessions, private control routes, no outbound communication. |
 | Application to model | Role providers and application validator | Model output, endpoint response, provider behavior | Structured schema validation, bounded retries, action validation, independent verifier. |
 | Model request to provider | Host-side OpenAI-compatible client | External configured endpoint | API key in header only; endpoint origin in manifests; request/response sanitization. |
@@ -13,10 +13,20 @@
 
 ## Browser and Fixture Safety
 
-Only bundled fixture origins may be automated. Normalized allowed hosts are
-`127.0.0.1`, `localhost`, `::1`, and `fixture.test`, using HTTP(S) and the exact
-configured port. Configured fixture origin cannot contain credentials, path,
-query, or fragment.
+Fixture sessions automate only bundled fixture origins. Normalized allowed hosts
+are `127.0.0.1`, `localhost`, `::1`, and `fixture.test`, using HTTP(S) and the
+exact configured port. Configured fixture origin cannot contain credentials,
+path, query, or fragment.
+
+Live sessions carry their own exact normalized HTTP(S) origins in
+`ObservationSessionConfig`: start origin plus explicitly configured resource
+origins. Playwright builds `NetworkPolicy` when each session starts. It never
+unions origins across experiment cells, so live session can neither reach the
+fixture origin nor another live target's origin. Live scenarios cannot define
+`fixture_inputs` or use `fixture-state` verification; visible-result verification
+uses pixel-visible rendered text captured inside the current viewport. CSS-clipped,
+offscreen, transparent, zero-font-size, and screen-reader-only text does not count
+as visible evidence.
 
 Every browser request is routed through the allowlist. Foreign origins are
 blocked, including redirects and popups. `about:`, `blob:`, and `data:` schemes
@@ -66,6 +76,15 @@ Model inputs are limited by role:
 - Full scent sees only already noticed visible controls.
 - Cognitive sees newly revealed and remembered persona-visible controls.
 
+Sighted-mode labels come only from pixel-visible rendered text. An input may use
+text from an associated `label` only when that label is visibly painted in the
+viewport. Accessibility-only names such as `aria-label`, `aria-labelledby`, and
+offscreen label text remain in the private semantic snapshot for evaluator and
+execution use; they are not projected into persona or model labels. Region
+context follows the same rule: model-facing context uses a visible heading or a
+generic rendered kind such as `Navigation` or `Section`, never an accessibility-
+only region name.
+
 No role sees DOM selectors, test IDs, hidden labels, raw URLs, provider handles,
 private control API paths, fixture-state keys, numeric prominence, numeric scent,
 or verifier state. Model requests are audited in tests for forbidden values and
@@ -75,6 +94,13 @@ External model providers can receive goal text, visible labels, role names,
 region labels, actionability/disabled state where role permits, and model
 prompt content. Do not run this POC with sensitive target content unless data
 handling, endpoint retention, access, and jurisdiction are acceptable.
+
+For `visible-result` scenarios, only an explicit cognitive `complete` action
+invokes independent verification. `complete` has no element ID, consumes one
+step and no interaction, and is valid only against the current viewport state.
+Ordinary successful actions and terminal failure or abandonment cannot upgrade
+the run to verified success. Fixture-state scenarios retain automatic
+after-action and terminal verification.
 
 ## Evidence and Claim Limits
 
@@ -92,7 +118,7 @@ conversion or product-market fit.
 
 ## Operator Rules
 
-1. Use only bundled fixture origins and disposable test accounts.
+1. Use bundled fixture origins only for fixture sessions; use live origins only when exact origins are explicitly configured. Use disposable test accounts.
 2. Use placeholder model values in docs and examples; keep API keys in environment variables or a secret manager.
 3. Do not commit `.uxa-output`, traces, screenshots, or live responses containing sensitive data.
 4. Review raw bundle retention before distributing reports or artifacts.

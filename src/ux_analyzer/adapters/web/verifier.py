@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Protocol, cast
 from urllib.parse import quote, urlsplit
 
@@ -105,6 +106,9 @@ class WebVerifier(VerificationProvider):
             self._fixture_state_client = HttpFixtureStateClient(fixture_control_origin)
         self._observation_provider = observation_provider
         self._snapshot_extractor = snapshot_extractor
+        self._last_capture: ObservationCapture | None = None
+        self._last_snapshot: ViewportSnapshot | None = None
+        self._verification_capture_count = 0
         if isinstance(spec, FixtureStateVerifierSpec):
             if self._fixture_inputs is None:
                 raise ValueError("fixture-state verification needs fixture inputs")
@@ -116,7 +120,17 @@ class WebVerifier(VerificationProvider):
                     "visible-result verification needs observation provider and extractor"
                 )
 
+    @property
+    def last_capture(self) -> ObservationCapture | None:
+        return self._last_capture
+
+    @property
+    def last_snapshot(self) -> ViewportSnapshot | None:
+        return self._last_snapshot
+
     async def verify(self, session: SessionHandle) -> VerificationResult:
+        self._last_capture = None
+        self._last_snapshot = None
         if isinstance(self.spec, FixtureStateVerifierSpec):
             return await self._verify_fixture_state(session, self.spec)
         return await self._verify_visible_result(session, self.spec)
@@ -156,12 +170,38 @@ class WebVerifier(VerificationProvider):
         if self._observation_provider is None or self._snapshot_extractor is None:
             raise WebVerificationError("visible-result verifier is not configured")
         capture = await self._observation_provider.capture(session)
+        self._verification_capture_count += 1
+        verification_viewport_id = (
+            f"{capture.viewport_id}-verification-{self._verification_capture_count}"
+        )
+        capture = replace(capture, viewport_id=verification_viewport_id)
         snapshot = self._snapshot_extractor(capture)
+        snapshot = _relabel_snapshot(snapshot, verification_viewport_id)
+        capture = replace(capture, snapshot=snapshot)
+        self._last_capture = capture
+        self._last_snapshot = snapshot
         evidence_id = f"viewport:{snapshot.id}"
+        effective_visible_elements = tuple(
+            element
+            for element in snapshot.elements
+            if element.visibility_fraction > 0 and element.rendered_text is not None
+        )
         for element in snapshot.elements:
-            if spec.text not in element.label:
+            if (
+                element.visibility_fraction <= 0
+                or element.rendered_text is None
+                or spec.text not in element.rendered_text
+            ):
                 continue
             if spec.role is not None and ElementRole(element.role).value != spec.role:
+                continue
+            if not all(
+                any(
+                    required_text in visible_element.rendered_text
+                    for visible_element in effective_visible_elements
+                )
+                for required_text in spec.all_of
+            ):
                 continue
             return VerificationResult(
                 verified=True,
@@ -177,6 +217,29 @@ class WebVerifier(VerificationProvider):
 
 FixtureStateWebVerifier = WebVerifier
 VisibleResultWebVerifier = WebVerifier
+
+
+def _relabel_snapshot(
+    snapshot: ViewportSnapshot, viewport_id: str
+) -> ViewportSnapshot:
+    """Give verifier captures unique IDs while preserving internal references."""
+
+    elements = tuple(
+        replace(
+            element,
+            execution_reference=(
+                replace(element.execution_reference, viewport_id=viewport_id)
+                if element.execution_reference is not None
+                else None
+            ),
+        )
+        for element in snapshot.elements
+    )
+    return replace(
+        snapshot,
+        id=viewport_id,
+        elements=elements,
+    )
 
 
 def _fixture_values(

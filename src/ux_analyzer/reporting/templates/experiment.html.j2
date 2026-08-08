@@ -150,6 +150,58 @@
     </section>
     {% endif %}
 
+    {% if provider_comparisons %}
+    <style>
+      .provider-comparison-section { padding: 18px; }
+      .comparison-note { max-width: 460px; margin: 0; text-align: right; }
+      .provider-comparison-toolbar { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+      .provider-comparison-toolbar label { display: grid; gap: 3px; color: var(--muted); font-size: .7rem; }
+      .provider-comparison-output { min-width: 0; }
+      .comparison-cell-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 8px 0 12px; }
+      .comparison-cell-heading h3 { margin: 0; font-size: 1rem; }
+      .comparison-cell-heading p { margin: 0; }
+      .provider-comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+      .provider-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 5px; background: var(--panel); }
+      .provider-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+      .provider-card-heading h3 { margin: 0; font-size: 1rem; }
+      .provider-status { padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: .68rem; font-weight: 800; }
+      .comparison-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+      .comparison-block > strong { display: block; margin-bottom: 6px; font-size: .76rem; }
+      .provider-heatmap { display: block; width: min(100%, 420px); max-height: 260px; margin: 8px 0; border: 1px solid var(--line); image-rendering: auto; object-fit: contain; background: #17222a; }
+      .exact-heatmap { image-rendering: pixelated; }
+      .artifact-link { display: inline-block; margin: 2px 0; color: var(--accent); font-size: .74rem; font-weight: 750; overflow-wrap: anywhere; }
+      .comparison-ranking-table { margin-top: 8px; }
+      .comparison-path { display: grid; gap: 6px; margin: 0; padding-left: 22px; }
+      .comparison-path li { padding-left: 2px; font-size: .73rem; }
+      .path-step { max-width: 100%; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); text-align: left; font-size: .72rem; overflow-wrap: anywhere; }
+      .path-step:hover, .path-step:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+      .path-status { margin-left: 6px; font-size: .68rem; font-weight: 800; text-transform: uppercase; }
+      .path-status-succeeded { color: var(--success); }
+      .path-status-failed { color: var(--danger); }
+      .path-status-recorded { color: var(--muted); }
+      .path-error { display: block; margin: 3px 0 0 6px; color: var(--danger); font-size: .68rem; overflow-wrap: anywhere; }
+      @media (max-width: 760px) {
+        .provider-comparison-grid { grid-template-columns: 1fr; }
+        .comparison-note { text-align: left; }
+        .comparison-cell-heading { align-items: flex-start; flex-direction: column; }
+      }
+    </style>
+    <section class="section provider-comparison-section" aria-labelledby="provider-comparison-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Methods</p>
+          <h2 id="provider-comparison-title">Provider method comparison</h2>
+        </div>
+        <p class="method-note comparison-note">Exact persisted heatmaps, prominence rankings, and executed action paths.</p>
+      </div>
+      <div class="provider-comparison-toolbar">
+        <label>Paired cell<select id="provider-comparison-select"></select></label>
+        <label>Foveacast duration<select id="provider-comparison-duration"></select></label>
+      </div>
+      <div id="provider-comparison-output" class="provider-comparison-output"></div>
+    </section>
+    {% endif %}
+
     <section class="section workspace-shell" id="playback-workspace" aria-labelledby="workspace-title">
       <div class="workspace-heading">
         <div>

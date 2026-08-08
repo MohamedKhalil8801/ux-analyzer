@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
@@ -24,7 +25,9 @@ from ux_analyzer.adapters.openai import (
     load_environment_file,
 )
 from ux_analyzer.adapters.saliency.foveacast import FoveacastSaliencyProvider
-from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
+from ux_analyzer.adapters.web.extractor import (
+    capture_with_diagnostics as capture_snapshot_with_diagnostics,
+)
 from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
 from ux_analyzer.adapters.web.session import PlaywrightSessionAdapter
 from ux_analyzer.adapters.web.verifier import HttpFixtureStateClient, WebVerifier
@@ -69,6 +72,7 @@ from ux_analyzer.config.loader import (
 )
 from ux_analyzer.domain.attention import CompleteObservation, ProgressiveObservation
 from ux_analyzer.domain.benchmark import (
+    PROMINENCE_PROVIDER_REGISTRY,
     ApplicationVersionKind,
     ExperimentDefinition,
     ExperimentPolicy,
@@ -146,7 +150,10 @@ class _ResolvedMatrix:
 def main() -> None:
     """Run UX analyzer commands."""
 
+    live_tests_were_explicit = "UXA_RUN_LIVE_TESTS" in os.environ
     load_environment_file()
+    if not live_tests_were_explicit:
+        os.environ.pop("UXA_RUN_LIVE_TESTS", None)
 
 
 @app.command()
@@ -324,7 +331,13 @@ def run_one(
     settings: OpenAICompatibleSettings | None = None
     if check_env or not dry_run:
         settings = _model_settings_or_exit()
-    _print_matrix(matrix, workers=1)
+    _print_matrix(
+        matrix,
+        workers=1,
+        max_concurrent_calls=(
+            settings.max_concurrent_calls if settings is not None else None
+        ),
+    )
     if dry_run:
         return
     if settings is None:
@@ -455,7 +468,13 @@ def _run_experiment_command(
     settings: OpenAICompatibleSettings | None = None
     if check_env or not dry_run:
         settings = _model_settings_or_exit()
-    _print_matrix(matrix, workers=workers)
+    _print_matrix(
+        matrix,
+        workers=workers,
+        max_concurrent_calls=(
+            settings.max_concurrent_calls if settings is not None else None
+        ),
+    )
     if dry_run:
         return
     if settings is None:
@@ -649,7 +668,12 @@ def _resolve_single_run(
     return _ResolvedMatrix(loaded=loaded, definition=definition, specs=specs)
 
 
-def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
+def _print_matrix(
+    matrix: _ResolvedMatrix,
+    *,
+    workers: int,
+    max_concurrent_calls: int | None = None,
+) -> None:
     policy_names = tuple(policy.value for policy in matrix.definition.policies)
     provider_names = matrix.definition.prominence_provider_ids
     configured_seeds = matrix.definition.seeds or tuple(
@@ -682,6 +706,8 @@ def _print_matrix(matrix: _ResolvedMatrix, *, workers: int) -> None:
     typer.echo(f"policies: {', '.join(policy_names)}")
     typer.echo(f"prominence providers: {', '.join(provider_names)}")
     typer.echo(f"workers: {workers}")
+    if max_concurrent_calls is not None:
+        typer.echo(f"model call concurrency: {max_concurrent_calls}")
     typer.echo(f"configured seeds: {len(configured_seeds)}")
     typer.echo(f"run specs: {len(matrix.specs)}")
     eligible_cells = len(accounting_cells)
@@ -836,11 +862,14 @@ class _FixtureObservationProvider:
         fixture_origin: str,
         fixture_inputs: Mapping[str, str],
         http_client: httpx.AsyncClient | None = None,
+        *,
+        fixture_control_enabled: bool = True,
     ) -> None:
         self._adapter = adapter
         self._fixture_origin = fixture_origin.rstrip("/")
         self._fixture_inputs = dict(fixture_inputs)
         self._http_client = http_client
+        self._fixture_control_enabled = fixture_control_enabled
         self._profiler: RunProfiler | None = None
 
     def set_profiler(self, profiler: RunProfiler) -> None:
@@ -852,20 +881,28 @@ class _FixtureObservationProvider:
     async def capture(self, session: SessionHandle) -> ObservationCapture:
         if self._profiler is None:
             capture = await self._adapter.capture(session)
-            snapshot = await capture_snapshot(
+            extraction = await capture_snapshot_with_diagnostics(
                 self._adapter.page_for_testing(session),
                 capture.viewport_id,
             )
-            return replace(capture, snapshot=snapshot)
+            return replace(
+                capture,
+                screenshot=extraction.screenshot,
+                snapshot=extraction.snapshot,
+            )
         with self._profiler.measure("browser.capture"):
             capture = await self._adapter.capture(session)
         with self._profiler.measure("dom.extract"):
-            snapshot = await capture_snapshot(
+            extraction = await capture_snapshot_with_diagnostics(
                 self._adapter.page_for_testing(session),
                 capture.viewport_id,
                 measure=self._profiler.measure,
             )
-        return replace(capture, snapshot=snapshot)
+        return replace(
+            capture,
+            screenshot=extraction.screenshot,
+            snapshot=extraction.snapshot,
+        )
 
     async def execute(
         self, session: SessionHandle, action: PlatformAction
@@ -873,40 +910,42 @@ class _FixtureObservationProvider:
         return await self._adapter.execute(session, action)
 
     async def reset(self, session: SessionHandle) -> None:
-        if self._http_client is not None:
-            response = await self._http_client.post(
-                f"{self._fixture_origin}/__control/reset",
-                json={"session_id": session.session_id, "inputs": self._fixture_inputs},
-            )
-            response.raise_for_status()
-        else:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
+        if self._fixture_control_enabled:
+            if self._http_client is not None:
+                response = await self._http_client.post(
                     f"{self._fixture_origin}/__control/reset",
-                    json={
-                        "session_id": session.session_id,
-                        "inputs": self._fixture_inputs,
-                    },
+                    json={"session_id": session.session_id, "inputs": self._fixture_inputs},
                 )
                 response.raise_for_status()
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        f"{self._fixture_origin}/__control/reset",
+                        json={
+                            "session_id": session.session_id,
+                            "inputs": self._fixture_inputs,
+                        },
+                    )
+                    response.raise_for_status()
         await self._adapter.reset(session)
 
     async def end_session(self, session: SessionHandle) -> None:
         try:
             await self._adapter.end_session(session)
         finally:
-            if self._http_client is not None:
-                response = await self._http_client.delete(
-                    f"{self._fixture_origin}/__control/session/{quote(session.session_id, safe='')}"
-                )
-                response.raise_for_status()
-            else:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.delete(
-                        f"{self._fixture_origin}/__control/session/"
-                        f"{quote(session.session_id, safe='')}"
+            if self._fixture_control_enabled:
+                if self._http_client is not None:
+                    response = await self._http_client.delete(
+                        f"{self._fixture_origin}/__control/session/{quote(session.session_id, safe='')}"
                     )
                     response.raise_for_status()
+                else:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.delete(
+                            f"{self._fixture_origin}/__control/session/"
+                            f"{quote(session.session_id, safe='')}"
+                        )
+                        response.raise_for_status()
 
 
 class _AttentionPolicyAdapter:
@@ -1015,6 +1054,11 @@ class _BundleFactory:
         provider_version = str(
             getattr(self._client, "provider_version", default_provider_version)
         )
+        prominence_version = self._runtime.prominence.version
+        if spec.prominence_provider_id == "foveacast":
+            prominence_version = PROMINENCE_PROVIDER_REGISTRY[
+                spec.prominence_provider_id
+            ]
         endpoint_origin = str(
             getattr(self._client, "endpoint_origin", self._settings.endpoint_origin)
         )
@@ -1025,7 +1069,7 @@ class _BundleFactory:
                 model_id=self._settings.cognitive_model,
                 endpoint_origin=endpoint_origin,
                 version=provider_version,
-                prompt_version="cognitive-v1",
+                prompt_version="cognitive-v2",
                 schema_version="cognitive-v1",
             )
         ]
@@ -1071,12 +1115,12 @@ class _BundleFactory:
                     if scent_enabled
                     else {}
                 ),
-                "cognitive": "cognitive-v1",
+                "cognitive": "cognitive-v2",
             },
             provider_versions={
                 "observation": "fixture-web-v1",
                 "models": provider_version,
-                "prominence": self._runtime.prominence.version,
+                "prominence": prominence_version,
                 "prominence-provider": spec.prominence_provider_id,
                 "attention": self._runtime.attention.version,
                 "discovery_cost": self._runtime.discovery_cost.version,
@@ -1110,16 +1154,19 @@ async def _execute_matrix(
         browser = await playwright.chromium.launch(headless=True)
         client_http = httpx.AsyncClient(timeout=settings.timeout_seconds)
         fixture_http = httpx.AsyncClient(timeout=30.0)
+        model_call_limiter = asyncio.Semaphore(settings.max_concurrent_calls)
         adapter = PlaywrightSessionAdapter(
             browser=browser,
-            allowed_origins=BrowserAllowedOrigins.fixture_only([origin]),
+            allowed_origins=None,
             trace_directory=output / "traces",
         )
         try:
 
             def factory(spec: RunSpec) -> RunAgent:
                 client = create_structured_model_client(
-                    settings, http_client=client_http
+                    settings,
+                    http_client=client_http,
+                    call_limiter=model_call_limiter,
                 )
                 return _build_agent(
                     spec,
@@ -1172,11 +1219,16 @@ def _build_agent(
     profile_output: Path | None = None,
 ) -> RunAgent:
     resolve_prominence_provider_id(spec.prominence_provider_id)
+    live_version = spec.application_version.kind is ApplicationVersionKind.LIVE
+    fixture_inputs: Mapping[str, str] = (
+        {} if live_version else spec.scenario.fixture_inputs.values
+    )
     provider = _FixtureObservationProvider(
         adapter,
         fixture_origin,
-        spec.scenario.fixture_inputs.values,
+        fixture_inputs,
         fixture_http_client,
+        fixture_control_enabled=not live_version,
     )
     attention_config = replace(
         runtime.attention,
@@ -1200,16 +1252,25 @@ def _build_agent(
     cognitive = StructuredCognitiveAgent(
         client,
         model=settings.cognitive_model,
-        fixture_keys=tuple(sorted(spec.scenario.fixture_inputs.values)),
+        fixture_keys=(
+            ()
+            if live_version
+            else tuple(sorted(spec.scenario.fixture_inputs.values))
+        ),
+    )
+    fixture_state_client = (
+        HttpFixtureStateClient(
+            fixture_origin,
+            http_client=fixture_http_client,
+            timeout_seconds=30.0,
+        )
+        if not live_version
+        else None
     )
     verifier = WebVerifier(
         spec.scenario.verifier,
         fixture_inputs=spec.scenario.fixture_inputs,
-        fixture_state_client=HttpFixtureStateClient(
-            fixture_origin,
-            http_client=fixture_http_client,
-            timeout_seconds=30.0,
-        ),
+        fixture_state_client=fixture_state_client,
         observation_provider=cast(ObservationProvider, provider),
         snapshot_extractor=_snapshot_from_capture,
     )
@@ -1654,10 +1715,26 @@ def _session_config(
         if spec.scenario.start_state == "dashboard"
         else f"/{quote(spec.scenario.start_state)}"
     )
-    version = spec.application_version.kind.value
+    application_version = spec.application_version
+    if application_version.kind is ApplicationVersionKind.LIVE:
+        if application_version.start_url is None:
+            raise ValueError("live application version has no start URL")
+        start_url = application_version.start_url
+        live_origins = BrowserAllowedOrigins.for_live(
+            start_url, application_version.allowed_origins
+        )
+        navigation_origins = tuple(sorted(live_origins.navigation_origins))
+        resource_origins = tuple(sorted(live_origins.resource_origins))
+        fixture_only = False
+    else:
+        version = application_version.kind.value
+        start_url = f"{fixture_origin}/app/{quote(spec.run_id)}/{version}{page}"
+        navigation_origins = (fixture_origin,)
+        resource_origins = ()
+        fixture_only = True
     return ObservationSessionConfig(
         session_id=spec.run_id,
-        start_url=f"{fixture_origin}/app/{quote(spec.run_id)}/{version}{page}",
+        start_url=start_url,
         test_account_id=TestAccountId(f"test-{spec.run_id.removeprefix('run-')}"),
         viewport=ViewportSize(
             width=spec.scenario.viewport_width,
@@ -1667,6 +1744,11 @@ def _session_config(
         artifact_redaction=RedactionPolicy.from_fixture_inputs(
             spec.scenario.fixture_inputs
         ),
+        navigation_settle_ms=application_version.navigation_settle_ms,
+        action_settle_ms=application_version.action_settle_ms,
+        navigation_origins=navigation_origins,
+        resource_origins=resource_origins,
+        fixture_only=fixture_only,
     )
 
 

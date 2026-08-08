@@ -10,6 +10,7 @@ from ux_analyzer.domain.attention import (
     AttentionRecoveryMiss,
     AttentionState,
     CoarseScent,
+    InteractWithElement,
     ProgressiveObservation,
 )
 from ux_analyzer.domain.benchmark import Budget
@@ -502,3 +503,132 @@ def test_same_seed_repeats_and_different_seed_can_change_path() -> None:
 
     assert first.selected_ids == repeat.selected_ids
     assert first.selected_ids != different.selected_ids
+
+
+def test_observation_memory_budget_keeps_all_visible_elements_action_valid() -> None:
+    snapshot = ViewportSnapshot(
+        id="viewport-1",
+        elements=tuple(
+            _element(element_id, x=index * 100)
+            for index, element_id in enumerate(
+                ("old-one", "old-two", "old-three", "new-one", "new-two")
+            )
+        ),
+    )
+    state = replace(_state(), memory_capacity=3)
+    for element_id in ("old-one", "old-two", "old-three"):
+        state = apply_observation(
+            state,
+            ProgressiveObservation.from_snapshot(
+                snapshot, newly_revealed_ids=(element_id,)
+            ),
+            snapshot=snapshot,
+        )
+
+    selection = ProgressiveAttentionPolicy(
+        AttentionPolicyConfig(batch_size=2)
+    ).next_observation(
+        state,
+        snapshot,
+        _scores(*(element.id for element in snapshot.elements)),
+        (),
+        random.Random(1),
+    )
+
+    assert tuple(
+        element.id for element in selection.observation.remembered_elements
+    ) == ("old-three",)
+    observed = apply_observation(
+        state, selection.observation, snapshot=snapshot
+    )
+    for element_id in ("old-three", *selection.selected_ids):
+        observed.validate_action(
+            InteractWithElement(element_id=element_id), snapshot
+        )
+
+
+def test_recovery_covers_never_noticed_visible_elements_before_forgotten_ones() -> None:
+    snapshot = ViewportSnapshot(
+        id="viewport-1",
+        elements=(
+            _element("forgotten"),
+            _element("fresh-one", x=200),
+            _element("fresh-two", x=300),
+        ),
+    )
+    state = replace(
+        _state(),
+        noticed_ids=frozenset({"forgotten"}),
+        memory=(),
+    )
+    scores = (
+        ProminenceResult("forgotten", 0.0, 0.99),
+        ProminenceResult("fresh-one", 0.0, 0.1),
+        ProminenceResult("fresh-two", 0.0, 0.1),
+    )
+
+    selection = ProgressiveAttentionPolicy(
+        AttentionPolicyConfig(batch_size=2)
+    ).next_observation(
+        state, snapshot, scores, (), random.Random(1), recovery_level=1
+    )
+
+    assert set(selection.selected_ids) == {"fresh-one", "fresh-two"}
+    assert "forgotten" not in selection.selected_ids
+
+
+def test_observation_memory_exposes_no_remembered_elements_when_batch_fills_capacity() -> None:
+    snapshot = ViewportSnapshot(
+        id="viewport-1",
+        elements=tuple(
+            _element(element_id, x=index * 100)
+            for index, element_id in enumerate(("old", "new-one", "new-two"))
+        ),
+    )
+    state = replace(_state(), memory_capacity=1)
+    state = apply_observation(
+        state,
+        ProgressiveObservation.from_snapshot(snapshot, newly_revealed_ids=("old",)),
+        snapshot=snapshot,
+    )
+
+    selection = ProgressiveAttentionPolicy(
+        AttentionPolicyConfig(batch_size=2)
+    ).next_observation(
+        state,
+        snapshot,
+        _scores(*(element.id for element in snapshot.elements)),
+        (),
+        random.Random(1),
+    )
+
+    assert selection.observation.remembered_elements == ()
+
+
+def test_recovery_samples_fresh_candidates_by_prominence_without_scent() -> None:
+    snapshot = ViewportSnapshot(
+        id="viewport-1",
+        elements=(
+            _element("forgotten"),
+            _element("fresh-high", x=200),
+            _element("fresh-low", x=300),
+        ),
+    )
+    state = replace(
+        _state(),
+        noticed_ids=frozenset({"forgotten"}),
+        memory=(),
+    )
+    scores = (
+        ProminenceResult("forgotten", 0.0, 0.99),
+        ProminenceResult("fresh-high", 0.0, 0.9),
+        ProminenceResult("fresh-low", 0.0, 0.1),
+    )
+
+    selection = ProgressiveAttentionPolicy(
+        AttentionPolicyConfig(batch_size=1)
+    ).next_observation(
+        state, snapshot, scores, (), random.Random(1), recovery_level=1
+    )
+
+    assert selection.selected_ids == ("fresh-high",)

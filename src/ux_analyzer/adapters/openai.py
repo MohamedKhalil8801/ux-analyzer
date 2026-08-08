@@ -10,12 +10,17 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
+import subprocess
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
@@ -129,6 +134,29 @@ def _as_float(value: object, *, name: str) -> float:
     return float(value)
 
 
+def _timeout_seconds(value: object, *, mode: Literal["api", "codex"]) -> float | None:
+    if value is None:
+        if mode != "codex":
+            raise ModelConfigurationError(
+                "unbounded timeout is supported only in codex mode"
+            )
+        return None
+    if isinstance(value, str) and value.strip().lower() in {
+        "none",
+        "off",
+        "unlimited",
+    }:
+        if mode != "codex":
+            raise ModelConfigurationError(
+                "unbounded timeout is supported only in codex mode"
+            )
+        return None
+    parsed = _as_float(value, name="timeout_seconds")
+    if parsed <= 0:
+        raise ModelConfigurationError("timeout_seconds must be greater than zero")
+    return parsed
+
+
 def _normalize_reasoning_effort(value: str | None, *, name: str) -> str | None:
     if value is None:
         return None
@@ -149,6 +177,46 @@ def _normalize_llm_mode(value: object) -> Literal["api", "codex"]:
     return cast(Literal["api", "codex"], normalized_mode)
 
 
+def _reasoning_effort(
+    settings: OpenAICompatibleSettings, role: ModelRole
+) -> str | None:
+    return (
+        settings.cognitive_reasoning_effort
+        if role is ModelRole.COGNITIVE
+        else settings.scent_reasoning_effort
+    )
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        delay = float(value)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        delay = parsed.timestamp() - time.time()
+    if delay < 0 or not math.isfinite(delay):
+        return None
+    return delay
+
+
+@asynccontextmanager
+async def _model_call_slot(
+    limiter: asyncio.Semaphore | None,
+) -> AsyncIterator[None]:
+    if limiter is None:
+        yield
+        return
+    async with limiter:
+        yield
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class OpenAICompatibleSettings:
     """Validated model endpoint settings loaded from environment variables."""
@@ -160,7 +228,8 @@ class OpenAICompatibleSettings:
     mode: Literal["api", "codex"] = "api"
     scent_reasoning_effort: str | None = None
     cognitive_reasoning_effort: str | None = None
-    timeout_seconds: float = 30.0
+    timeout_seconds: float | None = 30.0
+    max_concurrent_calls: int = 2
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     redaction_values: tuple[str, ...] = ()
 
@@ -189,8 +258,16 @@ class OpenAICompatibleSettings:
                 name,
                 _normalize_reasoning_effort(getattr(self, name), name=name),
             )
-        if self.timeout_seconds <= 0:
+        if self.timeout_seconds is None and normalized_mode != "codex":
+            raise ModelConfigurationError(
+                "unbounded timeout is supported only in codex mode"
+            )
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ModelConfigurationError("timeout_seconds must be greater than zero")
+        if self.max_concurrent_calls < 1:
+            raise ModelConfigurationError(
+                "max_concurrent_calls must be greater than zero"
+            )
         object.__setattr__(self, "base_url", normalized_url)
         object.__setattr__(self, "redaction_values", tuple(self.redaction_values))
 
@@ -208,11 +285,13 @@ class OpenAICompatibleSettings:
         dotenv_path: Path | None = None,
     ) -> OpenAICompatibleSettings:
         if environ is None:
-            load_environment_file(dotenv_path)
-            values: Mapping[str, str] = os.environ
+            merged_values = dict(os.environ)
+            load_environment_file(dotenv_path, environ=merged_values)
+            values: Mapping[str, str] = merged_values
         else:
             merged_values = dict(environ)
-            load_environment_file(dotenv_path, environ=merged_values)
+            if dotenv_path is not None:
+                load_environment_file(dotenv_path, environ=merged_values)
             values = merged_values
         mode = _normalize_llm_mode(values.get("UXA_LLM_MODE", "api"))
         names = (
@@ -237,6 +316,13 @@ class OpenAICompatibleSettings:
         else:
             base_url = ""
             api_key = ""
+        timeout_seconds = _timeout_seconds(
+            values.get("UXA_LLM_TIMEOUT_SECONDS", "30"), mode=mode
+        )
+        max_concurrent_calls = _as_int(
+            values.get("UXA_LLM_MAX_CONCURRENT_CALLS", "2"),
+            name="max_concurrent_calls",
+        )
         return cls(
             base_url=base_url,
             api_key=api_key,
@@ -249,6 +335,8 @@ class OpenAICompatibleSettings:
             cognitive_reasoning_effort=(
                 values.get("UXA_LLM_COGNITIVE_REASONING_EFFORT") or None
             ),
+            timeout_seconds=timeout_seconds,
+            max_concurrent_calls=max_concurrent_calls,
         )
 
     @classmethod
@@ -276,13 +364,18 @@ class OpenAICompatibleSettings:
             )
         else:
             retry = cast(RetryPolicy, retry_value)
-        timeout_value = value.get("timeout_seconds", 30.0)
         redaction_value = value.get("redaction_values", ())
         if not isinstance(redaction_value, Sequence) or isinstance(
             redaction_value, (str, bytes)
         ):
             raise ModelConfigurationError("redaction_values must be a sequence")
         mode = _normalize_llm_mode(value.get("mode", "api"))
+        timeout_seconds = _timeout_seconds(
+            value.get("timeout_seconds", 30.0), mode=mode
+        )
+        max_concurrent_calls = _as_int(
+            value.get("max_concurrent_calls", 2), name="max_concurrent_calls"
+        )
         if mode == "api":
             base_url = str(value["base_url"])
             api_key = str(value["api_key"])
@@ -305,7 +398,8 @@ class OpenAICompatibleSettings:
                 if value.get("cognitive_reasoning_effort") is None
                 else str(value["cognitive_reasoning_effort"])
             ),
-            timeout_seconds=_as_float(timeout_value, name="timeout_seconds"),
+            timeout_seconds=timeout_seconds,
+            max_concurrent_calls=max_concurrent_calls,
             retry_policy=retry,
             redaction_values=tuple(
                 str(item) for item in cast(Sequence[object], redaction_value)
@@ -321,6 +415,7 @@ class OpenAICompatibleSettings:
             f"scent_reasoning_effort={self.scent_reasoning_effort!r}, "
             f"cognitive_reasoning_effort={self.cognitive_reasoning_effort!r}, "
             f"timeout_seconds={self.timeout_seconds!r}, "
+            f"max_concurrent_calls={self.max_concurrent_calls!r}, "
             f"retry_policy={self.retry_policy!r})"
         )
 
@@ -529,6 +624,7 @@ class _StructuredCallSupport:
         status_code: int | None,
         policy: RetryPolicy,
         retry_number: int,
+        delay_override: float | None = None,
     ) -> RetryEvent:
         event = RetryEvent(
             role=role,
@@ -536,7 +632,9 @@ class _StructuredCallSupport:
             attempt=attempt,
             reason=reason,
             status_code=status_code,
-            delay_seconds=policy.delay_for_retry(retry_number),
+            delay_seconds=max(
+                policy.delay_for_retry(retry_number), delay_override or 0.0
+            ),
         )
         self._retry_events.append(event)
         return event
@@ -602,6 +700,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         settings: OpenAICompatibleSettings,
         *,
         http_client: httpx.AsyncClient | None = None,
+        call_limiter: asyncio.Semaphore | None = None,
     ) -> None:
         super().__init__(
             settings,
@@ -611,6 +710,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         self._http_client = http_client or httpx.AsyncClient(
             timeout=settings.timeout_seconds
         )
+        self._call_limiter = call_limiter
 
     async def complete(
         self,
@@ -640,15 +740,16 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 schema, normalized_messages, model, role_value, mode
             )
             try:
-                response = await self._http_client.post(
-                    f"{self.settings.base_url}/chat/completions",
-                    headers={
-                        "accept": "application/json",
-                        "content-type": "application/json",
-                        "authorization": f"Bearer {self.settings.api_key}",
-                    },
-                    json=request_payload,
-                )
+                async with _model_call_slot(self._call_limiter):
+                    response = await self._http_client.post(
+                        f"{self.settings.base_url}/chat/completions",
+                        headers={
+                            "accept": "application/json",
+                            "content-type": "application/json",
+                            "authorization": f"Bearer {self.settings.api_key}",
+                        },
+                        json=request_payload,
+                    )
                 response_payload = _response_body(response)
             except httpx.TransportError as error:
                 last_reason = _transport_error_category(error)
@@ -692,6 +793,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                             response.status_code,
                             retry_policy,
                             len(retries) + 1,
+                            delay_override=_retry_after_seconds(response),
                         )
                     )
                     await self._sleep(retries[-1].delay_seconds)
@@ -795,11 +897,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             "model": model,
             "messages": [message.model_dump() for message in messages],
         }
-        reasoning_effort = (
-            self.settings.cognitive_reasoning_effort
-            if role is ModelRole.COGNITIVE
-            else self.settings.scent_reasoning_effort
-        )
+        reasoning_effort = _reasoning_effort(self.settings, role)
         if reasoning_effort is not None:
             payload["reasoning_effort"] = reasoning_effort
         if mode == "strict":
@@ -824,6 +922,401 @@ class _CodexAttemptError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+_CODEX_CLEANUP_TIMEOUT_SECONDS = 0.25
+_CODEX_TERMINATION_GRACE_SECONDS = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexCleanupResult:
+    tree_terminated: bool
+    communication_reaped: bool
+    process_reaped: bool
+
+    @property
+    def success(self) -> bool:
+        return (
+            self.tree_terminated
+            and self.communication_reaped
+            and self.process_reaped
+        )
+
+
+def _codex_process_options() -> dict[str, Any]:
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _kill_codex_process(process: asyncio.subprocess.Process) -> None:
+    try:
+        process.kill()
+    except (OSError, RuntimeError):
+        pass
+
+
+def _codex_process_group_id(process: asyncio.subprocess.Process) -> int | None:
+    if os.name == "nt":
+        return None
+    try:
+        return os.getpgid(process.pid)
+    except OSError:
+        # start_new_session makes leader PID equal process-group ID.
+        return process.pid
+
+
+def _windows_descendant_pids(root_pid: int) -> tuple[int, ...] | None:
+    if os.name != "nt":
+        return ()
+    import ctypes
+    from ctypes import wintypes
+
+    class _ProcessEntry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ProcessEntry),
+    ]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ProcessEntry),
+    ]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if snapshot in (None, invalid_handle):
+        return None
+
+    children: dict[int, list[int]] = {}
+    entry = _ProcessEntry()
+    entry.dwSize = ctypes.sizeof(_ProcessEntry)
+    try:
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return None
+        while True:
+            children.setdefault(entry.th32ParentProcessID, []).append(
+                entry.th32ProcessID
+            )
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+    descendants: list[int] = []
+    pending = list(children.get(root_pid, ()))
+    seen: set[int] = set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        descendants.append(pid)
+        pending.extend(children.get(pid, ()))
+    return tuple(descendants)
+
+
+def _windows_terminate_process(pid: int, deadline: float) -> bool:
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(0x00100001, False, pid)
+    if not handle:
+        return True
+    try:
+        kernel32.TerminateProcess(handle, 1)
+        remaining_ms = max(
+            0,
+            int((deadline - asyncio.get_running_loop().time()) * 1000),
+        )
+        if remaining_ms == 0:
+            return False
+        reaped = kernel32.WaitForSingleObject(handle, remaining_ms) == 0
+        return reaped
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _task_result(task: asyncio.Future[Any]) -> object:
+    try:
+        return task.result()
+    except BaseException as error:
+        return error
+
+
+def _consume_task_result(task: asyncio.Future[Any]) -> None:
+    _task_result(task)
+
+
+async def _wait_task_until(
+    task: asyncio.Future[Any],
+    deadline: float,
+) -> tuple[bool, object]:
+    if task.done():
+        return True, _task_result(task)
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        return False, None
+    done, _ = await asyncio.wait({task}, timeout=remaining)
+    if task not in done:
+        return False, None
+    return True, _task_result(task)
+
+
+async def _cancel_task_until(
+    task: asyncio.Future[Any],
+    deadline: float,
+) -> tuple[bool, object]:
+    if not task.done():
+        task.cancel()
+    if task.done():
+        return True, _task_result(task)
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining > 0:
+        done, _ = await asyncio.wait({task}, timeout=remaining)
+        if task in done:
+            return True, _task_result(task)
+    task.add_done_callback(_consume_task_result)
+    return False, None
+
+
+async def _shielded_wait_task_until(
+    task: asyncio.Future[Any],
+    deadline: float,
+) -> tuple[bool, object]:
+    wait_task = asyncio.create_task(_wait_task_until(task, deadline))
+    while True:
+        try:
+            return await asyncio.shield(wait_task)
+        except asyncio.CancelledError:
+            if asyncio.get_running_loop().time() >= deadline:
+                await _cancel_task_until(wait_task, deadline)
+                return False, None
+
+
+async def _reap_process_until(
+    process: asyncio.subprocess.Process,
+    deadline: float,
+    *,
+    wait_task: asyncio.Future[Any] | None = None,
+) -> bool:
+    if wait_task is None:
+        try:
+            wait_task = asyncio.create_task(process.wait())
+        except Exception:
+            _kill_codex_process(process)
+            return False
+    completed, result = await _wait_task_until(wait_task, deadline)
+    if completed and not isinstance(result, BaseException):
+        return True
+    if completed:
+        _kill_codex_process(process)
+        try:
+            wait_task = asyncio.create_task(process.wait())
+        except Exception:
+            return False
+    else:
+        _kill_codex_process(process)
+    completed, result = await _wait_task_until(wait_task, deadline)
+    if completed and not isinstance(result, BaseException):
+        return True
+    if not completed:
+        completed, result = await _cancel_task_until(wait_task, deadline)
+    return completed and not isinstance(result, BaseException)
+
+
+async def _terminate_codex_process_tree(
+    process: asyncio.subprocess.Process,
+    *,
+    process_group_id: int | None,
+    force: bool = False,
+    deadline: float,
+) -> bool:
+    if os.name == "nt":
+        if deadline <= asyncio.get_running_loop().time():
+            _kill_codex_process(process)
+            return False
+        descendants_ok = True
+        try:
+            descendant_pids = _windows_descendant_pids(process.pid)
+        except Exception:
+            descendant_pids = None
+        if descendant_pids is not None:
+            if descendant_pids:
+                # Native termination avoids taskkill /T delay for known descendants.
+                descendants_ok = True
+                for descendant_pid in reversed(descendant_pids):
+                    if asyncio.get_running_loop().time() >= deadline:
+                        descendants_ok = False
+                        break
+                    if not _windows_terminate_process(descendant_pid, deadline):
+                        descendants_ok = False
+                leader_ok = _windows_terminate_process(process.pid, deadline)
+                return descendants_ok and leader_ok
+            descendants_ok = True
+        else:
+            descendants_ok = True
+        try:
+            taskkill = subprocess.Popen(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except (FileNotFoundError, OSError):
+            _kill_codex_process(process)
+            return False
+        taskkill_wait = asyncio.create_task(asyncio.to_thread(taskkill.wait))
+        completed, result = await _wait_task_until(taskkill_wait, deadline)
+        if not completed:
+            try:
+                taskkill.kill()
+            except OSError:
+                pass
+            completed, result = await _cancel_task_until(taskkill_wait, deadline)
+        if (
+            not completed
+            or isinstance(result, BaseException)
+            or taskkill.returncode != 0
+        ):
+            _kill_codex_process(process)
+            return False
+        return descendants_ok
+
+    if process_group_id is None:
+        _kill_codex_process(process)
+        return False
+    import signal
+
+    try:
+        os.killpg(
+            process_group_id,
+            getattr(signal, "SIGKILL", signal.SIGTERM) if force else signal.SIGTERM,
+        )
+    except ProcessLookupError:
+        return True
+    except (OSError, RuntimeError):
+        _kill_codex_process(process)
+        return False
+
+
+async def _cleanup_codex_process(
+    process: asyncio.subprocess.Process,
+    *,
+    process_group_id: int | None,
+    communication_task: asyncio.Future[Any] | None,
+    deadline: float,
+) -> _CodexCleanupResult:
+    process_wait_task = asyncio.create_task(process.wait())
+    tree_terminated = True
+    try:
+        if os.name == "nt":
+            tree_terminated = await _terminate_codex_process_tree(
+                process,
+                process_group_id=process_group_id,
+                force=True,
+                deadline=deadline,
+            )
+        else:
+            term_ok = await _terminate_codex_process_tree(
+                process,
+                process_group_id=process_group_id,
+                deadline=deadline,
+            )
+            grace_deadline = min(
+                deadline,
+                asyncio.get_running_loop().time() + _CODEX_TERMINATION_GRACE_SECONDS,
+            )
+            await _wait_task_until(process_wait_task, grace_deadline)
+            kill_ok = await _terminate_codex_process_tree(
+                process,
+                process_group_id=process_group_id,
+                force=True,
+                deadline=deadline,
+            )
+            tree_terminated = term_ok and kill_ok
+    except Exception:
+        tree_terminated = False
+        _kill_codex_process(process)
+
+    process_reaped = await _reap_process_until(
+        process,
+        deadline,
+        wait_task=process_wait_task,
+    )
+    communication_reaped = True
+    if communication_task is not None:
+        communication_reaped, _ = await _cancel_task_until(
+            communication_task, deadline
+        )
+    return _CodexCleanupResult(
+        tree_terminated=tree_terminated,
+        communication_reaped=communication_reaped,
+        process_reaped=process_reaped,
+    )
+
+
+async def _shielded_codex_cleanup(
+    process: asyncio.subprocess.Process,
+    *,
+    process_group_id: int | None,
+    communication_task: asyncio.Future[Any] | None,
+    deadline: float,
+) -> _CodexCleanupResult:
+    cleanup_task = asyncio.create_task(
+        _cleanup_codex_process(
+            process,
+            process_group_id=process_group_id,
+            communication_task=communication_task,
+            deadline=deadline,
+        )
+    )
+    completed, result = await _shielded_wait_task_until(cleanup_task, deadline)
+    if completed and isinstance(result, _CodexCleanupResult):
+        return result
+    await _cancel_task_until(cleanup_task, deadline)
+    return _CodexCleanupResult(False, False, False)
+
+
+def _codex_process_failure_reason(stdout: bytes, stderr: bytes) -> str:
+    text = b"\n".join((stdout, stderr)).decode("utf-8", errors="replace").casefold()
+    if any(
+        marker in text
+        for marker in ("429", "rate limit", "rate-limit", "too many requests", "quota")
+    ):
+        return "rate-limit"
+    return "process-exit"
 
 
 def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
@@ -882,12 +1375,18 @@ def _codex_transport_schema(schema: type[BaseModel]) -> dict[str, object]:
 class CodexStructuredClient(_StructuredCallSupport):
     """Codex CLI adapter with local schema validation and bounded retries."""
 
-    def __init__(self, settings: OpenAICompatibleSettings) -> None:
+    def __init__(
+        self,
+        settings: OpenAICompatibleSettings,
+        *,
+        call_limiter: asyncio.Semaphore | None = None,
+    ) -> None:
         super().__init__(
             settings,
             provider_id="codex-cli",
             provider_version="codex-cli",
         )
+        self._call_limiter = call_limiter
 
     async def complete(
         self,
@@ -907,16 +1406,26 @@ class CodexStructuredClient(_StructuredCallSupport):
         last_reason = "model call failed"
         response_metadata: dict[str, object] = {"failure": last_reason}
         request_metadata = self._request_metadata(
-            role_value, model, normalized_messages, schema_version
+            role_value,
+            model,
+            normalized_messages,
+            schema_version,
+            reasoning_effort=_reasoning_effort(self.settings, role_value),
         )
 
         while attempts < retry_policy.max_attempts:
             attempts += 1
             request_metadata = self._request_metadata(
-                role_value, model, normalized_messages, schema_version
+                role_value,
+                model,
+                normalized_messages,
+                schema_version,
+                reasoning_effort=_reasoning_effort(self.settings, role_value),
             )
             try:
-                parsed = await self._run_attempt(schema, normalized_messages, model)
+                parsed = await self._run_attempt(
+                    schema, normalized_messages, model, role_value
+                )
                 result = schema.model_validate(parsed)
             except _CodexAttemptError as error:
                 last_reason = error.reason
@@ -989,22 +1498,28 @@ class CodexStructuredClient(_StructuredCallSupport):
         model: str,
         messages: Sequence[ChatMessage],
         schema_version: str,
+        reasoning_effort: str | None,
     ) -> dict[str, object]:
-        return {
+        metadata: dict[str, object] = {
             "role": role.value,
             "model": model,
             "messages": [message.model_dump() for message in messages],
             "schema_version": schema_version,
         }
+        if reasoning_effort is not None:
+            metadata["reasoning_effort"] = reasoning_effort
+        return metadata
 
     async def _run_attempt(
         self,
         schema: type[BaseModel],
         messages: Sequence[ChatMessage],
         model: str,
+        role: ModelRole,
     ) -> object:
         prompt = _serialize_codex_messages(messages)
         output = ""
+        loop = asyncio.get_running_loop()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 schema_path = Path(temp_dir) / "schema.json"
@@ -1013,45 +1528,139 @@ class CodexStructuredClient(_StructuredCallSupport):
                     json.dumps(_codex_transport_schema(schema), ensure_ascii=True),
                     encoding="utf-8",
                 )
-                process = await asyncio.create_subprocess_exec(
-                    "codex",
-                    "exec",
-                    "--ephemeral",
-                    "--sandbox",
-                    "read-only",
-                    "--model",
-                    model,
-                    "--output-schema",
-                    str(schema_path),
-                    "--output-last-message",
-                    str(response_path),
-                    "-",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                try:
-                    await asyncio.wait_for(
-                        process.communicate(input=prompt),
-                        timeout=self.settings.timeout_seconds,
+                command = ["codex", "exec", "--ephemeral"]
+                reasoning_effort = _reasoning_effort(self.settings, role)
+                if reasoning_effort is not None:
+                    command.extend(
+                        ["-c", f"model_reasoning_effort={reasoning_effort}"]
                     )
-                except TimeoutError as error:
+                command.extend(
+                    [
+                        "--sandbox",
+                        "read-only",
+                        "--model",
+                        model,
+                        "--output-schema",
+                        str(schema_path),
+                        "--output-last-message",
+                        str(response_path),
+                        "-",
+                    ]
+                )
+                async with _model_call_slot(self._call_limiter):
+                    spawn_task = asyncio.create_task(
+                        asyncio.create_subprocess_exec(
+                            *command,
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            **_codex_process_options(),
+                        )
+                    )
                     try:
-                        process.kill()
-                        await process.communicate()
-                    except OSError:
-                        pass
-                    raise _CodexAttemptError("timeout") from error
-                if process.returncode != 0:
-                    raise _CodexAttemptError("process-exit")
+                        process = await asyncio.shield(spawn_task)
+                    except asyncio.CancelledError:
+                        cleanup_deadline = (
+                            loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
+                        )
+                        recovered, spawn_result = await _shielded_wait_task_until(
+                            spawn_task, cleanup_deadline
+                        )
+                        if recovered and not isinstance(
+                            spawn_result, BaseException
+                        ):
+                            process = cast(asyncio.subprocess.Process, spawn_result)
+                            await _shielded_codex_cleanup(
+                                process,
+                                process_group_id=_codex_process_group_id(process),
+                                communication_task=None,
+                                deadline=cleanup_deadline,
+                            )
+                        else:
+                            await _cancel_task_until(spawn_task, cleanup_deadline)
+                        raise
+
+                    process_group_id = _codex_process_group_id(process)
+                    communication_task = asyncio.create_task(
+                        process.communicate(input=prompt)
+                    )
+                    stdout_data = b""
+                    stderr_data = b""
+                    try:
+                        if self.settings.timeout_seconds is None:
+                            communication_result = await asyncio.shield(
+                                communication_task
+                            )
+                        else:
+                            call_deadline = (
+                                loop.time() + self.settings.timeout_seconds
+                            )
+                            completed, communication_result = await _wait_task_until(
+                                communication_task, call_deadline
+                            )
+                            if not completed:
+                                cleanup = await _shielded_codex_cleanup(
+                                    process,
+                                    process_group_id=process_group_id,
+                                    communication_task=communication_task,
+                                    deadline=(
+                                        loop.time()
+                                        + _CODEX_CLEANUP_TIMEOUT_SECONDS
+                                    ),
+                                )
+                                if not cleanup.success:
+                                    raise _CodexAttemptError("process-error")
+                                raise _CodexAttemptError("timeout")
+                        if isinstance(communication_result, asyncio.CancelledError):
+                            cleanup = await _shielded_codex_cleanup(
+                                process,
+                                process_group_id=process_group_id,
+                                communication_task=communication_task,
+                                deadline=(
+                                    loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
+                                ),
+                            )
+                            del cleanup
+                            raise communication_result
+                        if isinstance(communication_result, BaseException):
+                            raise _CodexAttemptError("process-error")
+                        if not isinstance(communication_result, tuple):
+                            raise _CodexAttemptError("process-error")
+                        communication_values = cast(
+                            tuple[object, ...], communication_result
+                        )
+                        if (
+                            len(communication_values) != 2
+                            or not isinstance(communication_values[0], bytes)
+                            or not isinstance(communication_values[1], bytes)
+                        ):
+                            raise _CodexAttemptError("process-error")
+                        stdout_data, stderr_data = cast(
+                            tuple[bytes, bytes], communication_values
+                        )
+                    except asyncio.CancelledError:
+                        cleanup = await _shielded_codex_cleanup(
+                            process,
+                            process_group_id=process_group_id,
+                            communication_task=communication_task,
+                            deadline=(
+                                loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
+                            ),
+                        )
+                        del cleanup
+                        raise
+                    if process.returncode != 0:
+                        raise _CodexAttemptError(
+                            _codex_process_failure_reason(stdout_data, stderr_data)
+                        )
                 try:
                     output = response_path.read_text(encoding="utf-8")
-                except OSError as error:
-                    raise _CodexAttemptError("process-error") from error
+                except OSError:
+                    raise _CodexAttemptError("process-error") from None
         except _CodexAttemptError:
             raise
-        except OSError as error:
-            raise _CodexAttemptError("process-error") from error
+        except OSError:
+            raise _CodexAttemptError("process-error") from None
 
         parsed = json.loads(output)
         if not isinstance(parsed, Mapping):
@@ -1063,10 +1672,18 @@ def create_structured_model_client(
     settings: OpenAICompatibleSettings,
     *,
     http_client: httpx.AsyncClient | None = None,
+    call_limiter: asyncio.Semaphore | None = None,
 ) -> StructuredModelClient:
     if settings.mode == "codex":
-        return cast(StructuredModelClient, CodexStructuredClient(settings))
+        return cast(
+            StructuredModelClient,
+            CodexStructuredClient(settings, call_limiter=call_limiter),
+        )
     return cast(
         StructuredModelClient,
-        OpenAICompatibleStructuredClient(settings, http_client=http_client),
+        OpenAICompatibleStructuredClient(
+            settings,
+            http_client=http_client,
+            call_limiter=call_limiter,
+        ),
     )

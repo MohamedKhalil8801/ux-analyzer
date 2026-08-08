@@ -11,6 +11,7 @@ from ux_analyzer.domain.attention import (
     AttentionAction,
     AttentionState,
     Back,
+    Complete,
     InspectElement,
     InteractWithElement,
     Scroll,
@@ -134,6 +135,8 @@ def _translate(
         return Wait(), WaitAction(milliseconds=0), None
     if kind == "back":
         return Back(), BackAction(), None
+    if kind == "complete":
+        return Complete(), None, None
     if kind == "abandon":
         reason = getattr(action, "reason", "")
         return Abandon(reason=reason), None, None

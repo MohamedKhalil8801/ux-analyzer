@@ -124,6 +124,38 @@ def test_resume_marks_staging_and_validates_finalized_bundle(tmp_path: Path) -> 
     assert state.pending_run_ids == ("run-2",)
 
 
+def test_resume_accepts_large_trace_artifact(tmp_path: Path) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-trace")
+    artifact = run / "artifacts" / "trace.zip"
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"x" * (64 * 1024 * 1024 + 1))
+    checksums = run / "checksums.sha256"
+    checksums.write_text(
+        checksums.read_text()
+        + f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  artifacts/trace.zip\n"
+    )
+
+    assert finalized_bundle_is_valid(tmp_path, "run-trace")
+
+
+def test_resume_rejects_oversized_trace_artifact_without_loading_payload(
+    tmp_path: Path,
+) -> None:
+    run = _write_finalized_bundle(tmp_path, "run-oversized-trace")
+    artifact = run / "artifacts" / "trace.zip"
+    artifact.parent.mkdir()
+    with artifact.open("wb") as stream:
+        stream.truncate(256 * 1024 * 1024 + 1)
+    (run / "checksums.sha256").write_text(
+        (run / "checksums.sha256").read_text()
+        + f"{'0' * 64}  artifacts/trace.zip\n"
+    )
+
+    failures = finalized_bundle_failures(run, expected_run_id="run-oversized-trace")
+
+    assert "unreadable checksummed file: artifacts/trace.zip" in failures
+
+
 @pytest.mark.parametrize(
     ("mutation", "run_id"),
     (

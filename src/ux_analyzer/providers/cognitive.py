@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
@@ -79,6 +80,10 @@ class BackAction(_RoleSchema):
     kind: Literal["back"] = "back"
 
 
+class CompleteAction(_RoleSchema):
+    kind: Literal["complete"] = "complete"
+
+
 class AbandonAction(_RoleSchema):
     kind: Literal["abandon"] = "abandon"
     reason: str = Field(min_length=1)
@@ -91,6 +96,7 @@ CognitiveAction = Annotated[
     | ScrollAction
     | WaitAction
     | BackAction
+    | CompleteAction
     | AbandonAction,
     Field(discriminator="kind"),
 ]
@@ -121,16 +127,48 @@ def _prompt() -> str:
 
 
 def _element_payload(
-    element: PersonaVisibleElement, region_label: str | None
+    element: PersonaVisibleElement,
+    region_label: str | None,
+    *,
+    model_element_id: str | None = None,
 ) -> CognitiveElement:
     return CognitiveElement(
-        element_id=element.id,
+        element_id=model_element_id or element.id,
         role=element.role.value,
         label=element.label,
         actionable=element.actionable,
         disabled=element.disabled,
         region_label=region_label,
     )
+
+
+def _model_element_aliases(
+    elements: tuple[PersonaVisibleElement, ...],
+) -> dict[str, str]:
+    reserved_ids = {element.id for element in elements}
+    aliases: dict[str, str] = {}
+    next_index = 0
+    for element in elements:
+        if len(element.id) <= 32:
+            continue
+        while f"e{next_index}" in reserved_ids or f"e{next_index}" in aliases.values():
+            next_index += 1
+        aliases[element.id] = f"e{next_index}"
+        next_index += 1
+    return aliases
+
+
+def _model_action(
+    action: Mapping[str, object] | None,
+    aliases: dict[str, str],
+) -> dict[str, object] | None:
+    if action is None:
+        return None
+    result = dict(action)
+    element_id = result.get("element_id")
+    if isinstance(element_id, str):
+        result["element_id"] = aliases.get(element_id, element_id)
+    return result
 
 
 def _normalize_model_response(response: CognitiveModelResponse) -> CognitiveDecision:
@@ -226,15 +264,29 @@ class StructuredCognitiveAgent:
             if observation.region_context is not None
             else None
         )
+        visible_elements = (
+            *observation.newly_revealed_elements,
+            *observation.remembered_elements,
+        )
+        aliases = _model_element_aliases(visible_elements)
+        reverse_aliases = {alias: element_id for element_id, alias in aliases.items()}
         payload = CognitiveObservation(
             goal=goal,
             fixture_keys=self.fixture_keys,
             newly_revealed_elements=tuple(
-                _element_payload(element, region_label)
+                _element_payload(
+                    element,
+                    region_label,
+                    model_element_id=aliases.get(element.id),
+                )
                 for element in observation.newly_revealed_elements
             ),
             remembered_elements=tuple(
-                _element_payload(element, region_label)
+                _element_payload(
+                    element,
+                    region_label,
+                    model_element_id=aliases.get(element.id),
+                )
                 for element in observation.remembered_elements
             ),
             region_label=region_label,
@@ -242,13 +294,13 @@ class StructuredCognitiveAgent:
                 self._run_context.viewport_id if self._run_context is not None else None
             ),
             previous_action=(
-                dict(self._run_context.previous_action)
+                _model_action(self._run_context.previous_action, aliases)
                 if self._run_context is not None
                 and self._run_context.previous_action is not None
                 else None
             ),
             previous_action_result=(
-                dict(self._run_context.previous_action_result)
+                _model_action(self._run_context.previous_action_result, aliases)
                 if self._run_context is not None
                 and self._run_context.previous_action_result is not None
                 else None
@@ -264,7 +316,11 @@ class StructuredCognitiveAgent:
                 else False
             ),
             available_controls=tuple(
-                _element_payload(element, region_label)
+                _element_payload(
+                    element,
+                    region_label,
+                    model_element_id=aliases.get(element.id),
+                )
                 for element in (
                     *observation.newly_revealed_elements,
                     *observation.remembered_elements,
@@ -301,6 +357,14 @@ class StructuredCognitiveAgent:
             model=self.model,
             role=self.role,
         )
+        if response.element_id is not None:
+            response = response.model_copy(
+                update={
+                    "element_id": reverse_aliases.get(
+                        response.element_id, response.element_id
+                    )
+                }
+            )
         decision = _normalize_model_response(response)
         visible_ids = {
             element.id

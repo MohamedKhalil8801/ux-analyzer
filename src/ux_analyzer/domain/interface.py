@@ -101,6 +101,7 @@ class RegionSnapshot:
     id: str
     label: str
     element_ids: tuple[str, ...] = ()
+    rendered_label: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -148,6 +149,7 @@ class ElementSnapshot:
     lineage_id: str | None = None
     local_contrast: float | None = None
     occlusion_fraction: float | None = None
+    rendered_text: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -203,7 +205,11 @@ class PersonaVisibleElement:
         return cls(
             id=snapshot.id,
             role=ElementRole(snapshot.role),
-            label=snapshot.label,
+            label=(
+                snapshot.rendered_text
+                if snapshot.rendered_text is not None
+                else snapshot.label
+            ),
             bounds=snapshot.bounds,
             visibility_fraction=snapshot.visibility_fraction,
             actionable=snapshot.actionable,

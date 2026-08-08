@@ -25,6 +25,7 @@ class RawRegionFact:
     ordinal: int
     kind: str
     label: str
+    rendered_label: str
     bounds: RawRect
     ancestor_ordinals: tuple[int, ...]
 
@@ -37,6 +38,7 @@ class RawElementFact:
     tag: str
     role: str
     label: str
+    rendered_text: str
     hidden_label: str | None
     bounds: RawRect
     visible_bounds: RawRect | None
@@ -81,10 +83,11 @@ def build_regions_and_edges(
             if region_ordinal in region_elements:
                 region_elements[region_ordinal].append(element_ids[element.ordinal])
     normalized_regions = tuple(
-        RegionSnapshot(
-            id=region_ids[region.ordinal],
-            label=region.label,
-            element_ids=tuple(region_elements[region.ordinal]),
+            RegionSnapshot(
+                id=region_ids[region.ordinal],
+                label=region.label,
+                rendered_label=region.rendered_label,
+                element_ids=tuple(region_elements[region.ordinal]),
         )
         for region in raw_regions
     )

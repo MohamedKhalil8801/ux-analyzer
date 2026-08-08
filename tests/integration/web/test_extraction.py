@@ -272,3 +272,63 @@ async def test_capture_links_unchanged_elements_without_exposing_lineage(
     assert len({element.lineage_id for element in first.elements}) == len(
         first.elements
     )
+
+
+@pytest.mark.asyncio
+async def test_capture_groups_visible_stat_rows_and_paragraphs_without_duplicates(
+    extraction_page: Page,
+) -> None:
+    await extraction_page.set_content(
+        """
+        <main>
+          <ul>
+            <li id="cities-row">
+              <span>48,000+</span><span>cities calibrated</span>
+              <span class="sr-only">Hidden city oracle</span>
+            </li>
+            <li id="countries-row"><span>130+</span><span>countries</span></li>
+            <li id="action-row"><span>Project details</span><a href="/details">Open details</a></li>
+          </ul>
+          <p id="current-role"><span>Frontend Engineer</span> at <span>PAIR Systems</span></p>
+          <section>
+            <p id="contact-email">m.khalil.bus@gmail.com</p>
+            <p id="contact-note">Open to remote frontend work</p>
+          </section>
+        </main>
+        """
+    )
+    await extraction_page.evaluate(
+        """
+        () => {
+          const hidden = document.querySelector('.sr-only');
+          hidden.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0px,0px,0px,0px)';
+        }
+        """
+    )
+
+    snapshot = await capture(extraction_page, "viewport-visible-groups")
+    rendered = [element.rendered_text for element in snapshot.elements]
+
+    assert rendered.count("48,000+ cities calibrated") == 1
+    assert rendered.count("130+ countries") == 1
+    assert "48,000+" not in rendered
+    assert "cities calibrated" not in rendered
+    assert "130+" not in rendered
+    assert "countries" not in rendered
+    assert all("Hidden city oracle" not in text for text in rendered)
+    assert "Project details Open details" not in rendered
+    assert "Open details" in rendered
+    assert rendered.count("Frontend Engineer at PAIR Systems") == 1
+    assert "Frontend Engineer" not in rendered
+    assert "PAIR Systems" not in rendered
+    assert "m.khalil.bus@gmail.com" in rendered
+    assert "Open to remote frontend work" in rendered
+    assert "m.khalil.bus@gmail.com Open to remote frontend work" not in rendered
+
+    cities = next(
+        element
+        for element in snapshot.elements
+        if element.rendered_text == "48,000+ cities calibrated"
+    )
+    assert cities.bounds.width > 0
+    assert cities.bounds.height > 0

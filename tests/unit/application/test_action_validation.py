@@ -206,3 +206,19 @@ def test_validate_abandon_decision_without_target() -> None:
 
     assert validated.domain_action.kind == "abandon"
     assert validated.platform_action is None
+
+
+def test_validate_complete_decision_without_target() -> None:
+    snapshot = _snapshot()
+
+    validated = validate_action(
+        CognitiveDecision(
+            action={"kind": "complete"},
+            reason="Visible result is sufficient.",
+        ),
+        _state(snapshot).attention,
+        snapshot,
+    )
+
+    assert validated.domain_action.kind == "complete"
+    assert validated.platform_action is None

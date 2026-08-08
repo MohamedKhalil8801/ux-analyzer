@@ -6,6 +6,80 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
+from urllib.parse import SplitResult, urlsplit, urlunsplit
+
+
+def canonicalize_https_url(value: str) -> str:
+    """Validate and canonicalize one HTTPS navigation URL."""
+
+    parsed = _parse_network_url(value, {"https"}, "start_url")
+    return urlunsplit(
+        (
+            "https",
+            _canonical_netloc(parsed, default_port=443),
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def canonicalize_http_origin(value: str) -> str:
+    """Validate and canonicalize one exact HTTP(S) resource origin."""
+
+    parsed = _parse_network_url(value, {"http", "https"}, "allowed origin")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError(
+            "allowed origin must not include a path, query, or fragment"
+        )
+    default_port = 80 if parsed.scheme.lower() == "http" else 443
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            _canonical_netloc(parsed, default_port=default_port),
+            "",
+            "",
+            "",
+        )
+    )
+
+
+def _parse_network_url(
+    value: str, allowed_schemes: set[str], label: str
+) -> SplitResult:
+    if type(value) is not str or not value or value != value.strip():
+        raise ValueError(f"{label} must be a non-empty URL")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{label} must have a valid host and port") from error
+    if port is not None and port <= 0:
+        raise ValueError(f"{label} must have a valid port")
+    if parsed.scheme.lower() not in allowed_schemes:
+        schemes = "/".join(sorted(allowed_schemes)).upper()
+        raise ValueError(f"{label} must use {schemes}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{label} must not include credentials")
+    if hostname is None or not hostname or any(char.isspace() for char in hostname):
+        raise ValueError(f"{label} must include a valid host")
+    if parsed.netloc.endswith(":"):
+        raise ValueError(f"{label} must have a valid port")
+    return parsed
+
+
+def _canonical_netloc(parsed: SplitResult, *, default_port: int) -> str:
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("network URL must include a valid host")
+    canonical_host = hostname.lower()
+    if ":" in canonical_host and not canonical_host.startswith("["):
+        canonical_host = f"[{canonical_host}]"
+    port = parsed.port
+    if port is None or port == default_port:
+        return canonical_host
+    return f"{canonical_host}:{port}"
 
 
 class ApplicationVersionKind(StrEnum):
@@ -13,6 +87,7 @@ class ApplicationVersionKind(StrEnum):
 
     DEFECTIVE = "defective"
     IMPROVED = "improved"
+    LIVE = "live"
 
 
 class ExperimentPolicy(StrEnum):
@@ -128,6 +203,15 @@ class VisibleResultVerifierSpec(VerifierSpecBase):
 
     text: str
     role: str | None = None
+    all_of: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        all_of = tuple(self.all_of)
+        if any(not value.strip() for value in all_of):
+            raise ValueError("all_of strings must not be empty")
+        if len(all_of) != len(set(all_of)):
+            raise ValueError("all_of strings must be unique")
+        object.__setattr__(self, "all_of", all_of)
 
 
 type VerifierSpec = FixtureStateVerifierSpec | VisibleResultVerifierSpec
@@ -187,11 +271,33 @@ class ApplicationVersion:
     id: str
     kind: ApplicationVersionKind
     label: str
+    start_url: str | None = None
+    allowed_origins: tuple[str, ...] = ()
+    navigation_settle_ms: int = 0
+    action_settle_ms: int = 0
+
+    def __post_init__(self) -> None:
+        if self.start_url is not None:
+            object.__setattr__(
+                self, "start_url", canonicalize_https_url(self.start_url)
+            )
+        canonical_origins = tuple(
+            canonicalize_http_origin(origin) for origin in self.allowed_origins
+        )
+        if len(canonical_origins) != len(set(canonical_origins)):
+            raise ValueError("allowed origins must be unique")
+        if self.kind is ApplicationVersionKind.LIVE and self.start_url is None:
+            raise ValueError("live application version requires start_url")
+        if self.navigation_settle_ms < 0:
+            raise ValueError("navigation_settle_ms must not be negative")
+        if self.action_settle_ms < 0:
+            raise ValueError("action_settle_ms must not be negative")
+        object.__setattr__(self, "allowed_origins", canonical_origins)
 
 
 @dataclass(frozen=True, slots=True)
 class Application:
-    """Application and its defective/improved presentation variants."""
+    """Application and its controlled or live presentation variants."""
 
     id: str
     name: str
@@ -204,11 +310,19 @@ class Application:
         if len({version.id for version in versions}) != len(versions):
             raise ValueError(f"application {self.id!r} has duplicate version IDs")
         kinds = {version.kind for version in versions}
-        missing = [kind.value for kind in ApplicationVersionKind if kind not in kinds]
-        if missing:
-            raise ValueError(
-                f"application {self.id!r} is missing {', '.join(missing)} version"
-            )
+        if kinds != {ApplicationVersionKind.LIVE}:
+            missing = [
+                kind.value
+                for kind in (
+                    ApplicationVersionKind.DEFECTIVE,
+                    ApplicationVersionKind.IMPROVED,
+                )
+                if kind not in kinds
+            ]
+            if missing:
+                raise ValueError(
+                    f"application {self.id!r} is missing {', '.join(missing)} version"
+                )
         object.__setattr__(self, "versions", versions)
 
 

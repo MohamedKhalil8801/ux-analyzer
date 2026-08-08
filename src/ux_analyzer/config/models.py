@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from ux_analyzer.domain.benchmark import (
+    canonicalize_http_origin,
+    canonicalize_https_url,
+)
 
 
 def _empty_int_list() -> list[int]:
@@ -49,8 +61,33 @@ class _ConfigModel(BaseModel):
 
 class ApplicationVersionModel(_ConfigModel):
     id: str = Field(min_length=1)
-    kind: Literal["defective", "improved"]
+    kind: Literal["defective", "improved", "live"]
     label: str = Field(min_length=1)
+    start_url: str | None = None
+    allowed_origins: list[str] = Field(default_factory=list)
+    navigation_settle_ms: int = Field(default=0, ge=0)
+    action_settle_ms: int = Field(default=0, ge=0)
+
+    @field_validator("start_url")
+    @classmethod
+    def _canonicalize_start_url(cls, start_url: str | None) -> str | None:
+        if start_url is None:
+            return None
+        return canonicalize_https_url(start_url)
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _canonicalize_allowed_origins(cls, origins: list[str]) -> list[str]:
+        canonical_origins = [canonicalize_http_origin(origin) for origin in origins]
+        if len(canonical_origins) != len(set(canonical_origins)):
+            raise ValueError("allowed origins must be unique")
+        return canonical_origins
+
+    @model_validator(mode="after")
+    def _validate_live_start_url(self) -> ApplicationVersionModel:
+        if self.kind == "live" and self.start_url is None:
+            raise ValueError("live application version requires start_url")
+        return self
 
 
 class ApplicationModel(_ConfigModel):
@@ -76,6 +113,16 @@ class VisibleResultVerifierModel(_ConfigModel):
     type: Literal["visible-result"]
     text: str = Field(min_length=1)
     role: str | None = Field(default=None, min_length=1)
+    all_of: list[str] = Field(default_factory=list)
+
+    @field_validator("all_of")
+    @classmethod
+    def _validate_all_of(cls, all_of: list[str]) -> list[str]:
+        if any(not value.strip() for value in all_of):
+            raise ValueError("all_of strings must not be empty")
+        if len(all_of) != len(set(all_of)):
+            raise ValueError("all_of strings must be unique")
+        return all_of
 
 
 VerifierModel = Annotated[

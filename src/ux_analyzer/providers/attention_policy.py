@@ -168,6 +168,7 @@ class ProgressiveAttentionPolicy:
             for element in snapshot.elements
             if element.id in visible_ids and element.id not in state.remembered_ids
         )
+        candidates = _coverage_candidates(candidates, state, recovery_level)
         if not candidates:
             raise ValueError("no unobserved visible elements remain")
         element_probabilities = _probabilities(candidates, self.config.temperature)
@@ -213,12 +214,17 @@ class ProgressiveAttentionPolicy:
             mode = f"{mode}+recovery"
             region_id = _selected_region(snapshot, selected)
         selected_ids = tuple(candidate.element_id for candidate in selected)
+        remembered_capacity = max(state.memory_capacity - len(selected_ids), 0)
         remembered_ids = tuple(
             item.element_id
             for item in state.memory
             if item.element_id in {element.id for element in snapshot.elements}
             and item.element_id not in selected_ids
         )
+        if remembered_capacity:
+            remembered_ids = remembered_ids[-remembered_capacity:]
+        else:
+            remembered_ids = ()
         observation = ProgressiveObservation.from_snapshot(
             snapshot,
             newly_revealed_ids=selected_ids,
@@ -234,6 +240,21 @@ class ProgressiveAttentionPolicy:
             recovery_selected_ids=recovery_ids,
             next_recovery_state=recovery_state,
         )
+
+
+def _coverage_candidates(
+    candidates: Sequence[_Candidate], state: AttentionState, recovery_level: int
+) -> tuple[_Candidate, ...]:
+    """Prefer never-noticed visible elements during bounded recovery."""
+
+    if recovery_level <= 0:
+        return tuple(candidates)
+    fresh = tuple(
+        candidate
+        for candidate in candidates
+        if candidate.element_id not in state.noticed_ids
+    )
+    return fresh or tuple(candidates)
 
 
 def _score_map(

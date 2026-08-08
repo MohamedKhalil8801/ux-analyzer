@@ -45,6 +45,7 @@ from ux_analyzer.providers.saliency_prominence import (
     AttentionStageSelector,
     FoveacastProminenceProvider,
     SimpleHybridProminenceProvider,
+    _normalize_stage_scores,
 )
 from ux_analyzer.storage.saliency_cache import SaliencyCache
 
@@ -566,6 +567,74 @@ def test_tiny_valid_temperature_keeps_stage_probabilities_finite() -> None:
 
     assert all(math.isfinite(item.normalized_probability) for item in selected)
     assert sum(item.normalized_probability for item in selected) == pytest.approx(1.0)
+
+
+def test_temperature_one_max_scales_before_normalizing_huge_scores() -> None:
+    probabilities = _normalize_stage_scores((1e308, 9e307), temperature=1.0)
+
+    assert probabilities == pytest.approx((10 / 19, 9 / 19))
+    assert probabilities[0] / probabilities[1] == pytest.approx(10 / 9)
+    assert sum(probabilities) == pytest.approx(1.0)
+
+
+def test_log_temperature_scaling_handles_subnormal_and_huge_scores() -> None:
+    probabilities = _normalize_stage_scores((5e-324, 1e308), temperature=2.0)
+
+    assert all(math.isfinite(probability) for probability in probabilities)
+    assert all(probability >= 0 for probability in probabilities)
+    assert probabilities[1] == pytest.approx(1.0)
+    assert sum(probabilities) == pytest.approx(1.0)
+
+
+def test_stage_probabilities_normalize_weighted_scores_without_softmax() -> None:
+    selected = AttentionStageSelector().select(
+        (
+            _profile("first", immediate=0.6, early=0.2, eventual=0.1),
+            _profile("second", immediate=0.3, early=0.8, eventual=0.7),
+        ),
+        SearchStage.INITIAL,
+    )
+
+    assert [item.raw_score for item in selected] == [0.6, 0.3]
+    assert [item.normalized_probability for item in selected] == pytest.approx(
+        (2 / 3, 1 / 3)
+    )
+    assert selected[0].normalized_probability / selected[1].normalized_probability == (
+        pytest.approx(2.0)
+    )
+    assert sum(item.normalized_probability for item in selected) == pytest.approx(1.0)
+
+
+def test_stage_probabilities_use_power_temperature_and_preserve_zero() -> None:
+    selected = AttentionStageSelector(temperature=2.0).select(
+        (
+            _profile("first", immediate=0.64, early=0.2, eventual=0.1),
+            _profile("second", immediate=0.16, early=0.8, eventual=0.7),
+            _profile("zero", immediate=0.0, early=0.5, eventual=0.5),
+        ),
+        SearchStage.INITIAL,
+    )
+
+    assert [item.raw_score for item in selected] == [0.64, 0.16, 0.0]
+    assert [item.normalized_probability for item in selected] == pytest.approx(
+        (2 / 3, 1 / 3, 0.0)
+    )
+    assert sum(item.normalized_probability for item in selected) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("invalid_score", (-1.0, math.nan, math.inf))
+def test_stage_selector_rejects_nonfinite_or_negative_stage_scores(
+    invalid_score: float,
+) -> None:
+    profile = _profile("invalid", immediate=0.5, early=0.2, eventual=0.1)
+    estimate = profile.immediate
+    assert estimate is not None
+    object.__setattr__(estimate, "score", invalid_score)
+
+    with pytest.raises(
+        ValueError, match="stage scores must be finite and non-negative"
+    ):
+        AttentionStageSelector().select((profile,), SearchStage.INITIAL)
 
 
 def test_hybrid_rejects_duplicate_learned_ids() -> None:

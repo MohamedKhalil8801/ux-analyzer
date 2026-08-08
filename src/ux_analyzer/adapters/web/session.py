@@ -1,24 +1,34 @@
-"""Playwright session adapter with fixture-only browser safety controls."""
+"""Playwright session adapter with fail-closed browser safety controls."""
 
 from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Awaitable, Iterable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
+from typing import Any
 
-from playwright.async_api import Browser, BrowserContext, Page, Request
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Request,
+    Route,
+    WebSocketRoute,
+)
 from playwright.async_api import Error as PlaywrightError
 
 from ux_analyzer.adapters.web.network_policy import (
     BrowserAllowedOrigins,
     NetworkPolicy,
+    abort_route,
 )
 from ux_analyzer.ports.artifacts import sanitize_artifact_content
 from ux_analyzer.ports.observation import (
     BackAction,
+    BlockedRequest,
     ClearTextAction,
     ClickAction,
     DoubleClickAction,
@@ -53,6 +63,23 @@ class ProviderFailure(ObservationProviderError):
 
 
 _NAVIGATION_START_GRACE_SECONDS = 0.1
+_TRANSIENT_POPUP_URLS = frozenset(("", ":", "about:blank"))
+_TRACE_REPLACE_ATTEMPTS = 3
+_TRACE_REPLACE_DELAY_SECONDS = 0.01
+_RECOVERABLE_USER_ACTIONS = (
+    ClickAction,
+    DoubleClickAction,
+    TypeTextAction,
+    SelectOptionAction,
+    ToggleAction,
+    SubmitAction,
+    OpenMenuAction,
+    ClearTextAction,
+)
+
+
+def _empty_task_set() -> set[asyncio.Task[None]]:
+    return set()
 
 
 @dataclass(slots=True)
@@ -65,6 +92,14 @@ class _ManagedSession:
     trace_started: bool = False
     capture_index: int = 0
     cleanup_started: bool = False
+    popup_listener: Callable[[Page], None] | None = None
+    route_handler: Callable[[Route, Request], Awaitable[None]] | None = None
+    websocket_handler: Callable[[WebSocketRoute], Awaitable[None]] | None = None
+    cleanup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    cleanup_complete: asyncio.Event = field(default_factory=asyncio.Event)
+    cleanup_error: BaseException | None = None
+    route_tasks: set[asyncio.Task[None]] = field(default_factory=_empty_task_set)
+    popup_tasks: set[asyncio.Task[None]] = field(default_factory=_empty_task_set)
 
 
 class PlaywrightSessionAdapter:
@@ -77,15 +112,18 @@ class PlaywrightSessionAdapter:
         self,
         *,
         browser: Browser,
-        allowed_origins: BrowserAllowedOrigins | Iterable[str],
+        allowed_origins: BrowserAllowedOrigins | Iterable[str] | None,
         trace_directory: Path,
     ) -> None:
         self._browser = browser
-        self._allowed_origins = (
-            allowed_origins
-            if isinstance(allowed_origins, BrowserAllowedOrigins)
-            else BrowserAllowedOrigins.fixture_only(allowed_origins)
-        )
+        if isinstance(allowed_origins, BrowserAllowedOrigins):
+            self._default_allowed_origins = allowed_origins
+        elif allowed_origins is None:
+            self._default_allowed_origins = None
+        else:
+            self._default_allowed_origins = BrowserAllowedOrigins.fixture_only(
+                allowed_origins
+            )
         self._trace_directory = trace_directory
         self._sessions: dict[str, _ManagedSession] = {}
 
@@ -94,12 +132,15 @@ class PlaywrightSessionAdapter:
         return len(self._sessions)
 
     async def start_session(self, config: ObservationSessionConfig) -> SessionHandle:
-        self._allowed_origins.require_allowed(
+        allowed_origins = self._allowed_origins_for(config)
+        allowed_origins.require_allowed(
             config.start_url, resource_type="document", kind="navigation"
         )
+        if config.session_id in self._sessions:
+            raise ProviderFailure("session ID already active")
         config.trace_path.parent.mkdir(parents=True, exist_ok=True)
         config.trace_path.unlink(missing_ok=True)
-        policy = NetworkPolicy(self._allowed_origins)
+        policy = NetworkPolicy(allowed_origins)
         context: BrowserContext | None = None
         managed: _ManagedSession | None = None
         try:
@@ -111,12 +152,6 @@ class PlaywrightSessionAdapter:
                 accept_downloads=False,
                 permissions=[],
                 service_workers="block",
-            )
-            await context.route_web_socket(
-                "**/*", lambda websocket: policy.handle_websocket(websocket)
-            )
-            await context.route(
-                "**/*", lambda route, request: policy.handle_route(route, request)
             )
             await context.add_init_script(
                 """
@@ -180,13 +215,48 @@ class PlaywrightSessionAdapter:
                 policy=policy,
                 trace_started=True,
             )
+            assert managed is not None
+            if handle.session_id in self._sessions:
+                raise ProviderFailure("session ID already active")
             self._sessions[handle.session_id] = managed
-            context.on(
-                "page",
-                lambda popup: asyncio.create_task(
-                    self._close_foreign_popup(managed, popup)
-                ),
+
+            def handle_popup(popup: Page) -> None:
+                self._schedule_popup_cleanup(managed, popup)
+
+            managed.popup_listener = handle_popup
+            context.on("page", handle_popup)
+
+            async def handle_websocket(websocket: WebSocketRoute) -> None:
+                if managed.cleanup_started:
+                    await websocket.close(
+                        code=1008,
+                        reason="session cleanup in progress",
+                    )
+                    return
+                await _track_task(
+                    managed.route_tasks,
+                    policy.handle_websocket(websocket),
+                )
+
+            async def handle_route(route: Route, request: Request) -> None:
+                if managed.cleanup_started:
+                    await abort_route(route, error_code="blockedbyclient")
+                    return
+                await _track_task(
+                    managed.route_tasks,
+                    policy.handle_route(
+                        route,
+                        request,
+                        kind=_request_kind(request, managed.page),
+                    ),
+                )
+
+            managed.websocket_handler = handle_websocket
+            managed.route_handler = handle_route
+            await context.route_web_socket(
+                "**/*", handle_websocket
             )
+            await context.route("**/*", handle_route)
             await self._navigate(managed, config.start_url)
             return handle
         except asyncio.CancelledError as cancellation:
@@ -236,6 +306,7 @@ class PlaywrightSessionAdapter:
         managed = self._active(session)
         started = monotonic()
         initial_url = managed.page.url
+        blocked_before = len(managed.policy.blocked_requests)
         navigation_started = asyncio.Event()
 
         def record_navigation(request: Request) -> None:
@@ -249,7 +320,7 @@ class PlaywrightSessionAdapter:
         try:
             navigation_occurred = False
             if isinstance(action, NavigateAction):
-                await self._navigate(managed, action.url)
+                await self._navigate(managed, action.url, settle=False)
                 navigation_occurred = True
             elif isinstance(action, BackAction):
                 await managed.page.go_back(wait_until="domcontentloaded")
@@ -294,7 +365,23 @@ class PlaywrightSessionAdapter:
                 await managed.page.mouse.down()
                 await managed.page.mouse.move(action.end_x, action.end_y)
                 await managed.page.mouse.up()
-            await _settle_after_action(managed.page, navigation_started)
+            await _settle_after_action(
+                managed.page,
+                navigation_started,
+                managed.config.navigation_settle_ms,
+                managed.config.action_settle_ms,
+            )
+            await _await_popup_tasks(managed.popup_tasks)
+            blocked_navigation = _blocked_document_navigation(
+                managed.policy.blocked_requests, blocked_before
+            )
+            if blocked_navigation is not None:
+                if _is_recoverable_user_interaction(action):
+                    return _blocked_action_result(managed, started)
+                raise SafetyBlocked(
+                    "browser action blocked for foreign origin "
+                    f"{blocked_navigation.origin!r}"
+                )
             return PlatformActionResult(
                 succeeded=True,
                 url=managed.page.url,
@@ -314,7 +401,19 @@ class PlaywrightSessionAdapter:
                 raise cancellation from cleanup_error
             raise
         except BaseException as error:
+            blocked_navigation = _blocked_document_navigation(
+                managed.policy.blocked_requests, blocked_before
+            )
+            if blocked_navigation is not None and _is_recoverable_user_interaction(
+                action
+            ):
+                return _blocked_action_result(managed, started)
             await self._cleanup(managed)
+            if blocked_navigation is not None:
+                raise SafetyBlocked(
+                    "browser action blocked for foreign origin "
+                    f"{blocked_navigation.origin!r}"
+                ) from error
             if isinstance(error, ProviderFailure):
                 raise
             raise ProviderFailure("browser action failed") from error
@@ -359,7 +458,24 @@ class PlaywrightSessionAdapter:
             raise ProviderFailure("session is not active")
         return managed
 
-    async def _navigate(self, managed: _ManagedSession, url: str) -> None:
+    def _allowed_origins_for(
+        self, config: ObservationSessionConfig
+    ) -> BrowserAllowedOrigins:
+        if not config.fixture_only and not config.navigation_origins:
+            raise ProviderFailure("live session requires explicit allowed origins")
+        if config.navigation_origins or config.resource_origins:
+            if config.fixture_only:
+                return BrowserAllowedOrigins.fixture_only(config.navigation_origins)
+            return BrowserAllowedOrigins.configured(
+                config.navigation_origins, config.resource_origins
+            )
+        if self._default_allowed_origins is None:
+            raise ProviderFailure("session requires explicit allowed origins")
+        return self._default_allowed_origins
+
+    async def _navigate(
+        self, managed: _ManagedSession, url: str, *, settle: bool = True
+    ) -> None:
         managed.policy.check(url, resource_type="document", kind="navigation")
         blocked_before = len(managed.policy.blocked_requests)
         try:
@@ -378,15 +494,31 @@ class PlaywrightSessionAdapter:
                 f"browser navigation blocked for foreign origin "
                 f"{new_blocks[-1].origin!r}"
             )
+        if settle:
+            await _wait_for_navigation_settle(
+                managed.page, managed.config.navigation_settle_ms
+            )
 
     async def _close_foreign_popup(self, managed: _ManagedSession, popup: Page) -> None:
         try:
             await popup.wait_for_load_state("domcontentloaded", timeout=500)
         except PlaywrightError:
             pass
-        if not managed.policy.allowed_origins.allows(popup.url, kind="popup"):
-            managed.policy.record_popup(popup.url)
-            await popup.close()
+        try:
+            popup_url = popup.url
+            if _is_transient_popup_url(popup_url):
+                await popup.close()
+            elif not managed.policy.allowed_origins.allows(popup_url, kind="popup"):
+                managed.policy.record_popup(popup_url)
+                await popup.close()
+        except PlaywrightError:
+            pass
+
+    def _schedule_popup_cleanup(self, managed: _ManagedSession, popup: Page) -> None:
+        _track_task(
+            managed.popup_tasks,
+            self._close_foreign_popup(managed, popup),
+        )
 
     @staticmethod
     async def _click(
@@ -407,24 +539,76 @@ class PlaywrightSessionAdapter:
             await page.mouse.click(x, y)
 
     async def _cleanup(self, managed: _ManagedSession) -> None:
-        if managed.cleanup_started:
+        cleanup_owner = False
+        wait_for_cleanup = False
+        cleanup_error: BaseException | None = None
+        async with managed.cleanup_lock:
+            if managed.cleanup_complete.is_set():
+                cleanup_error = managed.cleanup_error
+            elif managed.cleanup_started:
+                wait_for_cleanup = True
+            else:
+                managed.cleanup_started = True
+                cleanup_owner = True
+
+        if not cleanup_owner:
+            if wait_for_cleanup:
+                await managed.cleanup_complete.wait()
+                cleanup_error = managed.cleanup_error
+            if cleanup_error is not None:
+                raise cleanup_error
             return
-        managed.cleanup_started = True
-        self._sessions.pop(managed.handle.session_id, None)
+
         try:
-            if managed.trace_started:
-                await managed.context.tracing.stop(path=str(managed.handle.trace_path))
-                _sanitize_trace(managed)
-        except PlaywrightError:
-            _discard_trace(managed.handle.trace_path)
-        except BaseException:
-            _discard_trace(managed.handle.trace_path)
-            raise
-        finally:
+            try:
+                listener = managed.popup_listener
+                managed.popup_listener = None
+                if listener is not None:
+                    managed.context.remove_listener("page", listener)
+            except BaseException as error:
+                cleanup_error = error
+
+            try:
+                await managed.context.unroute_all(behavior="ignoreErrors")
+                await _cancel_and_gather_tasks(managed.route_tasks)
+                await _cancel_and_gather_tasks(managed.popup_tasks)
+                if managed.trace_started:
+                    await managed.context.tracing.stop(
+                        path=str(managed.handle.trace_path)
+                    )
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+
             try:
                 await managed.context.close()
-            except PlaywrightError:
-                pass
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+
+            if cleanup_error is not None:
+                _discard_trace(managed.handle.trace_path)
+                if isinstance(cleanup_error, PlaywrightError):
+                    return
+                raise cleanup_error
+
+            if managed.trace_started:
+                try:
+                    _sanitize_trace(managed)
+                except PlaywrightError:
+                    _discard_trace(managed.handle.trace_path)
+                except BaseException:
+                    _discard_trace(managed.handle.trace_path)
+                    raise
+        except BaseException as error:
+            managed.cleanup_error = error
+            raise
+        finally:
+            if self._sessions.get(managed.handle.session_id) is managed:
+                self._sessions.pop(managed.handle.session_id, None)
+            managed.route_handler = None
+            managed.websocket_handler = None
+            managed.cleanup_complete.set()
 
 
 def _sanitize_trace(managed: _ManagedSession) -> None:
@@ -438,7 +622,18 @@ def _sanitize_trace(managed: _ManagedSession) -> None:
     )
     temporary = path.with_name(f".{path.name}.sanitized")
     temporary.write_bytes(sanitized)
-    os.replace(temporary, path)
+    _replace_trace_with_retry(temporary, path)
+
+
+def _replace_trace_with_retry(source: Path, destination: Path) -> None:
+    for attempt in range(_TRACE_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == _TRACE_REPLACE_ATTEMPTS - 1:
+                raise
+            sleep(_TRACE_REPLACE_DELAY_SECONDS)
 
 
 def _discard_trace(path: Path) -> None:
@@ -451,6 +646,51 @@ def _discard_trace(path: Path) -> None:
         except FileNotFoundError:
             continue
         candidate.unlink(missing_ok=True)
+
+
+def _retrieve_task_exception(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+def _track_task(
+    tasks: set[asyncio.Task[None]], awaitable: Coroutine[Any, Any, None]
+) -> asyncio.Task[None]:
+    task = asyncio.create_task(awaitable)
+    tasks.add(task)
+
+    def finish(completed: asyncio.Task[None]) -> None:
+        tasks.discard(completed)
+        _retrieve_task_exception(completed)
+
+    task.add_done_callback(finish)
+    return task
+
+
+async def _cancel_and_gather_tasks(tasks: set[asyncio.Task[None]]) -> None:
+    while tasks:
+        current = tuple(tasks)
+        for task in current:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*current, return_exceptions=True)
+
+
+async def _await_popup_tasks(tasks: set[asyncio.Task[None]]) -> None:
+    await asyncio.sleep(0)
+    while tasks:
+        current = tuple(tasks)
+        results = await asyncio.gather(*current, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                raise ProviderFailure("popup cleanup failed") from result
+        await asyncio.sleep(0)
+
+
+def _is_transient_popup_url(url: str) -> bool:
+    return url in _TRANSIENT_POPUP_URLS
 
 
 async def _shielded_cleanup(awaitable: Awaitable[None]) -> None:
@@ -488,11 +728,63 @@ def _elapsed_ms(started: float) -> int:
     return int((monotonic() - started) * 1000)
 
 
-async def _settle_after_action(page: Page, navigation_started: asyncio.Event) -> None:
+def _blocked_action_result(
+    managed: _ManagedSession, started: float
+) -> PlatformActionResult:
+    return PlatformActionResult(
+        succeeded=False,
+        url=managed.page.url,
+        duration_ms=_elapsed_ms(started),
+        error="navigation blocked by safety policy",
+    )
+
+
+def _is_recoverable_user_interaction(action: PlatformAction) -> bool:
+    return isinstance(action, _RECOVERABLE_USER_ACTIONS)
+
+
+async def _settle_after_action(
+    page: Page,
+    navigation_started: asyncio.Event,
+    navigation_settle_ms: int,
+    action_settle_ms: int,
+) -> None:
+    settle_window_seconds = max(
+        _NAVIGATION_START_GRACE_SECONDS, action_settle_ms / 1000
+    )
     try:
         await asyncio.wait_for(
-            navigation_started.wait(), timeout=_NAVIGATION_START_GRACE_SECONDS
+            navigation_started.wait(), timeout=settle_window_seconds
         )
     except TimeoutError:
         return
     await page.wait_for_load_state("domcontentloaded")
+    await _wait_for_navigation_settle(page, navigation_settle_ms)
+    await page.wait_for_timeout(action_settle_ms)
+
+
+async def _wait_for_navigation_settle(page: Page, navigation_settle_ms: int) -> None:
+    await page.wait_for_timeout(navigation_settle_ms)
+
+
+def _blocked_document_navigation(
+    blocked_events: list[BlockedRequest], start: int
+) -> BlockedRequest | None:
+    return next(
+        (
+            event
+            for event in blocked_events[start:]
+            if event.resource_type == "document"
+            and event.kind in {"request", "redirect", "popup"}
+        ),
+        None,
+    )
+
+
+def _request_kind(request: Request, main_page: Page) -> str:
+    if request.resource_type != "document" or not request.is_navigation_request():
+        return "request"
+    try:
+        return "popup" if request.frame.page != main_page else "request"
+    except PlaywrightError:
+        return "popup"

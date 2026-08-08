@@ -78,7 +78,6 @@ STAGE_MIXTURES: Mapping[SearchStage, Mapping[AttentionDuration, float]] = {
 }
 
 _INFERENCE_CACHE_VIEWPORT_ID = "native-inference"
-_MIN_SOFTMAX_TEMPERATURE = 1e-12
 
 _ModelProviderSource = _SaliencyModelProvider | Callable[[], _SaliencyModelProvider]
 _CacheSource = _SaliencyCache | Callable[[], _SaliencyCache]
@@ -168,7 +167,7 @@ class AttentionStageSelector:
             )
             scored_profiles.append(profile)
 
-        probabilities = _softmax(raw_scores, self.temperature)
+        probabilities = _normalize_stage_scores(raw_scores, self.temperature)
         return tuple(
             ProminenceResult(
                 element_id=profile.element_id,
@@ -831,14 +830,50 @@ def _normalize_probabilities(values: Sequence[float]) -> tuple[float, ...]:
     return tuple(value / total for value in values)
 
 
-def _softmax(scores: Sequence[float], temperature: float) -> tuple[float, ...]:
+def _normalize_stage_scores(
+    scores: Sequence[float], temperature: float
+) -> tuple[float, ...]:
     if not scores:
         return ()
-    safe_temperature = max(temperature, _MIN_SOFTMAX_TEMPERATURE)
+    for score in scores:
+        try:
+            valid = math.isfinite(score) and score >= 0
+        except TypeError as error:
+            raise ValueError("stage scores must be finite and non-negative") from error
+        if type(score) is bool or not valid:
+            raise ValueError("stage scores must be finite and non-negative")
     maximum = max(scores)
-    exponentials = [math.exp((score - maximum) / safe_temperature) for score in scores]
-    total = sum(exponentials)
-    return tuple(value / total for value in exponentials)
+    if maximum == 0:
+        return tuple(1.0 / len(scores) for _ in scores)
+
+    if temperature == 1.0:
+        scaled_scores = tuple(score / maximum for score in scores)
+    else:
+        log_maximum = math.log(maximum)
+        log_scores = tuple(
+            float("-inf")
+            if score == 0
+            else (math.log(score) - log_maximum) / temperature
+            for score in scores
+        )
+        maximum_log_score = max(log_scores)
+        scaled_scores = tuple(
+            0.0 if score == 0 else math.exp(log_scores[index] - maximum_log_score)
+            for index, score in enumerate(scores)
+        )
+    probabilities = _normalize_probabilities(scaled_scores)
+    if sum(probabilities) == 1.0:
+        return probabilities
+    largest_index = max(enumerate(probabilities), key=lambda item: item[1])[0]
+    other_total = math.fsum(
+        probability
+        for index, probability in enumerate(probabilities)
+        if index != largest_index
+    )
+    return tuple(
+        1.0 - other_total if index == largest_index else probability
+        for index, probability in enumerate(probabilities)
+    )
 
 
 HybridProminenceProvider = SimpleHybridProminenceProvider

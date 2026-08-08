@@ -273,6 +273,7 @@ def _load_experiment(root: Path) -> dict[str, Any]:
         "runs": ordered_runs,
         "run_rows": _run_overview_rows(ordered_runs, gate_rows),
         "comparison_rows": _comparison_rows(ordered_runs),
+        "provider_comparisons": _provider_comparisons(ordered_runs),
         "gate_rows": gate_rows,
         "failure_rows": [run for run in ordered_runs if run["failed"]],
         "evidence_summary": _evidence_summary(ordered_runs),
@@ -637,6 +638,11 @@ def _report_context(
         if run_links is not None:
             run = {**run, "run_page": run_links.get(source["run_id"], "")}
         runs.append(run)
+    provider_comparisons = _report_provider_comparisons(
+        experiment.get("provider_comparisons", []),
+        {run["run_id"] for run in runs},
+        run_links,
+    )
     initial_width = 0
     for run in _list_of_mappings(experiment["runs"]):
         if run["snapshots"]:
@@ -669,6 +675,7 @@ def _report_context(
         "runs": runs,
         "run_rows": experiment["run_rows"],
         "comparison_rows": experiment["comparison_rows"],
+        "provider_comparisons": provider_comparisons,
         "gate_rows": experiment["gate_rows"],
         "failure_rows": failure_rows,
         "evidence_summary": experiment["evidence_summary"],
@@ -680,6 +687,7 @@ def _report_context(
                 "runs": runs,
                 "run_rows": experiment["run_rows"],
                 "comparison_rows": experiment["comparison_rows"],
+                "provider_comparisons": provider_comparisons,
                 "gate_rows": experiment["gate_rows"],
                 "failure_rows": failure_rows,
                 "evidence_summary": experiment["evidence_summary"],
@@ -914,7 +922,11 @@ def _is_allowed_screenshot_artifact(path: PurePosixPath) -> bool:
         return False
     if len(path.parts) > 2:
         return False
-    return path.suffix.casefold() in {".gif", ".jpeg", ".jpg", ".png"}
+    if path.suffix.casefold() in {".gif", ".jpeg", ".jpg", ".png"}:
+        return True
+    return len(path.name) == 64 and all(
+        character in "0123456789abcdefABCDEF" for character in path.name
+    )
 
 
 def _looks_redacted_source_png(content: bytes) -> bool:
@@ -1275,9 +1287,20 @@ def _read_saliency_profiles(path: Path, namespace: str) -> list[dict[str, Any]]:
             estimate = _mapping(profile.get(estimate_name))
             if not estimate:
                 if estimate_name in {"immediate", "early", "eventual"}:
-                    raise SaliencyReplayUnavailable(
-                        "profile duration coverage is incomplete"
-                    )
+                    timed_values = [
+                        profile.get(name)
+                        for name in ("immediate", "early", "eventual")
+                    ]
+                    if not all(value is None for value in timed_values):
+                        raise SaliencyReplayUnavailable(
+                            "profile duration coverage is incomplete"
+                        )
+                    item[estimate_name] = {
+                        "kind": "unavailable",
+                        "score": None,
+                        "source": "unavailable",
+                    }
+                    continue
                 item[estimate_name] = None
                 continue
             kind = _text(estimate.get("kind"), "unavailable")
@@ -2670,6 +2693,240 @@ def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _provider_comparisons(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str, str, int, int], list[dict[str, Any]]] = (
+        defaultdict(list)
+    )
+    for run in runs:
+        provider_id = _text(run.get("prominence_provider_id"), "heuristic")
+        if provider_id not in {"heuristic", "foveacast"}:
+            continue
+        groups[
+            (
+                run["scenario_id"],
+                run["version_id"],
+                run["persona_id"],
+                run["policy"],
+                int(_number(run.get("seed"), 0)),
+                int(_number(run.get("model_trial"), 0)),
+            )
+        ].append(run)
+
+    comparisons: list[dict[str, Any]] = []
+    for identity, grouped in sorted(groups.items()):
+        providers = [
+            _provider_comparison(run)
+            for run in sorted(
+                grouped,
+                key=lambda item: _text(item.get("prominence_provider_id")),
+            )
+        ]
+        if len({provider["provider_id"] for provider in providers}) < 2:
+            continue
+        scenario_id, version_id, persona_id, policy, seed, model_trial = identity
+        comparisons.append(
+            {
+                "key": "|".join(
+                    (
+                        scenario_id,
+                        version_id,
+                        persona_id,
+                        policy,
+                        str(seed),
+                        str(model_trial),
+                    )
+                ),
+                "scenario_id": scenario_id,
+                "scenario_label": grouped[0]["scenario_label"],
+                "version_id": version_id,
+                "version_label": grouped[0]["version_label"],
+                "persona_id": persona_id,
+                "persona_label": grouped[0]["persona_label"],
+                "policy": policy,
+                "seed": seed,
+                "model_trial": model_trial,
+                "providers": providers,
+            }
+        )
+    return comparisons
+
+
+def _provider_comparison(run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": run["run_id"],
+        "provider_id": _text(run.get("prominence_provider_id"), "heuristic"),
+        "outcome": run["outcome"],
+        "stage": run["stage"],
+        "verified": bool(run["verified"]),
+        "trusted": bool(run["trusted"]),
+        "comparison_valid": bool(run["comparison_valid"]),
+        "failure_reason": run["failure_reason"],
+        "heatmaps": _comparison_heatmaps(run),
+        "prominence": _comparison_prominence(run),
+        "action_path": _comparison_action_path(run),
+    }
+
+
+def _comparison_heatmaps(run: dict[str, Any]) -> list[dict[str, Any]]:
+    heatmaps: list[dict[str, Any]] = []
+    for group in _list_of_mappings(run.get("saliency")):
+        for entry in _list_of_mappings(group.get("entries")):
+            heatmaps.append(
+                {
+                    "duration": _text(entry.get("duration"), "unavailable"),
+                    "heatmap": entry.get("heatmap"),
+                    "heatmap_path": _safe_text(
+                        entry.get("heatmap_path"), "unavailable"
+                    ),
+                    "viewport_id": _safe_identifier(
+                        group.get("viewport_id"), "unavailable"
+                    ),
+                    "provider_id": _safe_identifier(
+                        entry.get("provider_id"), "unavailable"
+                    ),
+                    "execution_provider": _safe_identifier(
+                        entry.get("execution_provider"), "unavailable"
+                    ),
+                    "cache_state": _safe_identifier(
+                        group.get("cache_state"), "unavailable"
+                    ),
+                    "inference_duration_ms": _number(
+                        entry.get("inference_duration_ms"), 0
+                    ),
+                    "ranked_elements": _list_of_mappings(
+                        entry.get("ranked_elements")
+                    )[:12],
+                }
+            )
+    return heatmaps
+
+
+def _comparison_prominence(run: dict[str, Any]) -> list[dict[str, Any]]:
+    snapshots = {
+        snapshot["id"]: snapshot
+        for snapshot in _list_of_mappings(run.get("snapshots"))
+        if snapshot.get("id")
+    }
+    records: list[dict[str, Any]] = []
+    for record in _list_of_mappings(run.get("prominence")):
+        snapshot = snapshots.get(_text(record.get("viewport_id")), {})
+        elements = {
+            item["id"]: item
+            for item in _list_of_mappings(snapshot.get("elements"))
+            if item.get("id")
+        }
+        rankings: list[dict[str, Any]] = []
+        scores = sorted(
+            _list_of_mappings(record.get("scores")),
+            key=lambda item: _number(
+                item.get("raw_score", item.get("score")), 0
+            ),
+            reverse=True,
+        )
+        for rank, score in enumerate(scores[:12], start=1):
+            element_id = _safe_identifier(score.get("element_id"), "unavailable")
+            element = elements.get(element_id, {})
+            rankings.append(
+                {
+                    "rank": rank,
+                    "element_id": element_id,
+                    "label": _safe_text(
+                        element.get("label"), "Unlabelled element"
+                    ),
+                    "role": _safe_text(element.get("role"), "other"),
+                    "score": _number(
+                        score.get("raw_score", score.get("score")), 0
+                    ),
+                    "normalized_probability": _number(
+                        score.get("normalized_probability"), 0
+                    ),
+                }
+            )
+        records.append(
+            {
+                "sequence": int(_number(record.get("sequence"), 0)),
+                "viewport_id": _safe_identifier(
+                    record.get("viewport_id"), "unavailable"
+                ),
+                "rankings": rankings,
+            }
+        )
+    return records
+
+
+def _comparison_action_path(run: dict[str, Any]) -> list[dict[str, Any]]:
+    path: list[dict[str, Any]] = []
+    for action_record in _list_of_mappings(run.get("actions")):
+        action = _mapping(action_record.get("action"))
+        element_id = _optional_text(action.get("element_id"))
+        element_label = "No element target"
+        if element_id:
+            snapshot = _snapshot_before_sequence(
+                run, int(_number(action_record.get("sequence"), 0))
+            )
+            element = next(
+                (
+                    item
+                    for item in _list_of_mappings(snapshot.get("elements"))
+                    if item.get("id") == element_id
+                ),
+                {},
+            )
+            element_label = _safe_text(
+                element.get("label"), "Unlabelled element"
+            )
+        path.append(
+            {
+                "sequence": int(_number(action_record.get("sequence"), 0)),
+                "kind": _safe_text(action.get("kind"), "action"),
+                "element_id": element_id,
+                "element_label": element_label,
+                "succeeded": action_record.get("succeeded"),
+                "error": _optional_text(action_record.get("error")),
+            }
+        )
+    return path
+
+
+def _snapshot_before_sequence(run: dict[str, Any], sequence: int) -> dict[str, Any]:
+    viewport_id = ""
+    for event in _list_of_mappings(run.get("timeline")):
+        if int(_number(event.get("sequence"), 0)) > sequence:
+            break
+        if _text(event.get("kind")) == "viewport-captured":
+            viewport_id = _text(event.get("viewport_id"))
+    return next(
+        (
+            snapshot
+            for snapshot in _list_of_mappings(run.get("snapshots"))
+            if snapshot.get("id") == viewport_id
+        ),
+        {},
+    )
+
+
+def _report_provider_comparisons(
+    comparisons: object,
+    run_ids: set[str],
+    run_links: dict[str, str] | None,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for comparison in _list_of_mappings(comparisons):
+        providers: list[dict[str, Any]] = []
+        for provider in _list_of_mappings(comparison.get("providers")):
+            run_id = _text(provider.get("run_id"))
+            if run_id not in run_ids:
+                continue
+            copied = dict(provider)
+            if run_links is not None:
+                copied["run_page"] = run_links.get(run_id, "")
+            providers.append(copied)
+        if len({item.get("provider_id") for item in providers}) < 2:
+            continue
+        result.append({**comparison, "providers": providers})
+    return result
 
 
 def _aggregate_reproducibility_label(runs: list[dict[str, Any]]) -> str:

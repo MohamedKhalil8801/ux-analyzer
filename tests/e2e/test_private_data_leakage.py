@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -205,6 +205,49 @@ async def test_model_requests_and_persona_observations_are_leak_free() -> None:
         "cognitive-model",
     ]
     assert client.requests[-1]["schema"] == CognitiveModelResponse.__name__
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_cognitive_payload_excludes_aria_only_labels_but_keeps_visible_text() -> None:
+    snapshot = _snapshot()
+    snapshot = replace(
+        snapshot,
+        elements=(
+            replace(
+                snapshot.elements[0],
+                label="Switch dark theme",
+                rendered_text="",
+            ),
+            replace(
+                snapshot.elements[1],
+                label="Play interface sound",
+                rendered_text="",
+            ),
+            ElementSnapshot(
+                id="visible",
+                role="button",
+                label="Settings",
+                rendered_text="Settings",
+                bounds=BoundingBox(x=260, y=10, width=100, height=30),
+                visibility_fraction=1,
+                actionable=True,
+            ),
+        ),
+    )
+    observation = ProgressiveObservation.from_snapshot(
+        snapshot, newly_revealed_ids=("target", "other", "visible")
+    )
+    client = _RecordingModelClient()
+
+    await StructuredCognitiveAgent(client, model="cognitive-model").decide(
+        "Find settings", observation
+    )
+
+    cognitive_payload = client.requests[-1]["messages"][-1]["content"]
+    assert "Switch dark theme" not in cognitive_payload
+    assert "Play interface sound" not in cognitive_payload
+    assert "Settings" in cognitive_payload
 
 
 def test_leakage_failure_names_event_and_redacted_field_path() -> None:

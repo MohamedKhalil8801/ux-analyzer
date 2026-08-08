@@ -133,7 +133,7 @@ and `UXA_FOVEACAST_MODEL_7S` to existing files before running the marked test.
 | --- | --- | --- | --- |
 | `coarse-scent` | `scent-coarse-v1.txt`, `scent-coarse-v1` | Goal plus visible element ID, role, label, region label, actionability. Glance-level only. | Scores in `[0, 1]` for listed elements. |
 | `full-scent` | `scent-full-v1.txt`, `scent-full-v1` | Goal plus same visible meaning and disabled state for already noticed elements in current viewport. | Scores in `[0, 1]` for noticed elements only. |
-| `cognitive` | `cognitive-v1.txt`, `cognitive-v1` | Goal plus newly revealed and remembered persona-visible elements and optional region label. | One typed action: inspect, interact, scroll, wait, back, or abandon. |
+| `cognitive` | `cognitive-v2.txt`, `cognitive-v1` | Goal plus newly revealed and remembered sighted-visible elements and optional rendered region label. | One typed action: inspect, interact, type-fixture, scroll, wait, back, complete, or abandon. |
 
 Roles remain separate even when endpoint and model IDs match. Each has its own
 prompt version, schema version, `ModelRole`, manifest, model call record, retry
@@ -152,10 +152,23 @@ IDs, execution references, internal verifier state, numeric prominence scores,
 or numeric scent scores. The cognitive role also does not receive bounds or
 visibility fractions. It chooses only IDs present in its supplied observation.
 
-The cognitive model cannot decide official success. It can propose an action and
-reason string. Application validation enforces current viewport, noticed and
-remembered target, actionability, disabled state, budgets, and fixture-key
-resolution before execution.
+Sighted-mode element labels use pixel-visible rendered text only. CSS-clipped,
+offscreen, transparent, zero-font-size, and screen-reader-only text is excluded.
+For input, select, and textarea controls, associated `label` text is included
+only when that label is visibly painted in the viewport. Accessibility names
+remain private semantic facts and are not substituted into cognitive labels.
+Model-facing region labels use a visible heading or a generic rendered kind such
+as `Navigation`; aria-only region names stay private.
+
+The cognitive model cannot decide official success. For visible-result tasks it
+must explicitly propose `complete` after observing enough visible evidence.
+Only that action invokes independent verification; ordinary successful actions
+and terminal verification cannot promote the outcome. A failed completion check
+is recorded and the bounded run continues or ends non-successfully. Application
+validation enforces current viewport, noticed and remembered targets,
+actionability, disabled state, budgets, and fixture-key resolution before
+execution. `complete` has no element ID and consumes one step without a browser
+interaction. Fixture-state tasks retain automatic after-action verification.
 
 Typed input action text is a scenario fixture key, not a secret invented by the
 model. `action_validation` replaces the key with the scenario-configured value
@@ -197,6 +210,16 @@ errors, and invalid structured output. Safety rejection and authentication
 failure are not retried. Exhaustion raises model failure and leaves a sanitized
 record with role, model, prompt digest, schema version, attempts, latency, token
 usage, request, response, and retry events.
+
+HTTP rate-limit retries honor the provider's `Retry-After` header. Model calls
+share a concurrency limiter controlled by `UXA_LLM_MAX_CONCURRENT_CALLS`
+(default `2`); experiment `--workers` controls run concurrency, not unrestricted
+model request concurrency.
+
+In Codex mode, role-specific reasoning settings are forwarded as
+`codex exec -c model_reasoning_effort=<value>`. This overrides the user's Codex
+profile for each structured call, so `UXA_LLM_SCENT_REASONING_EFFORT` and
+`UXA_LLM_COGNITIVE_REASONING_EFFORT` reflect actual execution.
 
 Request/response records pass through recursive sanitization. It removes known
 secret keys, bearer values, API key, and configured exact fixture values. Logs

@@ -47,6 +47,7 @@ class ExtractionResult:
     """Snapshot plus private measurement diagnostics from one capture."""
 
     snapshot: ViewportSnapshot
+    screenshot: bytes
     diagnostics: ExtractionDiagnostics
 
 
@@ -110,6 +111,7 @@ async def capture_with_diagnostics(
                     id=element_id,
                     role=_domain_role(raw_element.role, raw_element.tag),
                     label=raw_element.label,
+                    rendered_text=raw_element.rendered_text,
                     bounds=bounds,
                     visibility_fraction=effective_fraction,
                     actionable=raw_element.actionable,
@@ -149,6 +151,7 @@ async def capture_with_diagnostics(
     )
     return ExtractionResult(
         snapshot=snapshot,
+        screenshot=captured_screenshot,
         diagnostics=ExtractionDiagnostics(
             local_contrast=contrast,
             occlusion_fraction=occlusion,
@@ -208,7 +211,20 @@ def _lineage_ids(
 def _domain_role(role: str, tag: str) -> ElementRole:
     if role in {item.value for item in ElementRole}:
         return ElementRole(role)
-    if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "label", "p"}:
+    if tag in {
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "label",
+        "p",
+        "li",
+        "dt",
+        "dd",
+        "tr",
+    }:
         return ElementRole.TEXT
     return ElementRole.OTHER
 
@@ -237,6 +253,9 @@ def _region_fact(payload: object) -> RawRegionFact:
         ordinal=_positive_or_zero_int(item.get("ordinal"), "region ordinal"),
         kind=_required_string(item.get("kind"), "region kind"),
         label=_required_string(item.get("label"), "region label"),
+        rendered_label=_required_string(
+            item.get("renderedLabel"), "rendered region label"
+        ),
         bounds=RawRect.from_payload(item.get("bounds")),
         ancestor_ordinals=tuple(
             _positive_or_zero_int(value, "region ancestor ordinal")
@@ -254,6 +273,7 @@ def _element_fact(payload: object) -> RawElementFact:
         tag=_required_string(item.get("tag"), "element tag"),
         role=_required_string(item.get("role"), "element role"),
         label=_required_string(item.get("label"), "element label"),
+        rendered_text=_rendered_text(item.get("renderedText")),
         hidden_label=_optional_string(item.get("hiddenLabel")),
         bounds=bounds,
         visible_bounds=(
@@ -312,6 +332,12 @@ def _list(value: object) -> list[object]:
 def _required_string(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be non-empty text")
+    return " ".join(value.split())
+
+
+def _rendered_text(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("rendered element text must be text")
     return " ".join(value.split())
 
 
@@ -375,6 +401,50 @@ EVALUATION_PAYLOAD = r"""
       if (Number.parseFloat(style.opacity) === 0) return false;
     }
     return true;
+  };
+  const zeroAlpha = (value) => {
+    const normalized = clean(value).toLowerCase();
+    if (normalized === 'transparent') return true;
+    const rgba = normalized.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\)$/);
+    if (rgba) return Number.parseFloat(rgba[1]) === 0;
+    const hsla = normalized.match(/^hsla\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\)$/);
+    return hsla ? Number.parseFloat(hsla[1]) === 0 : false;
+  };
+  const fullyClippedInset = (value) => {
+    const normalized = clean(value).toLowerCase().replace(/\s+/g, '');
+    const match = normalized.match(/^inset\(([^)]+)\)$/);
+    if (!match) return false;
+    const values = [...match[1].matchAll(/([0-9.]+)%/g)].map((item) => Number.parseFloat(item[1]));
+    if (!values.length) return false;
+    const expanded = values.length === 1
+      ? [values[0], values[0], values[0], values[0]]
+      : values.length === 2
+        ? [values[0], values[1], values[0], values[1]]
+        : values.length === 3
+          ? [values[0], values[1], values[2], values[1]]
+          : values.slice(0, 4);
+    return expanded[0] + expanded[2] >= 100 || expanded[1] + expanded[3] >= 100;
+  };
+  const hiddenTextStyle = (node) => {
+    for (let ancestor = node; ancestor instanceof Element; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      if (ancestor.classList.contains('sr-only') || ancestor.classList.contains('visually-hidden')) return true;
+      const inlineStyle = clean(ancestor.getAttribute('style')).toLowerCase();
+      if (inlineStyle.includes('font-size:0') || inlineStyle.includes('color:transparent')) return true;
+      if (inlineStyle.includes('width:1px') && inlineStyle.includes('height:1px') && inlineStyle.includes('overflow:hidden')) return true;
+      if (Number.parseFloat(style.fontSize) <= 0) return true;
+      if (zeroAlpha(style.color) || zeroAlpha(style.webkitTextFillColor)) return true;
+      const clip = clean(style.clip).replace(/\s+/g, ' ');
+      const clipValues = clip.match(/-?[0-9.]+px/g) || [];
+      if (clip.startsWith('rect(') && clipValues.length === 4 && clipValues.every((value) => Number.parseFloat(value) === 0)) return true;
+      if (fullyClippedInset(style.clipPath)) return true;
+      const bounds = ancestor.getBoundingClientRect();
+      const clips = ['hidden', 'clip'].includes(style.overflow)
+        || ['hidden', 'clip'].includes(style.overflowX)
+        || ['hidden', 'clip'].includes(style.overflowY);
+      if (clips && (bounds.width <= 1 || bounds.height <= 1)) return true;
+    }
+    return false;
   };
   const visibleGeometry = (node) => {
     const bounds = node.getBoundingClientRect();
@@ -441,8 +511,52 @@ EVALUATION_PAYLOAD = r"""
     }
     return path.join(' > ') || 'body';
   };
+  const textRectIsSightedVisible = (textNode, rect) => {
+    let visible = intersect(
+      {x: rect.left, y: rect.top, width: rect.width, height: rect.height},
+      viewportRect,
+    );
+    for (let ancestor = textNode.parentElement; ancestor instanceof Element && visible; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      const clipsX = ['hidden', 'clip', 'scroll', 'auto'].includes(style.overflowX);
+      const clipsY = ['hidden', 'clip', 'scroll', 'auto'].includes(style.overflowY);
+      if (clipsX || clipsY) {
+        const bounds = ancestor.getBoundingClientRect();
+        visible = intersect(visible, {
+          x: clipsX ? bounds.x : -1e9,
+          y: clipsY ? bounds.y : -1e9,
+          width: clipsX ? bounds.width : 2e9,
+          height: clipsY ? bounds.height : 2e9,
+        });
+      }
+    }
+    if (!visible || area(visible) <= 0) return false;
+    const parent = textNode.parentElement;
+    if (!(parent instanceof Element)) return false;
+    const centerX = rect.x + rect.width / 2;
+    const centerY = rect.y + rect.height / 2;
+    return document.elementsFromPoint(centerX, centerY).some((candidate) => (
+      candidate === parent || parent.contains(candidate)
+    ));
+  };
   const visibleText = (node) => {
-    const text = clean(node.innerText);
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const pieces = [];
+    let textNode = walker.nextNode();
+    while (textNode) {
+      const parent = textNode.parentElement;
+      if (parent instanceof Element && styleVisible(parent) && !hiddenTextStyle(parent)) {
+        const range = document.createRange();
+        range.selectNodeContents(textNode);
+        const intersectsViewport = Array.from(range.getClientRects()).some((rect) => (
+          rect.width > 0 && rect.height > 0 && textRectIsSightedVisible(textNode, rect)
+        ));
+        range.detach();
+        if (intersectsViewport) pieces.push(textNode.textContent || '');
+      }
+      textNode = walker.nextNode();
+    }
+    const text = clean(pieces.join(' '));
     return /[\p{L}\p{N}]/u.test(text) ? text : '';
   };
   const referencedText = (node) => {
@@ -451,7 +565,7 @@ EVALUATION_PAYLOAD = r"""
   };
   const associatedLabel = (node) => {
     if (!(node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement)) return '';
-    return clean(Array.from(node.labels || []).map((label) => label.innerText).join(' '));
+    return clean(Array.from(node.labels || []).map((label) => visibleText(label)).join(' '));
   };
   const semanticRole = (node) => {
     const explicit = clean(node.getAttribute('role')).toLowerCase();
@@ -461,7 +575,7 @@ EVALUATION_PAYLOAD = r"""
     if (tag === 'a' && node.hasAttribute('href')) return 'link';
     if (tag === 'input' && ['checkbox', 'radio'].includes(node.type)) return 'checkbox';
     if (['input', 'select', 'textarea'].includes(tag)) return 'input';
-    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label'].includes(tag)) return 'text';
+    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label', 'p', 'li', 'dt', 'dd', 'tr'].includes(tag)) return 'text';
     if (node.getAttribute('role') === 'status' || node.getAttribute('role') === 'alert') return 'text';
     return 'other';
   };
@@ -484,10 +598,37 @@ EVALUATION_PAYLOAD = r"""
     const aria = clean(node.getAttribute('aria-label'));
     const labelled = referencedText(node);
     const heading = clean(Array.from(node.querySelectorAll('h1,h2,h3,h4,h5,h6')).map((item) => item.innerText).join(' '));
+    const renderedHeading = clean(Array.from(node.querySelectorAll('h1,h2,h3,h4,h5,h6')).filter((item) => {
+      const bounds = item.getBoundingClientRect();
+      return bounds.bottom > 0 && bounds.top < viewport.height && visibleGeometry(item).visibleBounds;
+    }).map((item) => visibleText(item)).join(' '));
     const defaults = {header: 'Header', nav: 'Navigation', main: 'Main', aside: 'Sidebar', footer: 'Footer', section: 'Section', article: 'Section', form: 'Form', ul: 'List', ol: 'List', dialog: 'Dialog'};
-    return aria || labelled || heading || defaults[tag] || 'Region';
+    const role = clean(node.getAttribute('role')).toLowerCase();
+    const generic = defaults[tag] || defaults[role] || 'Region';
+    return {semantic: aria || labelled || heading || generic, rendered: renderedHeading || generic};
   };
   const allNodes = Array.from(document.querySelectorAll('*'));
+  const isTextGroup = (node) => {
+    const tag = node.tagName.toLowerCase();
+    const role = clean(node.getAttribute('role')).toLowerCase();
+    const text = visibleText(node);
+    if (!text || !visibleGeometry(node).visibleBounds) return false;
+    if (node.querySelector('a[href],button,input,select,textarea,summary,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="checkbox"]')) return false;
+    if (['li', 'p', 'tr', 'dt', 'dd'].includes(tag) || role === 'listitem') return true;
+    const style = getComputedStyle(node);
+    const children = Array.from(node.children);
+    return ['flex', 'inline-flex', 'grid', 'inline-grid'].includes(style.display)
+      && children.length >= 2
+      && children.length <= 4
+      && children.every((child) => ['span', 'strong', 'em', 'small', 'b', 'i'].includes(child.tagName.toLowerCase()));
+  };
+  const textGroupNodes = new Set(allNodes.filter(isTextGroup));
+  const isNestedInTextGroup = (node) => {
+    for (let ancestor = node.parentElement; ancestor instanceof Element; ancestor = ancestor.parentElement) {
+      if (textGroupNodes.has(ancestor)) return true;
+    }
+    return false;
+  };
   const regions = [];
   const regionOrdinalByNode = new Map();
   for (const node of allNodes) {
@@ -501,18 +642,22 @@ EVALUATION_PAYLOAD = r"""
       const ancestorOrdinal = regionOrdinalByNode.get(ancestor);
       if (ancestorOrdinal !== undefined) ancestors.push(ancestorOrdinal);
     }
-    regions.push({ordinal, kind: node.tagName.toLowerCase(), label: regionLabel(node), bounds: geometry.bounds, ancestorOrdinals: ancestors});
+    const labels = regionLabel(node);
+    regions.push({ordinal, kind: node.tagName.toLowerCase(), label: labels.semantic, renderedLabel: labels.rendered, bounds: geometry.bounds, ancestorOrdinals: ancestors});
   }
   const elements = [];
   for (const node of allNodes) {
     if (!styleVisible(node)) continue;
+    if (isNestedInTextGroup(node)) continue;
     const role = semanticRole(node);
     const geometry = visibleGeometry(node);
     if (!geometry.visibleBounds) continue;
     const visible = visibleText(node);
-    if (!isCandidate(node, role, visible)) continue;
+    if (!textGroupNodes.has(node) && !isCandidate(node, role, visible)) continue;
+    const labelText = associatedLabel(node);
+    const rendered = clean([visible, labelText].filter(Boolean).join(' '));
     const accessible = clean(node.getAttribute('aria-label'));
-    const label = visible || associatedLabel(node) || accessible || clean(node.getAttribute('placeholder')) || role || 'control';
+    const label = rendered || accessible || clean(node.getAttribute('placeholder')) || role || 'control';
     const regionOrdinals = [];
     for (let ancestor = node; ancestor instanceof Element; ancestor = ancestor.parentElement) {
       const regionOrdinal = regionOrdinalByNode.get(ancestor);
@@ -526,6 +671,7 @@ EVALUATION_PAYLOAD = r"""
       tag,
       role,
       label,
+      renderedText: rendered,
       hiddenLabel: clean(node.getAttribute('data-hidden-label')) || null,
       bounds: geometry.bounds,
       visibleBounds: geometry.visibleBounds,

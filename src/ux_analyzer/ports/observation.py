@@ -51,6 +51,11 @@ class ObservationSessionConfig:
     viewport: ViewportSize
     trace_path: Path
     artifact_redaction: RedactionPolicy = RedactionPolicy()
+    navigation_settle_ms: int = 0
+    action_settle_ms: int = 0
+    navigation_origins: tuple[str, ...] = ()
+    resource_origins: tuple[str, ...] = ()
+    fixture_only: bool = True
 
     def __post_init__(self) -> None:
         if not self.session_id:
@@ -61,8 +66,16 @@ class ObservationSessionConfig:
         if isinstance(account_id, str):
             account_id = TestAccountId(account_id)
         object.__setattr__(self, "test_account_id", account_id)
+        object.__setattr__(self, "navigation_origins", tuple(self.navigation_origins))
+        object.__setattr__(self, "resource_origins", tuple(self.resource_origins))
         if not self.trace_path.name:
             raise ValueError("trace path must contain a filename")
+        for name, milliseconds in (
+            ("navigation settle", self.navigation_settle_ms),
+            ("action settle", self.action_settle_ms),
+        ):
+            if isinstance(milliseconds, bool) or milliseconds < 0:
+                raise ValueError(f"{name} duration must not be negative")
 
 
 @dataclass(slots=True)

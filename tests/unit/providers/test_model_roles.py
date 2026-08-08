@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from ux_analyzer.ports.models import (
 from ux_analyzer.providers.cognitive import (
     CognitiveModelResponse,
     StructuredCognitiveAgent,
+    _model_element_aliases,
 )
 from ux_analyzer.providers.scent import (
     CoarseScentResponse,
@@ -110,6 +112,17 @@ def test_cognitive_prompt_requires_grounded_navigation() -> None:
 
     assert "Do not infer unseen destinations" in prompt
     assert "unrelated navigation" in prompt
+    assert "state_changed" in prompt
+    assert "complete" in prompt
+    assert "report-result" not in prompt
+    assert "expected answer" not in prompt.lower()
+    assert "current and remembered visible evidence" in prompt.lower()
+    assert "do not inspect already-visible text" in prompt.lower()
+    assert (
+        '{"action":"complete","element_id":null,"fixture_key":null,'
+        '"direction":null,"reason":"Current and remembered visible evidence covers the goal."}'
+        in prompt
+    )
 
 
 def _noticed_state(snapshot: ViewportSnapshot) -> AttentionState:
@@ -291,6 +304,27 @@ async def test_cognitive_inspect_without_element_is_classified_model_failure() -
 
 
 @pytest.mark.asyncio
+async def test_cognitive_complete_action_has_no_element_id() -> None:
+    class CompleteClient(RecordingClient):
+        async def complete(self, schema, messages, model, role):
+            del messages, model, role
+            return schema.model_validate(
+                {"action": "complete", "reason": "I saw enough visible evidence."}
+            )
+
+    observation = ProgressiveObservation.from_snapshot(
+        _snapshot(), newly_revealed_ids=("target",)
+    )
+
+    decision = await StructuredCognitiveAgent(
+        CompleteClient(), model="cognitive-model"
+    ).decide("Find invite", observation)
+
+    assert decision.action.kind == "complete"
+    assert not hasattr(decision.action, "element_id")
+
+
+@pytest.mark.asyncio
 async def test_cognitive_unknown_element_is_classified_model_failure() -> None:
     class UnknownElementClient(RecordingClient):
         async def complete(self, schema, messages, model, role):
@@ -400,6 +434,86 @@ async def test_cognitive_payload_includes_safe_progress_and_persona_context() ->
         "scent_score",
     ):
         assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_cognitive_uses_short_aliases_for_long_element_ids() -> None:
+    long_id = "run-" + "a" * 80
+
+    class AliasEchoClient(RecordingClient):
+        async def complete(
+            self,
+            schema: type[object],
+            messages: object,
+            model: str,
+            role: ModelRole,
+        ) -> object:
+            user_message = list(messages)[-1]
+            content = user_message.content
+            self.calls.append((schema, model, role, content))
+            if schema is not CognitiveModelResponse:
+                raise AssertionError(f"unexpected schema: {schema!r}")
+            payload = json.loads(content)
+            alias = payload["available_controls"][0]["element_id"]
+            return schema.model_validate(
+                {
+                    "action": "interact",
+                    "element_id": alias,
+                    "reason": "Visible control matches goal.",
+                }
+            )
+
+    base_snapshot = _snapshot()
+    snapshot = replace(
+        base_snapshot,
+        elements=tuple(
+            replace(element, id=long_id) if element.id == "target" else element
+            for element in base_snapshot.elements
+        ),
+    )
+    observation = ProgressiveObservation.from_snapshot(
+        snapshot, newly_revealed_ids=(long_id,)
+    )
+    client = AliasEchoClient()
+
+    decision = await StructuredCognitiveAgent(
+        client, model="cognitive-model"
+    ).decide("Find invite", observation)
+
+    payload = json.loads(client.calls[-1][3])
+    assert payload["available_controls"][0]["element_id"] == "e0"
+    assert decision.action.element_id == long_id
+
+
+def test_cognitive_aliases_avoid_all_visible_real_ids_and_each_other() -> None:
+    base_snapshot = _snapshot()
+    long_ids = ("long-" + "a" * 80, "long-" + "b" * 80)
+    snapshot = replace(
+        base_snapshot,
+        elements=(
+            replace(base_snapshot.elements[0], id=long_ids[0]),
+            replace(base_snapshot.elements[1], id="e0"),
+            ElementSnapshot(
+                id=long_ids[1],
+                role="button",
+                label="Second long control",
+                bounds=BoundingBox(x=40, y=2, width=10, height=10),
+                visibility_fraction=1.0,
+                actionable=True,
+            ),
+        ),
+    )
+    observation = ProgressiveObservation.from_snapshot(
+        snapshot, newly_revealed_ids=long_ids + ("e0",)
+    )
+
+    aliases = _model_element_aliases(observation.newly_revealed_elements)
+
+    assert len(aliases) == 2
+    assert set(aliases.values()).isdisjoint(
+        {element.id for element in observation.newly_revealed_elements}
+    )
+    assert len(aliases.values()) == len(set(aliases.values()))
 
 
 @pytest.mark.asyncio

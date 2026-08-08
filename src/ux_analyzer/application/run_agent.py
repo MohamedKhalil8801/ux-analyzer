@@ -43,10 +43,13 @@ from ux_analyzer.application.state_updates import (
 )
 from ux_analyzer.domain.attention import (
     Abandon,
+    Complete,
     FullScent,
     InteractWithElement,
     PersonaObservation,
+    Wait,
 )
+from ux_analyzer.domain.benchmark import VisibleResultVerifierSpec
 from ux_analyzer.domain.findings import Finding
 from ux_analyzer.domain.interface import (
     PrivateExecutionReference,
@@ -108,6 +111,7 @@ from ux_analyzer.ports.observation import (
     ObservationSessionConfig,
     SafetyBlocked,
     SessionHandle,
+    WaitAction,
 )
 from ux_analyzer.ports.verification import VerificationProvider
 
@@ -116,6 +120,17 @@ if TYPE_CHECKING:
 
 _ATTENTION_EXHAUSTED_MESSAGE = "no unobserved visible elements remain"
 _ATTENTION_EXHAUSTED_REASON = "all visible elements examined without progress"
+_HUMAN_BUDGET_TERMINAL_REASONS = frozenset(
+    {
+        "attention budget exhausted",
+        "step budget exhausted",
+        "observation budget exhausted",
+        "interaction budget exhausted",
+        "action budget exhausted",
+        "human attention budget exhausted",
+        "human action budget exhausted",
+    }
+)
 
 
 class ObservationSelection(Protocol):
@@ -596,6 +611,7 @@ class _RunContext:
     last_action_fingerprint: tuple[object, ...] | None = None
     consecutive_action_count: int = 0
     no_progress_count: int = 0
+    deferred_wait_pending: bool = False
     transition_history: list[TransitionProgressSignature] = field(
         default_factory=lambda: list[TransitionProgressSignature]()
     )
@@ -663,6 +679,17 @@ class RunAgent:
 
         writer: RunBundleWriter | None = None
         initial_state = RunState.initial(spec)
+        effective_memory_capacity = _effective_memory_capacity(
+            spec, self.memory_policy
+        )
+        if initial_state.attention.memory_capacity != effective_memory_capacity:
+            initial_state = replace(
+                initial_state,
+                attention=replace(
+                    initial_state.attention,
+                    memory_capacity=effective_memory_capacity,
+                ),
+            )
         profiler = RunProfiler(self.profile_path)
         set_profiler = getattr(self.observation_provider, "set_profiler", None)
         if callable(set_profiler):
@@ -729,8 +756,8 @@ class RunAgent:
                     execution = await self._verify_terminal(
                         execution,
                         writer,
-                        context.session,
-                        context.state_event_ids,
+                        context,
+                        artifact_checksums,
                     )
             else:
                 remaining = deadline - asyncio.get_running_loop().time()
@@ -745,8 +772,8 @@ class RunAgent:
                                 self._verify_terminal(
                                     execution,
                                     writer,
-                                    context.session,
-                                    context.state_event_ids,
+                                    context,
+                                    artifact_checksums,
                                 ),
                                 timeout=remaining,
                             )
@@ -839,6 +866,24 @@ class RunAgent:
             snapshot = context.state.current_snapshot
             if captured is None or snapshot is None:
                 raise RuntimeError("run has no current viewport capture")
+            if context.deferred_wait_pending:
+                context.deferred_wait_pending = False
+                if not _has_unobserved_visible_element(
+                    context.application_state, snapshot
+                ):
+                    writer.append_event(
+                        {
+                            "kind": "attention-exhausted",
+                            "reason": _ATTENTION_EXHAUSTED_REASON,
+                        }
+                    )
+                    return _Execution(
+                        state=context.state,
+                        outcome=AgentAbandoned(reason=_ATTENTION_EXHAUSTED_REASON),
+                        verification=None,
+                        agent_claimed_success=claimed_success,
+                        terminal_reason=_ATTENTION_EXHAUSTED_REASON,
+                    )
 
             with context.profiler.measure("prominence.score"):
                 scores, prominence_batch, artifact_references = self._score_prominence(
@@ -936,8 +981,8 @@ class RunAgent:
                         rng,
                         recovery_level=context.no_progress_count,
                     )
-            except ValueError as error:
-                if str(error) != _ATTENTION_EXHAUSTED_MESSAGE:
+            except (ValueError, RuntimeError) as error:
+                if not _is_attention_exhausted_error(error):
                     raise
                 writer.append_event(
                     {
@@ -1060,7 +1105,7 @@ class RunAgent:
                             )
                         ),
                         fixture_input_complete=bool(context.completed_fixture_inputs),
-                        working_memory_capacity=spec.persona.working_memory_capacity,
+                        working_memory_capacity=context.application_state.attention.memory_capacity,
                         confidence=context.application_state.confidence,
                         frustration=context.application_state.frustration,
                         abandonment_threshold=spec.persona.abandonment_threshold,
@@ -1155,6 +1200,7 @@ class RunAgent:
             if claim:
                 writer.append_event({"kind": "agent-claim", "claimed_success": True})
 
+            deferred_abandonment = False
             try:
                 with context.profiler.measure("action.validate"):
                     validated = validate_action(
@@ -1216,13 +1262,87 @@ class RunAgent:
                 context.state_event_ids,
             )
             if isinstance(validated.domain_action, Abandon):
-                return _Execution(
-                    state=context.state,
-                    outcome=AgentAbandoned(reason=validated.domain_action.reason),
-                    verification=None,
-                    agent_claimed_success=claimed_success,
-                    terminal_reason=validated.domain_action.reason,
+                if _accept_abandonment(context, spec):
+                    return _Execution(
+                        state=context.state,
+                        outcome=AgentAbandoned(reason=validated.domain_action.reason),
+                        verification=None,
+                        agent_claimed_success=claimed_success,
+                        terminal_reason=validated.domain_action.reason,
+                    )
+                writer.append_event(
+                    {
+                        "kind": "abandonment-deferred",
+                        "reason": validated.domain_action.reason,
+                        "recovery_level": context.no_progress_count + 1,
+                    }
                 )
+                validated = ValidatedAction(
+                    decision=decision,
+                    domain_action=Wait(),
+                    platform_action=WaitAction(milliseconds=0),
+                )
+                action_fingerprint = _action_fingerprint(validated, snapshot)
+                deferred_abandonment = True
+                context.deferred_wait_pending = True
+                context.state = _record(
+                    context.state,
+                    ActionProposed(action=validated.domain_action),
+                    writer,
+                    context.state_event_ids,
+                )
+
+            if isinstance(validated.domain_action, Complete):
+                context.state = _record(
+                    context.state,
+                    ActionExecuted(
+                        action=validated.domain_action,
+                        viewport_id=snapshot.id,
+                        succeeded=True,
+                    ),
+                    writer,
+                    context.state_event_ids,
+                )
+                context.application_state = _require_application_state(
+                    apply_interaction_result(
+                        context.application_state,
+                        validated.domain_action,
+                        True,
+                        snapshot=snapshot,
+                        config=self.state_update_config,
+                        memory_policy=self.memory_policy,
+                    )
+                )
+                _sync_run_attention(context)
+                context.previous_action = _safe_action(validated)
+                context.previous_action_result = {
+                    "succeeded": True,
+                    "state_changed": False,
+                    "navigation_occurred": False,
+                    "meaningful_progress": False,
+                }
+                with context.profiler.measure("verification.run"):
+                    verification = await self._verify(
+                        context, writer, artifact_checksums
+                    )
+                context.state = verification[0]
+                if verification[1].verified:
+                    return _Execution(
+                        state=context.state,
+                        outcome=VerifiedSuccess(),
+                        verification=verification[1],
+                        agent_claimed_success=claimed_success,
+                        terminal_reason=None,
+                    )
+                if context.application_state.budgets.steps <= 0:
+                    return _Execution(
+                        state=context.state,
+                        outcome=BudgetExhausted(),
+                        verification=verification[1],
+                        agent_claimed_success=claimed_success,
+                        terminal_reason="attention budget exhausted",
+                    )
+                continue
 
             if validated.platform_action is None:
                 context.state = _record(
@@ -1330,7 +1450,26 @@ class RunAgent:
                 "meaningful_progress": meaningful_progress,
                 "error": result.error,
             }
-            if meaningful_progress:
+            if deferred_abandonment:
+                context.no_progress_count += 1
+                if context.last_action_fingerprint == action_fingerprint:
+                    context.consecutive_action_count += 1
+                else:
+                    context.last_action_fingerprint = action_fingerprint
+                    context.consecutive_action_count = 1
+                if (
+                    context.consecutive_action_count < 3
+                    and context.no_progress_count < 5
+                ):
+                    writer.append_event(
+                        {
+                            "kind": "no-progress-recovery",
+                            "count": context.no_progress_count,
+                            "action": validated.domain_action,
+                            "reason": "abandonment was deferred for bounded re-observation",
+                        }
+                    )
+            elif meaningful_progress:
                 context.no_progress_count = 0
                 context.last_action_fingerprint = None
                 context.consecutive_action_count = 0
@@ -1354,10 +1493,14 @@ class RunAgent:
                         }
                     )
 
-            if result.succeeded:
+            if (
+                result.succeeded
+                and not deferred_abandonment
+                and not _is_visible_result_verifier(spec)
+            ):
                 with context.profiler.measure("verification.run"):
                     verification = await self._verify(
-                        context.state, writer, session, context.state_event_ids
+                        context, writer, artifact_checksums
                     )
                 context.state = verification[0]
                 if verification[1].verified:
@@ -1433,13 +1576,18 @@ class RunAgent:
         context: _RunContext,
         writer: RunBundleWriter,
         artifact_checksums: list[ArtifactChecksum],
+        *,
+        capture: ObservationCapture | None = None,
+        snapshot: ViewportSnapshot | None = None,
     ) -> _CapturedViewport:
         session = context.session
         if session is None:
             raise RuntimeError("capture requires active session")
-        with context.profiler.measure("observation.capture.total"):
-            capture = await self.observation_provider.capture(session)
-        snapshot = self.snapshot_extractor(capture)
+        if capture is None:
+            with context.profiler.measure("observation.capture.total"):
+                capture = await self.observation_provider.capture(session)
+        if snapshot is None:
+            snapshot = self.snapshot_extractor(capture)
         previous_snapshot = context.state.current_snapshot
         screenshot = writer.write_artifact(f"{snapshot.id}.png", capture.screenshot)
         screenshot_checksum = _artifact_checksum(screenshot)
@@ -1462,17 +1610,27 @@ class RunAgent:
             or _stage_reset_action(context.previous_action)
         )
         context.current_viewport_identity = current_identity
-        context.state = _record(
-            context.state,
-            ViewportCaptured(
-                snapshot=snapshot,
-                viewport_width=capture.viewport.width,
-                viewport_height=capture.viewport.height,
-            ),
-            writer,
-            context.state_event_ids,
+        duplicate_viewport = any(
+            existing.id == snapshot.id for existing in context.state.snapshots
         )
-        source_event_id = context.state_event_ids[-1]
+        if not duplicate_viewport:
+            context.state = _record(
+                context.state,
+                ViewportCaptured(
+                    snapshot=snapshot,
+                    viewport_width=capture.viewport.width,
+                    viewport_height=capture.viewport.height,
+                ),
+                writer,
+                context.state_event_ids,
+            )
+            source_event_id = context.state_event_ids[-1]
+        else:
+            source_event_id = (
+                context.current_capture.source_event_id
+                if context.current_capture is not None
+                else context.state_event_ids[-1]
+            )
         captured = _CapturedViewport(
             capture=capture,
             snapshot=snapshot,
@@ -1693,32 +1851,84 @@ class RunAgent:
 
     async def _verify(
         self,
-        state: RunState,
+        context: _RunContext,
         writer: RunBundleWriter,
-        session: SessionHandle,
-        state_event_ids: list[str],
+        artifact_checksums: list[ArtifactChecksum],
     ) -> tuple[RunState, VerificationResult]:
+        session = context.session
+        if session is None:
+            raise RuntimeError("verification requires active session")
         result = await self.verifier.verify(session)
+        result = await self._persist_verification_capture(
+            context, writer, artifact_checksums, result
+        )
         return (
             _record(
-                state,
+                context.state,
                 VerificationRecorded(result=result),
                 writer,
-                state_event_ids,
+                context.state_event_ids,
             ),
             result,
+        )
+
+    async def _persist_verification_capture(
+        self,
+        context: _RunContext,
+        writer: RunBundleWriter,
+        artifact_checksums: list[ArtifactChecksum],
+        result: VerificationResult,
+    ) -> VerificationResult:
+        capture = getattr(self.verifier, "last_capture", None)
+        if not isinstance(capture, ObservationCapture):
+            return result
+        snapshot = getattr(self.verifier, "last_snapshot", None)
+        if not isinstance(snapshot, ViewportSnapshot):
+            snapshot = self.snapshot_extractor(capture)
+        persisted = await self._capture(
+            context,
+            writer,
+            artifact_checksums,
+            capture=capture,
+            snapshot=snapshot,
+        )
+        screenshot_path = persisted.snapshot.screenshot_artifact
+        if screenshot_path is None:
+            raise RuntimeError("verification capture lacks persisted screenshot")
+        screenshot_evidence_id = f"screenshot:{screenshot_path}"
+        if screenshot_evidence_id in result.evidence_ids:
+            return result
+        return replace(
+            result,
+            evidence_ids=(*result.evidence_ids, screenshot_evidence_id),
         )
 
     async def _verify_terminal(
         self,
         execution: _Execution,
         writer: RunBundleWriter,
-        session: SessionHandle | None,
-        state_event_ids: list[str],
+        context: _RunContext,
+        artifact_checksums: list[ArtifactChecksum],
     ) -> _Execution:
         if execution.verification is not None:
             return execution
 
+        if _is_visible_result_verifier(execution.state.spec):
+            result = execution.state.verification or VerificationResult(
+                verified=False,
+                details="independent verification unavailable",
+            )
+            state = execution.state
+            if state.verification is None:
+                state = _record(
+                    state,
+                    VerificationRecorded(result=result),
+                    writer,
+                    context.state_event_ids,
+                )
+            return replace(execution, state=state, verification=result)
+
+        session = context.session
         if session is None:
             result = VerificationResult(
                 verified=False,
@@ -1728,15 +1938,18 @@ class RunAgent:
                 execution.state,
                 VerificationRecorded(result=result),
                 writer,
-                state_event_ids,
+                context.state_event_ids,
             )
             return replace(execution, state=state, verification=result)
 
         try:
             result = await self.verifier.verify(session)
+            result = await self._persist_verification_capture(
+                context, writer, artifact_checksums, result
+            )
         except asyncio.CancelledError:
             raise
-        except BaseException as error:
+        except BaseException:
             result = VerificationResult(
                 verified=False,
                 details="independent verification failed",
@@ -1745,21 +1958,19 @@ class RunAgent:
                 execution.state,
                 VerificationRecorded(result=result),
                 writer,
-                state_event_ids,
+                context.state_event_ids,
             )
             return replace(
                 execution,
                 state=state,
-                outcome=_outcome_for_error(error),
-                terminal_reason=_safe_error_message(error),
                 verification=result,
             )
 
         state = _record(
-            execution.state,
+            context.state,
             VerificationRecorded(result=result),
             writer,
-            state_event_ids,
+            context.state_event_ids,
         )
         outcome = VerifiedSuccess() if result.verified else execution.outcome
         return replace(execution, state=state, outcome=outcome, verification=result)
@@ -2265,6 +2476,51 @@ def _require_application_state(state: object) -> ApplicationState:
     return state
 
 
+def _is_attention_exhausted_error(error: BaseException) -> bool:
+    message = str(error)
+    return message == _ATTENTION_EXHAUSTED_MESSAGE or message.startswith(
+        "no unobserved element:"
+    )
+
+
+def _effective_memory_capacity(
+    spec: RunSpec, memory_policy: MemoryPolicy | None
+) -> int:
+    persona_capacity = spec.persona.working_memory_capacity
+    if memory_policy is None:
+        return persona_capacity
+    return min(persona_capacity, memory_policy.config.working_capacity)
+
+
+def _has_unobserved_visible_element(
+    state: ApplicationState, snapshot: ViewportSnapshot
+) -> bool:
+    noticed_ids = state.attention.noticed_ids
+    return any(
+        element.visibility_fraction > 0 and element.id not in noticed_ids
+        for element in snapshot.elements
+    )
+
+
+def _is_visible_result_verifier(spec: RunSpec) -> bool:
+    return isinstance(spec.scenario.verifier, VisibleResultVerifierSpec)
+
+
+def _accept_abandonment(context: _RunContext, spec: RunSpec) -> bool:
+    """Accept model abandonment only after bounded search can no longer continue."""
+
+    application_state = context.application_state
+    attention = application_state.attention
+    return (
+        application_state.abandoned
+        or attention.frustration >= spec.persona.abandonment_threshold
+        or context.consecutive_action_count >= 3
+        or context.no_progress_count >= 5
+        or attention.budgets.steps <= 0
+        or attention.budgets.observations <= 0
+    )
+
+
 def _sync_run_attention(context: _RunContext) -> None:
     context.state = replace(
         context.state, attention=context.application_state.attention
@@ -2388,6 +2644,9 @@ def _safe_action(validated: ValidatedAction) -> dict[str, object]:
 
 
 def _agent_claim(decision: object) -> bool:
+    action = getattr(decision, "action", decision)
+    if getattr(action, "kind", None) == "complete":
+        return True
     return bool(
         getattr(
             decision,
@@ -2495,9 +2754,13 @@ def _ux_sample_validity(
     terminal_reason: str | None,
 ) -> tuple[bool, str | None]:
     kind = str(getattr(outcome, "kind", "internal-error"))
-    if kind in {"verified-success", "agent-abandoned", "budget-exhausted"}:
+    if kind in {"verified-success", "agent-abandoned"}:
         return True, None
     reason = terminal_reason or getattr(outcome, "reason", None) or "run unavailable"
+    if kind == "budget-exhausted":
+        normalized_reason = " ".join(reason.casefold().split())
+        if normalized_reason in _HUMAN_BUDGET_TERMINAL_REASONS:
+            return True, None
     return False, f"{kind}: {reason}"
 
 

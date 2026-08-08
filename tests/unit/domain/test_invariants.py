@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 from ux_analyzer.domain.attention import (
     AttentionAction,
     AttentionState,
+    Complete,
     FullScent,
     InspectElement,
     InteractWithElement,
     NoticeElements,
+    PersonaVisibleRegion,
     ProgressiveObservation,
 )
 from ux_analyzer.domain.benchmark import (
@@ -33,6 +35,7 @@ from ux_analyzer.domain.interface import (
     BoundingBox,
     ElementSnapshot,
     PrivateExecutionReference,
+    RegionSnapshot,
     ViewportSnapshot,
 )
 from ux_analyzer.domain.run import (
@@ -74,6 +77,25 @@ def element_snapshot(
         hidden_label="private label",
         destination_url="https://fixture.invalid/private",
     )
+
+
+def test_element_snapshot_preserves_legacy_positional_optional_order() -> None:
+    snapshot = ElementSnapshot(
+        "target",
+        "button",
+        "Visible label",
+        BoundingBox(x=10, y=20, width=120, height=40),
+        1.0,
+        True,
+        True,
+        "region-1",
+        "provider-1",
+    )
+
+    assert snapshot.disabled is True
+    assert snapshot.region_id == "region-1"
+    assert snapshot.provider_id == "provider-1"
+    assert snapshot.rendered_text is None
 
 
 def viewport_snapshot(
@@ -197,6 +219,27 @@ def test_private_execution_reference_is_not_serialized_to_agent() -> None:
     assert "destination_url" not in dumped
 
 
+def test_persona_projection_uses_rendered_text_without_aria_fallback() -> None:
+    aria_only = element_snapshot(noticed_label="Switch dark theme")
+    aria_only = replace(aria_only, rendered_text="")
+    synthetic = element_snapshot(noticed_label="Synthetic label")
+
+    assert viewport_snapshot(elements=(aria_only,)).persona_visible_elements()[0].label == ""
+    assert viewport_snapshot(elements=(synthetic,)).persona_visible_elements()[0].label == "Synthetic label"
+
+
+def test_persona_region_projection_uses_rendered_label_with_synthetic_fallback() -> None:
+    live_region = RegionSnapshot(
+        id="navigation",
+        label="Primary secret",
+        rendered_label="Navigation",
+    )
+    synthetic_region = RegionSnapshot(id="section", label="Synthetic section")
+
+    assert PersonaVisibleRegion.from_snapshot(live_region).label == "Navigation"
+    assert PersonaVisibleRegion.from_snapshot(synthetic_region).label == "Synthetic section"
+
+
 def test_runtime_state_is_frozen() -> None:
     snapshot = viewport_snapshot()
 
@@ -273,6 +316,44 @@ def test_observation_references_existing_elements_and_limits_new_batch() -> None
         ProgressiveObservation.from_snapshot(snapshot, newly_revealed_ids=("missing",))
 
 
+def test_distinct_contact_evidence_remains_retainable_in_bounded_memory() -> None:
+    snapshot = viewport_snapshot(
+        elements=(
+            replace(
+                element_snapshot("email"),
+                label="m.khalil.bus@gmail.com",
+                rendered_text="m.khalil.bus@gmail.com",
+            ),
+            replace(
+                element_snapshot("note"),
+                label="Open to remote frontend work",
+                rendered_text="Open to remote frontend work",
+            ),
+        )
+    )
+    state = AttentionState.initial(
+        budget=run_spec().scenario.budget,
+        confidence=0.5,
+        frustration=0.1,
+        memory_capacity=2,
+    )
+    state = state.after_observation(
+        ProgressiveObservation.from_snapshot(snapshot, newly_revealed_ids=("email",))
+    )
+    state = state.after_observation(
+        ProgressiveObservation.from_snapshot(
+            snapshot,
+            newly_revealed_ids=("note",),
+            remembered_ids=("email",),
+        )
+    )
+
+    assert [item.label for item in state.memory] == [
+        "m.khalil.bus@gmail.com",
+        "Open to remote frontend work",
+    ]
+
+
 def test_full_scent_requires_notice() -> None:
     state = AttentionState.initial(
         budget=run_spec().scenario.budget,
@@ -309,13 +390,35 @@ def test_attention_actions_are_discriminated_by_kind() -> None:
         NoticeElements(element_ids=("target",)),
         InspectElement(element_id="target"),
         InteractWithElement(element_id="target"),
+        Complete(),
     )
 
     assert tuple(action.kind for action in actions) == (
         "notice-elements",
         "inspect-element",
         "interact-with-element",
+        "complete",
     )
+
+
+def test_complete_action_requires_current_viewport_and_consumes_step_only() -> None:
+    snapshot = viewport_snapshot()
+    state = AttentionState.initial(
+        budget=run_spec().scenario.budget,
+        confidence=0.5,
+        frustration=0.1,
+    ).after_observation(
+        ProgressiveObservation.from_snapshot(snapshot, newly_revealed_ids=("target",))
+    )
+
+    state.validate_action(Complete(), snapshot)
+    next_state = state.after_action(Complete())
+
+    assert next_state.budgets.steps == state.budgets.steps - 1
+    assert next_state.budgets.interactions == state.budgets.interactions
+
+    with pytest.raises(ValueError, match="stale viewport"):
+        state.validate_action(Complete(), viewport_snapshot("viewport-2"))
 
 
 def test_run_state_apply_is_only_lifecycle_transition_and_finalizes() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,43 @@ def test_explicit_environment_overrides_dotenv_values(tmp_path: Path) -> None:
     assert settings.cognitive_model == "file-cognitive-model"
 
 
+def test_explicit_environment_does_not_load_implicit_project_dotenv() -> None:
+    settings = OpenAICompatibleSettings.from_env(
+        {
+            "UXA_LLM_BASE_URL": "https://llm.example.test/v1",
+            "UXA_LLM_API_KEY": "secret",
+            "UXA_SCENT_MODEL": "gpt-scent",
+            "UXA_COGNITIVE_MODEL": "gpt-cognitive",
+        }
+    )
+
+    assert settings.mode == "api"
+    assert settings.base_url == "https://llm.example.test/v1"
+
+
+def test_settings_from_process_environment_does_not_mutate_process_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text(
+        "\n".join(
+            (
+                "UXA_LLM_BASE_URL=https://file.example.test/v1",
+                "UXA_LLM_API_KEY=file-secret",
+                "UXA_SCENT_MODEL=file-scent-model",
+                "UXA_COGNITIVE_MODEL=file-cognitive-model",
+                "UXA_RUN_LIVE_TESTS=1",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("UXA_RUN_LIVE_TESTS", raising=False)
+
+    OpenAICompatibleSettings.from_env(dotenv_path=dotenv_path)
+
+    assert "UXA_RUN_LIVE_TESTS" not in os.environ
+
+
 def test_codex_mode_does_not_require_endpoint_credentials() -> None:
     settings = OpenAICompatibleSettings.from_env(
         {
@@ -87,6 +125,49 @@ def test_codex_mode_does_not_require_endpoint_credentials() -> None:
     assert settings.scent_model == "gpt-scent"
     assert settings.cognitive_model == "gpt-cognitive"
     assert settings.endpoint_origin == "codex-cli"
+
+
+def test_codex_mode_accepts_unbounded_model_timeout() -> None:
+    settings = OpenAICompatibleSettings.from_env(
+        {
+            "UXA_LLM_MODE": "codex",
+            "UXA_LLM_TIMEOUT_SECONDS": "none",
+            "UXA_SCENT_MODEL": "gpt-scent",
+            "UXA_COGNITIVE_MODEL": "gpt-cognitive",
+        },
+        dotenv_path=Path("missing-test.env"),
+    )
+
+    assert settings.timeout_seconds is None
+
+
+def test_model_settings_load_model_call_concurrency_limit() -> None:
+    settings = OpenAICompatibleSettings.from_env(
+        {
+            "UXA_LLM_BASE_URL": "https://llm.example.test/v1",
+            "UXA_LLM_API_KEY": "secret",
+            "UXA_SCENT_MODEL": "gpt-scent",
+            "UXA_COGNITIVE_MODEL": "gpt-cognitive",
+            "UXA_LLM_MAX_CONCURRENT_CALLS": "3",
+        }
+    )
+
+    assert settings.max_concurrent_calls == 3
+
+
+def test_api_mode_rejects_unbounded_model_timeout() -> None:
+    with pytest.raises(ModelConfigurationError, match="unbounded"):
+        OpenAICompatibleSettings.from_env(
+            {
+                "UXA_LLM_MODE": "api",
+                "UXA_LLM_TIMEOUT_SECONDS": "none",
+                "UXA_LLM_BASE_URL": "https://llm.example.test/v1",
+                "UXA_LLM_API_KEY": "secret",
+                "UXA_SCENT_MODEL": "gpt-scent",
+                "UXA_COGNITIVE_MODEL": "gpt-cognitive",
+            },
+            dotenv_path=Path("missing-test.env"),
+        )
 
 
 def test_codex_model_validate_does_not_require_endpoint_credentials() -> None:
@@ -125,5 +206,7 @@ def test_env_example_contains_placeholder_values_only() -> None:
         "UXA_COGNITIVE_MODEL": "<cognitive-model-id>",
         "UXA_LLM_SCENT_REASONING_EFFORT": "",
         "UXA_LLM_COGNITIVE_REASONING_EFFORT": "",
+        "UXA_LLM_TIMEOUT_SECONDS": "30",
+        "UXA_LLM_MAX_CONCURRENT_CALLS": "2",
         "UXA_RUN_LIVE_TESTS": "0",
     }

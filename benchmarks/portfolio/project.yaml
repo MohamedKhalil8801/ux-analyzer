@@ -1,0 +1,172 @@
+id: portfolio-benchmark
+name: Mohamed Khalil live portfolio benchmark
+
+applications:
+  - id: portfolio
+    name: Mohamed Khalil public portfolio
+    versions:
+      - id: portfolio-live
+        kind: live
+        label: Production
+        start_url: https://mohamed-khalil.vercel.app
+        allowed_origins:
+          - https://fonts.googleapis.com
+          - https://fonts.gstatic.com
+        navigation_settle_ms: 2400
+        action_settle_ms: 2800
+
+scenarios:
+  - id: current-pair-role
+    name: Current PAIR role and frontend stack
+    goal: Find Mohamed's current employer, role, and primary web frontend technologies.
+    application_version_ids:
+      - portfolio-live
+    start_state: home
+    budget:
+      max_steps: 60
+      max_observations: 30
+      max_interactions: 24
+      max_model_calls: 40
+      timeout_seconds: null
+    verifier:
+      type: visible-result
+      text: Frontend Engineer
+      all_of:
+        - PAIR Systems
+        - React
+        - TypeScript
+    safeguards:
+      - public-target-only
+      - visible-result-only
+      - no-fixture-state
+      - no-outbound-communication
+    eligible_persona_ids:
+      - first-time-nontechnical
+    expected_evidence:
+      - target-discovery
+      - visible-result
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        live: PAIR Systems
+      role: link
+    viewport:
+      width: 1440
+      height: 900
+
+  - id: open-prayer-times-scale
+    name: Open Prayer Times coverage
+    goal: Find stated city and country coverage for Mohamed's open-source prayer-time project.
+    application_version_ids:
+      - portfolio-live
+    start_state: home
+    budget:
+      max_steps: 60
+      max_observations: 30
+      max_interactions: 24
+      max_model_calls: 40
+      timeout_seconds: null
+    verifier:
+      type: visible-result
+      text: 48,000+
+      all_of:
+        - cities calibrated
+        - 130+
+        - countries
+    safeguards:
+      - public-target-only
+      - visible-result-only
+      - no-fixture-state
+      - no-outbound-communication
+    eligible_persona_ids:
+      - first-time-nontechnical
+    expected_evidence:
+      - target-discovery
+      - visible-result
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        live: Open Prayer Times
+      role: link
+    viewport:
+      width: 1440
+      height: 900
+
+  - id: contact-remote-role
+    name: Contact for remote frontend role
+    goal: Find Mohamed's public email address and whether he is open to remote frontend work.
+    application_version_ids:
+      - portfolio-live
+    start_state: home
+    budget:
+      max_steps: 60
+      max_observations: 30
+      max_interactions: 24
+      max_model_calls: 40
+      timeout_seconds: null
+    verifier:
+      type: visible-result
+      text: m.khalil.bus@gmail.com
+      all_of:
+        - Open to mobile and web roles
+        - open to remote
+    safeguards:
+      - public-target-only
+      - visible-result-only
+      - no-fixture-state
+      - no-outbound-communication
+    eligible_persona_ids:
+      - first-time-nontechnical
+    expected_evidence:
+      - target-discovery
+      - visible-result
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        live: Contact
+      role: link
+    viewport:
+      width: 1440
+      height: 900
+
+personas:
+  - id: first-time-nontechnical
+    name: First-time nontechnical portfolio visitor
+    working_memory_capacity: 4
+    initial_confidence: 0.55
+    initial_frustration: 0.10
+    abandonment_threshold: 0.72
+    attention_temperature: 1.15
+
+providers:
+  attention:
+    batch_size: 3
+    cross_region_exploration: 1
+  saliency:
+    model_set:
+      - foveacast-v0.2.0
+    fallback:
+      enabled: false
+      provider_id: heuristic
+
+experiments:
+  - id: portfolio-foveacast-vs-heuristic
+    name: Portfolio FoveaCast versus heuristic prominence
+    scenario_ids:
+      - current-pair-role
+      - open-prayer-times-scale
+      - contact-remote-role
+    application_version_ids:
+      - portfolio-live
+    persona_ids:
+      - first-time-nontechnical
+    prominence_provider_ids:
+      - heuristic
+      - foveacast
+    policies:
+      - progressive-prominence
+    seeds:
+      - 0
+    model_trials:
+      - 0
+    run_count: 1

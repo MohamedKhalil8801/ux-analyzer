@@ -315,11 +315,12 @@ def _validate_references(config: ProjectModel) -> None:
     versions_by_id: dict[str, ApplicationVersionKind] = {}
     for application in config.applications:
         kinds = {version.kind for version in application.versions}
-        for required_kind in ("defective", "improved"):
-            if required_kind not in kinds:
-                raise ProjectConfigError(
-                    f"application {application.id!r} missing {required_kind} application version"
-                )
+        if kinds != {"live"}:
+            for required_kind in ("defective", "improved"):
+                if required_kind not in kinds:
+                    raise ProjectConfigError(
+                        f"application {application.id!r} missing {required_kind} application version"
+                    )
         for version in application.versions:
             if version.id in version_ids:
                 raise ProjectConfigError(
@@ -342,6 +343,21 @@ def _validate_references(config: ProjectModel) -> None:
                 raise ProjectConfigError(
                     f"scenario {scenario.id!r} references unknown persona {persona_id!r}"
                 )
+        live_version_ids = tuple(
+            version_id
+            for version_id in scenario.application_version_ids
+            if versions_by_id[version_id] is ApplicationVersionKind.LIVE
+        )
+        if live_version_ids and scenario.fixture_inputs:
+            raise ProjectConfigError(
+                f"scenario {scenario.id!r} referencing live application versions "
+                "must not define fixture_inputs"
+            )
+        if live_version_ids and isinstance(scenario.verifier, FixtureStateVerifierModel):
+            raise ProjectConfigError(
+                f"scenario {scenario.id!r} referencing live application versions "
+                "must not use fixture-state verifier"
+            )
         if isinstance(scenario.verifier, FixtureStateVerifierModel):
             if scenario.verifier.expected_fixture_key not in scenario.fixture_inputs:
                 raise ProjectConfigError(
@@ -430,6 +446,10 @@ def _to_application(application: ApplicationModel) -> Application:
                 id=version.id,
                 kind=ApplicationVersionKind(version.kind),
                 label=version.label,
+                start_url=version.start_url,
+                allowed_origins=tuple(version.allowed_origins),
+                navigation_settle_ms=version.navigation_settle_ms,
+                action_settle_ms=version.action_settle_ms,
             )
             for version in application.versions
         ),
@@ -451,6 +471,7 @@ def _to_scenario(scenario: ScenarioModel) -> Scenario:
             type=scenario.verifier.type,
             text=scenario.verifier.text,
             role=scenario.verifier.role,
+            all_of=tuple(scenario.verifier.all_of),
         )
     return Scenario(
         id=scenario.id,
@@ -537,9 +558,53 @@ def _digest_normalized_payload(normalized: dict[str, object]) -> str:
 
 
 def _digest_compatibility_payload(payload: dict[str, object]) -> dict[str, object]:
-    """Keep omitted default provider settings out of legacy config identity."""
+    """Keep omitted default settings out of legacy config identity."""
 
     normalized = dict(payload)
+    applications_value = normalized.get("applications")
+    if isinstance(applications_value, list):
+        applications: list[object] = []
+        for item in cast(list[object], applications_value):
+            if isinstance(item, dict):
+                application = dict(cast(dict[str, object], item))
+                versions_value = application.get("versions")
+                if isinstance(versions_value, list):
+                    versions: list[object] = []
+                    for version_value in cast(list[object], versions_value):
+                        if isinstance(version_value, dict):
+                            version = dict(cast(dict[str, object], version_value))
+                            if version.get("start_url") is None:
+                                version.pop("start_url", None)
+                            if version.get("allowed_origins") == []:
+                                version.pop("allowed_origins", None)
+                            if version.get("navigation_settle_ms") == 0:
+                                version.pop("navigation_settle_ms", None)
+                            if version.get("action_settle_ms") == 0:
+                                version.pop("action_settle_ms", None)
+                            versions.append(version)
+                        else:
+                            versions.append(version_value)
+                    application["versions"] = versions
+                applications.append(application)
+            else:
+                applications.append(item)
+        normalized["applications"] = applications
+    scenarios_value = normalized.get("scenarios")
+    if isinstance(scenarios_value, list):
+        scenarios: list[object] = []
+        for item in cast(list[object], scenarios_value):
+            if isinstance(item, dict):
+                scenario = dict(cast(dict[str, object], item))
+                verifier_value = scenario.get("verifier")
+                if isinstance(verifier_value, dict):
+                    verifier = dict(cast(dict[str, object], verifier_value))
+                    if verifier.get("all_of") == []:
+                        verifier.pop("all_of", None)
+                    scenario["verifier"] = verifier
+                scenarios.append(scenario)
+            else:
+                scenarios.append(item)
+        normalized["scenarios"] = scenarios
     providers_value = normalized.get("providers")
     if isinstance(providers_value, dict):
         providers = dict(cast(dict[str, object], providers_value))

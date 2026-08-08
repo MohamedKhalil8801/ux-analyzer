@@ -17,6 +17,7 @@ from ux_analyzer.domain.attention import (
     AttentionRecoveryMiss,
     AttentionState,
     Back,
+    Complete,
     InspectElement,
     InteractWithElement,
     NoticeElements,
@@ -428,6 +429,7 @@ def _as_attention_action(action: AttentionAction | PlatformAction) -> AttentionA
         (
             Abandon,
             Back,
+            Complete,
             InspectElement,
             InteractWithElement,
             NoticeElements,

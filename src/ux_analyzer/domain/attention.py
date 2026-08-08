@@ -79,7 +79,14 @@ class PersonaVisibleRegion:
 
     @classmethod
     def from_snapshot(cls, region: RegionSnapshot) -> PersonaVisibleRegion:
-        return cls(id=region.id, label=region.label)
+        return cls(
+            id=region.id,
+            label=(
+                region.rendered_label
+                if region.rendered_label is not None
+                else region.label
+            ),
+        )
 
     def model_dump(self) -> dict[str, str]:
         return {"id": self.id, "label": self.label}
@@ -141,10 +148,24 @@ class ProgressiveObservation:
             newly_revealed_elements=tuple(
                 PersonaVisibleElement.from_snapshot(element_by_id[element_id])
                 for element_id in newly_revealed_ids
+                if (
+                    element_by_id[element_id].visibility_fraction > 0
+                    and (
+                        element_by_id[element_id].rendered_text is None
+                        or bool(element_by_id[element_id].rendered_text.strip())
+                    )
+                )
             ),
             remembered_elements=tuple(
                 PersonaVisibleElement.from_snapshot(element_by_id[element_id])
                 for element_id in remembered_ids
+                if (
+                    element_by_id[element_id].visibility_fraction > 0
+                    and (
+                        element_by_id[element_id].rendered_text is None
+                        or bool(element_by_id[element_id].rendered_text.strip())
+                    )
+                )
             ),
             region_context=region_context,
         )
@@ -506,6 +527,11 @@ class Back:
 
 
 @dataclass(frozen=True, slots=True)
+class Complete:
+    kind: Literal["complete"] = "complete"
+
+
+@dataclass(frozen=True, slots=True)
 class Abandon:
     kind: Literal["abandon"] = "abandon"
     reason: str = ""
@@ -522,5 +548,6 @@ type AttentionAction = (
     | Scroll
     | Wait
     | Back
+    | Complete
     | Abandon
 )

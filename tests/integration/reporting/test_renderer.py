@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 import pytest
@@ -699,6 +699,51 @@ def test_renderer_keeps_prominence_providers_separate_in_rows_and_gates(
     assert html.count('data-metric="prominence-provider">foveacast</td>') >= 3
 
 
+def test_renderer_pairs_provider_heatmaps_and_recorded_action_paths(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-heuristic",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="heuristic",
+    )
+    _write_run(
+        tmp_path,
+        "run-foveacast",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-foveacast")
+
+    experiment = renderer._load_experiment(tmp_path)
+    comparisons = experiment["provider_comparisons"]
+
+    assert len(comparisons) == 1
+    providers = {
+        item["provider_id"]: item for item in comparisons[0]["providers"]
+    }
+    assert set(providers) == {"heuristic", "foveacast"}
+    assert providers["foveacast"]["heatmaps"][0]["heatmap"].startswith(
+        "data:image/png;base64,"
+    )
+    assert providers["foveacast"]["heatmaps"][0]["heatmap_path"].endswith(
+        "1s-heatmap.png"
+    )
+    assert providers["heuristic"]["heatmaps"] == []
+    assert providers["heuristic"]["prominence"][0]["rankings"][0]["label"]
+    assert providers["heuristic"]["action_path"][0]["element_label"]
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Provider method comparison" in html
+    assert "Open exact generated heatmap" in html
+    assert "Recorded action path" in html
+
+
 def test_overview_counts_executed_actions_and_formats_discovery_cost(
     tmp_path: Path,
 ) -> None:
@@ -1232,6 +1277,43 @@ def test_renderer_rejects_incomplete_saliency_profile_duration_coverage(
     assert run["saliency"][0]["replay_available"] is False
 
 
+def test_renderer_accepts_profile_with_all_timed_estimates_unavailable(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-unavailable-profile",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-unavailable-profile")
+    profiles_path = (
+        tmp_path
+        / "runs"
+        / "run-unavailable-profile"
+        / "saliency"
+        / "inference-1"
+        / "profiles.json"
+    )
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    for duration in ("immediate", "early", "eventual"):
+        profiles[0][duration] = None
+    profiles_path.write_bytes(
+        canonicalize_saliency_artifact_content(
+            SaliencyArtifactKind.PROFILES,
+            json.dumps(profiles).encode(),
+            expected_viewport_id="inference-1",
+        )
+    )
+    _write_checksums(profiles_path.parents[2])
+
+    run = renderer._load_experiment(tmp_path)["runs"][0]
+
+    assert run["saliency"][0]["replay_available"] is True
+    assert run["saliency"][0]["entries"]
+
+
 def test_renderer_rejects_profile_prediction_provenance_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -1340,6 +1422,69 @@ def test_renderer_rejects_non_screenshot_artifact_path(
     snapshot = renderer._load_experiment(tmp_path)["runs"][0]["snapshots"][0]
 
     assert snapshot["screenshot"] is None
+
+
+def test_renderer_replays_content_addressed_verifier_screenshot(
+    tmp_path: Path,
+) -> None:
+    source = BytesIO()
+    image = Image.new("RGB", (2, 2), color="red")
+    image.putpixel((0, 0), (0, 0, 255))
+    image.save(source, format="PNG")
+    screenshot = source.getvalue()
+    digest = hashlib.sha256(screenshot).hexdigest()
+    _write_run(
+        tmp_path,
+        "run-verifier-screenshot",
+        version="improved",
+        discovery_cost=3,
+        screenshot=screenshot,
+    )
+    run = tmp_path / "runs" / "run-verifier-screenshot"
+    artifact_path = run / "artifacts" / digest
+    artifact_path.write_bytes(screenshot)
+    (run / "artifacts" / "screenshot.png").unlink()
+    events = [
+        json.loads(line)
+        for line in (run / "timeline.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    capture = next(event for event in events if event["kind"] == "viewport-captured")
+    capture["snapshot"]["screenshot_artifact"] = f"artifacts/{digest}"
+    verification = next(
+        event for event in events if event["kind"] == "verification-recorded"
+    )
+    verification["result"]["evidence_ids"].append(f"screenshot:artifacts/{digest}")
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_checksums(run)
+
+    snapshot = renderer._load_experiment(tmp_path)["runs"][0]["snapshots"][0]
+
+    expected = base64.b64encode(screenshot).decode("ascii")
+    assert snapshot["screenshot"] == f"data:image/png;base64,{expected}"
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    (
+        f"artifacts/{'a' * 63}",
+        f"artifacts/{'g' * 64}",
+        "artifacts/screenshot",
+        f"generated/{'a' * 64}",
+        f"artifacts/../{'a' * 64}",
+    ),
+)
+def test_renderer_rejects_non_content_addressed_extensionless_screenshot_paths(
+    artifact: str,
+) -> None:
+    assert not renderer._is_allowed_screenshot_artifact(PurePosixPath(artifact))
+
+
+def test_renderer_accepts_uppercase_content_addressed_screenshot_name() -> None:
+    assert renderer._is_allowed_screenshot_artifact(
+        PurePosixPath("artifacts", "A" * 64)
+    )
 
 
 def test_renderer_rejects_saliency_profile_element_without_snapshot_lineage(

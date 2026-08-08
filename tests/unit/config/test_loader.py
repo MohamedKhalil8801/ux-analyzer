@@ -8,17 +8,28 @@ from typing import Any
 import pytest
 import yaml
 
-from ux_analyzer.application.experiment import ExperimentContext, expand_experiment
+from ux_analyzer.application.experiment import (
+    ExperimentContext,
+    deterministic_run_id,
+    expand_experiment,
+)
 from ux_analyzer.config.loader import ProjectConfigError, load_project
 from ux_analyzer.domain.benchmark import (
+    ApplicationVersion,
     ApplicationVersionKind,
     ExperimentPolicy,
     FixtureStateVerifierSpec,
+    VisibleResultVerifierSpec,
 )
 
 FIXTURE_PATH = (
     Path(__file__).parents[2] / "fixtures" / "config" / "minimal-project.yaml"
 )
+LEGACY_CONFIG_DIGEST = (
+    "8d89b1483b2bd968a2b8b5c6dd2ce37a3749537899a0b88aceb8abf9f4fecb08"
+)
+LEGACY_RUN_ID = "run-bddad93657faaf94d4317372c772d125ef5b62e1bc30f6e61b2aa36c5355c264"
+LIVE_CONFIG_DIGEST = "3fdc33d0c9ed994a924db0a0bd640899477dfd2841666eb72350a138fb5b92a6"
 
 
 def _read_project() -> dict[str, Any]:
@@ -36,14 +47,47 @@ def _write_project(
     return path
 
 
+def _live_project(
+    *,
+    start_url: str = "https://portfolio.example/work",
+    allowed_origins: list[str] | None = None,
+) -> dict[str, Any]:
+    project = _read_project()
+    resource_origins = (
+        allowed_origins if allowed_origins is not None else ["https://fonts.example"]
+    )
+    project["applications"][0]["versions"] = [
+        {
+            "id": "portfolio-live",
+            "kind": "live",
+            "label": "Production",
+            "start_url": start_url,
+            "allowed_origins": list(resource_origins),
+            "navigation_settle_ms": 2000,
+            "action_settle_ms": 900,
+        }
+    ]
+    project["scenarios"][0]["application_version_ids"] = ["portfolio-live"]
+    project["scenarios"][0]["fixture_inputs"] = {}
+    project["scenarios"][0]["verifier"] = {
+        "type": "visible-result",
+        "text": "Work",
+    }
+    project["scenarios"][0]["evaluation_target"]["labels_by_version"] = {"live": "Work"}
+    project["experiments"][0]["application_version_ids"] = ["portfolio-live"]
+    return project
+
+
 def test_load_valid_project_into_frozen_domain_contracts() -> None:
     loaded = load_project(FIXTURE_PATH)
 
     assert loaded.project.id == "minimal-project"
-    assert (
-        loaded.project.applications[0].versions[0].kind
-        is ApplicationVersionKind.DEFECTIVE
-    )
+    fixture_version = loaded.project.applications[0].versions[0]
+    assert fixture_version.kind is ApplicationVersionKind.DEFECTIVE
+    assert fixture_version.start_url is None
+    assert fixture_version.allowed_origins == ()
+    assert fixture_version.navigation_settle_ms == 0
+    assert fixture_version.action_settle_ms == 0
     assert loaded.project.experiments[0].policies == (ExperimentPolicy.FULL_LIST,)
     assert isinstance(loaded.project.scenarios[0].verifier, FixtureStateVerifierSpec)
     assert loaded.project.scenarios[0].fixture_inputs.values["invite_email"] == (
@@ -53,6 +97,272 @@ def test_load_valid_project_into_frozen_domain_contracts() -> None:
         {"invite_email"}
     )
     assert len(loaded.config_digest) == 64
+
+
+def test_loads_single_live_application_version(tmp_path: Path) -> None:
+    project = _read_project()
+    project["applications"][0]["versions"] = [
+        {
+            "id": "portfolio-live",
+            "kind": "live",
+            "label": "Production",
+            "start_url": "https://portfolio.example/work",
+            "allowed_origins": ["https://fonts.example"],
+            "navigation_settle_ms": 2000,
+            "action_settle_ms": 900,
+        }
+    ]
+    project["scenarios"][0]["application_version_ids"] = ["portfolio-live"]
+    project["scenarios"][0]["fixture_inputs"] = {}
+    project["scenarios"][0]["verifier"] = {
+        "type": "visible-result",
+        "text": "Work",
+    }
+    project["scenarios"][0]["evaluation_target"]["labels_by_version"] = {"live": "Work"}
+    project["experiments"][0]["application_version_ids"] = ["portfolio-live"]
+
+    version = (
+        load_project(_write_project(tmp_path, project))
+        .project.applications[0]
+        .versions[0]
+    )
+
+    assert version.kind is ApplicationVersionKind.LIVE
+    assert version.start_url == "https://portfolio.example/work"
+    assert version.allowed_origins == ("https://fonts.example",)
+    assert version.navigation_settle_ms == 2000
+    assert version.action_settle_ms == 900
+
+
+def test_live_application_version_requires_start_url(tmp_path: Path) -> None:
+    project = _read_project()
+    project["applications"][0]["versions"] = [
+        {"id": "portfolio-live", "kind": "live", "label": "Production"}
+    ]
+    project["scenarios"][0]["application_version_ids"] = ["portfolio-live"]
+    project["scenarios"][0]["evaluation_target"]["labels_by_version"] = {"live": "Work"}
+    project["experiments"][0]["application_version_ids"] = ["portfolio-live"]
+
+    with pytest.raises(ProjectConfigError, match="start_url"):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_loads_visible_result_verifier_all_of_constraints(tmp_path: Path) -> None:
+    project = _live_project()
+    project["scenarios"][0]["verifier"]["all_of"] = ["PAIR Systems", "React"]
+
+    verifier = (
+        load_project(_write_project(tmp_path, project)).project.scenarios[0].verifier
+    )
+
+    assert isinstance(verifier, VisibleResultVerifierSpec)
+    assert verifier.text == "Work"
+    assert verifier.all_of == ("PAIR Systems", "React")
+
+
+@pytest.mark.parametrize("all_of", [[""], ["React", "React"]])
+def test_visible_result_verifier_rejects_invalid_all_of(
+    tmp_path: Path, all_of: list[str]
+) -> None:
+    project = _live_project()
+    project["scenarios"][0]["verifier"]["all_of"] = all_of
+
+    with pytest.raises(ProjectConfigError, match="all_of"):
+        load_project(_write_project(tmp_path, project))
+
+
+@pytest.mark.parametrize("timing_field", ["navigation_settle_ms", "action_settle_ms"])
+def test_live_settle_timings_must_not_be_negative(
+    tmp_path: Path, timing_field: str
+) -> None:
+    project = _read_project()
+    project["applications"][0]["versions"] = [
+        {
+            "id": "portfolio-live",
+            "kind": "live",
+            "label": "Production",
+            "start_url": "https://portfolio.example/work",
+            timing_field: -1,
+        }
+    ]
+    project["scenarios"][0]["application_version_ids"] = ["portfolio-live"]
+    project["scenarios"][0]["evaluation_target"]["labels_by_version"] = {"live": "Work"}
+    project["experiments"][0]["application_version_ids"] = ["portfolio-live"]
+
+    with pytest.raises(ProjectConfigError, match=timing_field):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_live_configuration_canonicalizes_url_and_resource_origins(
+    tmp_path: Path,
+) -> None:
+    project = _live_project(
+        start_url="HTTPS://Portfolio.Example:443/work",
+        allowed_origins=["HTTPS://Fonts.Example:443/", "http://CDN.Example:80"],
+    )
+
+    version = (
+        load_project(_write_project(tmp_path, project))
+        .project.applications[0]
+        .versions[0]
+    )
+
+    assert version.start_url == "https://portfolio.example/work"
+    assert version.allowed_origins == (
+        "https://fonts.example",
+        "http://cdn.example",
+    )
+
+
+@pytest.mark.parametrize(
+    "start_url",
+    [
+        "http://portfolio.example/work",
+        "https://user:password@portfolio.example/work",
+        "https://portfolio.example:not-a-port/work",
+        "https://portfolio.example:0/work",
+        "https://portfolio.example:65536/work",
+    ],
+)
+def test_live_configuration_rejects_unsafe_start_url(
+    tmp_path: Path, start_url: str
+) -> None:
+    with pytest.raises(ProjectConfigError, match="start_url"):
+        load_project(_write_project(tmp_path, _live_project(start_url=start_url)))
+
+
+@pytest.mark.parametrize(
+    "allowed_origins",
+    [
+        ["ftp://fonts.example"],
+        ["https://user:password@fonts.example"],
+        ["https://fonts.example/assets"],
+        ["https://fonts.example?query=1"],
+        ["https://fonts.example#fragment"],
+        ["https://fonts.example:not-a-port"],
+        ["https://fonts.example:0"],
+        ["https://fonts.example:65536"],
+    ],
+)
+def test_live_configuration_rejects_unsafe_resource_origins(
+    tmp_path: Path, allowed_origins: list[str]
+) -> None:
+    with pytest.raises(ProjectConfigError, match="origin"):
+        load_project(
+            _write_project(
+                tmp_path,
+                _live_project(allowed_origins=allowed_origins),
+            )
+        )
+
+
+def test_live_configuration_rejects_duplicate_canonical_resource_origins(
+    tmp_path: Path,
+) -> None:
+    project = _live_project(
+        allowed_origins=["https://fonts.example", "HTTPS://Fonts.Example:443/"]
+    )
+
+    with pytest.raises(ProjectConfigError, match="origin"):
+        load_project(_write_project(tmp_path, project))
+
+
+@pytest.mark.parametrize(
+    ("start_url", "allowed_origins"),
+    [
+        ("http://portfolio.example/work", ()),
+        ("https://user:password@portfolio.example/work", ()),
+        ("https://portfolio.example:not-a-port/work", ()),
+        ("https://portfolio.example:0/work", ()),
+        ("https://portfolio.example/work", ("https://fonts.example/assets",)),
+        (
+            "https://portfolio.example/work",
+            ("https://fonts.example", "HTTPS://Fonts.Example:443/"),
+        ),
+        ("https://portfolio.example/work", ("https://fonts.example:0",)),
+    ],
+)
+def test_application_version_rejects_unsafe_network_values_directly(
+    start_url: str, allowed_origins: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValueError):
+        ApplicationVersion(
+            id="portfolio-live",
+            kind=ApplicationVersionKind.LIVE,
+            label="Production",
+            start_url=start_url,
+            allowed_origins=allowed_origins,
+        )
+
+
+def test_live_scenario_rejects_fixture_inputs(tmp_path: Path) -> None:
+    project = _live_project()
+    project["scenarios"][0]["fixture_inputs"] = {"secret": {"value": "not-for-live"}}
+
+    with pytest.raises(ProjectConfigError, match="live.*fixture_inputs"):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_live_scenario_rejects_fixture_state_verifier(tmp_path: Path) -> None:
+    project = _live_project()
+    project["scenarios"][0]["fixture_inputs"] = {}
+    project["scenarios"][0]["verifier"] = {
+        "type": "fixture-state",
+        "resource": "result",
+        "field": "text",
+        "operator": "equals",
+        "expected_fixture_key": "expected",
+    }
+
+    with pytest.raises(ProjectConfigError, match="live.*fixture-state"):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_legacy_fixture_digest_and_run_id_ignore_explicit_new_defaults(
+    tmp_path: Path,
+) -> None:
+    omitted_defaults = load_project(
+        _write_project(tmp_path, _read_project(), "omitted.yaml")
+    )
+    explicit_defaults = _read_project()
+    for version in explicit_defaults["applications"][0]["versions"]:
+        version.update(
+            {
+                "start_url": None,
+                "allowed_origins": [],
+                "navigation_settle_ms": 0,
+                "action_settle_ms": 0,
+            }
+        )
+    explicit = load_project(
+        _write_project(tmp_path, explicit_defaults, "explicit.yaml")
+    )
+
+    assert (
+        omitted_defaults.config_digest == explicit.config_digest == LEGACY_CONFIG_DIGEST
+    )
+    assert (
+        deterministic_run_id(
+            experiment_id="smoke",
+            scenario_id="invite-teammate",
+            application_version_id="fixture-app-defective",
+            persona_id="first-time-user",
+            policy=ExperimentPolicy.FULL_LIST,
+            seed=11,
+            config_digest=explicit.config_digest,
+        )
+        == LEGACY_RUN_ID
+    )
+
+
+def test_non_default_live_version_fields_affect_digest(tmp_path: Path) -> None:
+    first = load_project(_write_project(tmp_path, _live_project(), "first.yaml"))
+    changed_project = _live_project()
+    changed_project["applications"][0]["versions"][0]["action_settle_ms"] = 901
+    changed = load_project(_write_project(tmp_path, changed_project, "changed.yaml"))
+
+    assert first.config_digest == LIVE_CONFIG_DIGEST
+    assert changed.config_digest != first.config_digest
 
 
 def test_missing_model_trials_defaults_to_zero() -> None:
@@ -306,6 +616,148 @@ def test_demo_uses_reduced_local_budget_matrices() -> None:
     )
 
 
+def test_portfolio_benchmark_is_small_visual_only_matrix() -> None:
+    path = Path(__file__).parents[3] / "benchmarks" / "portfolio" / "project.yaml"
+    loaded = load_project(path)
+    experiment = loaded.project.experiments[0]
+    application = loaded.project.applications[0]
+    version = application.versions[0]
+
+    assert len(loaded.project.scenarios) == 3
+    assert len(application.versions) == 1
+    assert version.kind is ApplicationVersionKind.LIVE
+    assert version.start_url == "https://mohamed-khalil.vercel.app"
+    assert version.allowed_origins == (
+        "https://fonts.googleapis.com",
+        "https://fonts.gstatic.com",
+    )
+    assert version.navigation_settle_ms == 2400
+    assert version.action_settle_ms == 2800
+    assert loaded.runtime.saliency.fallback.enabled is False
+    assert loaded.runtime.attention.batch_size == 3
+    assert loaded.runtime.attention.cross_region_exploration == 1
+    assert experiment.id == "portfolio-foveacast-vs-heuristic"
+    assert experiment.application_version_ids == ("portfolio-live",)
+    assert experiment.prominence_provider_ids == ("heuristic", "foveacast")
+    assert experiment.policies == (ExperimentPolicy.PROGRESSIVE_PROMINENCE,)
+    assert experiment.seeds == (0,)
+    assert experiment.model_trials == (0,)
+    assert experiment.run_count == 1
+    expected_scenarios = (
+        (
+            "Find Mohamed's current employer, role, and primary web frontend technologies.",
+            "PAIR Systems",
+            "Frontend Engineer",
+            ("PAIR Systems", "React", "TypeScript"),
+        ),
+        (
+            "Find stated city and country coverage for Mohamed's open-source prayer-time project.",
+            "Open Prayer Times",
+            "48,000+",
+            ("cities calibrated", "130+", "countries"),
+        ),
+        (
+            "Find Mohamed's public email address and whether he is open to remote frontend work.",
+            "Contact",
+            "m.khalil.bus@gmail.com",
+            ("Open to mobile and web roles", "open to remote"),
+        ),
+    )
+    for scenario, (goal, target_label, text, all_of) in zip(
+        loaded.project.scenarios, expected_scenarios, strict=True
+    ):
+        assert scenario.goal == goal
+        assert scenario.fixture_inputs.values == {}
+        assert scenario.viewport_width == 1440
+        assert scenario.viewport_height == 900
+        assert scenario.budget.max_steps == 60
+        assert scenario.budget.max_observations == 30
+        assert scenario.budget.max_interactions == 24
+        assert scenario.budget.max_model_calls == 40
+        assert scenario.budget.timeout_seconds is None
+        assert isinstance(scenario.verifier, VisibleResultVerifierSpec)
+        assert scenario.verifier.text == text
+        assert scenario.verifier.all_of == all_of
+        assert scenario.verifier.role is None
+        assert scenario.evaluation_target.labels_by_version == {"live": target_label}
+        assert scenario.evaluation_target.role == "link"
+    specs = expand_experiment(
+        ExperimentContext(
+            definition=experiment,
+            project=loaded.project,
+            config_digest=loaded.config_digest,
+        )
+    )
+    assert len(specs) == 6
+    assert tuple(
+        (
+            spec.scenario.id,
+            spec.prominence_provider_id,
+            spec.persona.id,
+            spec.application_version.id,
+            spec.policy.value,
+            spec.seed,
+            spec.model_trial,
+        )
+        for spec in specs
+    ) == (
+        (
+            "current-pair-role",
+            "heuristic",
+            "first-time-nontechnical",
+            "portfolio-live",
+            "progressive-prominence",
+            0,
+            0,
+        ),
+        (
+            "current-pair-role",
+            "foveacast",
+            "first-time-nontechnical",
+            "portfolio-live",
+            "progressive-prominence",
+            0,
+            0,
+        ),
+        (
+            "open-prayer-times-scale",
+            "heuristic",
+            "first-time-nontechnical",
+            "portfolio-live",
+            "progressive-prominence",
+            0,
+            0,
+        ),
+        (
+            "open-prayer-times-scale",
+            "foveacast",
+            "first-time-nontechnical",
+            "portfolio-live",
+            "progressive-prominence",
+            0,
+            0,
+        ),
+        (
+            "contact-remote-role",
+            "heuristic",
+            "first-time-nontechnical",
+            "portfolio-live",
+            "progressive-prominence",
+            0,
+            0,
+        ),
+        (
+            "contact-remote-role",
+            "foveacast",
+            "first-time-nontechnical",
+            "portfolio-live",
+            "progressive-prominence",
+            0,
+            0,
+        ),
+    )
+
+
 def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     tmp_path: Path,
 ) -> None:
@@ -470,7 +922,9 @@ def test_digest_is_stable_when_yaml_key_order_changes(tmp_path: Path) -> None:
     assert first.config_digest == second.config_digest
 
 
-def test_additive_saliency_experiment_keeps_legacy_selected_digest(tmp_path: Path) -> None:
+def test_additive_saliency_experiment_keeps_legacy_selected_digest(
+    tmp_path: Path,
+) -> None:
     base_project = _read_project()
     additive_project = copy.deepcopy(base_project)
     additive_experiment = copy.deepcopy(additive_project["experiments"][0])
@@ -479,8 +933,6 @@ def test_additive_saliency_experiment_keeps_legacy_selected_digest(tmp_path: Pat
     additive_project["experiments"].append(additive_experiment)
 
     base = load_project(_write_project(tmp_path, base_project, "base.yaml"))
-    additive = load_project(
-        _write_project(tmp_path, additive_project, "additive.yaml")
-    )
+    additive = load_project(_write_project(tmp_path, additive_project, "additive.yaml"))
 
     assert base.config_digest_for("smoke") == additive.config_digest_for("smoke")

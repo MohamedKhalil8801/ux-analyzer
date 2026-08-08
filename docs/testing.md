@@ -71,6 +71,34 @@ finalized bundles are skipped:
 uv run uxa run benchmarks/demo/project.yaml --experiment focused-validation --workers 4 --fixture-origin http://127.0.0.1:8000 --output reports/focused-validation --resume
 ```
 
+## Live portfolio benchmark
+
+Validate and run six serial cells against public portfolio. Use fresh output
+directory for each Codex comparison:
+
+```powershell
+$env:UXA_LLM_MODE = "codex"
+$env:UXA_LLM_COGNITIVE_REASONING_EFFORT = "low"
+$env:UXA_LLM_TIMEOUT_SECONDS = "180"
+$env:UXA_LLM_MAX_CONCURRENT_CALLS = "1"
+uv run uxa validate benchmarks/portfolio/project.yaml
+uv run uxa run benchmarks/portfolio/project.yaml --experiment portfolio-foveacast-vs-heuristic --workers 1 --output reports/portfolio-foveacast-vs-heuristic-final3
+```
+
+This is a focused one-trial provider comparison and smoke benchmark: three live
+scenarios crossed with `heuristic` and `foveacast` under `progressive-prominence`,
+seed 0, and model trial 0. It has no fixture inputs, uses visible-result
+verification, and disables saliency fallback. Browser viewport is 1440x900.
+Navigation settles for 2400 ms; live audit showed counters settling around 2400 ms
+after entering viewport, so action settling is 2800 ms. Do not treat results as a
+statistical comparison, generalize beyond this target, or make real-user claims.
+Each scenario sets `timeout_seconds: null`: wall-clock model latency is reported
+as operating cost and must not become a UX failure. Human budgets stay bounded at
+60 steps, 30 observations, 24 interactions, and 40 model calls. Attention uses
+`batch_size: 3` and `cross_region_exploration: 1`; `progressive-prominence` makes
+no scent calls and receives no target oracle. The Codex environment variables and
+`--workers 1` are infrastructure settings, not UX behavior.
+
 Run separate saliency-focused validation after deterministic checks:
 
 ```text

@@ -19,12 +19,18 @@ from ux_analyzer.application.evaluation import (
     evaluation_target_for,
 )
 from ux_analyzer.application.experiment import ExperimentFailure, ExperimentResult
-from ux_analyzer.application.run_agent import RunAgent, RunFinalizationError
+from ux_analyzer.application.memory import MemoryPolicy, MemoryPolicyConfig
+from ux_analyzer.application.run_agent import (
+    RunAgent,
+    RunFinalizationError,
+    _ux_sample_validity,
+)
 from ux_analyzer.application.saliency import ProminenceBatch
 from ux_analyzer.domain.attention import (
     Abandon,
     AttentionState,
     FullScent,
+    InteractWithElement,
     ProgressiveObservation,
 )
 from ux_analyzer.domain.benchmark import (
@@ -46,7 +52,13 @@ from ux_analyzer.domain.interface import (
     RegionSnapshot,
     ViewportSnapshot,
 )
-from ux_analyzer.domain.run import ProviderManifest, VerificationResult
+from ux_analyzer.domain.run import (
+    AgentAbandoned,
+    BudgetExhausted,
+    ProviderManifest,
+    VerificationResult,
+    VerifiedSuccess,
+)
 from ux_analyzer.domain.saliency import (
     AttentionDuration,
     SaliencyGeometry,
@@ -84,10 +96,15 @@ from ux_analyzer.ports.observation import (
     SessionHandle,
     ToggleAction,
     ViewportSize,
+    WaitAction,
 )
 from ux_analyzer.ports.observation import TestAccountId as AccountId
-from ux_analyzer.providers.attention_policy import ObservationSelection
-from ux_analyzer.providers.cognitive import CognitiveDecision
+from ux_analyzer.providers.attention_policy import (
+    AttentionPolicyConfig,
+    ObservationSelection,
+    ProgressiveAttentionPolicy,
+)
+from ux_analyzer.providers.cognitive import CognitiveDecision, StructuredCognitiveAgent
 from ux_analyzer.providers.finding_rules import FindingRuleSet
 from ux_analyzer.providers.prominence import ProminenceResult
 from ux_analyzer.providers.saliency_prominence import FoveacastProminenceProvider
@@ -126,6 +143,7 @@ class FakeObservationProvider:
         self.started = 0
         self.reset_count = 0
         self.capture_count = 0
+        self.captures: list[ObservationCapture] = []
         self.executed: list[PlatformAction] = []
         self.ended = 0
 
@@ -149,7 +167,7 @@ class FakeObservationProvider:
             raise self.failure
         snapshot = self.snapshots[min(self.capture_count, len(self.snapshots) - 1)]
         self.capture_count += 1
-        return ObservationCapture(
+        capture = ObservationCapture(
             session_id=session.session_id,
             viewport_id=snapshot.id,
             url="http://fixture.test/app/run/improved",
@@ -162,6 +180,8 @@ class FakeObservationProvider:
             ),
             snapshot=snapshot,
         )
+        self.captures.append(capture)
+        return capture
 
     async def execute(
         self, session: SessionHandle, action: PlatformAction
@@ -747,6 +767,7 @@ def _snapshot(
             id=element_id,
             role="button",
             label=label,
+            rendered_text=label,
             bounds=BoundingBox(x=10, y=10, width=100, height=30),
             visibility_fraction=1,
             actionable=True,
@@ -766,6 +787,7 @@ def _snapshot(
                 id=second_element_id,
                 role="button",
                 label="Fallback",
+                rendered_text="Fallback",
                 bounds=BoundingBox(x=130, y=10, width=100, height=30),
                 visibility_fraction=1,
                 actionable=True,
@@ -880,6 +902,7 @@ def _agent(
     result_evaluator=None,
     attention_policy: object | None = None,
     full_scent_evaluator: object | None = None,
+    memory_policy: MemoryPolicy | None = None,
     max_model_calls: int = 64,
     prominence_provider: object | None = None,
 ) -> RunAgent:
@@ -895,6 +918,7 @@ def _agent(
         model_record_source=model_record_source,
         result_evaluator=result_evaluator,
         full_scent_evaluator=full_scent_evaluator,
+        memory_policy=memory_policy,
     )
 
 
@@ -1959,7 +1983,9 @@ async def test_exhausted_visible_attention_finalizes_as_agent_abandoned(
 async def test_verified_success_records_claim_separately_and_finalizes_after_terminal_event(
     tmp_path: Path,
 ) -> None:
-    provider = FakeObservationProvider((_snapshot(),))
+    provider = FakeObservationProvider(
+        (_snapshot(), _snapshot("viewport-2", second_element_id="result"))
+    )
     verifier = FakeVerifier((VerificationResult(verified=True, evidence_ids=("v1",)),))
     bundles = FakeBundleFactory()
     agent = _agent(
@@ -1971,18 +1997,29 @@ async def test_verified_success_records_claim_separately_and_finalizes_after_ter
                     action={"kind": "interact", "element_id": "target"},
                     reason="Target matches goal.",
                 ),
+                CognitiveDecision(
+                    action={"kind": "complete"},
+                    reason="I saw enough visible evidence.",
+                ),
             )
         ),
         verifier,
         bundles,
+        result_evaluator=lambda candidate: replace(
+            candidate,
+            metrics=evaluate_run(candidate, EvaluationTarget("target")),
+        ),
     )
 
     result = await agent.execute(_spec())
 
     assert result.outcome.kind == "verified-success"
     assert result.verification.verified
-    assert result.agent_claimed_success is False
-    assert result.state.attention.confidence == pytest.approx(0.55)
+    assert result.agent_claimed_success is True
+    assert result.metrics is not None
+    assert result.metrics.claimed_completion is True
+    assert result.metrics.false_success is False
+    assert result.state.attention.confidence == pytest.approx(0.6)
     assert bundles.bundle.finalized
     assert bundles.bundle.events[-1].kind == "run-terminated"
     viewport_event = next(
@@ -1993,6 +2030,144 @@ async def test_verified_success_records_claim_separately_and_finalizes_after_ter
     assert viewport_event.viewport_width == 1024
     assert viewport_event.viewport_height == 768
     assert provider.ended == 1
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "decision-recorded"
+        and event.get("claimed_success") is True
+        for event in bundles.bundle.events
+    )
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "agent-claim"
+        and event.get("claimed_success") is True
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_visible_result_requires_explicit_complete_after_successful_interaction(
+    tmp_path: Path,
+) -> None:
+    initial = _snapshot()
+    result_snapshot = _snapshot("viewport-2", second_element_id="result")
+    result_snapshot = replace(
+        result_snapshot,
+        elements=tuple(
+            replace(element, label="Sent", rendered_text="Sent")
+            if element.id == "result"
+            else element
+            for element in result_snapshot.elements
+        ),
+    )
+    provider = FakeObservationProvider((initial, result_snapshot))
+    verifier = FakeVerifier((VerificationResult(verified=True, evidence_ids=("v1",)),))
+    bundles = FakeBundleFactory()
+    cognitive = FakeCognitiveAgent(
+        (
+            CognitiveDecision(
+                action={"kind": "interact", "element_id": "target"},
+                reason="Visible control matches goal.",
+            ),
+            CognitiveDecision(
+                action={"kind": "complete"},
+                reason="I saw enough visible evidence.",
+            ),
+        )
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        verifier,
+        bundles,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "verified-success"
+    assert verifier.calls == 1
+    assert [action.kind for action in provider.executed] == ["click"]
+    assert cognitive.observations[1].newly_revealed_elements[0].label == "Sent"
+    assert any(
+        getattr(event, "action", None).__class__.__name__ == "Complete"
+        for event in bundles.bundle.events
+        if getattr(event, "kind", None) == "action-proposed"
+    )
+    assert any(
+        getattr(event, "action", None).__class__.__name__ == "Complete"
+        for event in bundles.bundle.events
+        if getattr(event, "kind", None) == "action-executed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_visible_result_terminal_failure_does_not_promote_without_complete(
+    tmp_path: Path,
+) -> None:
+    provider = FakeObservationProvider((_snapshot(),))
+    verifier = FakeVerifier((VerificationResult(verified=True),))
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "No further search."},
+                    reason="No further search.",
+                ),
+            )
+        ),
+        verifier,
+        bundles,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.verification.verified is False
+    assert result.verification.details == "independent verification unavailable"
+    assert verifier.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_fixture_state_retains_after_action_auto_verification(
+    tmp_path: Path,
+) -> None:
+    base_spec = _spec(timeout_seconds=None)
+    spec = replace(
+        base_spec,
+        scenario=replace(
+            base_spec.scenario,
+            verifier=FixtureStateVerifierSpec(
+                type="fixture-state",
+                resource="workspace",
+                field="invite_status",
+                operator="equals",
+                expected_fixture_key="invite_email",
+            ),
+        ),
+    )
+    verifier = FakeVerifier((VerificationResult(verified=True),))
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),)),
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "target"},
+                    reason="Target matches goal.",
+                ),
+            )
+        ),
+        verifier,
+        FakeBundleFactory(),
+    )
+
+    result = await agent.execute(spec)
+
+    assert result.outcome.kind == "verified-success"
+    assert verifier.calls == 1
 
 
 @pytest.mark.asyncio
@@ -2024,6 +2199,36 @@ async def test_claimed_but_unverified_success_becomes_agent_abandonment(
     assert result.agent_claimed_success is True
     assert result.verification.verified is False
     assert provider.ended == 1
+
+
+@pytest.mark.asyncio
+async def test_unverified_explicit_complete_remains_claimed_false_success(
+    tmp_path: Path,
+) -> None:
+    provider = FakeObservationProvider((_snapshot(),))
+    verifier = FakeVerifier((VerificationResult(verified=False),))
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (CognitiveDecision(action={"kind": "complete"}, reason="Complete."),)
+        ),
+        verifier,
+        FakeBundleFactory(),
+        result_evaluator=lambda candidate: replace(
+            candidate,
+            metrics=evaluate_run(candidate, EvaluationTarget("target")),
+        ),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.verification.verified is False
+    assert result.agent_claimed_success is True
+    assert result.metrics is not None
+    assert result.metrics.claimed_completion is True
+    assert result.metrics.false_success is True
 
 
 @pytest.mark.asyncio
@@ -2061,6 +2266,40 @@ async def test_terminal_failures_finalize_and_cleanup(
 
 
 @pytest.mark.asyncio
+async def test_terminal_verification_failure_preserves_primary_execution_failure(
+    tmp_path: Path,
+) -> None:
+    class SessionNotActiveVerifier(FakeVerifier):
+        async def verify(self, session: SessionHandle) -> VerificationResult:
+            del session
+            self.calls += 1
+            raise ObservationProviderError("session not active")
+
+    bundles = FakeBundleFactory()
+    verifier = SessionNotActiveVerifier(())
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((_snapshot(),), failure=SafetyBlocked("blocked")),
+        FakeCognitiveAgent(()),
+        verifier,
+        bundles,
+    )
+
+    result = await agent.execute(_spec())
+
+    assert result.outcome.kind == "safety-blocked"
+    assert result.terminal_reason == "blocked"
+    assert result.verification == VerificationResult(
+        verified=False,
+        details="independent verification unavailable",
+    )
+    terminal = bundles.bundle.events[-1]
+    assert terminal.kind == "run-terminated"
+    assert terminal.outcome.kind == "safety-blocked"
+    assert terminal.verification.details == "independent verification unavailable"
+
+
+@pytest.mark.asyncio
 async def test_model_failure_timeout_and_budget_exhaustion_are_closed_outcomes(
     tmp_path: Path,
 ) -> None:
@@ -2078,6 +2317,9 @@ async def test_model_failure_timeout_and_budget_exhaustion_are_closed_outcomes(
     timeout_result = await timeout_agent.execute(_spec(timeout_seconds=0.01))
     assert timeout_result.outcome.kind == "timed-out"
     assert timeout_result.ux_sample_valid is False
+    assert timeout_result.ux_sample_invalid_reason == (
+        "timed-out: run timeout exceeded"
+    )
 
     model_bundles = FakeBundleFactory()
     model_agent = _agent(
@@ -2090,6 +2332,7 @@ async def test_model_failure_timeout_and_budget_exhaustion_are_closed_outcomes(
     model_result = await model_agent.execute(_spec())
     assert model_result.outcome.kind == "model-failure"
     assert model_result.ux_sample_valid is False
+    assert model_result.ux_sample_invalid_reason == "model-failure: exhausted"
 
     budget_bundles = FakeBundleFactory()
     budget_agent = _agent(
@@ -2160,8 +2403,12 @@ async def test_repeated_fixture_input_terminates_with_diagnostic_and_finalizes(
 
     result = await agent.execute(_spec(timeout_seconds=None))
 
-    assert result.outcome.kind in {"budget-exhausted", "agent-abandoned"}
-    assert "fixture" in (result.terminal_reason or "").lower()
+    assert result.outcome.kind == "budget-exhausted"
+    assert result.terminal_reason == "repeated successful fixture input detected"
+    assert result.ux_sample_valid is False
+    assert result.ux_sample_invalid_reason == (
+        "budget-exhausted: repeated successful fixture input detected"
+    )
     assert bundles.bundle.finalized
     assert any(
         isinstance(event, dict)
@@ -2195,11 +2442,56 @@ async def test_model_call_budget_counts_calls_without_an_audit_source(
 
     assert result.outcome.kind == "budget-exhausted"
     assert result.terminal_reason == "model call budget exhausted"
+    assert result.ux_sample_valid is False
+    assert result.ux_sample_invalid_reason == (
+        "budget-exhausted: model call budget exhausted"
+    )
     assert len(cognitive.observations) == 1
     assert any(
         isinstance(event, dict)
         and event.get("kind") == "model-call-budget-exhausted"
         and event.get("model_calls") == 1
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_abandonment_at_model_call_limit_defers_to_invalid_model_budget(
+    tmp_path: Path,
+) -> None:
+    provider = FakeObservationProvider((_snapshot(),))
+    bundles = FakeBundleFactory()
+    cognitive = FakeCognitiveAgent(
+        (
+            CognitiveDecision(
+                action={"kind": "abandon", "reason": "No further progress."},
+                reason="No further progress.",
+            ),
+        )
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        timeout_seconds=None,
+        max_model_calls=1,
+    )
+
+    result = await agent.execute(_spec(max_model_calls=1, timeout_seconds=None))
+
+    assert result.outcome.kind == "budget-exhausted"
+    assert result.terminal_reason == "model call budget exhausted"
+    assert result.ux_sample_valid is False
+    assert result.ux_sample_invalid_reason == (
+        "budget-exhausted: model call budget exhausted"
+    )
+    assert isinstance(provider_action := provider.executed[0], WaitAction)
+    assert provider_action.milliseconds == 0
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "abandonment-deferred"
         for event in bundles.bundle.events
     )
 
@@ -2514,8 +2806,8 @@ async def test_meaningful_fixture_progress_resets_scroll_repetition(
 
     result = await agent.execute(_spec(max_steps=10, timeout_seconds=None))
 
-    assert result.outcome.kind == "agent-abandoned", result.terminal_reason
-    assert result.terminal_reason == "Test complete."
+    assert result.outcome.kind == "budget-exhausted", result.terminal_reason
+    assert result.terminal_reason == "attention budget exhausted"
     assert attention.recovery_levels == [0, 1, 0, 1, 2]
     assert not any(
         isinstance(event, dict) and event.get("kind") == "repeated-action-detected"
@@ -2749,7 +3041,7 @@ async def test_unlimited_run_awaits_run_and_terminal_verification(
 
     assert result.outcome.kind == "agent-abandoned"
     assert result.verification.verified is False
-    assert verifier.calls == 1
+    assert verifier.calls == 0
     assert bundles.bundle.finalized
     assert bundles.bundle.events[-1].kind == "run-terminated"
     assert provider.ended == 1
@@ -2782,11 +3074,9 @@ async def test_finite_timeout_bounds_terminal_verification(tmp_path: Path) -> No
 
     result = await agent.execute(_spec(timeout_seconds=0.01))
 
-    assert result.outcome.kind == "timed-out"
+    assert result.outcome.kind == "agent-abandoned"
     assert result.verification.verified is False
-    assert result.verification.details == (
-        "independent verification unavailable before timeout"
-    )
+    assert result.verification.details == "independent verification unavailable"
     assert bundles.bundle.finalized
     assert bundles.bundle.events[-1].kind == "run-terminated"
     assert provider.ended == 1
@@ -2850,9 +3140,10 @@ async def test_scroll_back_wait_wrong_and_stale_actions_recapture_and_recover(
         "back",
         "wait",
         "click",
+        "wait",
     ]
     assert len(provider.executed) < len(decisions)
-    assert provider.capture_count == 5
+    assert provider.capture_count == 6
     assert any(
         event.get("kind") == "action-rejected"
         for event in bundles.bundle.events
@@ -2936,6 +3227,7 @@ async def test_web_verifier_checks_fixture_state_without_exposing_expected_value
     assert result.evidence_ids == ("fixture:run-1:workspace.invite_status",)
     assert "sent" not in (result.details or "")
     assert state_client.session_ids == ["run-1"]
+    assert verifier.last_capture is None
 
 
 @pytest.mark.asyncio
@@ -2958,15 +3250,169 @@ async def test_web_verifier_checks_fresh_persona_visible_capture(
     result = await verifier.verify(session)
 
     assert result.verified
-    assert result.evidence_ids == ("viewport:viewport-1:element:target",)
+    assert result.evidence_ids == ("viewport:viewport-1-verification-1:element:target",)
     assert provider.capture_count == 1
+    assert verifier.last_capture is not provider.captures[0]
+    assert verifier.last_capture is not None
+    assert verifier.last_capture.viewport_id == "viewport-1-verification-1"
+
+
+@pytest.mark.asyncio
+async def test_web_verifier_clears_last_capture_before_each_verification(
+    tmp_path: Path,
+) -> None:
+    spec = _spec()
+    provider = FakeObservationProvider((_snapshot(),))
+    session = await provider.start_session(_config(spec, tmp_path))
+    verifier = WebVerifier(
+        VisibleResultVerifierSpec(type="visible-result", text="Invite", role="button"),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot
+        if capture.snapshot is not None
+        else (_ for _ in ()).throw(ValueError("missing snapshot")),
+    )
+
+    await verifier.verify(session)
+    provider.failure = RuntimeError("capture failed")
+    with pytest.raises(RuntimeError, match="capture failed"):
+        await verifier.verify(session)
+
+    assert verifier.last_capture is None
+
+
+@pytest.mark.asyncio
+async def test_visible_verification_capture_is_persisted_once_with_exact_screenshot(
+    tmp_path: Path,
+) -> None:
+    initial = _snapshot()
+    verified_snapshot = _snapshot("verification-viewport", element_id="result", label="Sent")
+    exact_screenshot = b"exact-verification-screenshot"
+    provider = FakeObservationProvider(
+        (initial, verified_snapshot),
+        screenshots=(b"initial-screenshot", exact_screenshot),
+    )
+    verifier = WebVerifier(
+        VisibleResultVerifierSpec(type="visible-result", text="Sent", role="button"),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot
+        if capture.snapshot is not None
+        else (_ for _ in ()).throw(ValueError("missing snapshot")),
+    )
+    bundles = FilesystemBundleFactory(tmp_path / "bundles")
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (CognitiveDecision(action={"kind": "complete"}, reason="Complete."),)
+        ),
+        verifier,
+        bundles,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert provider.capture_count == 2
+    assert result.verification.evidence_ids[0].startswith(
+        "viewport:verification-viewport"
+    )
+    screenshot_id = next(
+        evidence_id
+        for evidence_id in result.verification.evidence_ids
+        if evidence_id.startswith("screenshot:")
+    )
+    screenshot_path = screenshot_id.removeprefix("screenshot:")
+    assert any(
+        snapshot.id.startswith("verification-viewport-verification-")
+        and snapshot.screenshot_artifact == screenshot_path
+        for snapshot in result.state.snapshots
+    )
+    checksum = next(
+        item for item in result.state.artifact_checksums if item.path == screenshot_path
+    )
+    assert checksum.sha256 == hashlib.sha256(exact_screenshot).hexdigest()
+    assert (result.bundle_path / screenshot_path).read_bytes() == exact_screenshot
+    timeline = [
+        json.loads(line)
+        for line in (result.bundle_path / "timeline.jsonl").read_text().splitlines()
+    ]
+    viewport_sequence = next(
+        index for index, event in enumerate(timeline)
+        if event["kind"] == "viewport-captured"
+        and event["snapshot"]["id"].startswith("verification-viewport-verification-")
+    )
+    verification_sequence = next(
+        index for index, event in enumerate(timeline)
+        if event["kind"] == "verification-recorded"
+    )
+    assert viewport_sequence < verification_sequence
+
+
+@pytest.mark.asyncio
+async def test_verification_capture_reusing_viewport_id_gets_distinct_identity(
+    tmp_path: Path,
+) -> None:
+    initial = _snapshot("viewport-1")
+    verified_snapshot = _snapshot("viewport-1", element_id="result", label="Sent")
+    initial_screenshot = b"initial-screenshot"
+    exact_screenshot = b"different-verification-screenshot"
+    provider = FakeObservationProvider(
+        (initial, verified_snapshot),
+        screenshots=(initial_screenshot, exact_screenshot),
+    )
+    verifier = WebVerifier(
+        VisibleResultVerifierSpec(type="visible-result", text="Sent", role="button"),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot
+        if capture.snapshot is not None
+        else (_ for _ in ()).throw(ValueError("missing snapshot")),
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (CognitiveDecision(action={"kind": "complete"}, reason="Complete."),)
+        ),
+        verifier,
+        FilesystemBundleFactory(tmp_path / "bundles"),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.state.snapshots[0].id == "viewport-1"
+    assert len(result.state.snapshots) == 2
+    persisted_verifier = result.state.snapshots[1]
+    assert persisted_verifier.id != "viewport-1"
+    assert persisted_verifier.element("result").execution_reference.viewport_id == (
+        persisted_verifier.id
+    )
+    assert (
+        f"viewport:{persisted_verifier.id}:element:result"
+        in result.verification.evidence_ids
+    )
+    timeline = [
+        json.loads(line)
+        for line in (result.bundle_path / "timeline.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    viewport_events = [
+        event for event in timeline if event["kind"] == "viewport-captured"
+    ]
+    assert [event["snapshot"]["id"] for event in viewport_events] == [
+        "viewport-1",
+        persisted_verifier.id,
+    ]
+    assert viewport_events[0]["sequence"] != viewport_events[1]["sequence"]
+    assert (
+        result.bundle_path / persisted_verifier.screenshot_artifact
+    ).read_bytes() == exact_screenshot
 
 
 @pytest.mark.asyncio
 async def test_session_start_failure_does_not_cleanup_previous_run_session(
     tmp_path: Path,
 ) -> None:
-    provider = FakeObservationProvider((_snapshot(),))
+    provider = FakeObservationProvider((_snapshot(second_element_id="result"),))
     verifier = FakeVerifier(
         (
             VerificationResult(verified=True, evidence_ids=("v1",)),
@@ -2981,6 +3427,10 @@ async def test_session_start_failure_does_not_cleanup_previous_run_session(
                 CognitiveDecision(
                     action={"kind": "interact", "element_id": "target"},
                     reason="Target matches goal.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "complete"},
+                    reason="I saw enough visible evidence.",
                 ),
             )
         ),
@@ -3375,3 +3825,303 @@ async def test_evaluator_failure_still_publishes_closed_immutable_bundle(
         assert (
             hashlib.sha256((bundle / relative_path).read_bytes()).hexdigest() == digest
         )
+
+
+@pytest.mark.asyncio
+async def test_abandonment_defers_for_reobserve_then_contact_target_succeeds(
+    tmp_path: Path,
+) -> None:
+    provider = FakeObservationProvider(
+        (
+            _snapshot("viewport-1", "partial", label="Partial view"),
+            _snapshot("viewport-2", "contact", label="Contact"),
+        )
+    )
+    bundles = FakeBundleFactory()
+    attention = RepeatingAttentionPolicy()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            (
+                CognitiveDecision(
+                    action={"kind": "abandon", "reason": "No target yet."},
+                    reason="No target yet.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "interact", "element_id": "contact"},
+                    reason="Contact control is visible.",
+                ),
+                CognitiveDecision(
+                    action={"kind": "complete"},
+                    reason="I saw enough visible evidence.",
+                ),
+            )
+        ),
+        FakeVerifier((VerificationResult(verified=True),)),
+        bundles,
+        attention_policy=attention,
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "verified-success"
+    assert isinstance(provider.executed[0], WaitAction)
+    assert provider.executed[0].milliseconds == 0
+    assert provider.executed[1].kind == "click"
+    assert provider.executed[1].element_id == "contact"
+    assert attention.recovery_levels == [0, 1, 2]
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "abandonment-deferred"
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_memory_capacity_keeps_offered_elements_action_valid(
+    tmp_path: Path,
+) -> None:
+    base_snapshot = _snapshot(
+        second_element_id="second",
+        lineage_id="target",
+        second_lineage_id="second",
+    )
+    third = replace(
+        base_snapshot.elements[1],
+        id="third",
+        label="Third",
+        rendered_text="Third",
+        bounds=BoundingBox(x=250, y=10, width=100, height=30),
+        lineage_id="third",
+    )
+    fourth = replace(
+        third,
+        id="fourth",
+        label="Fourth",
+        rendered_text="Fourth",
+        bounds=BoundingBox(x=370, y=10, width=100, height=30),
+        lineage_id="fourth",
+    )
+    snapshot = replace(
+        base_snapshot,
+        elements=(*base_snapshot.elements, third, fourth),
+    )
+
+    class RecordingCognitiveAgent(FakeCognitiveAgent):
+        def __init__(self) -> None:
+            super().__init__(())
+            self.contexts: list[CognitiveRunContext] = []
+
+        def update_context(self, context: CognitiveRunContext) -> None:
+            self.contexts.append(context)
+
+        async def decide(
+            self, goal: str, observation: ProgressiveObservation
+        ) -> object:
+            del goal
+            self.observations.append(observation)
+            if len(self.observations) == 1:
+                return CognitiveDecision(action={"kind": "wait"}, reason="Observe more.")
+            return CognitiveDecision(
+                action={
+                    "kind": "interact",
+                    "element_id": observation.newly_revealed_elements[0].id,
+                },
+                reason="Use offered control.",
+            )
+
+    cognitive = RecordingCognitiveAgent()
+    attention = ProgressiveAttentionPolicy(
+        AttentionPolicyConfig(batch_size=2, cross_region_exploration=0)
+    )
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((snapshot,)),
+        cognitive,
+        FakeVerifier(
+            (VerificationResult(verified=False), VerificationResult(verified=True))
+        ),
+        FakeBundleFactory(),
+        attention_policy=attention,
+        memory_policy=MemoryPolicy(MemoryPolicyConfig(working_capacity=1)),
+    )
+
+    spec = _spec(timeout_seconds=None)
+    spec = replace(
+        spec,
+        scenario=replace(
+            spec.scenario,
+            verifier=FixtureStateVerifierSpec(
+                type="fixture-state",
+                resource="workspace",
+                field="invite_status",
+                operator="equals",
+                expected_fixture_key="invite_email",
+            ),
+        ),
+    )
+    result = await agent.execute(spec)
+
+    assert result.outcome.kind == "verified-success"
+    assert result.state.attention.memory_capacity == 1
+    assert [context.working_memory_capacity for context in cognitive.contexts] == [1, 1]
+    offered = cognitive.observations[1]
+    assert offered.remembered_elements == ()
+    for element in (
+        *offered.newly_revealed_elements,
+        *offered.remembered_elements,
+    ):
+        result.state.attention.validate_action(
+            InteractWithElement(element_id=element.id), snapshot
+        )
+
+
+@pytest.mark.asyncio
+async def test_memory_evicted_noticed_elements_do_not_count_as_fresh_coverage(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(
+        second_element_id="second",
+        lineage_id="target",
+        second_lineage_id="second",
+    )
+    bundles = FakeBundleFactory()
+    decision = CognitiveDecision(
+        action={"kind": "abandon", "reason": "No further controls."},
+        reason="No further controls.",
+    )
+    cognitive = FakeCognitiveAgent((decision,) * 6)
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((snapshot,)),
+        cognitive,
+        FakeVerifier((VerificationResult(verified=False),)),
+        bundles,
+        attention_policy=ProgressiveAttentionPolicy(
+            AttentionPolicyConfig(batch_size=2, cross_region_exploration=0)
+        ),
+        memory_policy=MemoryPolicy(MemoryPolicyConfig(working_capacity=1)),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "agent-abandoned"
+    assert result.terminal_reason == "all visible elements examined without progress"
+    assert result.state.attention.noticed_ids == frozenset({"target", "second"})
+    assert len(cognitive.observations) == 1
+    prominence_events = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict) and event.get("kind") == "prominence-recorded"
+    ]
+    assert len(prominence_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_cognitive_completes_from_grouped_stat_rows_retained_in_memory(
+    tmp_path: Path,
+) -> None:
+    base_snapshot = _snapshot(second_element_id="countries")
+    snapshot = replace(
+        base_snapshot,
+        elements=(
+            replace(
+                base_snapshot.elements[0],
+                label="48,000+ cities calibrated",
+                rendered_text="48,000+ cities calibrated",
+            ),
+            replace(
+                base_snapshot.elements[1],
+                label="130+ countries",
+                rendered_text="130+ countries",
+            ),
+        ),
+    )
+
+    class GroupedEvidenceClient:
+        endpoint_origin = "https://llm.example.test"
+
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        async def complete(self, schema, messages, model, role):
+            del model, role
+            payload = json.loads(messages[-1].content)
+            self.payloads.append(payload)
+            labels = {
+                item["label"]
+                for item in (
+                    *payload["newly_revealed_elements"],
+                    *payload["remembered_elements"],
+                )
+            }
+            action = (
+                "complete"
+                if {"48,000+ cities calibrated", "130+ countries"} <= labels
+                else "wait"
+            )
+            return schema.model_validate(
+                {
+                    "action": action,
+                    "reason": "Current and remembered visible evidence covers the goal.",
+                }
+            )
+
+    client = GroupedEvidenceClient()
+    agent = _agent(
+        tmp_path,
+        FakeObservationProvider((snapshot,)),
+        StructuredCognitiveAgent(client, model="cognitive-model"),
+        FakeVerifier((VerificationResult(verified=True),)),
+        FakeBundleFactory(),
+        attention_policy=ProgressiveAttentionPolicy(
+            AttentionPolicyConfig(batch_size=1, cross_region_exploration=0)
+        ),
+        memory_policy=MemoryPolicy(MemoryPolicyConfig(working_capacity=2)),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.outcome.kind == "verified-success"
+    assert len(client.payloads) == 2
+    assert client.payloads[1]["remembered_elements"]
+    assert "verifier" not in json.dumps(client.payloads).lower()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "terminal_reason", "expected_valid", "expected_invalid_reason"),
+    (
+        (VerifiedSuccess(), None, True, None),
+        (AgentAbandoned(reason="No safe path."), "No safe path.", True, None),
+        (BudgetExhausted(), "attention budget exhausted", True, None),
+        (BudgetExhausted(), "interaction budget exhausted", True, None),
+        (
+            BudgetExhausted(),
+            "model call budget exhausted",
+            False,
+            "budget-exhausted: model call budget exhausted",
+        ),
+        (
+            BudgetExhausted(),
+            "repeated successful fixture input detected",
+            False,
+            "budget-exhausted: repeated successful fixture input detected",
+        ),
+        (
+            BudgetExhausted(),
+            "provider runtime limit exhausted",
+            False,
+            "budget-exhausted: provider runtime limit exhausted",
+        ),
+    ),
+)
+def test_ux_sample_validity_separates_human_and_automation_budgets(
+    outcome: object,
+    terminal_reason: str | None,
+    expected_valid: bool,
+    expected_invalid_reason: str | None,
+) -> None:
+    validity = _ux_sample_validity(outcome, terminal_reason)  # type: ignore[arg-type]
+
+    assert validity == (expected_valid, expected_invalid_reason)
