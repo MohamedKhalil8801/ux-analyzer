@@ -7,6 +7,7 @@ from ux_analyzer.domain.findings import (
     EvidenceClass,
     FindingSeverity,
     Reproducibility,
+    UnsupportedHumanClaimError,
 )
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
@@ -110,14 +111,20 @@ def test_synthesis_finding_rejects_confidence_outside_unit_interval(
 
 def test_synthesis_finding_rejects_empty_or_duplicate_evidence_ids() -> None:
     reference = EvidenceRef("event:run-a:18", "event", "run-a")
+    duplicate_reference = EvidenceRef("event:run-a:18", "event", "run-a")
     with pytest.raises(ValueError, match="duplicate evidence"):
-        _finding(evidence_refs=(reference, reference))
+        _finding(evidence_refs=(reference, duplicate_reference))
 
     with pytest.raises(ValueError, match="evidence ID"):
         _finding(evidence_refs=())
 
     with pytest.raises(ValueError, match="evidence ID"):
         EvidenceRef("", "event", "run-a")
+
+
+def test_synthesis_finding_rejects_unsupported_human_claim() -> None:
+    with pytest.raises(UnsupportedHumanClaimError, match="unsupported human claim"):
+        _finding(evidence_class=EvidenceClass.UNSUPPORTED_HUMAN_CLAIM)
 
 
 def test_synthesis_finding_rejects_missing_fix_and_plain_language_fields() -> None:
@@ -252,6 +259,32 @@ def test_synthesis_attempt_recursively_freezes_manifest_and_retrieval_data() -> 
     assert isinstance(frozen_request, MappingProxyType)
     assert frozen_model["models"] == ("gpt-report",)
     assert frozen_request["evidence_ids"] == ("event:run-a:18",)
+
+
+def test_synthesis_attempt_rejects_unsupported_mutable_metadata_values() -> None:
+    mutable_metadata = bytearray(b"mutable")
+
+    with pytest.raises(TypeError, match="unsupported metadata value"):
+        SynthesisAttempt(
+            attempt_id="attempt-1",
+            status=SynthesisStatus.UNAVAILABLE,
+            model_manifest={"payload": mutable_metadata},
+        )
+
+
+@pytest.mark.parametrize("resolution", [None, " "])
+def test_resolved_synthesis_objection_requires_non_empty_resolution(
+    resolution: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="resolution"):
+        SynthesisObjection(
+            objection_id="objection-1",
+            finding_id="finding-1",
+            severity=ObjectionSeverity.BLOCKING,
+            message="The evidence does not support the proposed claim.",
+            resolved=True,
+            resolution=resolution,
+        )
 
 
 @pytest.mark.parametrize(

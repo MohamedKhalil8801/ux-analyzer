@@ -12,6 +12,7 @@ from ux_analyzer.domain.findings import (
     EvidenceClass,
     FindingSeverity,
     Reproducibility,
+    UnsupportedHumanClaimError,
 )
 
 
@@ -39,7 +40,9 @@ def _freeze_value(value: object) -> object:
         return tuple(_freeze_value(item) for item in value)
     if isinstance(value, (set, frozenset)):
         return tuple(_freeze_value(item) for item in value)
-    return value
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported metadata value: {type(value).__name__}")
 
 
 def _mapping_proxy(values: Mapping[str, object]) -> Mapping[str, object]:
@@ -200,7 +203,12 @@ class SynthesisFinding:
         object.__setattr__(
             self, "limitations", _tuple_of_strings(self.limitations, "limitations")
         )
-        object.__setattr__(self, "evidence_class", EvidenceClass(self.evidence_class))
+        evidence_class = EvidenceClass(self.evidence_class)
+        if evidence_class is EvidenceClass.UNSUPPORTED_HUMAN_CLAIM:
+            raise UnsupportedHumanClaimError(
+                "unsupported human claim cannot become finding"
+            )
+        object.__setattr__(self, "evidence_class", evidence_class)
         object.__setattr__(
             self,
             "reproducibility",
@@ -234,7 +242,9 @@ class SynthesisObjection:
         _require_non_empty(self.message, "objection message")
         if self.reviewer_role:
             _require_non_empty(self.reviewer_role, "reviewer_role")
-        if self.resolution is not None and self.resolution:
+        if self.resolved and self.resolution is None:
+            raise ValueError("resolution must not be empty")
+        if self.resolution is not None:
             _require_non_empty(self.resolution, "resolution")
         object.__setattr__(self, "severity", ObjectionSeverity(self.severity))
         object.__setattr__(
