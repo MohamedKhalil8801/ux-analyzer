@@ -78,6 +78,28 @@ def _live_project(
     return project
 
 
+def _frozen_expectation_document(
+    expectation_id: str = "invite-first-time-v1",
+    *,
+    application_version_id: str = "fixture-app-improved",
+    scenario_id: str = "invite-teammate",
+    persona_id: str = "first-time-user",
+) -> dict[str, Any]:
+    return {
+        "id": expectation_id,
+        "schema_version": "frozen-expectation-v1",
+        "application_version_id": application_version_id,
+        "scenario_id": scenario_id,
+        "persona_id": persona_id,
+        "desired_outcomes": ["A valid invitation is sent."],
+        "required_invariants": ["The invitee remains a workspace member."],
+        "acceptable_alternatives": ["Use the team page.", "Use onboarding."],
+        "reference_paths": [["dashboard", "team", "invite"]],
+        "effort_bounds": {"max_steps": 8.0},
+        "warning_signals": ["Invitation form is unreachable."],
+    }
+
+
 def test_load_valid_project_into_frozen_domain_contracts() -> None:
     loaded = load_project(FIXTURE_PATH)
 
@@ -836,12 +858,132 @@ def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     assert target.roles_by_version == {"defective": "button", "improved": "link"}
 
 
-def test_expectation_provider_cannot_be_enabled_in_poc(tmp_path: Path) -> None:
+def test_expectation_provider_requires_documents_when_enabled(tmp_path: Path) -> None:
     project = _read_project()
     project["providers"] = {"expectation": {"enabled": True}}
 
-    with pytest.raises(ProjectConfigError, match="expectation"):
+    with pytest.raises(ProjectConfigError, match="enabled expectation provider"):
         load_project(_write_project(tmp_path, project))
+
+
+def test_loads_versioned_frozen_expectation_document(tmp_path: Path) -> None:
+    project = _read_project()
+    project["providers"] = {
+        "expectation": {
+            "enabled": True,
+            "provider_id": "frozen-expectation-v1",
+            "documents": [_frozen_expectation_document()],
+        }
+    }
+
+    loaded = load_project(_write_project(tmp_path, project))
+
+    assert loaded.runtime.expectation_enabled is True
+    assert len(loaded.runtime.expectations) == 1
+    expectation = loaded.runtime.expectations[0]
+    assert expectation.expectation_id == "invite-first-time-v1"
+    assert expectation.key.application_version_id == "fixture-app-improved"
+    assert expectation.key.scenario_id == "invite-teammate"
+    assert expectation.key.persona_id == "first-time-user"
+    assert expectation.effort_bounds["max_steps"] == pytest.approx(8.0)
+
+
+def test_legacy_disabled_expectation_provider_remains_valid() -> None:
+    loaded = load_project(FIXTURE_PATH)
+
+    assert loaded.runtime.expectation_enabled is False
+    assert loaded.runtime.expectations == ()
+
+
+def test_wildcard_persona_expectation_is_valid(tmp_path: Path) -> None:
+    project = _read_project()
+    project["providers"] = {
+        "expectation": {
+            "enabled": True,
+            "documents": [
+                _frozen_expectation_document(persona_id="*"),
+            ],
+        }
+    }
+
+    loaded = load_project(_write_project(tmp_path, project))
+
+    assert loaded.runtime.expectations[0].key.persona_id == "*"
+
+
+def test_frozen_expectation_documents_reject_duplicate_keys(tmp_path: Path) -> None:
+    project = _read_project()
+    first = _frozen_expectation_document("invite-first-time-v1")
+    duplicate = _frozen_expectation_document("invite-first-time-v2")
+    project["providers"] = {
+        "expectation": {"enabled": True, "documents": [first, duplicate]}
+    }
+
+    with pytest.raises(ProjectConfigError, match="duplicate frozen expectation key"):
+        load_project(_write_project(tmp_path, project))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "application_version_id",
+            "missing-version",
+            "unknown application version",
+        ),
+        ("scenario_id", "missing-scenario", "unknown scenario"),
+        ("persona_id", "missing-persona", "unknown persona"),
+    ],
+)
+def test_frozen_expectation_documents_reject_unknown_references(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    project = _read_project()
+    document = _frozen_expectation_document()
+    document[field] = value
+    project["providers"] = {"expectation": {"enabled": True, "documents": [document]}}
+
+    with pytest.raises(ProjectConfigError, match=message):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_frozen_expectation_documents_reject_empty_outcomes(tmp_path: Path) -> None:
+    project = _read_project()
+    document = _frozen_expectation_document()
+    document["desired_outcomes"] = []
+    project["providers"] = {"expectation": {"enabled": True, "documents": [document]}}
+
+    with pytest.raises(ProjectConfigError, match="desired_outcomes"):
+        load_project(_write_project(tmp_path, project))
+
+
+def test_expectation_documents_are_canonicalized_in_digests(tmp_path: Path) -> None:
+    project = _read_project()
+    documents = [
+        _frozen_expectation_document("invite-first-time-v1"),
+        _frozen_expectation_document("invite-first-time-wildcard", persona_id="*"),
+    ]
+    project["providers"] = {"expectation": {"enabled": True, "documents": documents}}
+    first = load_project(_write_project(tmp_path, project, "first.yaml"))
+
+    reordered = copy.deepcopy(project)
+    reordered["providers"]["expectation"]["documents"] = list(reversed(documents))
+    second = load_project(_write_project(tmp_path, reordered, "reordered.yaml"))
+
+    assert first.config_digest == second.config_digest
+    assert first.config_digest_for("smoke") == second.config_digest_for("smoke")
+
+    changed = copy.deepcopy(project)
+    changed["providers"]["expectation"]["documents"][0]["desired_outcomes"] = [
+        "A different valid invitation is sent."
+    ]
+    third = load_project(_write_project(tmp_path, changed, "changed.yaml"))
+
+    assert third.config_digest != first.config_digest
+    assert third.config_digest_for("smoke") != first.config_digest_for("smoke")
 
 
 def test_domain_project_is_immutable() -> None:

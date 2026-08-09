@@ -19,6 +19,7 @@ from ux_analyzer.config.models import (
     ApplicationModel,
     ExperimentModel,
     FixtureStateVerifierModel,
+    FrozenExpectationDocumentModel,
     ProjectModel,
     SaliencyProviderModel,
     ScenarioModel,
@@ -41,6 +42,7 @@ from ux_analyzer.domain.benchmark import (
     VisibleResultVerifierSpec,
     resolve_prominence_provider_id,
 )
+from ux_analyzer.domain.expectations import ExpectationKey, FrozenExpectation
 from ux_analyzer.providers.attention_policy import AttentionPolicyConfig
 from ux_analyzer.providers.finding_rules import FindingRuleConfig
 from ux_analyzer.providers.prominence import (
@@ -101,6 +103,7 @@ class RuntimeConfig:
     discovery_cost: DiscoveryCostConfig
     findings: FindingRuleConfig
     state_updates: StateUpdateConfig
+    expectations: tuple[FrozenExpectation, ...]
     expectation_enabled: bool
     saliency: SaliencyRuntimeConfig
 
@@ -232,9 +235,38 @@ def _to_runtime(config: ProjectModel) -> RuntimeConfig:
             failure_confidence_delta=state_updates.failure_confidence_delta,
             failure_frustration_delta=state_updates.failure_frustration_delta,
         ),
+        expectations=_to_expectations(config.providers.expectation.documents),
         expectation_enabled=config.providers.expectation.enabled,
         saliency=saliency_runtime,
     )
+
+
+def _to_expectations(
+    documents: Iterable[FrozenExpectationDocumentModel],
+) -> tuple[FrozenExpectation, ...]:
+    try:
+        return tuple(
+            FrozenExpectation(
+                expectation_id=document.id,
+                schema_version=document.schema_version,
+                key=ExpectationKey(
+                    application_version_id=document.application_version_id,
+                    scenario_id=document.scenario_id,
+                    persona_id=document.persona_id,
+                ),
+                desired_outcomes=tuple(document.desired_outcomes),
+                required_invariants=tuple(document.required_invariants),
+                acceptable_alternatives=tuple(document.acceptable_alternatives),
+                reference_paths=tuple(tuple(path) for path in document.reference_paths),
+                effort_bounds=dict(document.effort_bounds),
+                warning_signals=tuple(document.warning_signals),
+            )
+            for document in documents
+        )
+    except (TypeError, ValueError) as error:
+        raise ProjectConfigError(
+            f"invalid frozen expectation document: {error}"
+        ) from error
 
 
 def _to_saliency_runtime(config: SaliencyProviderModel) -> SaliencyRuntimeConfig:
@@ -331,6 +363,12 @@ def _validate_references(config: ProjectModel) -> None:
 
     persona_ids = {persona.id for persona in config.personas}
     scenario_ids = {scenario.id for scenario in config.scenarios}
+    _validate_expectation_references(
+        config,
+        versions_by_id=versions_by_id,
+        scenario_ids=scenario_ids,
+        persona_ids=persona_ids,
+    )
     for scenario in config.scenarios:
         for version_id in scenario.application_version_ids:
             if version_id not in versions_by_id:
@@ -353,7 +391,9 @@ def _validate_references(config: ProjectModel) -> None:
                 f"scenario {scenario.id!r} referencing live application versions "
                 "must not define fixture_inputs"
             )
-        if live_version_ids and isinstance(scenario.verifier, FixtureStateVerifierModel):
+        if live_version_ids and isinstance(
+            scenario.verifier, FixtureStateVerifierModel
+        ):
             raise ProjectConfigError(
                 f"scenario {scenario.id!r} referencing live application versions "
                 "must not use fixture-state verifier"
@@ -407,6 +447,53 @@ def _assert_unique_ids(kind: str, ids: Iterable[str]) -> None:
     values = list(ids)
     if len(values) != len(set(values)):
         raise ProjectConfigError(f"duplicate {kind} id")
+
+
+def _validate_expectation_references(
+    config: ProjectModel,
+    *,
+    versions_by_id: Mapping[str, ApplicationVersionKind],
+    scenario_ids: set[str],
+    persona_ids: set[str],
+) -> None:
+    scenarios_by_id = {scenario.id: scenario for scenario in config.scenarios}
+    seen_keys: set[tuple[str, str, str]] = set()
+    for document in config.providers.expectation.documents:
+        key = (
+            document.application_version_id,
+            document.scenario_id,
+            document.persona_id,
+        )
+        if key in seen_keys:
+            raise ProjectConfigError(
+                "duplicate frozen expectation key: "
+                f"{document.application_version_id!r}, "
+                f"{document.scenario_id!r}, {document.persona_id!r}"
+            )
+        seen_keys.add(key)
+
+        if document.application_version_id not in versions_by_id:
+            raise ProjectConfigError(
+                f"frozen expectation {document.id!r} references unknown "
+                f"application version {document.application_version_id!r}"
+            )
+        scenario = scenarios_by_id.get(document.scenario_id)
+        if scenario is None or document.scenario_id not in scenario_ids:
+            raise ProjectConfigError(
+                f"frozen expectation {document.id!r} references unknown scenario "
+                f"{document.scenario_id!r}"
+            )
+        if document.persona_id != "*" and document.persona_id not in persona_ids:
+            raise ProjectConfigError(
+                f"frozen expectation {document.id!r} references unknown persona "
+                f"{document.persona_id!r}"
+            )
+        if document.application_version_id not in scenario.application_version_ids:
+            raise ProjectConfigError(
+                f"frozen expectation {document.id!r} references application version "
+                f"{document.application_version_id!r} outside scenario "
+                f"{document.scenario_id!r}"
+            )
 
 
 def _to_domain(config: ProjectModel) -> BenchmarkProject:
@@ -610,6 +697,29 @@ def _digest_compatibility_payload(payload: dict[str, object]) -> dict[str, objec
         providers = dict(cast(dict[str, object], providers_value))
         if providers.get("saliency") is None:
             providers.pop("saliency", None)
+        expectation_value = providers.get("expectation")
+        if isinstance(expectation_value, dict):
+            expectation = dict(cast(dict[str, object], expectation_value))
+            documents_value = expectation.get("documents")
+            if expectation.get("enabled") is False and documents_value == []:
+                expectation.pop("provider_id", None)
+                expectation.pop("documents", None)
+            elif isinstance(documents_value, list):
+                documents = [
+                    dict(cast(dict[str, object], document))
+                    for document in cast(list[object], documents_value)
+                    if isinstance(document, dict)
+                ]
+                documents.sort(
+                    key=lambda document: (
+                        str(document.get("application_version_id", "")),
+                        str(document.get("scenario_id", "")),
+                        str(document.get("persona_id", "")),
+                        str(document.get("id", "")),
+                    )
+                )
+                expectation["documents"] = documents
+            providers["expectation"] = expectation
         normalized["providers"] = providers
     experiments_value = normalized.get("experiments")
     if isinstance(experiments_value, list):

@@ -217,8 +217,32 @@ class AttentionProviderModel(_ConfigModel):
     recovery_after_misses: int = Field(default=2, ge=1)
 
 
+class FrozenExpectationDocumentModel(_ConfigModel):
+    id: str = Field(min_length=1)
+    schema_version: Literal["frozen-expectation-v1"]
+    application_version_id: str = Field(min_length=1)
+    scenario_id: str = Field(min_length=1)
+    persona_id: str = Field(min_length=1)
+    desired_outcomes: list[str] = Field(min_length=1)
+    required_invariants: list[str] = Field(default_factory=list)
+    acceptable_alternatives: list[str] = Field(default_factory=list)
+    reference_paths: list[list[str]] = Field(default_factory=list)
+    effort_bounds: dict[str, float] = Field(default_factory=_empty_float_mapping)
+    warning_signals: list[str] = Field(default_factory=list)
+
+
 class ExpectationProviderModel(_ConfigModel):
-    enabled: Literal[False] = False
+    enabled: bool = False
+    provider_id: Literal["frozen-expectation-v1"] = "frozen-expectation-v1"
+    documents: list[FrozenExpectationDocumentModel] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_documents_when_enabled(self) -> ExpectationProviderModel:
+        if self.enabled and not self.documents:
+            raise ValueError(
+                "enabled expectation provider requires at least one document"
+            )
+        return self
 
 
 class SaliencyCacheModel(_ConfigModel):
