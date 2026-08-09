@@ -1,0 +1,2645 @@
+{
+  "cases": [
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 702,
+            "y": 544
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Create workspace",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 48,
+            "y": 462
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-primary-cta",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-primary-cta.png",
+      "split": "calibration",
+      "tags": [
+        "single-target"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 375,
+            "y": 296
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Continue",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 702,
+            "y": 214
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.88,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "danger",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-competing-actions",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-competing-actions.png",
+      "split": "calibration",
+      "tags": [
+        "competing-cta"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 702,
+            "y": 64
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Billing",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "link",
+          "style": "selected",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 48,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-dense-navigation",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-dense-navigation.png",
+      "split": "calibration",
+      "tags": [
+        "dense-navigation"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 375,
+            "y": 544
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Save changes",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 702,
+            "y": 462
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-form-submit",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-form-submit.png",
+      "split": "calibration",
+      "tags": [
+        "form"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 56,
+            "width": 210,
+            "x": 48,
+            "y": 112
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Security settings",
+          "local_contrast": 0.82,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "text",
+          "style": "heading",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 702,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-section-heading",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-section-heading.png",
+      "split": "calibration",
+      "tags": [
+        "heading"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 702,
+            "y": 544
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Invite teammate",
+          "local_contrast": 0.18,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "low-contrast",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 48,
+            "y": 462
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-low-contrast-action",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-low-contrast-action.png",
+      "split": "calibration",
+      "tags": [
+        "low-contrast"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 48,
+            "y": 544
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "View invoice",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.35,
+          "relevance": 3,
+          "role": "link",
+          "style": "selected",
+          "visibility_fraction": 0.65
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 702,
+            "y": 462
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-partially-occluded",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-partially-occluded.png",
+      "split": "calibration",
+      "tags": [
+        "occlusion"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 702,
+            "y": 64
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Export report",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 48,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.98,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "loud",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-off-center-target",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-off-center-target.png",
+      "split": "calibration",
+      "tags": [
+        "center-bias"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 48,
+            "y": 544
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Open details",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "link",
+          "style": "selected",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 702,
+            "y": 462
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-large-container",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-large-container.png",
+      "split": "calibration",
+      "tags": [
+        "decorative-container"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 170,
+            "x": 282,
+            "y": 44
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Open navigation",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "menu",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 170,
+            "x": 28,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 28,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 28,
+            "y": 190
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 90,
+            "y": 340
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-mobile-menu",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-mobile-menu.png",
+      "split": "calibration",
+      "tags": [
+        "responsive"
+      ],
+      "viewport": {
+        "height": 800,
+        "width": 480
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 48,
+            "y": 112
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Search projects",
+          "local_contrast": 0.55,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "input",
+          "style": "field",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 702,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.98,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "loud",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-semantic-target",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-semantic-target.png",
+      "split": "calibration",
+      "tags": [
+        "semantic-vs-visual"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 375,
+            "y": 544
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Publish",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 702,
+            "y": 462
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "selected",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 330,
+            "y": 280
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "calibration-late-primary-action",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/calibration-late-primary-action.png",
+      "split": "calibration",
+      "tags": [
+        "reading-order"
+      ],
+      "viewport": {
+        "height": 640,
+        "width": 960
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 766,
+            "y": 624
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Create workspace",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 48,
+            "y": 542
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-primary-cta",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-primary-cta.png",
+      "split": "holdout",
+      "tags": [
+        "single-target"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 425,
+            "y": 350
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Continue",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 766,
+            "y": 268
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.88,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "danger",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-competing-actions",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-competing-actions.png",
+      "split": "holdout",
+      "tags": [
+        "competing-cta"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 170,
+            "x": 282,
+            "y": 58
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Billing",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "link",
+          "style": "selected",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 170,
+            "x": 28,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 28,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 28,
+            "y": 190
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 90,
+            "y": 340
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-dense-navigation",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-dense-navigation.png",
+      "split": "holdout",
+      "tags": [
+        "dense-navigation"
+      ],
+      "viewport": {
+        "height": 800,
+        "width": 480
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 425,
+            "y": 624
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Save changes",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 766,
+            "y": 542
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-form-submit",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-form-submit.png",
+      "split": "holdout",
+      "tags": [
+        "form"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 56,
+            "width": 210,
+            "x": 66,
+            "y": 126
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Security settings",
+          "local_contrast": 0.82,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "text",
+          "style": "heading",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 766,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-section-heading",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-section-heading.png",
+      "split": "holdout",
+      "tags": [
+        "heading"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 766,
+            "y": 624
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Invite teammate",
+          "local_contrast": 0.18,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "low-contrast",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 48,
+            "y": 542
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-low-contrast-action",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-low-contrast-action.png",
+      "split": "holdout",
+      "tags": [
+        "low-contrast"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 66,
+            "y": 624
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "View invoice",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.35,
+          "relevance": 3,
+          "role": "link",
+          "style": "selected",
+          "visibility_fraction": 0.65
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 766,
+            "y": 542
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-partially-occluded",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-partially-occluded.png",
+      "split": "holdout",
+      "tags": [
+        "occlusion"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 766,
+            "y": 78
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Export report",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 48,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.98,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "loud",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-off-center-target",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-off-center-target.png",
+      "split": "holdout",
+      "tags": [
+        "center-bias"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 66,
+            "y": 624
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Open details",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "link",
+          "style": "selected",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 766,
+            "y": 542
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-large-container",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-large-container.png",
+      "split": "holdout",
+      "tags": [
+        "decorative-container"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 170,
+            "x": 282,
+            "y": 58
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Open navigation",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "menu",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 170,
+            "x": 28,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 28,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 28,
+            "y": 190
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 90,
+            "y": 340
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-mobile-menu",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-mobile-menu.png",
+      "split": "holdout",
+      "tags": [
+        "responsive"
+      ],
+      "viewport": {
+        "height": 800,
+        "width": 480
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 170,
+            "x": 46,
+            "y": 106
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Search projects",
+          "local_contrast": 0.55,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "input",
+          "style": "field",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 170,
+            "x": 282,
+            "y": 150
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.98,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "loud",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 28,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 28,
+            "y": 190
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 90,
+            "y": 340
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-semantic-target",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-semantic-target.png",
+      "split": "holdout",
+      "tags": [
+        "semantic-vs-visual"
+      ],
+      "viewport": {
+        "height": 800,
+        "width": 480
+      }
+    },
+    {
+      "elements": [
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 48,
+            "width": 210,
+            "x": 425,
+            "y": 624
+          },
+          "disabled": false,
+          "id": "target",
+          "label": "Publish",
+          "local_contrast": 0.94,
+          "occlusion_fraction": 0.0,
+          "relevance": 3,
+          "role": "button",
+          "style": "accent",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 46,
+            "width": 210,
+            "x": 766,
+            "y": 542
+          },
+          "disabled": false,
+          "id": "secondary",
+          "label": "Secondary action",
+          "local_contrast": 0.76,
+          "occlusion_fraction": 0.0,
+          "relevance": 2,
+          "role": "button",
+          "style": "selected",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": true,
+          "bounds": {
+            "height": 34,
+            "width": 128,
+            "x": 48,
+            "y": 24
+          },
+          "disabled": false,
+          "id": "nav",
+          "label": "Dashboard",
+          "local_contrast": 0.34,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "link",
+          "style": "quiet",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 72,
+            "width": 420,
+            "x": 48,
+            "y": 210
+          },
+          "disabled": false,
+          "id": "content",
+          "label": "Quarterly activity and workspace summary",
+          "local_contrast": 0.48,
+          "occlusion_fraction": 0.0,
+          "relevance": 1,
+          "role": "text",
+          "style": "text",
+          "visibility_fraction": 1.0
+        },
+        {
+          "actionable": false,
+          "bounds": {
+            "height": 120,
+            "width": 300,
+            "x": 362,
+            "y": 300
+          },
+          "disabled": false,
+          "id": "decoration",
+          "label": "Decorative summary",
+          "local_contrast": 0.28,
+          "occlusion_fraction": 0.0,
+          "relevance": 0,
+          "role": "other",
+          "style": "panel",
+          "visibility_fraction": 1.0
+        }
+      ],
+      "id": "holdout-late-primary-action",
+      "near": [
+        [
+          "target",
+          "secondary"
+        ]
+      ],
+      "screenshot": "assets/holdout-late-primary-action.png",
+      "split": "holdout",
+      "tags": [
+        "reading-order"
+      ],
+      "viewport": {
+        "height": 720,
+        "width": 1024
+      }
+    }
+  ],
+  "version": "prominence-corpus-v1"
+}

@@ -966,17 +966,14 @@ def assert_hotspot_target_alignment(
     tolerance_px: float = 1.0,
 ) -> int:
     target = snapshot.element("target")
-    target_center = (
-        target.bounds.x + target.bounds.width / 2,
-        target.bounds.y + target.bounds.height / 2,
-    )
+    left = target.bounds.x - tolerance_px
+    top = target.bounds.y - tolerance_px
+    right = target.bounds.x + target.bounds.width + tolerance_px
+    bottom = target.bounds.y + target.bounds.height + tolerance_px
     failures = 0
     for prediction in predictions.predictions:
-        hotspot = _hotspot_source_center(prediction)
-        if max(
-            abs(hotspot[0] - target_center[0]),
-            abs(hotspot[1] - target_center[1]),
-        ) > tolerance_px:
+        hotspot_x, hotspot_y = _hotspot_source_center(prediction)
+        if not (left <= hotspot_x <= right and top <= hotspot_y <= bottom):
             failures += 1
     return failures
 

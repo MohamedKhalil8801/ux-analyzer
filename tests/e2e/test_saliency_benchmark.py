@@ -339,7 +339,7 @@ def test_paired_evaluation_metrics_drive_regression_gate_input(tmp_path: Path) -
     assert material_unexplained_regression(injected_regression, heuristic.metrics)
 
 
-def test_fake_hotspot_maps_to_target_center_with_pixel_tolerance(
+def test_fake_hotspot_maps_inside_target_with_pixel_tolerance(
     tmp_path: Path,
 ) -> None:
     model = _DeterministicSaliencyModel()
@@ -353,6 +353,45 @@ def test_fake_hotspot_maps_to_target_center_with_pixel_tolerance(
 
     assert model.last_predictions is not None
     assert assert_hotspot_target_alignment(snapshot, model.last_predictions) == 0
+
+
+def test_hotspot_alignment_accepts_hotspot_inside_target_away_from_center(
+    tmp_path: Path,
+) -> None:
+    model = _DeterministicSaliencyModel()
+    provider = FoveacastProminenceProvider(
+        model,
+        SaliencyCache(tmp_path / "inside-target-hotspot-cache"),
+        heuristic_provider=HeuristicProminenceProvider(),
+    )
+    snapshot = ViewportSnapshot(
+        id="large-target-viewport",
+        elements=(
+            ElementSnapshot(
+                id="target",
+                role="button",
+                label="Large target",
+                bounds=BoundingBox(x=1, y=1, width=6, height=6),
+                visibility_fraction=1.0,
+                actionable=True,
+            ),
+        ),
+    )
+    capture = replace(_focused_capture(), viewport_id=snapshot.id)
+    provider.score(capture, snapshot, SearchStage.INITIAL, None)
+
+    assert model.last_predictions is not None
+    assert assert_hotspot_target_alignment(snapshot, model.last_predictions) == 0
+    outside_target = replace(
+        snapshot,
+        elements=(
+            replace(
+                snapshot.elements[0],
+                bounds=BoundingBox(x=4, y=4, width=3, height=3),
+            ),
+        ),
+    )
+    assert assert_hotspot_target_alignment(outside_target, model.last_predictions) == 3
 
 
 def _focused_snapshot() -> ViewportSnapshot:
@@ -824,7 +863,7 @@ def test_real_foveacast_focused_states_have_maps_profiles_alignment_and_replay_a
         assert container.early is None
         assert container.eventual is None
         assert assert_hotspot_target_alignment(
-            snapshot, predictions, tolerance_px=32.0
+            snapshot, predictions, tolerance_px=1.0
         ) == 0
 
         cache = SaliencyCache(tmp_path / scenario_id)

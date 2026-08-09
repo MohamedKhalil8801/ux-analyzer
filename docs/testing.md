@@ -204,3 +204,19 @@ unavailable until explicit provider pricing is configured.
 
 Outputs are simulated benchmark evidence. They do not support claims about
 real-user completion, satisfaction, or human behavior.
+
+## Comprehensive prominence provider benchmark
+
+Run the controlled 24-case comparison before changing prominence providers:
+
+```text
+rtk uv run python scripts/generate_prominence_corpus.py
+rtk uv run python scripts/benchmark_prominence.py --cases benchmarks/prominence/cases.json --output reports/prominence-comprehensive
+```
+
+The corpus splits 12 calibration cases from 12 holdout cases. The runner compares
+heuristic, FoveaCast, and a calibrated late-fusion candidate, rejects FoveaCast
+fallback samples, and writes `summary.json` plus `decision.md`. See
+`docs/validation/2026-08-09-prominence-provider-benchmark.md` for the formulas,
+metric table, and current recommendation. The labels are controlled human-authored
+synthetic evidence; they are not eye tracking or real-user measurements.
