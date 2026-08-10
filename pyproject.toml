@@ -45,6 +45,7 @@ packages = ["src/ux_analyzer", "fixture_app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "--import-mode=importlib"
 testpaths = ["tests"]
 markers = [
     "e2e: bundled fixture browser acceptance tests",
