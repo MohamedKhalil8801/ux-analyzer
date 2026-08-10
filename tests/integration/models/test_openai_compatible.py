@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import io
 import json
 import os
 import subprocess
@@ -9,6 +12,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 from pydantic import BaseModel
 
 from ux_analyzer.adapters import openai as openai_adapter
@@ -19,7 +23,7 @@ from ux_analyzer.adapters.openai import (
     OpenAICompatibleStructuredClient,
     create_structured_model_client,
 )
-from ux_analyzer.ports.models import ChatMessage, ModelRole
+from ux_analyzer.ports.models import ChatMessage, ModelAttachment, ModelRole
 from ux_analyzer.providers.cognitive import CognitiveModelResponse
 from ux_analyzer.providers.scent import CoarseScentResponse
 
@@ -36,8 +40,29 @@ def _settings(**overrides: object) -> OpenAICompatibleSettings:
     return OpenAICompatibleSettings.model_validate(values)
 
 
+def _png_bytes() -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), color=(220, 220, 220)).save(output, format="PNG")
+    return output.getvalue()
+
+
+def _attachment(tmp_path: Path, content: bytes | None = None) -> ModelAttachment:
+    content = content or _png_bytes()
+    path = tmp_path / "evidence.png"
+    path.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    return ModelAttachment(
+        evidence_id=f"screenshot:run-a:{digest}",
+        path=path,
+        media_type="image/png",
+        sha256=digest,
+    )
+
+
 class _FakeCodexProcess:
-    def __init__(self, returncode: int, stderr: bytes = b"codex stderr must not be recorded") -> None:
+    def __init__(
+        self, returncode: int, stderr: bytes = b"codex stderr must not be recorded"
+    ) -> None:
         self.returncode = returncode
         self.stderr = stderr
         self.input: bytes | None = None
@@ -288,6 +313,7 @@ async def test_codex_timeout_bounds_descendant_like_cleanup_and_records_attempt(
             retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
         )
     )
+
     def fail_wait_for(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("cleanup must use deadline-aware task waits")
 
@@ -978,7 +1004,23 @@ async def test_cognitive_reasoning_effort_is_forwarded_when_configured() -> None
         requests.append(json.loads(request.content))
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "ok": True,
+                                    "echo": (
+                                        "data:image/png;base64,"
+                                        + base64.b64encode(_png_bytes()).decode("ascii")
+                                    ),
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
         )
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -1232,3 +1274,222 @@ async def test_shared_model_call_limiter_serializes_concurrent_requests() -> Non
 
     assert maximum_active == 1
     await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_attachment_builds_vision_payload_and_redacts_audit(
+    tmp_path: Path,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+        )
+
+    attachment = _attachment(tmp_path)
+    message = ChatMessage(
+        role="user",
+        content="Inspect the screenshot",
+        attachments=(attachment,),
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(report_reasoning_effort="high"),
+        http_client=http_client,
+    )
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    result = await client.complete(
+        SimpleResponse,
+        (message,),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.ok
+    payload = requests[0]
+    assert payload["reasoning_effort"] == "high"
+    assert payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect the screenshot"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": (
+                            "data:image/png;base64,"
+                            + base64.b64encode(_png_bytes()).decode("ascii")
+                        )
+                    },
+                },
+            ],
+        }
+    ]
+
+    audit = client.records[0].request
+    audit_json = json.dumps(audit)
+    assert "data:image" not in audit_json
+    assert base64.b64encode(_png_bytes()).decode("ascii") not in audit_json
+    assert "data:image" not in json.dumps(client.records[0].response)
+    assert audit["messages"] == [
+        {
+            "role": "user",
+            "content": "Inspect the screenshot",
+            "attachments": [
+                {
+                    "evidence_id": attachment.evidence_id,
+                    "path": "evidence.png",
+                    "media_type": "image/png",
+                    "sha256": attachment.sha256,
+                }
+            ],
+        }
+    ]
+    assert str(attachment.path) not in audit_json
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_attachment_rejects_checksum_and_size_before_encoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+            )
+        )
+    )
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    valid = _attachment(tmp_path)
+    bad_checksum = ModelAttachment(
+        evidence_id=valid.evidence_id,
+        path=valid.path,
+        media_type=valid.media_type,
+        sha256="0" * 64,
+    )
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+    with pytest.raises(ValueError, match="checksum"):
+        await client.complete(
+            SimpleResponse,
+            (ChatMessage(role="user", content="Inspect", attachments=(bad_checksum,)),),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+
+    monkeypatch.setattr(
+        openai_adapter,
+        "_MAX_MODEL_ATTACHMENT_BYTES",
+        valid.path.stat().st_size - 1,
+    )
+    with pytest.raises(ValueError, match="size|bytes"):
+        await client.complete(
+            SimpleResponse,
+            (ChatMessage(role="user", content="Inspect", attachments=(valid,)),),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_attachment_payload_uses_fresh_message_lists(
+    tmp_path: Path,
+) -> None:
+    attachment = _attachment(tmp_path)
+    message = ChatMessage(role="user", content="Inspect", attachments=(attachment,))
+    http_client = httpx.AsyncClient()
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    first = client._request_payload(
+        SimpleResponse,
+        (message,),
+        "report-model",
+        ModelRole.REPORT_ANALYST,
+        "json-object",
+    )
+    second = client._request_payload(
+        SimpleResponse,
+        (message,),
+        "report-model",
+        ModelRole.REPORT_ANALYST,
+        "json-object",
+    )
+
+    assert first["messages"] is not second["messages"]
+    assert first["messages"][0] is not second["messages"][0]
+    first["messages"].append({"role": "assistant", "content": "mutated"})  # type: ignore[union-attr]
+    assert len(second["messages"]) == 1  # type: ignore[arg-type]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_codex_attachment_manifest_lists_only_validated_evidence_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    processes: list[_FakeCodexProcess] = []
+    schemas: list[object] = []
+    _patch_codex_process(
+        monkeypatch,
+        calls,
+        processes,
+        schemas,
+        output=json.dumps({"ok": True}),
+        returncode=0,
+    )
+    content = _png_bytes()
+    attachment = _attachment(tmp_path, content)
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            report_reasoning_effort="medium",
+            retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
+        )
+    )
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    result = await client.complete(
+        SimpleResponse,
+        (ChatMessage(role="user", content="Inspect", attachments=(attachment,)),),
+        model="report-model",
+        role=ModelRole.REPORT_EVIDENCE_AUDITOR,
+    )
+
+    assert result.ok
+    prompt = processes[0].input.decode("utf-8")
+    assert attachment.evidence_id in prompt
+    prompt_payload = json.loads(prompt)
+    assert prompt_payload["evidence_manifest"][0]["path"] == str(
+        attachment.path.absolute()
+    )
+    assert "Only read evidence files listed in evidence_manifest" in prompt
+    assert "Do not inspect the repository or conversation history" in prompt
+    assert base64.b64encode(content).decode("ascii") not in prompt
+    assert client.records[0].request["messages"][0]["attachments"] == [
+        {
+            "evidence_id": attachment.evidence_id,
+            "path": "evidence.png",
+            "media_type": "image/png",
+            "sha256": attachment.sha256,
+        }
+    ]
+    assert str(attachment.path) not in json.dumps(client.records[0].request)
+    assert client.records[0].request["reasoning_effort"] == "medium"

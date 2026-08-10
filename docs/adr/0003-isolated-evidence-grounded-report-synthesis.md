@@ -13,10 +13,13 @@ by application version, scenario, and persona. It must not receive run-agent
 chat history, prior prompts, raw model responses, private reasoning, cognitive
 prose, or existing finding prose.
 
-The pipeline uses four fresh-context roles: `ux-analyst`, `evidence-auditor`,
-`pattern-reviewer`, and `report-adjudicator`. The same configured capable model
-may serve every role initially, but each call has an independent context and a
-role-specific structured contract. Publication requires deterministic
+The pipeline uses four fresh-context roles with these canonical serialized
+values: `report-analyst`, `report-evidence-auditor`, `report-pattern-reviewer`,
+and `report-adjudicator`. The shorter names `ux-analyst`,
+`evidence-auditor`, and `pattern-reviewer` are legacy vocabulary aliases only;
+they must not be emitted in persisted role values. The same configured capable
+model may serve every role initially, but each call has an independent context
+and a role-specific structured contract. Publication requires deterministic
 reference validation and no unresolved blocking objection.
 
 ## Evidence Boundary

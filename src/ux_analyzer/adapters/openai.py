@@ -7,6 +7,7 @@ contracts in ``ux_analyzer.ports.models``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -16,21 +17,24 @@ import re
 import subprocess
 import tempfile
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC
 from email.utils import parsedate_to_datetime
-from pathlib import Path
+from io import BytesIO
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 import httpx
 from dotenv import dotenv_values, load_dotenv
+from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from ux_analyzer.ports.models import (
     ChatMessage,
+    ModelAttachment,
     ModelCallRecord,
     ModelManifest,
     ModelRole,
@@ -39,12 +43,17 @@ from ux_analyzer.ports.models import (
     StructuredModelClient,
     TokenUsage,
 )
+from ux_analyzer.storage.run_bundle import (
+    secure_assert_ancestors,
+    secure_read_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 _REDACTED = "[REDACTED]"
+_REDACTED_ATTACHMENT = "[REDACTED_ATTACHMENT]"
 _SENSITIVE_KEYS = frozenset(
     {
         "api_key",
@@ -57,9 +66,19 @@ _SENSITIVE_KEYS = frozenset(
     }
 )
 _BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_DATA_URI_PATTERN = re.compile(r"(?i)data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=]+")
 _REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
+_REPORT_ROLES = frozenset(
+    {
+        ModelRole.REPORT_ANALYST,
+        ModelRole.REPORT_EVIDENCE_AUDITOR,
+        ModelRole.REPORT_PATTERN_REVIEWER,
+        ModelRole.REPORT_ADJUDICATOR,
+    }
+)
+_MAX_MODEL_ATTACHMENT_BYTES = 16 * 1024 * 1024
 
 
 class ModelConfigurationError(ValueError):
@@ -105,9 +124,12 @@ def sanitize_for_log(value: object, *, secrets: Sequence[str] = ()) -> Any:
         return [sanitize_for_log(item, secrets=secret_values) for item in sequence]
     if isinstance(value, str):
         sanitized = _BEARER_PATTERN.sub("Bearer " + _REDACTED, value)
+        sanitized = _DATA_URI_PATTERN.sub(_REDACTED_ATTACHMENT, sanitized)
         for secret in sorted(secret_values, key=len, reverse=True):
             sanitized = sanitized.replace(secret, _REDACTED)
         return sanitized
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return _REDACTED_ATTACHMENT
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return str(value)
@@ -180,11 +202,101 @@ def _normalize_llm_mode(value: object) -> Literal["api", "codex"]:
 def _reasoning_effort(
     settings: OpenAICompatibleSettings, role: ModelRole
 ) -> str | None:
-    return (
-        settings.cognitive_reasoning_effort
-        if role is ModelRole.COGNITIVE
-        else settings.scent_reasoning_effort
-    )
+    role_value = ModelRole(role)
+    if role_value is ModelRole.COGNITIVE:
+        return settings.cognitive_reasoning_effort
+    if role_value in _REPORT_ROLES:
+        return settings.report_reasoning_effort
+    return settings.scent_reasoning_effort
+
+
+def _absolute_attachment_path(attachment: ModelAttachment) -> Path:
+    path = attachment.path
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return Path(os.path.abspath(path))
+
+
+def _safe_attachment_audit_path(path: Path) -> str:
+    relative = Path(path.name) if path.is_absolute() else path
+    if not relative.parts or any(
+        part in {".", ".."} or "\x00" in part for part in relative.parts
+    ):
+        raise ValueError("attachment path must be safe and relative for audit")
+    return PurePosixPath(*relative.parts).as_posix()
+
+
+def _attachment_audit_metadata(attachment: ModelAttachment) -> dict[str, str]:
+    return {
+        "evidence_id": attachment.evidence_id,
+        "path": _safe_attachment_audit_path(attachment.path),
+        "media_type": attachment.media_type,
+        "sha256": attachment.sha256,
+    }
+
+
+def _validated_attachment_bytes(attachment: ModelAttachment) -> bytes:
+    path = _absolute_attachment_path(attachment)
+    try:
+        secure_assert_ancestors(path, "model attachment")
+        content = secure_read_bytes(
+            path,
+            "model attachment",
+            max_bytes=_MAX_MODEL_ATTACHMENT_BYTES,
+        )
+    except (OSError, RuntimeError) as error:
+        raise ValueError("model attachment path or size is invalid") from error
+
+    try:
+        with Image.open(BytesIO(content)) as image:
+            image_format = image.format
+            image.verify()
+    except Exception as error:
+        raise ValueError("model attachment media is invalid") from error
+
+    actual_media_type = {
+        "PNG": "image/png",
+        "JPEG": "image/jpeg",
+    }.get(image_format or "")
+    if actual_media_type != attachment.media_type:
+        raise ValueError("model attachment media type does not match content")
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != attachment.sha256:
+        raise ValueError("model attachment checksum mismatch")
+    return content
+
+
+def _validate_model_attachments(messages: Sequence[ChatMessage]) -> None:
+    for message in messages:
+        for attachment in message.attachments:
+            _validated_attachment_bytes(attachment)
+
+
+def _audit_message_dump(message: ChatMessage) -> dict[str, object]:
+    payload = message.model_dump()
+    if message.attachments:
+        payload["attachments"] = [
+            _attachment_audit_metadata(attachment) for attachment in message.attachments
+        ]
+    return payload
+
+
+def _http_message_payload(message: ChatMessage) -> dict[str, object]:
+    if not message.attachments:
+        return message.model_dump()
+    parts: list[dict[str, object]] = [
+        {"type": "text", "text": message.content},
+    ]
+    for attachment in message.attachments:
+        content = _validated_attachment_bytes(attachment)
+        encoded = base64.b64encode(content).decode("ascii")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{attachment.media_type};base64,{encoded}"},
+            }
+        )
+    return {"role": message.role, "content": parts}
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
@@ -209,7 +321,7 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
 @asynccontextmanager
 async def _model_call_slot(
     limiter: asyncio.Semaphore | None,
-) -> AsyncIterator[None]:
+) -> AsyncGenerator[None, None]:
     if limiter is None:
         yield
         return
@@ -232,6 +344,8 @@ class OpenAICompatibleSettings:
     max_concurrent_calls: int = 2
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     redaction_values: tuple[str, ...] = ()
+    report_model: str | None = None
+    report_reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
         normalized_mode = _normalize_llm_mode(self.mode)
@@ -252,7 +366,13 @@ class OpenAICompatibleSettings:
         ):
             if not value:
                 raise ModelConfigurationError(f"{name} must not be empty")
-        for name in ("scent_reasoning_effort", "cognitive_reasoning_effort"):
+        if self.report_model is not None and not self.report_model:
+            raise ModelConfigurationError("report_model must not be empty")
+        for name in (
+            "scent_reasoning_effort",
+            "cognitive_reasoning_effort",
+            "report_reasoning_effort",
+        ):
             object.__setattr__(
                 self,
                 name,
@@ -283,6 +403,7 @@ class OpenAICompatibleSettings:
         environ: Mapping[str, str] | None = None,
         *,
         dotenv_path: Path | None = None,
+        report_synthesis_enabled: bool = False,
     ) -> OpenAICompatibleSettings:
         if environ is None:
             merged_values = dict(os.environ)
@@ -296,14 +417,18 @@ class OpenAICompatibleSettings:
         mode = _normalize_llm_mode(values.get("UXA_LLM_MODE", "api"))
         names = (
             (
-                "UXA_LLM_BASE_URL",
-                "UXA_LLM_API_KEY",
+                (
+                    "UXA_LLM_BASE_URL",
+                    "UXA_LLM_API_KEY",
+                )
+                if mode == "api"
+                else ()
             )
-            if mode == "api"
-            else ()
-        ) + (
-            "UXA_SCENT_MODEL",
-            "UXA_COGNITIVE_MODEL",
+            + (
+                "UXA_SCENT_MODEL",
+                "UXA_COGNITIVE_MODEL",
+            )
+            + (("UXA_REPORT_MODEL",) if report_synthesis_enabled else ())
         )
         missing = [name for name in names if not values.get(name)]
         if missing:
@@ -328,6 +453,7 @@ class OpenAICompatibleSettings:
             api_key=api_key,
             scent_model=values["UXA_SCENT_MODEL"],
             cognitive_model=values["UXA_COGNITIVE_MODEL"],
+            report_model=values.get("UXA_REPORT_MODEL") or None,
             mode=mode,
             scent_reasoning_effort=(
                 values.get("UXA_LLM_SCENT_REASONING_EFFORT") or None
@@ -335,12 +461,20 @@ class OpenAICompatibleSettings:
             cognitive_reasoning_effort=(
                 values.get("UXA_LLM_COGNITIVE_REASONING_EFFORT") or None
             ),
+            report_reasoning_effort=(
+                values.get("UXA_LLM_REPORT_REASONING_EFFORT") or None
+            ),
             timeout_seconds=timeout_seconds,
             max_concurrent_calls=max_concurrent_calls,
         )
 
     @classmethod
-    def model_validate(cls, value: Mapping[str, object]) -> OpenAICompatibleSettings:
+    def model_validate(
+        cls,
+        value: Mapping[str, object],
+        *,
+        report_synthesis_enabled: bool = False,
+    ) -> OpenAICompatibleSettings:
         """Small Pydantic-like constructor useful at config boundaries/tests."""
 
         retry_value = value.get("retry_policy", RetryPolicy())
@@ -382,11 +516,19 @@ class OpenAICompatibleSettings:
         else:
             base_url = ""
             api_key = ""
+        report_model_value = value.get("report_model")
+        if report_synthesis_enabled and not report_model_value:
+            raise ModelConfigurationError(
+                "report_model is required for report synthesis"
+            )
         return cls(
             base_url=base_url,
             api_key=api_key,
             scent_model=str(value["scent_model"]),
             cognitive_model=str(value["cognitive_model"]),
+            report_model=(
+                None if report_model_value is None else str(report_model_value)
+            ),
             mode=mode,
             scent_reasoning_effort=(
                 None
@@ -397,6 +539,11 @@ class OpenAICompatibleSettings:
                 None
                 if value.get("cognitive_reasoning_effort") is None
                 else str(value["cognitive_reasoning_effort"])
+            ),
+            report_reasoning_effort=(
+                None
+                if value.get("report_reasoning_effort") is None
+                else str(value["report_reasoning_effort"])
             ),
             timeout_seconds=timeout_seconds,
             max_concurrent_calls=max_concurrent_calls,
@@ -412,12 +559,26 @@ class OpenAICompatibleSettings:
             f"base_url={self.base_url!r}, "
             f"scent_model={self.scent_model!r}, "
             f"cognitive_model={self.cognitive_model!r}, "
+            f"report_model={self.report_model!r}, "
             f"scent_reasoning_effort={self.scent_reasoning_effort!r}, "
             f"cognitive_reasoning_effort={self.cognitive_reasoning_effort!r}, "
+            f"report_reasoning_effort={self.report_reasoning_effort!r}, "
             f"timeout_seconds={self.timeout_seconds!r}, "
             f"max_concurrent_calls={self.max_concurrent_calls!r}, "
             f"retry_policy={self.retry_policy!r})"
         )
+
+    def model_for_role(self, role: ModelRole) -> str:
+        role_value = ModelRole(role)
+        if role_value in _REPORT_ROLES:
+            if self.report_model is None:
+                raise ModelConfigurationError(
+                    "report_model is required for report roles"
+                )
+            return self.report_model
+        if role_value in {ModelRole.COARSE_SCENT, ModelRole.FULL_SCENT}:
+            return self.scent_model
+        return self.cognitive_model
 
 
 def _schema_version(schema: type[BaseModel]) -> str:
@@ -437,7 +598,18 @@ def _normalize_messages(
         content = message.get("content")
         if not isinstance(role, str) or not isinstance(content, str):
             raise ValueError("model messages need string role and content")
-        normalized.append(ChatMessage(role=role, content=content))
+        attachments_value = message.get("attachments", ())
+        if not isinstance(attachments_value, Sequence) or isinstance(
+            attachments_value, (str, bytes)
+        ):
+            raise ValueError("model message attachments must be a sequence")
+        normalized.append(
+            ChatMessage(
+                role=role,
+                content=content,
+                attachments=tuple(cast(Sequence[ModelAttachment], attachments_value)),
+            )
+        )
     if not normalized:
         raise ValueError("structured model call needs at least one message")
     return tuple(normalized)
@@ -445,7 +617,7 @@ def _normalize_messages(
 
 def _prompt_digest(messages: Sequence[ChatMessage]) -> str:
     canonical = json.dumps(
-        [message.model_dump() for message in messages],
+        [_audit_message_dump(message) for message in messages],
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
@@ -604,6 +776,10 @@ class _StructuredCallSupport:
             ModelRole.COARSE_SCENT: "scent-coarse-v1",
             ModelRole.FULL_SCENT: "scent-full-v1",
             ModelRole.COGNITIVE: "cognitive-v1",
+            ModelRole.REPORT_ANALYST: "report-analyst-v1",
+            ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v1",
+            ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v1",
+            ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v1",
         }[role_value]
         return ModelManifest(
             provider_id=self._provider_id,
@@ -720,6 +896,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         role: ModelRole,
     ) -> SchemaT:
         normalized_messages = _normalize_messages(messages)
+        _validate_model_attachments(normalized_messages)
         role_value = ModelRole(role)
         prompt_digest = _prompt_digest(normalized_messages)
         schema_version = _schema_version(schema)
@@ -848,7 +1025,14 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 schema_version,
                 attempts,
                 started,
-                request_payload,
+                self._request_payload(
+                    schema,
+                    normalized_messages,
+                    model,
+                    role_value,
+                    mode,
+                    include_attachment_bytes=False,
+                ),
                 cast(Mapping[str, object], response_payload),
                 (
                     _usage(cast(Mapping[str, object], response_payload))
@@ -861,7 +1045,12 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             return result
 
         request_payload = self._request_payload(
-            schema, normalized_messages, model, role_value, mode
+            schema,
+            normalized_messages,
+            model,
+            role_value,
+            mode,
+            include_attachment_bytes=False,
         )
         self._record(
             role_value,
@@ -892,10 +1081,19 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         model: str,
         role: ModelRole,
         mode: str,
+        *,
+        include_attachment_bytes: bool = True,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "model": model,
-            "messages": [message.model_dump() for message in messages],
+            "messages": [
+                (
+                    _http_message_payload(message)
+                    if include_attachment_bytes
+                    else _audit_message_dump(message)
+                )
+                for message in messages
+            ],
         }
         reasoning_effort = _reasoning_effort(self.settings, role)
         if reasoning_effort is not None:
@@ -937,9 +1135,7 @@ class _CodexCleanupResult:
     @property
     def success(self) -> bool:
         return (
-            self.tree_terminated
-            and self.communication_reaped
-            and self.process_reaped
+            self.tree_terminated and self.communication_reaped and self.process_reaped
         )
 
 
@@ -1277,9 +1473,7 @@ async def _cleanup_codex_process(
     )
     communication_reaped = True
     if communication_task is not None:
-        communication_reaped, _ = await _cancel_task_until(
-            communication_task, deadline
-        )
+        communication_reaped, _ = await _cancel_task_until(communication_task, deadline)
     return _CodexCleanupResult(
         tree_terminated=tree_terminated,
         communication_reaped=communication_reaped,
@@ -1320,8 +1514,35 @@ def _codex_process_failure_reason(stdout: bytes, stderr: bytes) -> str:
 
 
 def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
+    serialized_messages = [message.model_dump() for message in messages]
+    attachments = [
+        attachment for message in messages for attachment in message.attachments
+    ]
+    if not attachments:
+        return json.dumps(
+            serialized_messages,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    manifest: list[dict[str, object]] = []
+    for attachment in attachments:
+        _validated_attachment_bytes(attachment)
+        manifest.append(
+            {
+                **_attachment_audit_metadata(attachment),
+                "path": str(_absolute_attachment_path(attachment)),
+            }
+        )
     return json.dumps(
-        [message.model_dump() for message in messages],
+        {
+            "messages": serialized_messages,
+            "evidence_manifest": manifest,
+            "evidence_policy": (
+                "Only read evidence files listed in evidence_manifest. "
+                "Do not inspect the repository or conversation history."
+            ),
+        },
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -1396,6 +1617,7 @@ class CodexStructuredClient(_StructuredCallSupport):
         role: ModelRole,
     ) -> SchemaT:
         normalized_messages = _normalize_messages(messages)
+        _validate_model_attachments(normalized_messages)
         role_value = ModelRole(role)
         prompt_digest = _prompt_digest(normalized_messages)
         schema_version = _schema_version(schema)
@@ -1503,7 +1725,7 @@ class CodexStructuredClient(_StructuredCallSupport):
         metadata: dict[str, object] = {
             "role": role.value,
             "model": model,
-            "messages": [message.model_dump() for message in messages],
+            "messages": [_audit_message_dump(message) for message in messages],
             "schema_version": schema_version,
         }
         if reasoning_effort is not None:
@@ -1531,9 +1753,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                 command = ["codex", "exec", "--ephemeral"]
                 reasoning_effort = _reasoning_effort(self.settings, role)
                 if reasoning_effort is not None:
-                    command.extend(
-                        ["-c", f"model_reasoning_effort={reasoning_effort}"]
-                    )
+                    command.extend(["-c", f"model_reasoning_effort={reasoning_effort}"])
                 command.extend(
                     [
                         "--sandbox",
@@ -1554,21 +1774,18 @@ class CodexStructuredClient(_StructuredCallSupport):
                             stdin=asyncio.subprocess.PIPE,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
+                            cwd=temp_dir,
                             **_codex_process_options(),
                         )
                     )
                     try:
                         process = await asyncio.shield(spawn_task)
                     except asyncio.CancelledError:
-                        cleanup_deadline = (
-                            loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
-                        )
+                        cleanup_deadline = loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
                         recovered, spawn_result = await _shielded_wait_task_until(
                             spawn_task, cleanup_deadline
                         )
-                        if recovered and not isinstance(
-                            spawn_result, BaseException
-                        ):
+                        if recovered and not isinstance(spawn_result, BaseException):
                             process = cast(asyncio.subprocess.Process, spawn_result)
                             await _shielded_codex_cleanup(
                                 process,
@@ -1592,9 +1809,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                                 communication_task
                             )
                         else:
-                            call_deadline = (
-                                loop.time() + self.settings.timeout_seconds
-                            )
+                            call_deadline = loop.time() + self.settings.timeout_seconds
                             completed, communication_result = await _wait_task_until(
                                 communication_task, call_deadline
                             )
@@ -1604,8 +1819,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                                     process_group_id=process_group_id,
                                     communication_task=communication_task,
                                     deadline=(
-                                        loop.time()
-                                        + _CODEX_CLEANUP_TIMEOUT_SECONDS
+                                        loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
                                     ),
                                 )
                                 if not cleanup.success:
@@ -1616,9 +1830,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                                 process,
                                 process_group_id=process_group_id,
                                 communication_task=communication_task,
-                                deadline=(
-                                    loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
-                                ),
+                                deadline=(loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS),
                             )
                             del cleanup
                             raise communication_result
@@ -1643,9 +1855,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                             process,
                             process_group_id=process_group_id,
                             communication_task=communication_task,
-                            deadline=(
-                                loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
-                            ),
+                            deadline=(loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS),
                         )
                         del cleanup
                         raise

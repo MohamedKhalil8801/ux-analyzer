@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Protocol, TypeVar
+from pathlib import Path
+from typing import Any, Literal, Protocol, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -19,6 +21,15 @@ class ModelRole(StrEnum):
     COARSE_SCENT = "coarse-scent"
     FULL_SCENT = "full-scent"
     COGNITIVE = "cognitive"
+    REPORT_ANALYST = "report-analyst"
+    REPORT_EVIDENCE_AUDITOR = "report-evidence-auditor"
+    REPORT_PATTERN_REVIEWER = "report-pattern-reviewer"
+    REPORT_ADJUDICATOR = "report-adjudicator"
+
+    # ADR 0003 legacy names remain source-compatible but never serialize.
+    UX_ANALYST = REPORT_ANALYST
+    EVIDENCE_AUDITOR = REPORT_EVIDENCE_AUDITOR
+    PATTERN_REVIEWER = REPORT_PATTERN_REVIEWER
 
 
 class ModelResponseValidationError(ValueError):
@@ -59,15 +70,62 @@ class ChatMessage:
 
     role: str
     content: str
+    attachments: tuple[ModelAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         if self.role not in {"system", "user", "assistant"}:
             raise ValueError(f"unsupported chat message role: {self.role!r}")
         if not self.content:
             raise ValueError("chat message content must not be empty")
+        attachments = _normalize_model_attachments(self.attachments)
+        if len({item.evidence_id for item in attachments}) != len(attachments):
+            raise ValueError("chat message attachments must have unique evidence IDs")
+        if attachments and self.role != "user":
+            raise ValueError("model attachments are supported only on user messages")
+        object.__setattr__(self, "attachments", attachments)
 
-    def model_dump(self) -> dict[str, str]:
+    def model_dump(self) -> dict[str, object]:
         return {"role": self.role, "content": self.content}
+
+
+_SAFE_MODEL_ATTACHMENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$")
+_SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelAttachment:
+    """Validated visual evidence available to one model call."""
+
+    evidence_id: str
+    path: Path
+    media_type: Literal["image/png", "image/jpeg"]
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if _SAFE_MODEL_ATTACHMENT_ID.fullmatch(self.evidence_id) is None:
+            raise ValueError("evidence ID must be non-empty and safe")
+        path = Path(self.path)
+        if (
+            not path.parts
+            or not path.name
+            or any(part in {".", ".."} or "\x00" in part for part in path.parts)
+        ):
+            raise ValueError("attachment path must be safe")
+        if self.media_type not in {"image/png", "image/jpeg"}:
+            raise ValueError("attachment media type is unsupported")
+        if _SHA256_DIGEST.fullmatch(self.sha256) is None:
+            raise ValueError("sha256 must be a lowercase SHA-256 digest")
+        object.__setattr__(self, "path", path)
+
+
+def _normalize_model_attachments(value: object) -> tuple[ModelAttachment, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise TypeError("chat message attachments must be a sequence")
+    sequence = cast(Sequence[object], value)
+    normalized: tuple[object, ...] = tuple(sequence)
+    if any(not isinstance(item, ModelAttachment) for item in normalized):
+        raise TypeError("chat message attachments must be ModelAttachment values")
+    return cast(tuple[ModelAttachment, ...], normalized)
 
 
 @dataclass(frozen=True, slots=True)

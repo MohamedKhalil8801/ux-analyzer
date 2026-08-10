@@ -15,9 +15,12 @@ from ux_analyzer.domain.interface import (
     ViewportSnapshot,
 )
 from ux_analyzer.ports.models import (
+    ChatMessage,
     CognitiveRunContext,
+    ModelAttachment,
     ModelResponseValidationError,
     ModelRole,
+    RetryPolicy,
 )
 from ux_analyzer.providers.cognitive import (
     CognitiveModelResponse,
@@ -153,6 +156,154 @@ def test_model_environment_loads_separate_role_models_without_logging_key() -> N
     assert settings.scent_model == "scent-model"
     assert settings.cognitive_model == "cognitive-model"
     assert "secret-key" not in repr(settings)
+
+
+def test_report_roles_have_distinct_stable_values() -> None:
+    assert [
+        ModelRole.REPORT_ANALYST.value,
+        ModelRole.REPORT_EVIDENCE_AUDITOR.value,
+        ModelRole.REPORT_PATTERN_REVIEWER.value,
+        ModelRole.REPORT_ADJUDICATOR.value,
+    ] == [
+        "report-analyst",
+        "report-evidence-auditor",
+        "report-pattern-reviewer",
+        "report-adjudicator",
+    ]
+
+
+def test_legacy_report_role_names_alias_canonical_serialized_values() -> None:
+    assert ModelRole.UX_ANALYST is ModelRole.REPORT_ANALYST
+    assert ModelRole.EVIDENCE_AUDITOR is ModelRole.REPORT_EVIDENCE_AUDITOR
+    assert ModelRole.PATTERN_REVIEWER is ModelRole.REPORT_PATTERN_REVIEWER
+    assert ModelRole.UX_ANALYST.value == "report-analyst"
+    assert ModelRole.EVIDENCE_AUDITOR.value == "report-evidence-auditor"
+    assert ModelRole.PATTERN_REVIEWER.value == "report-pattern-reviewer"
+
+
+def test_report_settings_append_without_shifting_legacy_positional_fields() -> None:
+    from ux_analyzer.adapters.openai import OpenAICompatibleSettings
+
+    retry_policy = RetryPolicy(max_attempts=1)
+    settings = OpenAICompatibleSettings(
+        "https://llm.example.test/v1",
+        "secret-key",
+        "scent-model",
+        "cognitive-model",
+        "api",
+        None,
+        None,
+        17.0,
+        4,
+        retry_policy,
+        ("secret-value",),
+        report_model="report-model",
+        report_reasoning_effort="high",
+    )
+
+    assert settings.mode == "api"
+    assert settings.timeout_seconds == 17.0
+    assert settings.max_concurrent_calls == 4
+    assert settings.retry_policy is retry_policy
+    assert settings.redaction_values == ("secret-value",)
+    assert settings.report_model == "report-model"
+    assert settings.report_reasoning_effort == "high"
+
+
+def test_report_model_is_conditional_and_shared_by_report_roles() -> None:
+    from ux_analyzer.adapters.openai import (
+        ModelConfigurationError,
+        OpenAICompatibleSettings,
+    )
+
+    environment = {
+        "UXA_LLM_BASE_URL": "https://llm.example.test/v1",
+        "UXA_LLM_API_KEY": "secret-key",
+        "UXA_SCENT_MODEL": "scent-model",
+        "UXA_COGNITIVE_MODEL": "cognitive-model",
+    }
+
+    legacy_settings = OpenAICompatibleSettings.from_env(environment)
+    assert legacy_settings.report_model is None
+
+    with pytest.raises(ModelConfigurationError, match="UXA_REPORT_MODEL"):
+        OpenAICompatibleSettings.from_env(
+            environment,
+            report_synthesis_enabled=True,
+        )
+
+    settings = OpenAICompatibleSettings.from_env(
+        {
+            **environment,
+            "UXA_REPORT_MODEL": "report-model",
+            "UXA_LLM_REPORT_REASONING_EFFORT": "high",
+        },
+        report_synthesis_enabled=True,
+    )
+
+    assert settings.report_model == "report-model"
+    assert settings.report_reasoning_effort == "high"
+    assert [
+        settings.model_for_role(role)
+        for role in (
+            ModelRole.REPORT_ANALYST,
+            ModelRole.REPORT_EVIDENCE_AUDITOR,
+            ModelRole.REPORT_PATTERN_REVIEWER,
+            ModelRole.REPORT_ADJUDICATOR,
+        )
+    ] == ["report-model"] * 4
+
+
+def test_model_attachment_and_chat_message_are_immutable_and_bounded() -> None:
+    attachment = ModelAttachment(
+        evidence_id="screenshot:run-a:" + "a" * 64,
+        path=Path("runs/run-a/artifacts/screenshot.png"),
+        media_type="image/png",
+        sha256="a" * 64,
+    )
+    supplied = [attachment]
+    message = ChatMessage(
+        role="user", content="Inspect this screenshot", attachments=supplied
+    )
+    supplied.clear()
+
+    assert message.attachments == (attachment,)
+    assert message.model_dump() == {
+        "role": "user",
+        "content": "Inspect this screenshot",
+    }
+
+    with pytest.raises(ValueError, match="evidence ID"):
+        ModelAttachment(
+            evidence_id="../outside",
+            path=Path("runs/run-a/artifacts/screenshot.png"),
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+    with pytest.raises(ValueError, match="path"):
+        ModelAttachment(
+            evidence_id="screenshot:run-a:" + "a" * 64,
+            path=Path("../outside.png"),
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+    with pytest.raises(ValueError, match="media"):
+        ModelAttachment(
+            evidence_id="screenshot:run-a:" + "a" * 64,
+            path=Path("runs/run-a/artifacts/screenshot.gif"),
+            media_type="image/gif",  # type: ignore[arg-type]
+            sha256="a" * 64,
+        )
+    with pytest.raises(ValueError, match="SHA-256"):
+        ModelAttachment(
+            evidence_id="screenshot:run-a:" + "a" * 64,
+            path=Path("runs/run-a/artifacts/screenshot.png"),
+            media_type="image/png",
+            sha256="not-a-digest",
+        )
+
+    with pytest.raises(ValueError, match="user"):
+        ChatMessage(role="system", content="No image here", attachments=(attachment,))
 
 
 def test_role_manifests_use_selected_client_provider_metadata() -> None:
@@ -476,9 +627,9 @@ async def test_cognitive_uses_short_aliases_for_long_element_ids() -> None:
     )
     client = AliasEchoClient()
 
-    decision = await StructuredCognitiveAgent(
-        client, model="cognitive-model"
-    ).decide("Find invite", observation)
+    decision = await StructuredCognitiveAgent(client, model="cognitive-model").decide(
+        "Find invite", observation
+    )
 
     payload = json.loads(client.calls[-1][3])
     assert payload["available_controls"][0]["element_id"] == "e0"
