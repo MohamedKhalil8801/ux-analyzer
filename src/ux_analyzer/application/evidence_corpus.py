@@ -101,6 +101,49 @@ _DETERMINISTIC_METRICS = frozenset(
     for name, evidence_class in _APPROVED_METRIC_CLASSES.items()
     if evidence_class is EvidenceClass.DETERMINISTIC_FACT
 )
+_BOOLEAN_METRICS = frozenset(
+    {
+        "verified-completion",
+        "claimed-completion",
+        "false-success",
+        "target-below-fold",
+        "unexpected-hierarchy",
+        "ambiguous-target",
+        "feedback-observed",
+        "recovery-success",
+    }
+)
+_COUNT_METRICS = frozenset(
+    {
+        "target-discovery-rank",
+        "inspected-elements",
+        "inspected-regions",
+        "scrolls",
+        "wrong-actions",
+        "backtracks",
+        "navigation-depth",
+        "recovery-actions",
+    }
+)
+_PROBABILITY_METRICS = frozenset(
+    {
+        "target-prominence",
+        "target-scent",
+        "strongest-competing-scent",
+    }
+)
+_NON_NEGATIVE_METRICS = frozenset(
+    {
+        "discovery-cost",
+        "inspection-cost",
+        "region-cost",
+        "scroll-cost",
+        "wrong-action-cost",
+        "backtrack-cost",
+        "uncertainty-cost",
+        "abandonment-penalty",
+    }
+)
 _SAFE_ID_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_PROVENANCE_MARKERS = (
     "access_token",
@@ -637,15 +680,47 @@ def _metric_class(name: str, source: Mapping[str, object]) -> EvidenceClass:
     return _APPROVED_METRIC_CLASSES[name]
 
 
-def _approved_metric_value(name: str, value: object) -> object | None:
+def _approved_metric_value(
+    name: str,
+    value: object,
+    *,
+    max_discovery_rank: int | None = None,
+) -> object | None:
     if name not in _APPROVED_METRIC_CLASSES:
         return None
     if name == "outcome":
         return value if isinstance(value, str) and value in _SAFE_OUTCOMES else None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and math.isfinite(float(value)):
-        return value
+    if name in _BOOLEAN_METRICS:
+        if isinstance(value, bool):
+            return value
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) in {0.0, 1.0}
+        ):
+            return value
+        return None
+    if name in _COUNT_METRICS:
+        count = _integer(value)
+        if count is None or count < 0:
+            return None
+        if name == "target-discovery-rank":
+            if count <= 0:
+                return None
+            if max_discovery_rank is not None and count > max_discovery_rank:
+                return None
+        return count
+    if name in _PROBABILITY_METRICS:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        number = float(value)
+        return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
+    if name in _NON_NEGATIVE_METRICS:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        number = float(value)
+        return number if math.isfinite(number) and number >= 0.0 else None
     return None
 
 
@@ -665,13 +740,19 @@ def _safe_evidence_id(value: object) -> str | None:
 
 def _metric_values(
     metrics: Mapping[str, object],
+    *,
+    max_discovery_rank: int | None = None,
 ) -> tuple[tuple[str, object, EvidenceClass, Mapping[str, object]], ...]:
     values: list[tuple[str, object, EvidenceClass, Mapping[str, object]]] = []
     explicit_names: set[str] = set()
     for raw in _mappings(metrics.get("metrics")):
         name = _text(raw.get("name"))
         rendered = name.replace("_", "-")
-        value = _approved_metric_value(rendered, raw.get("value"))
+        value = _approved_metric_value(
+            rendered,
+            raw.get("value"),
+            max_discovery_rank=max_discovery_rank,
+        )
         if not name or value is None:
             continue
         evidence_class = _metric_class(rendered, raw)
@@ -686,7 +767,9 @@ def _metric_values(
             continue
         if name == "discovery_cost":
             total = _approved_metric_value(
-                "discovery-cost", _mapping(raw_value).get("total")
+                "discovery-cost",
+                _mapping(raw_value).get("total"),
+                max_discovery_rank=max_discovery_rank,
             )
             if total is not None:
                 values.append(
@@ -699,12 +782,33 @@ def _metric_values(
                 )
             continue
         value = _safe_scalar(raw_value)
-        value = _approved_metric_value(rendered, value)
+        value = _approved_metric_value(
+            rendered,
+            value,
+            max_discovery_rank=max_discovery_rank,
+        )
         if value is None:
             continue
         evidence_class = _metric_class(rendered, metrics)
         values.append((rendered, value, evidence_class, metrics))
     return tuple(values)
+
+
+def _discovery_rank_bound(
+    events: Sequence[Mapping[str, object]],
+    snapshots: Sequence[Mapping[str, object]],
+) -> int:
+    observed_elements = sum(
+        len(
+            _sequence_values(
+                _mapping(event.get("observation")).get("newly_revealed_elements")
+            )
+        )
+        for event in events
+    )
+    if observed_elements > 0:
+        return observed_elements
+    return sum(len(_mappings(snapshot.get("elements"))) for snapshot in snapshots)
 
 
 def _score_values(value: object) -> tuple[Mapping[str, object], ...]:
@@ -713,9 +817,11 @@ def _score_values(value: object) -> tuple[Mapping[str, object], ...]:
 
 def _ranked_payload(value: object) -> dict[str, object]:
     raw = _mapping(value)
-    result: dict[str, object] = {}
+    rank = _positive_rank(raw.get("rank"))
+    if rank is None:
+        return {}
+    result: dict[str, object] = {"rank": rank}
     for name in (
-        "rank",
         "element_id",
         "label",
         "role",
@@ -730,11 +836,6 @@ def _ranked_payload(value: object) -> dict[str, object]:
                 bounds = _bounds(raw[name])
                 if bounds is not None:
                     result[name] = bounds
-            elif name == "rank":
-                rank = _positive_rank(raw[name])
-                if rank is None:
-                    return {}
-                result[name] = rank
             elif name in {
                 "adjusted_score",
                 "visibility_fraction",
@@ -1671,7 +1772,12 @@ class EvidenceCorpusBuilder:
             verification,
         )
         metrics = raw_metrics or summary_row
-        metric_values = list(_metric_values(metrics))
+        metric_values = list(
+            _metric_values(
+                metrics,
+                max_discovery_rank=_discovery_rank_bound(events, snapshots),
+            )
+        )
         outcome_kind = _approved_metric_value(
             "outcome", _mapping(raw_result.get("outcome")).get("kind")
         )

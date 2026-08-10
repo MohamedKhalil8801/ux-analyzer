@@ -492,7 +492,24 @@ def test_tampered_score_probability_is_not_published_as_model_evidence(
     )
 
 
+def test_tampered_metric_bounds_are_not_published(tmp_path: Path) -> None:
+    experiment, run = _experiment(tmp_path)
+    result_path = run / "result.json"
+    result = json.loads(result_path.read_text())
+    result["metrics"]["target_discovery_rank"] = 999
+    result["metrics"]["target_prominence"] = 2.0
+    _write_json(result_path, result)
+    _write_checksums(run)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+    evidence_ids = {entry.ref.evidence_id for entry in corpus.entries}
+
+    assert "metric:run-a:target-discovery-rank" not in evidence_ids
+    assert "metric:run-a:target-prominence" not in evidence_ids
+
+
 def test_tampered_ranked_values_are_not_published() -> None:
+    assert _ranked_payload({"element_id": "target", "adjusted_score": 0.5}) == {}
     assert (
         _ranked_payload(
             {
