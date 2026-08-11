@@ -137,6 +137,100 @@ providers:
     failure_penalty: 0.5
     recovery_scent_threshold: 0.9
     recovery_after_misses: 2
+  expectation:
+    enabled: true
+    provider_id: frozen-expectation-v1
+    documents:
+      - id: fixture-defective-invite-teammate-v1
+        schema_version: frozen-expectation-v1
+        application_version_id: fixture-app-defective
+        scenario_id: invite-teammate
+        persona_id: "*"
+        desired_outcomes:
+          - The supplied teammate is invited to the workspace.
+        required_invariants:
+          - The invitee remains a workspace member.
+          - No outbound communication is required.
+        acceptable_alternatives:
+          - Use the dashboard invitation entry.
+          - Use the workspace team settings entry.
+        reference_paths:
+          - [dashboard, invite]
+          - [dashboard, settings, team, invite]
+        effort_bounds:
+          max_steps: 24
+          max_wrong_actions: 1
+          max_backtracks: 1
+        warning_signals:
+          - The invitation control uses a broad or ambiguous action label.
+          - The invitation control is absent from the first useful view.
+      - id: fixture-improved-invite-teammate-v1
+        schema_version: frozen-expectation-v1
+        application_version_id: fixture-app-improved
+        scenario_id: invite-teammate
+        persona_id: "*"
+        desired_outcomes:
+          - The supplied teammate is invited to the workspace.
+        required_invariants:
+          - The invitee remains a workspace member.
+          - No outbound communication is required.
+        acceptable_alternatives:
+          - Use the primary invite teammate action.
+          - Use the workspace team settings entry.
+        reference_paths:
+          - [dashboard, invite-teammate]
+          - [dashboard, settings, team, invite]
+        effort_bounds:
+          max_steps: 24
+          max_wrong_actions: 1
+          max_backtracks: 1
+        warning_signals:
+          - The primary invitation action is not visible in the first useful view.
+      - id: fixture-defective-enable-2fa-v1
+        schema_version: frozen-expectation-v1
+        application_version_id: fixture-app-defective
+        scenario_id: enable-2fa
+        persona_id: "*"
+        desired_outcomes:
+          - Two-factor authentication is enabled for the account.
+        required_invariants:
+          - The configured verification code is used only in the fixture.
+          - Completion is independently verified by fixture state.
+        acceptable_alternatives:
+          - Use the account security entry.
+          - Use the settings security entry.
+        reference_paths:
+          - [settings, security, enable-protection]
+          - [account, security, two-factor]
+        effort_bounds:
+          max_steps: 24
+          max_wrong_actions: 1
+          max_backtracks: 1
+        warning_signals:
+          - The two-factor control uses a broad or ambiguous protection label.
+          - Security settings are hidden behind an unexpected navigation branch.
+      - id: fixture-improved-enable-2fa-v1
+        schema_version: frozen-expectation-v1
+        application_version_id: fixture-app-improved
+        scenario_id: enable-2fa
+        persona_id: "*"
+        desired_outcomes:
+          - Two-factor authentication is enabled for the account.
+        required_invariants:
+          - The configured verification code is used only in the fixture.
+          - Completion is independently verified by fixture state.
+        acceptable_alternatives:
+          - Use the account security entry.
+          - Use the settings security entry.
+        reference_paths:
+          - [settings, security, two-factor]
+          - [account, security, two-factor]
+        effort_bounds:
+          max_steps: 24
+          max_wrong_actions: 1
+          max_backtracks: 1
+        warning_signals:
+          - The two-factor control is not visible from the first useful security view.
 
 evaluation:
   discovery_cost:
@@ -161,6 +255,8 @@ evaluation:
     success_frustration_delta: -0.10
     failure_confidence_delta: -0.10
     failure_frustration_delta: 0.20
+  report_synthesis:
+    enabled: true
 
 experiments:
   - id: core-pair

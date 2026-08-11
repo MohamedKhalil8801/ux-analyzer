@@ -1,0 +1,164 @@
+{
+  "schema_version": "report-synthesis-e2e-v1",
+  "scenario": "contradictory-candidate",
+  "entries": [
+    {
+      "ref": {
+        "evidence_id": "event:run-1:7",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-7",
+        "replay_sequence": 7
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The user reached the candidate control during the recorded task.",
+      "payload": {
+        "sequence": 7,
+        "action": "interact"
+      }
+    },
+    {
+      "ref": {
+        "evidence_id": "verification:run-1",
+        "kind": "verification",
+        "run_id": "run-1"
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The independent verifier confirmed task completion.",
+      "payload": {
+        "verified": true,
+        "outcome": "verified-success"
+      }
+    }
+  ],
+  "scripts": {
+    "report-analyst": [
+      {
+        "complete": true,
+        "candidate_findings": [
+          {
+            "finding_id": "contradictory-blocker",
+            "title": "A candidate claims an unsupported blocker",
+            "issue": "The candidate treats a label interpretation as a task failure.",
+            "impact": "The candidate would overstate risk for a completed task.",
+            "root_cause": "The candidate depends on an interpretation that is not established.",
+            "fixes": [
+              "Do not publish a blocker without evidence that the required outcome failed."
+            ],
+            "severity": "critical",
+            "confidence": 0.52,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              }
+            ],
+            "counterevidence": [
+              "The verifier confirms completion, so a task blocker is not established."
+            ],
+            "severity_justification": "The candidate would affect a critical task, but support remains disputed."
+          }
+        ]
+      }
+    ],
+    "report-evidence-auditor": [
+      {
+        "complete": true,
+        "objections": [
+          {
+            "objection_id": "verified-outcome-conflict",
+            "finding_id": "contradictory-blocker",
+            "objection_type": "contradiction",
+            "severity": "blocking",
+            "message": "The verified completion outcome contradicts publication of a task blocker.",
+            "evidence_refs": [
+              {
+                "evidence_id": "verification:run-1",
+                "kind": "verification",
+                "run_id": "run-1"
+              }
+            ],
+            "reviewer_role": "report-evidence-auditor"
+          }
+        ]
+      }
+    ],
+    "report-pattern-reviewer": [
+      {
+        "complete": true,
+        "objections": []
+      }
+    ],
+    "report-adjudicator": [
+      {
+        "complete": true,
+        "final_findings": [
+          {
+            "finding_id": "contradictory-blocker",
+            "title": "A candidate claims an unsupported blocker",
+            "issue": "The candidate treats a label interpretation as a task failure.",
+            "impact": "The candidate would overstate risk for a completed task.",
+            "root_cause": "The candidate depends on an interpretation that is not established.",
+            "fixes": [
+              "Do not publish a blocker without evidence that the required outcome failed."
+            ],
+            "severity": "critical",
+            "confidence": 0.52,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              }
+            ],
+            "counterevidence": [
+              "The verifier confirms completion, so a task blocker is not established."
+            ],
+            "severity_justification": "The candidate would affect a critical task, but support remains disputed."
+          }
+        ],
+        "objection_resolutions": []
+      },
+      {
+        "complete": true,
+        "final_findings": [
+          {
+            "finding_id": "contradictory-blocker",
+            "title": "A candidate claims an unsupported blocker",
+            "issue": "The candidate treats a label interpretation as a task failure.",
+            "impact": "The candidate would overstate risk for a completed task.",
+            "root_cause": "The candidate depends on an interpretation that is not established.",
+            "fixes": [
+              "Do not publish a blocker without evidence that the required outcome failed."
+            ],
+            "severity": "critical",
+            "confidence": 0.52,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              }
+            ],
+            "counterevidence": [
+              "The verifier confirms completion, so a task blocker is not established."
+            ],
+            "severity_justification": "The candidate would affect a critical task, but support remains disputed."
+          }
+        ],
+        "objection_resolutions": []
+      }
+    ]
+  }
+}

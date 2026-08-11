@@ -1,0 +1,204 @@
+{
+  "schema_version": "report-synthesis-e2e-v1",
+  "scenario": "isolated-critical-blocker",
+  "entries": [
+    {
+      "ref": {
+        "evidence_id": "event:run-1:6",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-6",
+        "replay_sequence": 6
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The user encountered a minor label mismatch in several surfaces.",
+      "payload": {
+        "sequence": 6,
+        "surface": "Dashboard",
+        "outcome": "recoverable"
+      }
+    },
+    {
+      "ref": {
+        "evidence_id": "event:run-1:7",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-7",
+        "replay_sequence": 7
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The required submit action remained unavailable at the task blocker.",
+      "payload": {
+        "sequence": 7,
+        "surface": "Security",
+        "outcome": "blocked"
+      }
+    },
+    {
+      "ref": {
+        "evidence_id": "event:run-1:8",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-8",
+        "replay_sequence": 8
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The verifier recorded the broad label mismatch after recovery.",
+      "payload": {
+        "sequence": 8,
+        "surface": "Profile",
+        "outcome": "recoverable"
+      }
+    }
+  ],
+  "scripts": {
+    "report-analyst": [
+      {
+        "complete": true,
+        "candidate_findings": [
+          {
+            "finding_id": "broad-minor-inconsistency",
+            "title": "Labels vary across task surfaces",
+            "issue": "A low-impact label mismatch appears across several surfaces.",
+            "impact": "The wording mismatch is recoverable.",
+            "root_cause": "A shared label differs between task surfaces.",
+            "fixes": [
+              "Align the low-impact labels during routine content maintenance."
+            ],
+            "severity": "low",
+            "confidence": 0.86,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:6",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-6",
+                "replay_sequence": 6
+              },
+              {
+                "evidence_id": "event:run-1:8",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-8",
+                "replay_sequence": 8
+              }
+            ],
+            "affected_surfaces": [
+              "Dashboard",
+              "Profile",
+              "Members"
+            ],
+            "severity_justification": "The mismatch is broad but the recorded outcome is recoverable."
+          },
+          {
+            "finding_id": "isolated-task-blocker",
+            "title": "The required security task is blocked",
+            "issue": "The required security task cannot be completed at the submit step.",
+            "impact": "A critical account-protection task cannot reach completion.",
+            "root_cause": "The required submit action is unavailable in the security surface.",
+            "fixes": [
+              "Restore an available submit action and verify the completed state before release."
+            ],
+            "severity": "critical",
+            "confidence": 0.97,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              }
+            ],
+            "severity_justification": "One recorded task step blocks a required account-protection outcome."
+          }
+        ]
+      }
+    ],
+    "report-evidence-auditor": [
+      {
+        "complete": true,
+        "objections": []
+      }
+    ],
+    "report-pattern-reviewer": [
+      {
+        "complete": true,
+        "objections": []
+      }
+    ],
+    "report-adjudicator": [
+      {
+        "complete": true,
+        "final_findings": [
+          {
+            "finding_id": "broad-minor-inconsistency",
+            "title": "Labels vary across task surfaces",
+            "issue": "A low-impact label mismatch appears across several surfaces.",
+            "impact": "The wording mismatch is recoverable.",
+            "root_cause": "A shared label differs between task surfaces.",
+            "fixes": [
+              "Align the low-impact labels during routine content maintenance."
+            ],
+            "severity": "low",
+            "confidence": 0.86,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:6",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-6",
+                "replay_sequence": 6
+              },
+              {
+                "evidence_id": "event:run-1:8",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-8",
+                "replay_sequence": 8
+              }
+            ],
+            "affected_surfaces": [
+              "Dashboard",
+              "Profile",
+              "Members"
+            ],
+            "severity_justification": "The mismatch is broad but the recorded outcome is recoverable."
+          },
+          {
+            "finding_id": "isolated-task-blocker",
+            "title": "The required security task is blocked",
+            "issue": "The required security task cannot be completed at the submit step.",
+            "impact": "A critical account-protection task cannot reach completion.",
+            "root_cause": "The required submit action is unavailable in the security surface.",
+            "fixes": [
+              "Restore an available submit action and verify the completed state before release."
+            ],
+            "severity": "critical",
+            "confidence": 0.97,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              }
+            ],
+            "severity_justification": "One recorded task step blocks a required account-protection outcome."
+          }
+        ],
+        "objection_resolutions": []
+      }
+    ]
+  }
+}

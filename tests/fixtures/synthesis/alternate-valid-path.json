@@ -1,0 +1,104 @@
+{
+  "schema_version": "report-synthesis-e2e-v1",
+  "scenario": "alternate-valid-path",
+  "entries": [
+    {
+      "ref": {
+        "evidence_id": "event:run-1:7",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-7",
+        "replay_sequence": 7
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The user completed the task through a valid alternate route.",
+      "payload": {
+        "sequence": 7,
+        "action": "interact",
+        "outcome": "verified-success"
+      }
+    },
+    {
+      "ref": {
+        "evidence_id": "expectation:run-1",
+        "kind": "expectation",
+        "run_id": "run-1"
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The frozen expectation permits more than one valid route.",
+      "payload": {
+        "matched": true,
+        "acceptable_alternatives": [
+          "Use the team page.",
+          "Use the onboarding shortcut."
+        ],
+        "reference_paths": [
+          [
+            "open-account-menu",
+            "open-team",
+            "invite",
+            "confirm"
+          ]
+        ]
+      }
+    }
+  ],
+  "scripts": {
+    "report-analyst": [
+      {
+        "complete": false,
+        "evidence_requests": [
+          "event:run-1:7"
+        ]
+      },
+      {
+        "complete": true,
+        "candidate_findings": [
+          {
+            "finding_id": "alternate-route",
+            "title": "The user selected an alternate path",
+            "issue": "The user selected an alternate path instead of the reference path.",
+            "impact": "The task completed successfully.",
+            "root_cause": "The selected route differs from the reference path.",
+            "fixes": [
+              "Keep the alternate route available while preserving the primary route."
+            ],
+            "severity": "low",
+            "confidence": 0.91,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              }
+            ],
+            "severity_justification": "The verifier confirms successful completion and the expectation permits this route."
+          }
+        ]
+      }
+    ],
+    "report-evidence-auditor": [
+      {
+        "complete": true,
+        "objections": []
+      }
+    ],
+    "report-pattern-reviewer": [
+      {
+        "complete": true,
+        "objections": []
+      }
+    ],
+    "report-adjudicator": [
+      {
+        "complete": true,
+        "final_findings": [],
+        "objection_resolutions": []
+      }
+    ]
+  }
+}

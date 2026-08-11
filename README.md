@@ -38,11 +38,14 @@ $env:UXA_LLM_BASE_URL = "https://<provider-host>/v1"
 $env:UXA_LLM_API_KEY = "<api-key>"
 $env:UXA_SCENT_MODEL = "<scent-model-id>"
 $env:UXA_COGNITIVE_MODEL = "<cognitive-model-id>"
+$env:UXA_REPORT_MODEL = "<report-model-id>"
 ```
 
 `UXA_LLM_BASE_URL` must be an HTTP(S) URL without credentials. Adapter posts to
 `<base-url>/chat/completions`. Scent and cognitive model IDs may be equal, but
-roles remain separate.
+roles remain separate. `UXA_REPORT_MODEL` is required for live report synthesis
+when the project enables it; use a structured-output vision-capable model when
+the evidence corpus contains screenshots or heatmaps.
 
 Run core benchmark:
 
@@ -71,7 +74,16 @@ uv run uxa inspect-run .uxa-output/runs/<run-id>
 ```
 
 The report is static HTML. Open `report.html` directly; no report server is
-required.
+required. `uxa report` only reads recorded bundles and never calls a model.
+
+When `evaluation.report_synthesis.enabled: true`, `uxa run` automatically
+attempts synthesis after finalized runs. Use `--no-synthesis` to skip that
+attempt while keeping deterministic findings and the offline report. Run
+`uxa synthesize PROJECT --experiment ID --output DIR` to create a new immutable
+synthesis attempt from finalized evidence without rerunning the experiment.
+Missing model configuration, transport failure, or invalid role output produces
+an explicit unavailable or rejected attempt and keeps the deterministic report
+available.
 
 Run opt-in live endpoint compatibility test. This sends one coarse-scent, one
 full-scent, and one cognitive request. Without the flag it skips.
@@ -92,7 +104,9 @@ uv run pytest tests/live/test_openai_endpoint.py -m live -q
 | `uxa run PROJECT --experiment ID --output DIR` | Execute selected experiment. Defaults: `core-pair`, `.uxa-output`, one worker. |
 | `uxa run-one PROJECT --scenario ID --version ID --persona ID --policy ID --seed N --output DIR` | Execute exactly one semantic cell. |
 | `uxa run PROJECT --dry-run` | Print expanded matrix and estimated model calls without browser or model execution. |
+| `uxa run PROJECT --no-synthesis` | Execute runs without the automatic report-synthesis attempt. |
 | `uxa ablate PROJECT --experiment ID --policy POLICY` | Execute selected ablation policies. Repeat `--policy`; default experiment is `ablations`. |
+| `uxa synthesize PROJECT --experiment ID --output DIR` | Synthesize a new immutable report attempt from finalized evidence. |
 | `uxa report BUNDLE_ROOT --output FILE` | Render finalized bundles into static HTML. |
 | `uxa inspect-run RUN_DIR` | Print terminal outcome, verification, claim, and artifact paths. |
 
@@ -141,8 +155,12 @@ Personas contain `id`, `name`, positive `working_memory_capacity`, bounded
 positive `attention_temperature`.
 
 Root `providers` config versions prominence weights/temperature and progressive
-attention formula weights. Root `evaluation` config versions discovery-cost,
-finding-rule, and state-update formulas. Persona attention temperature and
+attention formula weights. `providers.expectation` enables versioned frozen
+expectation documents; existing user files omit it and remain disabled by
+default. Root `evaluation` config versions discovery-cost, finding-rule, and
+state-update formulas. `evaluation.report_synthesis.enabled` enables the
+post-run four-role report synthesis pipeline and its bounded retrieval,
+adjudication, and verification settings. Persona attention temperature and
 abandonment threshold override corresponding per-run policy values.
 
 Experiments contain `id`, `name`, `scenario_ids`, `application_version_ids`,
@@ -185,8 +203,8 @@ the directional gate described in [evaluation docs](docs/domain-model.md).
 
 | Mode | Required configuration | Transport |
 | --- | --- | --- |
-| `api` | `UXA_LLM_MODE`, `UXA_LLM_BASE_URL`, `UXA_LLM_API_KEY`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL` | OpenAI-compatible HTTP transport |
-| `codex` | `UXA_LLM_MODE`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`, logged-in Codex CLI | `codex exec` subprocess transport |
+| `api` | `UXA_LLM_MODE`, `UXA_LLM_BASE_URL`, `UXA_LLM_API_KEY`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`; `UXA_REPORT_MODEL` when synthesis is enabled | OpenAI-compatible HTTP transport |
+| `codex` | `UXA_LLM_MODE`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`, logged-in Codex CLI; report model when synthesis is enabled | `codex exec` subprocess transport |
 
 Codex mode is opt-in. Codex must already be installed, logged in, and available
 as `codex` on `PATH`. Account mode does not read or print credentials.
@@ -197,6 +215,7 @@ as `codex` on `PATH`. Account mode does not read or print credentials.
 - [Domain model](docs/domain-model.md)
 - [Run bundle format](docs/run-bundle-format.md)
 - [Model provider](docs/model-provider.md)
+- [Report synthesis and provider boundary](docs/model-provider.md#report-synthesis-contract)
 - [Security](docs/security.md)
 - [Roadmap and deferred contracts](docs/roadmap.md)
 - [Original POC plan versus current implementation](docs/poc-plan-vs-current.md)

@@ -148,6 +148,80 @@ providers:
     fallback:
       enabled: false
       provider_id: heuristic
+  expectation:
+    enabled: true
+    provider_id: frozen-expectation-v1
+    documents:
+      - id: portfolio-current-pair-role-v1
+        schema_version: frozen-expectation-v1
+        application_version_id: portfolio-live
+        scenario_id: current-pair-role
+        persona_id: first-time-nontechnical
+        desired_outcomes:
+          - The visitor identifies the current employer, role, and primary frontend technologies.
+        required_invariants:
+          - Claims are supported by visible portfolio content.
+          - No contact or outbound action is required.
+        acceptable_alternatives:
+          - Use the primary work or about navigation entry.
+          - Use a visible project or experience section.
+        reference_paths:
+          - [home, about, experience]
+          - [home, work, project, stack]
+        effort_bounds:
+          max_steps: 60
+          max_wrong_actions: 2
+          max_backtracks: 2
+        warning_signals:
+          - Employer, role, or stack information is not visible on the first useful route.
+      - id: portfolio-open-prayer-times-scale-v1
+        schema_version: frozen-expectation-v1
+        application_version_id: portfolio-live
+        scenario_id: open-prayer-times-scale
+        persona_id: first-time-nontechnical
+        desired_outcomes:
+          - The visitor finds the stated city and country coverage for Open Prayer Times.
+        required_invariants:
+          - Coverage claims are supported by visible portfolio content.
+          - No external service or outbound action is required.
+        acceptable_alternatives:
+          - Use the projects navigation entry.
+          - Use the Open Prayer Times project detail.
+        reference_paths:
+          - [home, projects, open-prayer-times]
+          - [home, work, open-prayer-times, coverage]
+        effort_bounds:
+          max_steps: 60
+          max_wrong_actions: 2
+          max_backtracks: 2
+        warning_signals:
+          - Coverage scale is hidden behind a route that does not identify the project.
+      - id: portfolio-contact-remote-role-v1
+        schema_version: frozen-expectation-v1
+        application_version_id: portfolio-live
+        scenario_id: contact-remote-role
+        persona_id: first-time-nontechnical
+        desired_outcomes:
+          - The visitor finds the public email address and remote-work availability.
+        required_invariants:
+          - Contact details and availability are supported by visible portfolio content.
+          - The scenario does not send a message.
+        acceptable_alternatives:
+          - Use the contact navigation entry.
+          - Use the visible availability or footer contact entry.
+        reference_paths:
+          - [home, contact]
+          - [home, about, availability, contact]
+        effort_bounds:
+          max_steps: 60
+          max_wrong_actions: 2
+          max_backtracks: 2
+        warning_signals:
+          - Contact information or remote availability is not discoverable from a visible route.
+
+evaluation:
+  report_synthesis:
+    enabled: true
 
 experiments:
   - id: portfolio-foveacast-vs-heuristic

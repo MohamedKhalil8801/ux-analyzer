@@ -6,8 +6,8 @@
 
 | Mode | Required configuration | Transport |
 | --- | --- | --- |
-| `api` | mode, base URL, API key, scent model, cognitive model | OpenAI-compatible HTTP |
-| `codex` | mode, scent model, cognitive model, logged-in Codex CLI | `codex exec` subprocess |
+| `api` | mode, base URL, API key, scent model, cognitive model; report model when synthesis is enabled | OpenAI-compatible HTTP |
+| `codex` | mode, scent model, cognitive model, logged-in Codex CLI; report model when synthesis is enabled | `codex exec` subprocess |
 
 API mode uses these environment names:
 
@@ -17,6 +17,10 @@ UXA_LLM_BASE_URL       HTTP(S) base URL without credentials
 UXA_LLM_API_KEY        secret sent as Bearer authorization header
 UXA_SCENT_MODEL        model ID for coarse and full scent roles
 UXA_COGNITIVE_MODEL    model ID for cognitive role
+UXA_REPORT_MODEL       model ID for the four report-synthesis roles
+UXA_LLM_REPORT_REASONING_EFFORT
+                       optional report effort: none, minimal, low, medium,
+                       high, xhigh, or max
 ```
 
 Use placeholders in configuration examples:
@@ -27,6 +31,7 @@ $env:UXA_LLM_BASE_URL = "https://<provider-host>/v1"
 $env:UXA_LLM_API_KEY = "<api-key>"
 $env:UXA_SCENT_MODEL = "<scent-model-id>"
 $env:UXA_COGNITIVE_MODEL = "<cognitive-model-id>"
+$env:UXA_REPORT_MODEL = "<report-model-id>"
 ```
 
 Codex mode is opt-in. Set `UXA_LLM_MODE=codex`, keep the two model variables,
@@ -39,6 +44,45 @@ records only endpoint origin, never URL credentials or API key.
 `uxa validate --check-env` checks presence without printing values. Non-dry
 `uxa run` requires the settings for selected mode. Dry-run matrix expansion can
 run without them unless `--check-env` is also supplied.
+
+## Report Synthesis Contract
+
+Report synthesis is a post-run, evidence-grounded use case. `UXA_REPORT_MODEL`
+selects the model used by the analyst, evidence auditor, pattern reviewer, and
+adjudicator. The model must support the repository's structured JSON schemas.
+It must also accept `image/png` and `image/jpeg` inputs when the evidence room
+contains screenshot or heatmap attachments. A model without the required vision
+input support makes that synthesis attempt unavailable; it does not turn an
+image estimate into a deterministic fact.
+
+The four roles receive fresh, isolated message tuples. They share only the
+redacted evidence-room manifest, frozen expectations, UX principles as
+interpretive context, and explicitly retrieved allowlisted evidence. They do
+not receive run-agent chat, hidden DOM facts, selectors, private reasoning,
+raw prior role responses, or existing report prose. The analyst proposes
+candidates, the evidence auditor checks references and counterevidence, the
+pattern reviewer checks cross-surface and recurrence claims, and the
+adjudicator decides publication and severity.
+
+Retrieval is bounded. Defaults are three retrieval rounds, at most 32 evidence
+entries per resolution, and 16 MiB of cumulative attachments. Project settings
+can bound retrieval rounds from 1 to 5, adjudication revisions from 0 to 2,
+and final verification passes from 1 to 2. Evidence references remain tied to
+recorded run, viewport, element, event, metric, replay, and artifact identity.
+
+Enabled projects attempt synthesis automatically after `uxa run` finalizes its
+runs. `uxa run ... --no-synthesis` skips the attempt and still renders the
+deterministic report. `uxa synthesize PROJECT --experiment ID --output DIR`
+creates a new immutable synthesis attempt from finalized bundles. Missing
+configuration, unavailable transport, schema failure, rejected candidates, or
+unresolved objections are recorded as `unavailable` or `rejected`; deterministic
+findings and replay remain available through fallback behavior. A successful
+attempt is `accepted` or `no-issues`.
+
+`uxa report` is intentionally offline. It reads stored bundles and immutable
+synthesis artifacts, resolves only independently verifiable evidence links, and
+never calls a model. The report can therefore be regenerated without network
+access or credentials.
 
 ## Saliency Execution Providers
 

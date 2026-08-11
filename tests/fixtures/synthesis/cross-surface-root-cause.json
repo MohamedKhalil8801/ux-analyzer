@@ -1,0 +1,226 @@
+{
+  "schema_version": "report-synthesis-e2e-v1",
+  "scenario": "cross-surface-root-cause",
+  "entries": [
+    {
+      "ref": {
+        "evidence_id": "event:run-1:6",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-6",
+        "replay_sequence": 6
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The user searched from the dashboard before finding the task entry point.",
+      "payload": {
+        "sequence": 6,
+        "surface": "Dashboard",
+        "action": "inspect"
+      }
+    },
+    {
+      "ref": {
+        "evidence_id": "event:run-1:7",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-7",
+        "replay_sequence": 7
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The user opened a similarly labelled control in the members surface.",
+      "payload": {
+        "sequence": 7,
+        "surface": "Members",
+        "action": "interact"
+      }
+    },
+    {
+      "ref": {
+        "evidence_id": "event:run-1:8",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-8",
+        "replay_sequence": 8
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The verifier recorded completion after the user reached the settings surface.",
+      "payload": {
+        "sequence": 8,
+        "surface": "Settings",
+        "action": "verify",
+        "verified": true
+      }
+    }
+  ],
+  "scripts": {
+    "report-analyst": [
+      {
+        "complete": false,
+        "evidence_requests": [
+          "event:run-1:6",
+          "event:run-1:7",
+          "event:run-1:8"
+        ]
+      },
+      {
+        "complete": true,
+        "candidate_findings": [
+          {
+            "finding_id": "shared-navigation-label",
+            "title": "Task labels repeat an internal structure",
+            "issue": "Users search across several task surfaces before recognizing the same entry point.",
+            "impact": "Important workspace tasks require avoidable searching.",
+            "root_cause": "The same internal label is reused across three task surfaces.",
+            "fixes": [
+              "Use task-oriented labels consistently across all affected surfaces."
+            ],
+            "severity": "high",
+            "confidence": 0.88,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:6",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-6",
+                "replay_sequence": 6
+              },
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              },
+              {
+                "evidence_id": "event:run-1:8",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-8",
+                "replay_sequence": 8
+              }
+            ],
+            "affected_surfaces": [
+              "Dashboard",
+              "Members",
+              "Settings"
+            ],
+            "counterevidence": [
+              "The settings surface presents a direct task label, limiting the recurrence claim."
+            ],
+            "severity_justification": "Three recorded surface events show the same discovery problem on an important task."
+          }
+        ]
+      }
+    ],
+    "report-evidence-auditor": [
+      {
+        "complete": true,
+        "objections": [
+          {
+            "objection_id": "direct-label-counterexample",
+            "finding_id": "shared-navigation-label",
+            "objection_type": "counterexample",
+            "severity": "material",
+            "message": "The settings surface contains a direct label and qualifies the recurrence claim.",
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:8",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-8",
+                "replay_sequence": 8
+              }
+            ],
+            "reviewer_role": "report-evidence-auditor"
+          }
+        ]
+      }
+    ],
+    "report-pattern-reviewer": [
+      {
+        "complete": true,
+        "objections": []
+      }
+    ],
+    "report-adjudicator": [
+      {
+        "complete": true,
+        "final_findings": [
+          {
+            "finding_id": "shared-navigation-label",
+            "title": "Task labels repeat an internal structure",
+            "issue": "Users search across several task surfaces before recognizing the same entry point.",
+            "impact": "Important workspace tasks require avoidable searching.",
+            "root_cause": "The same internal label is reused across three task surfaces.",
+            "fixes": [
+              "Use task-oriented labels consistently across all affected surfaces."
+            ],
+            "severity": "high",
+            "confidence": 0.88,
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:6",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-6",
+                "replay_sequence": 6
+              },
+              {
+                "evidence_id": "event:run-1:7",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-7",
+                "replay_sequence": 7
+              },
+              {
+                "evidence_id": "event:run-1:8",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-8",
+                "replay_sequence": 8
+              }
+            ],
+            "affected_surfaces": [
+              "Dashboard",
+              "Members",
+              "Settings"
+            ],
+            "counterevidence": [
+              "The settings surface presents a direct task label, limiting the recurrence claim."
+            ],
+            "reviewer_state": "accepted",
+            "severity_justification": "Three recorded surface events show the same discovery problem on an important task."
+          }
+        ],
+        "objection_resolutions": [
+          {
+            "objection_id": "direct-label-counterexample",
+            "finding_id": "shared-navigation-label",
+            "resolved": true,
+            "resolution": "The direct label remains recorded as counterevidence while the grouped finding is limited to the repeated mismatch.",
+            "evidence_refs": [
+              {
+                "evidence_id": "event:run-1:8",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-8",
+                "replay_sequence": 8
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

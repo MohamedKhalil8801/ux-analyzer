@@ -126,3 +126,65 @@ heatmaps. It must keep numeric saliency outside cognitive prompts and obey
 source-image redaction. Missing source overlays produce heatmap-only replay.
 Intentional changes from the original implementation plan are recorded in
 [POC plan versus current implementation](poc-plan-vs-current.md).
+
+## Evidence-room report synthesis boundary
+
+Report synthesis starts only after run bundles and the experiment result are
+finalized. The application builds a redacted evidence room containing frozen
+expectations, deterministic run facts, replay events, metrics, geometry, and
+allowlisted screenshot or heatmap artifacts. It excludes run-agent chat,
+selectors, hidden DOM facts, private reasoning, raw model responses, and prior
+report prose.
+
+The post-run flow is:
+
+```text
+finalized runs
+    -> evidence-room manifest and frozen expectations
+    -> report analyst retrieves candidate evidence
+    -> evidence auditor checks refs and counterevidence
+    -> pattern reviewer checks recurrence and cross-surface scope
+    -> adjudicator resolves objections and judges publication/severity
+    -> deterministic validation and final verification
+    -> immutable synthesis attempt
+    -> offline report renderer and playback workspace
+```
+
+The four report roles use fresh isolated contexts. They may request only
+known evidence IDs, and every requested entry is resolved, bounded, and
+revalidated before it can support a finding. Retrieval defaults to three rounds,
+32 entries, and 16 MiB of cumulative attachments. Role output is advisory until
+the deterministic publication contract accepts it.
+
+Frozen expectations define desired outcomes, invariants, acceptable alternatives,
+reference paths, effort bounds, and warning signals. A path deviation is not
+automatically an issue: a valid alternate route remains acceptable when the
+outcome and invariants hold. A finding needs evidence of user impact or task
+harm, not merely distance from one reference path.
+
+Severity is an evidence judgment over task importance, user impact, frequency,
+recoverability, accessibility impact, scope, recurrence, leverage, and
+counterevidence. Broad scope or recurrence can inform the judgment but cannot
+multiply severity by itself. The UX principle pack supplies interpretive
+questions and labels; principles are not evidence, cannot establish severity,
+and cannot replace recorded observations or verification.
+
+Each synthesis attempt is immutable and records its corpus, expectation and
+principle digests, role manifests, retrieval log, objections, candidate and
+rejected findings, final findings, limitations, status, and fallback metadata.
+Regeneration creates a new attempt rather than rewriting an old one. Outcomes
+are `accepted`, `no-issues`, `rejected`, or `unavailable`. Missing transport or
+invalid model output preserves deterministic findings and remains visible as a
+bounded fallback state.
+
+Every visible finding links to independently verifiable evidence such as a
+recorded event, viewport or element snapshot, metric, replay sequence,
+screenshot, or heatmap artifact. The renderer resolves those links locally and
+opens the corresponding playback workspace; `uxa report` never calls a model.
+
+Task 10-11 ledger note: the Task 12 scenarios use event, expectation, and
+verification references, so they do not exercise saliency artifact navigation
+or generic ranked-element target validation. The existing renderer validation
+coverage and the ledger items for secure heatmap/native-map hashing, snapshot
+identity checks, and unavailable-versus-no-issues fix-first fallback remain
+explicit review work outside this bounded documentation and scenario batch.

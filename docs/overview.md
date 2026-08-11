@@ -2475,3 +2475,50 @@ Prominence
 ```
 
 This creates a better foundation for automated usability analysis than unrestricted screenshot reasoning or complete interface-tree access. It allows the system to identify not only whether a task can be completed, but why the correct path is easy or difficult to discover.
+
+## 38. Evidence-Grounded Report Synthesis
+
+The report layer is a bounded post-run review of recorded evidence, not another
+open-ended agent session. It builds an evidence room from finalized run bundles,
+frozen expectations, deterministic facts, replay events, metrics, geometry, and
+allowlisted image artifacts. Run-agent conversation, hidden interface facts,
+selectors, private reasoning, raw model responses, and existing report prose do
+not enter that room.
+
+Four isolated roles process the room in order: the analyst proposes candidate
+findings and requests evidence; the evidence auditor checks references,
+counterevidence, and publication support; the pattern reviewer checks whether
+scope, recurrence, and cross-surface claims are supported; and the adjudicator
+resolves objections, selects final findings, and judges severity. Deterministic
+validation performs the final reference, verifier, narrative, and publication
+checks. A role response is never published by itself.
+
+Frozen expectations make tolerance explicit. They record desired outcomes,
+required invariants, acceptable alternatives, reference paths, effort bounds,
+and warning signals. A different path can be valid when it reaches the desired
+outcome without violating invariants. The system must not report a route as an
+issue merely because it differs from an example path; it needs observed harm,
+task friction, or a material risk supported by the evidence room.
+
+Severity is a judgment over the evidence: task importance, user impact,
+frequency, recoverability, accessibility impact, affected scope, recurrence,
+leverage, and counterevidence. Breadth and recurrence are context, not
+automatic severity multipliers. UX principles help reviewers ask consistent
+questions and name a concern, but they are interpretive limitations. They are
+not evidence, do not prove a user claim, and cannot independently justify a
+severity level.
+
+Attempts are immutable records with corpus, expectation, and principle digests;
+role manifests; retrieval history; candidates; objections; rejected findings;
+published findings; limitations; fallback metadata; and a terminal status.
+The status is `accepted`, `no-issues`, `rejected`, or `unavailable`. A missing
+model, transport failure, invalid schema, or unresolved objection does not erase
+the deterministic run result: the report records the bounded failure and keeps
+the offline fallback available.
+
+The report UI is conclusions-first but evidence-first in its claims. Each
+visible finding exposes independently verifiable links to recorded events,
+viewports, elements, metrics, replay sequences, screenshots, or heatmaps.
+`Verify evidence` and `Open evidence` navigate to the local playback workspace.
+`uxa report` only renders stored artifacts and never calls a model, so report
+regeneration is available offline and does not need credentials.
