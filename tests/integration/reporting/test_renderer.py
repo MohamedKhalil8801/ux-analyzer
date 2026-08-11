@@ -89,13 +89,15 @@ def _synthesis_ref(
             kind,
             run_id,
             viewport_id=viewport_id,
+            artifact_path=f"runs/{run_id}/saliency/inference-1/3s-heatmap.png",
+            sha256="866f97bc38d8251e7c689fe970efb5c943bfbe0c72b0cfdab1b68c79ce005aa5",
         )
     raise AssertionError(f"unsupported synthesis fixture reference: {kind}")
 
 
 def _synthesis_payload(ref: EvidenceRef) -> dict[str, object]:
     payload: dict[str, object] = {"evidence_id": ref.evidence_id}
-    if ref.kind == "heatmap":
+    if ref.kind in {"heatmap", "native-map"}:
         payload.update({"namespace": "inference-1", "duration": "3s"})
     return payload
 
@@ -749,6 +751,136 @@ def test_renderer_loads_accepted_synthesis_and_maps_safe_evidence_targets(
     assert "attachment_path" not in json.dumps(synthesis)
 
 
+@pytest.mark.parametrize(
+    ("kind", "filename"),
+    [("heatmap", "3s-heatmap.png"), ("native-map", "3s.npz")],
+)
+def test_renderer_rejects_mismatched_synthesis_saliency_artifact_digest(
+    tmp_path: Path,
+    kind: str,
+    filename: str,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_saliency_replay_evidence(tmp_path, "run-1")
+    relative_artifact = f"runs/run-1/saliency/inference-1/{filename}"
+    reference = EvidenceRef(
+        f"{kind}:run-1:inference-1:3s",
+        kind,
+        "run-1",
+        viewport_id="inference-1",
+        artifact_path=relative_artifact,
+        sha256="0" * 64,
+    )
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(reference,),
+        finding_refs=(reference,),
+        finding_title="Mismatched saliency digest must not render",
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Mismatched saliency digest must not render"
+        for finding in synthesis["findings"]
+    )
+
+
+def test_renderer_rejects_model_estimate_target_with_unrecorded_element(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    reference = EvidenceRef(
+        "model-estimate:run-1:prominence:3:forged",
+        "model-estimate",
+        "run-1",
+        viewport_id="viewport-1",
+        element_id="forged",
+        event_id="event-3",
+    )
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(reference,),
+        finding_refs=(reference,),
+        finding_title="Forged model estimate must not render",
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Forged model estimate must not render"
+        for finding in synthesis["findings"]
+    )
+
+
+def test_renderer_rejects_ranked_element_target_with_unrecorded_element(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_saliency_replay_evidence(tmp_path, "run-1")
+    reference = EvidenceRef(
+        "ranked-element:run-1:inference-1:3s:forged",
+        "ranked-element",
+        "run-1",
+        viewport_id="inference-1",
+        element_id="forged",
+    )
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(reference,),
+        finding_refs=(reference,),
+        finding_title="Forged ranked element must not render",
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Forged ranked element must not render"
+        for finding in synthesis["findings"]
+    )
+
+
+def test_renderer_rejects_unsupported_target_fields(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    reference = EvidenceRef(
+        "scenario:run-1",
+        "scenario",
+        "run-1",
+        viewport_id="forged-viewport",
+    )
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(reference,),
+        finding_refs=(reference,),
+        finding_title="Unsupported target fields must not render",
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Unsupported target fields must not render"
+        for finding in synthesis["findings"]
+    )
+
+
 @pytest.mark.parametrize("attempt_status", [None, SynthesisStatus.UNAVAILABLE])
 def test_renderer_missing_or_unavailable_synthesis_uses_deterministic_fallback(
     tmp_path: Path,
@@ -904,7 +1036,10 @@ def test_renderer_rejects_forged_synthesis_evidence_references(tmp_path: Path) -
     )
 
 
-def test_renderer_does_not_promote_rejected_attempt_findings(tmp_path: Path) -> None:
+def test_renderer_does_not_promote_rejected_attempt_findings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
     _write_synthesis(
         tmp_path,
@@ -913,6 +1048,7 @@ def test_renderer_does_not_promote_rejected_attempt_findings(tmp_path: Path) -> 
         finding_refs=(_synthesis_ref("event"),),
         finding_title="Rejected attempt finding",
     )
+    monkeypatch.setattr(renderer, "_deterministic_fallback_findings", lambda runs: [])
 
     synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
         "synthesis"
@@ -920,10 +1056,27 @@ def test_renderer_does_not_promote_rejected_attempt_findings(tmp_path: Path) -> 
 
     assert synthesis["synthesis_status"] == "rejected"
     assert synthesis["using_fallback"] is True
+    assert synthesis["findings"] == []
     assert all(
         finding["title"] != "Rejected attempt finding"
         for finding in synthesis["findings"]
     )
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    normalized_html = " ".join(html.split())
+
+    assert 'data-synthesis-status="rejected"' in normalized_html
+    assert "Evidence review rejected; candidate findings are not publishable." in (
+        normalized_html
+    )
+    assert (
+        "No prioritized fix is available because all candidate findings were rejected."
+        in (normalized_html)
+    )
+    assert "Rejected findings are not publishable." in normalized_html
+    assert "the evidence review is unavailable" not in normalized_html
 
 
 def test_render_experiment_report_is_offline_and_does_not_call_model(
@@ -1076,6 +1229,28 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert "Unavailable: synthesis principles were not recorded." in fallback_html
     assert "Unavailable: counterevidence was not recorded." in fallback_html
     assert 'data-evidence-target="{&#34;kind&#34;: &#34;metric&#34;' in fallback_html
+
+
+def test_renderer_uses_unavailable_fix_first_copy_without_fallback_findings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_run(tmp_path, "run-1", version="improved", discovery_cost=3)
+    monkeypatch.setattr(renderer, "_deterministic_fallback_findings", lambda runs: [])
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    normalized_html = " ".join(html.split())
+
+    assert (
+        "No prioritized fix is available because the evidence review is unavailable."
+        in normalized_html
+    )
+    assert (
+        "No fix is prioritized because no supported issue was established"
+        not in normalized_html
+    )
 
 
 @pytest.mark.e2e

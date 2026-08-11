@@ -32,7 +32,7 @@
       {%- elif status == "no-issues" -%}No supported issues established
       {%- elif status in ["missing", "unavailable"] -%}Evidence review unavailable
       {%- elif status == "invalid" -%}Evidence review could not be validated
-      {%- elif status == "rejected" -%}Evidence review needs caution
+      {%- elif status == "rejected" -%}Evidence review rejected; candidate findings are not publishable.
       {%- else -%}Evidence review status unavailable
       {%- endif -%}
     {%- endmacro %}
@@ -194,6 +194,8 @@
         No supported UX issues were established in the tested scenarios.
         {% elif synthesis_status == "accepted" %}
         The tested scenarios show supported issues, with priority and fixes listed below.
+        {% elif synthesis_status == "rejected" %}
+        No report-synthesis finding was publishable because all candidate findings were rejected.
         {% elif using_fallback %}
         Recorded findings are shown while the complete evidence review is unavailable.
         {% else %}
@@ -219,7 +221,13 @@
         </div>
       </div>
       {% if using_fallback %}
-      <p class="fallback-notice">Backup view in use. Recorded findings remain available while the complete evidence review is unavailable.</p>
+      <p class="fallback-notice">
+        {% if synthesis_status == "rejected" %}
+        Report synthesis was rejected. Candidate findings are not publishable; recorded findings remain available as a fallback.
+        {% else %}
+        Backup view in use. Recorded findings remain available while the complete evidence review is unavailable.
+        {% endif %}
+      </p>
       {% endif %}
     </section>
 
@@ -342,6 +350,8 @@
       <p class="empty-conclusion">
         {% if synthesis_status == "no-issues" %}
         No supported UX issues were established in the tested scenarios.
+        {% elif synthesis_status == "rejected" %}
+        No accepted findings are available because all candidate findings were rejected.
         {% elif using_fallback %}
         No recorded findings are available for this report.
         {% else %}
@@ -377,7 +387,17 @@
         {% endfor %}
       </ol>
       {% else %}
-      <p class="empty-conclusion">No fix is prioritized because no supported issue was established in the tested scenarios.</p>
+      <p class="empty-conclusion">
+        {% if synthesis_status == "no-issues" %}
+        No fix is prioritized because no supported issue was established in the tested scenarios.
+        {% elif synthesis_status == "rejected" %}
+        No prioritized fix is available because all candidate findings were rejected. Rejected findings are not publishable.
+        {% elif using_fallback %}
+        No prioritized fix is available because the evidence review is unavailable.
+        {% else %}
+        No prioritized fix is available from this report.
+        {% endif %}
+      </p>
       {% endif %}
     </section>
 

@@ -381,12 +381,6 @@ def _validate_references(config: ProjectModel) -> None:
 
     persona_ids = {persona.id for persona in config.personas}
     scenario_ids = {scenario.id for scenario in config.scenarios}
-    _validate_expectation_references(
-        config,
-        versions_by_id=versions_by_id,
-        scenario_ids=scenario_ids,
-        persona_ids=persona_ids,
-    )
     for scenario in config.scenarios:
         for version_id in scenario.application_version_ids:
             if version_id not in versions_by_id:
@@ -394,6 +388,13 @@ def _validate_references(config: ProjectModel) -> None:
                     f"scenario {scenario.id!r} references unknown application version "
                     f"{version_id!r}"
                 )
+    _validate_expectation_references(
+        config,
+        versions_by_id=versions_by_id,
+        scenario_ids=scenario_ids,
+        persona_ids=persona_ids,
+    )
+    for scenario in config.scenarios:
         for persona_id in scenario.eligible_persona_ids:
             if persona_id not in persona_ids:
                 raise ProjectConfigError(

@@ -37,6 +37,8 @@ from ux_analyzer.storage.run_bundle import (
     secure_assert_ancestors,
     secure_is_link_or_reparse,
     secure_read_bytes,
+    validate_saliency_heatmap_content,
+    validate_saliency_native_map_content,
 )
 from ux_analyzer.storage.saliency_replay import (
     load_saliency_replay as _load_trusted_saliency_replay,
@@ -802,19 +804,10 @@ def _synthesis_navigation_target(
         )
         return target
     if reference.kind in {"heatmap", "native-map", "saliency-metadata"}:
-        namespace = _text(
-            _mapping(entry.payload).get("namespace"), reference.viewport_id or ""
-        )
-        duration = _optional_text(_mapping(entry.payload).get("duration"))
-        group = next(
-            (
-                group
-                for group in _list_of_mappings(run.get("saliency"))
-                if group.get("artifact_namespace") == namespace
-                or group.get("viewport_id") == namespace
-            ),
-            None,
-        )
+        payload = entry.payload
+        namespace = _text(payload.get("namespace"), reference.viewport_id or "")
+        duration = _optional_text(payload.get("duration"))
+        group = _synthesis_saliency_group(run, namespace)
         if group is None or group.get("replay_available") is False:
             raise SynthesisArtifactError("synthesis saliency reference is unavailable")
         if duration is not None and not any(
@@ -822,6 +815,18 @@ def _synthesis_navigation_target(
             for entry in _list_of_mappings(group.get("entries"))
         ):
             raise SynthesisArtifactError("synthesis saliency duration is not recorded")
+        if reference.kind in {"heatmap", "native-map"}:
+            if duration is None:
+                raise SynthesisArtifactError(
+                    "synthesis saliency reference has no duration"
+                )
+            _validate_synthesis_saliency_artifact(
+                entry,
+                run,
+                root,
+                namespace=namespace,
+                duration=duration,
+            )
         target.update(
             {
                 "viewport_id": reference.viewport_id,
@@ -842,20 +847,73 @@ def _synthesis_navigation_target(
         target["metric_id"] = metric_id
         return target
     if reference.kind == "model-estimate":
-        sequence = (
-            _integer(reference.event_id.removeprefix("event-"))
-            if reference.event_id
-            else None
-        )
-        if sequence is not None and _event_by_sequence(run, sequence) is None:
+        if reference.event_id is None or not reference.event_id.startswith("event-"):
+            raise SynthesisArtifactError("synthesis estimate has no recorded event")
+        sequence = _integer(reference.event_id.removeprefix("event-"))
+        if sequence is None:
             raise SynthesisArtifactError("synthesis estimate event is not recorded")
+        event = _event_by_sequence(run, sequence)
+        if event is None or _text(event.get("event_id")) != reference.event_id:
+            raise SynthesisArtifactError("synthesis estimate event ID mismatch")
+        recorded_viewport_id = _recorded_event_viewport_id(run, event)
+        if (
+            reference.viewport_id is not None
+            and recorded_viewport_id != reference.viewport_id
+        ):
+            raise SynthesisArtifactError("synthesis estimate viewport ID mismatch")
+        if not _event_records_element(event, reference.element_id):
+            raise SynthesisArtifactError("synthesis estimate element ID mismatch")
+        target_viewport_id = reference.viewport_id or recorded_viewport_id
+        _validate_synthesis_element_target(
+            run,
+            viewport_id=target_viewport_id,
+            element_id=reference.element_id,
+        )
         target.update(
             {
-                "viewport_id": reference.viewport_id,
+                "viewport_id": target_viewport_id,
                 "element_id": reference.element_id,
             }
         )
         return target
+    if reference.kind == "ranked-element":
+        payload = entry.payload
+        namespace = _text(payload.get("namespace"), reference.viewport_id or "")
+        duration = _optional_text(payload.get("duration"))
+        if duration is None:
+            raise SynthesisArtifactError("synthesis ranked element has no duration")
+        group = _synthesis_saliency_group(run, namespace)
+        if group is None or group.get("replay_available") is False:
+            raise SynthesisArtifactError("synthesis ranked element is unavailable")
+        if not any(
+            item.get("duration") == duration
+            for item in _list_of_mappings(group.get("entries"))
+        ):
+            raise SynthesisArtifactError(
+                "synthesis ranked element duration is not recorded"
+            )
+        target_viewport_id = _optional_text(group.get("viewport_id"))
+        _validate_synthesis_element_target(
+            run,
+            viewport_id=target_viewport_id,
+            element_id=reference.element_id,
+        )
+        target.update(
+            {
+                "viewport_id": target_viewport_id,
+                "element_id": reference.element_id,
+                "duration": duration,
+                "namespace": namespace,
+            }
+        )
+        return target
+    if any(
+        getattr(reference, name) is not None
+        for name in ("viewport_id", "element_id", "metric_id")
+    ):
+        raise SynthesisArtifactError(
+            "synthesis reference contains unsupported target fields"
+        )
     target.update(
         {
             name: value
@@ -925,6 +983,100 @@ def _snapshot_by_id(
         ),
         None,
     )
+
+
+def _validate_synthesis_element_target(
+    run: Mapping[str, Any],
+    *,
+    viewport_id: str | None,
+    element_id: str | None,
+) -> None:
+    if viewport_id is None or element_id is None:
+        raise SynthesisArtifactError("synthesis target is incomplete")
+    snapshot = _snapshot_by_id(run, viewport_id)
+    if snapshot is None or not any(
+        element.get("id") == element_id
+        for element in _list_of_mappings(snapshot.get("elements"))
+    ):
+        raise SynthesisArtifactError("synthesis target element is not recorded")
+
+
+def _event_records_element(event: Mapping[str, Any], element_id: str | None) -> bool:
+    if element_id is None:
+        return False
+    if _recorded_event_element_id(event) == element_id:
+        return True
+    return any(
+        score.get("element_id") == element_id
+        for score in _list_of_mappings(event.get("scores"))
+    )
+
+
+def _synthesis_saliency_group(
+    run: Mapping[str, Any], namespace: str
+) -> dict[str, Any] | None:
+    return next(
+        (
+            group
+            for group in _list_of_mappings(run.get("saliency"))
+            if group.get("artifact_namespace") == namespace
+            or group.get("viewport_id") == namespace
+        ),
+        None,
+    )
+
+
+def _validate_synthesis_saliency_artifact(
+    entry: EvidenceEntry,
+    run: Mapping[str, Any],
+    root: Path,
+    *,
+    namespace: str,
+    duration: str,
+) -> None:
+    reference = entry.ref
+    if reference.artifact_path is None or reference.sha256 is None:
+        raise SynthesisArtifactError("synthesis saliency reference is incomplete")
+    root_relative = _synthesis_relative_path(
+        reference.artifact_path, "synthesis saliency path"
+    )
+    parts = root_relative.parts
+    if len(parts) < 3 or parts[0] != "runs" or parts[1] != reference.run_id:
+        raise SynthesisArtifactError("synthesis saliency path is outside its run")
+    run_relative = PurePosixPath(*parts[2:])
+    filename = (
+        f"{duration}-heatmap.png" if reference.kind == "heatmap" else f"{duration}.npz"
+    )
+    expected_relative = PurePosixPath("saliency", namespace, filename)
+    if run_relative != expected_relative:
+        raise SynthesisArtifactError("synthesis saliency path is not recorded")
+    group = _synthesis_saliency_group(run, namespace)
+    if group is None or group.get("replay_available") is False:
+        raise SynthesisArtifactError("synthesis saliency reference is unavailable")
+    if expected_relative.as_posix() not in _strings(group.get("artifact_ids")):
+        raise SynthesisArtifactError("synthesis saliency artifact is not recorded")
+    if reference.kind == "heatmap" and not any(
+        _text(item.get("heatmap_path"), "") == expected_relative.as_posix()
+        for item in _list_of_mappings(group.get("entries"))
+        if item.get("duration") == duration
+    ):
+        raise SynthesisArtifactError("synthesis heatmap is not recorded")
+    run_path = root / _text(run.get("bundle_path"))
+    candidate = _secure_bundle_file(run_path, run_relative)
+    if candidate is None:
+        raise SynthesisArtifactError("synthesis saliency path is unavailable")
+    content = secure_read_bytes(candidate, "synthesis saliency artifact")
+    if hashlib.sha256(content).hexdigest() != reference.sha256:
+        raise SynthesisArtifactError("synthesis saliency artifact digest mismatch")
+    try:
+        if reference.kind == "heatmap":
+            validate_saliency_heatmap_content(content)
+        else:
+            validate_saliency_native_map_content(content)
+    except ValueError as error:
+        raise SynthesisArtifactError(
+            "synthesis saliency artifact is invalid"
+        ) from error
 
 
 def _screenshot_navigation_target(
