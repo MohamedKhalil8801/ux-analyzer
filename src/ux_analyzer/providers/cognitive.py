@@ -182,11 +182,14 @@ def _normalize_model_response(response: CognitiveModelResponse) -> CognitiveDeci
     }.get(action_name, action_name)
 
     action_data: dict[str, object] = {"kind": action_name}
-    if response.element_id is not None:
+    if (
+        action_name in {"inspect", "interact", "type-fixture"}
+        and response.element_id is not None
+    ):
         action_data["element_id"] = response.element_id
-    if response.fixture_key is not None:
+    if action_name == "type-fixture" and response.fixture_key is not None:
         action_data["fixture_key"] = response.fixture_key
-    if response.direction is not None:
+    if action_name == "scroll" and response.direction is not None:
         action_data["direction"] = response.direction
     if action_name == "abandon" and response.reason is not None:
         action_data["reason"] = response.reason

@@ -698,3 +698,43 @@ async def test_flat_cognitive_provider_response_normalizes_to_domain_action(
 
     assert decision.action.kind == expected_kind
     assert decision.action.element_id == "target"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_action", "expected_action"),
+    (
+        ("scroll", {"kind": "scroll", "direction": "down"}),
+        ("wait", {"kind": "wait"}),
+        ("back", {"kind": "back"}),
+        ("complete", {"kind": "complete"}),
+        ("abandon", {"kind": "abandon", "reason": "Provider response."}),
+    ),
+)
+async def test_flat_cognitive_non_targeted_actions_ignore_irrelevant_fields(
+    provider_action: str,
+    expected_action: dict[str, str],
+) -> None:
+    class IrrelevantFieldsClient(RecordingClient):
+        async def complete(self, schema, messages, model, role):
+            del messages, model, role
+            return schema.model_validate(
+                {
+                    "action": provider_action,
+                    "element_id": "e0",
+                    "fixture_key": "irrelevant_fixture",
+                    "direction": "down",
+                    "reason": "Provider response.",
+                }
+            )
+
+    observation = ProgressiveObservation.from_snapshot(
+        _snapshot(), newly_revealed_ids=("target",)
+    )
+    decision = await StructuredCognitiveAgent(
+        IrrelevantFieldsClient(),
+        model="cognitive-model",
+        fixture_keys=("invite_email",),
+    ).decide("Find invite", observation)
+
+    assert decision.action.model_dump(mode="json") == expected_action
