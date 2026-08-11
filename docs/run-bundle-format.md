@@ -185,6 +185,62 @@ heatmap-only image, element geometry, ranked elements, and aggregation detail.
 Replay parser applies bounded JSON, timeline, image, and profile/aggregate limits;
 oversized or malformed evidence is unavailable rather than rendered.
 
+## Experiment-Scoped Synthesis Artifacts
+
+Report synthesis is stored at experiment scope beside the run bundles. It does
+not add files to, rewrite, or change checksums in any existing run bundle.
+
+```text
+<experiment-output>/
+  synthesis/
+    index.json
+    attempts/
+      <attempt-id>/
+        synthesis.json
+        corpus-manifest.json
+```
+
+Published attempt IDs use the collision-safe form
+`<created-at-utc>-<first12(corpus_digest)>-<sequence>`. The UTC component is a
+path-safe timestamp ending in `Z`; the digest component is twelve lowercase
+hexadecimal characters and the sequence is a positive decimal integer. An
+existing attempt directory is immutable and is never overwritten.
+
+`corpus-manifest.json` is the canonical `EvidenceCorpus` JSON document. Its
+bytes are ASCII, sorted by key, compact, and terminated by one newline. The
+same serialization rule applies to `synthesis.json` and `index.json`.
+
+`synthesis.json` contains the artifact schema version, attempt identity and
+creation time, the corpus, expectation, principle-pack, prompt, and schema
+digest fields, model and role manifests, retrieval log, usage, candidate
+findings, objections, rejected findings, final findings, status, limitations,
+and deterministic-fallback availability. The `digests` object contains
+`corpus`, `expectation`, `principle_pack`, `prompt`, and `schema`; the prompt
+and schema digests are SHA-256 values of their persisted version identifiers.
+The corpus digest is checked against the canonical corpus-manifest bytes, the
+expectation digest is checked against the expectation entries in that manifest,
+and the principle-pack digest is checked against the corpus metadata.
+
+`index.json` contains `schema_version: "synthesis-index-v1"`, an
+`accepted_attempt_id` (or `null`), and an `attempts` list. Each list record
+contains `attempt_id`, `created_at`, `status`, `corpus_digest`,
+`synthesis_digest`, and `corpus_manifest_digest`. The accepted pointer may
+target only `accepted` or `no-issues` attempts. `rejected` and `unavailable`
+attempts remain retained and readable but cannot become the selected report
+synthesis. The only statuses are `accepted`, `no-issues`, `rejected`, and
+`unavailable`.
+
+Attempt files are written in a same-parent hidden staging directory. Files are
+fsynced before the complete attempt directory is atomically renamed into
+`attempts/`; the index is written to a same-parent temporary file and atomically
+replaced. Hidden staging and temporary files are ignored during recovery. A
+failed index publication therefore leaves the previous accepted pointer intact
+while retaining the newly published attempt for audit.
+
+`uxa report` is an offline renderer. It reads the selected accepted or
+no-issues attempt and never initiates a model call; missing, rejected,
+unavailable, or invalid synthesis falls back to deterministic run findings.
+
 ## Redaction and Retention
 
 `RedactionPolicy` redacts configured exact values and configured mapping keys

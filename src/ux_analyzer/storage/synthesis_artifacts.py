@@ -1,0 +1,875 @@
+"""Immutable experiment-scoped report-synthesis artifacts."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
+from datetime import UTC, datetime
+from enum import Enum
+from pathlib import Path
+from typing import cast
+from uuid import uuid4
+
+from ux_analyzer.domain.synthesis import (
+    EvidenceRef,
+    SynthesisAttempt,
+    SynthesisFinding,
+    SynthesisObjection,
+    SynthesisStatus,
+)
+from ux_analyzer.ports.report_synthesis import SynthesisCorpusPort
+from ux_analyzer.storage.run_bundle import (
+    secure_assert_ancestors,
+    secure_ensure_directory,
+    secure_is_link_or_reparse,
+    secure_make_temporary_directory,
+    secure_read_bytes,
+    secure_remove_tree,
+    secure_replace,
+    secure_unlink,
+    secure_write_bytes,
+)
+
+_INDEX_SCHEMA_VERSION = "synthesis-index-v1"
+_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v1"
+_MAX_JSON_BYTES = 64 * 1024 * 1024
+_DIGEST_LENGTH = 64
+_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_ATTEMPT_CREATED_PATTERN = re.compile(
+    r"^(?:\d{8}T\d{6}(?:\d{6})?Z|\d{4}-\d{2}-\d{2}T\d{6}(?:\.\d{1,6})?Z)$"
+)
+_ACCEPTED_STATUSES = frozenset({SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES})
+
+
+class SynthesisArtifactError(ValueError):
+    """Raised when synthesis artifact state is invalid or cannot be trusted."""
+
+
+def _json_object_without_duplicates(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise SynthesisArtifactError("JSON contains duplicate fields")
+        result[key] = value
+    return result
+
+
+def _json_value(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        return {str(key): _json_value(item) for key, item in mapping.items()}
+    if isinstance(value, (list, tuple)):
+        sequence = cast(list[object] | tuple[object, ...], value)
+        return [_json_value(item) for item in sequence]
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: _json_value(cast(object, getattr(value, item.name)))
+            for item in fields(value)
+        }
+    return value
+
+
+def _canonical_bytes(value: object, *, trailing_newline: bool = True) -> bytes:
+    serialized = json.dumps(
+        _json_value(value),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if trailing_newline:
+        serialized += "\n"
+    return serialized.encode("ascii")
+
+
+def _sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _digest_identifier(identifier: str) -> str:
+    return _sha256(identifier.encode("utf-8"))
+
+
+def _created_at_from_attempt_token(value: str) -> datetime:
+    formats = ("%Y%m%dT%H%M%SZ", "%Y-%m-%dT%H%M%SZ")
+    for date_format in formats:
+        try:
+            return datetime.strptime(value, date_format).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    raise SynthesisArtifactError("attempt ID contains an invalid UTC timestamp")
+
+
+def _created_at_matches_attempt_id(created_at: str, attempt_id: str) -> bool:
+    created_token, _, _ = _validate_attempt_id(attempt_id)
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        return False
+    expected = _created_at_from_attempt_token(created_token)
+    return parsed.astimezone(UTC).replace(microsecond=0) == expected
+
+
+def _text(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SynthesisArtifactError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _mapping(value: object, field_name: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise SynthesisArtifactError(f"{field_name} must be an object")
+    mapping = cast(Mapping[object, object], value)
+    return {str(key): item for key, item in mapping.items()}
+
+
+def _list(value: object, field_name: str) -> list[object]:
+    if not isinstance(value, list):
+        raise SynthesisArtifactError(f"{field_name} must be an array")
+    return cast(list[object], value)
+
+
+def _enum_text(value: object, field_name: str) -> str:
+    if isinstance(value, Enum):
+        return _text(value.value, field_name)
+    return _text(value, field_name)
+
+
+def _float(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SynthesisArtifactError(f"{field_name} must be numeric")
+    return float(value)
+
+
+def _digest(value: object, field_name: str) -> str:
+    result = _text(value, field_name)
+    if not _DIGEST_PATTERN.fullmatch(result):
+        raise SynthesisArtifactError(f"{field_name} must be a lowercase SHA-256 digest")
+    return result
+
+
+def _validate_attempt_id(attempt_id: object) -> tuple[str, str, int]:
+    value = _text(attempt_id, "attempt ID")
+    created, digest_prefix, sequence_text = (
+        value.rsplit("-", maxsplit=2) if value.count("-") >= 2 else ("", "", "")
+    )
+    if (
+        not _ATTEMPT_CREATED_PATTERN.fullmatch(created)
+        or not re.fullmatch(r"[0-9a-f]{12}", digest_prefix)
+        or not re.fullmatch(r"[1-9][0-9]*", sequence_text)
+        or Path(value).name != value
+        or "\\" in value
+        or "\x00" in value
+    ):
+        raise SynthesisArtifactError(
+            "attempt ID must be <created-at-utc>-<first12(corpus_digest)>-<sequence>"
+        )
+    return created, digest_prefix, int(sequence_text)
+
+
+def _evidence_ref_to_dict(reference: EvidenceRef) -> dict[str, object]:
+    return {
+        "evidence_id": reference.evidence_id,
+        "kind": reference.kind,
+        "run_id": reference.run_id,
+        "viewport_id": reference.viewport_id,
+        "element_id": reference.element_id,
+        "event_id": reference.event_id,
+        "metric_id": reference.metric_id,
+        "artifact_path": reference.artifact_path,
+        "replay_sequence": reference.replay_sequence,
+        "sha256": reference.sha256,
+    }
+
+
+def _evidence_ref_from_dict(value: object) -> EvidenceRef:
+    mapping = _mapping(value, "evidence reference")
+    return EvidenceRef(
+        evidence_id=_text(mapping.get("evidence_id"), "evidence ID"),
+        kind=_text(mapping.get("kind"), "evidence kind"),
+        run_id=_text(mapping.get("run_id"), "run ID"),
+        viewport_id=cast(str | None, mapping.get("viewport_id")),
+        element_id=cast(str | None, mapping.get("element_id")),
+        event_id=cast(str | None, mapping.get("event_id")),
+        metric_id=cast(str | None, mapping.get("metric_id")),
+        artifact_path=cast(str | None, mapping.get("artifact_path")),
+        replay_sequence=cast(int | None, mapping.get("replay_sequence")),
+        sha256=cast(str | None, mapping.get("sha256")),
+    )
+
+
+def _finding_to_dict(finding: SynthesisFinding) -> dict[str, object]:
+    return {
+        "finding_id": finding.finding_id,
+        "title": finding.title,
+        "issue": finding.issue,
+        "impact": finding.impact,
+        "root_cause": finding.root_cause,
+        "fixes": list(finding.fixes),
+        "severity": _enum_text(finding.severity, "finding severity"),
+        "confidence": finding.confidence,
+        "evidence_refs": [
+            _evidence_ref_to_dict(reference) for reference in finding.evidence_refs
+        ],
+        "affected_surfaces": list(finding.affected_surfaces),
+        "principles": list(finding.principles),
+        "counterevidence": [
+            _evidence_ref_to_dict(item) if isinstance(item, EvidenceRef) else item
+            for item in finding.counterevidence
+        ],
+        "limitations": list(finding.limitations),
+        "reviewer_state": finding.reviewer_state,
+        "evidence_class": _enum_text(finding.evidence_class, "evidence class"),
+        "reproducibility": _enum_text(finding.reproducibility, "reproducibility"),
+        "severity_justification": finding.severity_justification,
+        "reviewer_notes": list(finding.reviewer_notes),
+    }
+
+
+def _finding_from_dict(value: object) -> SynthesisFinding:
+    mapping = _mapping(value, "finding")
+    counterevidence: list[str | EvidenceRef] = []
+    for item in _list(mapping.get("counterevidence", []), "counterevidence"):
+        if isinstance(item, Mapping):
+            counterevidence.append(
+                _evidence_ref_from_dict(_mapping(cast(object, item), "counterevidence"))
+            )
+        else:
+            counterevidence.append(_text(item, "counterevidence"))
+    return SynthesisFinding(
+        finding_id=_text(mapping.get("finding_id"), "finding ID"),
+        title=_text(mapping.get("title"), "finding title"),
+        issue=_text(mapping.get("issue"), "finding issue"),
+        impact=_text(mapping.get("impact"), "finding impact"),
+        root_cause=_text(mapping.get("root_cause"), "finding root cause"),
+        fixes=tuple(
+            _text(item, "finding fix") for item in _list(mapping.get("fixes"), "fixes")
+        ),
+        severity=_text(mapping.get("severity"), "finding severity"),
+        confidence=cast(float, mapping.get("confidence")),
+        evidence_refs=tuple(
+            _evidence_ref_from_dict(item)
+            for item in _list(mapping.get("evidence_refs"), "evidence_refs")
+        ),
+        affected_surfaces=tuple(
+            _text(item, "affected surface")
+            for item in _list(mapping.get("affected_surfaces", []), "affected_surfaces")
+        ),
+        principles=tuple(
+            _text(item, "principle")
+            for item in _list(mapping.get("principles", []), "principles")
+        ),
+        counterevidence=tuple(counterevidence),
+        limitations=tuple(
+            _text(item, "finding limitation")
+            for item in _list(mapping.get("limitations", []), "limitations")
+        ),
+        reviewer_state=_text(mapping.get("reviewer_state"), "reviewer state"),
+        evidence_class=_text(mapping.get("evidence_class"), "evidence class"),
+        reproducibility=_text(mapping.get("reproducibility"), "reproducibility"),
+        severity_justification=cast(str, mapping.get("severity_justification", "")),
+        reviewer_notes=tuple(
+            _text(item, "reviewer note")
+            for item in _list(mapping.get("reviewer_notes", []), "reviewer_notes")
+        ),
+    )
+
+
+def _objection_to_dict(objection: SynthesisObjection) -> dict[str, object]:
+    return {
+        "objection_id": objection.objection_id,
+        "finding_id": objection.finding_id,
+        "severity": _enum_text(objection.severity, "objection severity"),
+        "message": objection.message,
+        "evidence_refs": [
+            _evidence_ref_to_dict(reference) for reference in objection.evidence_refs
+        ],
+        "reviewer_role": objection.reviewer_role,
+        "resolved": objection.resolved,
+        "resolution": objection.resolution,
+    }
+
+
+def _objection_from_dict(value: object) -> SynthesisObjection:
+    mapping = _mapping(value, "objection")
+    resolved = mapping.get("resolved", False)
+    if not isinstance(resolved, bool):
+        raise SynthesisArtifactError("objection resolved must be boolean")
+    return SynthesisObjection(
+        objection_id=_text(mapping.get("objection_id"), "objection ID"),
+        finding_id=_text(mapping.get("finding_id"), "objection finding ID"),
+        severity=_text(mapping.get("severity"), "objection severity"),
+        message=_text(mapping.get("message"), "objection message"),
+        evidence_refs=tuple(
+            _evidence_ref_from_dict(item)
+            for item in _list(
+                mapping.get("evidence_refs", []), "objection evidence_refs"
+            )
+        ),
+        reviewer_role=cast(str, mapping.get("reviewer_role", "")),
+        resolved=resolved,
+        resolution=cast(str | None, mapping.get("resolution")),
+    )
+
+
+def _attempt_to_dict(attempt: SynthesisAttempt) -> dict[str, object]:
+    prompt_digest = _digest_identifier(attempt.prompt_version)
+    schema_digest = _digest_identifier(attempt.schema_version)
+    return {
+        "artifact_schema_version": _ARTIFACT_SCHEMA_VERSION,
+        "attempt_id": attempt.attempt_id,
+        "created_at": attempt.created_at,
+        "corpus_digest": attempt.corpus_digest,
+        "expectation_digest": attempt.expectation_digest,
+        "principle_pack_digest": attempt.principle_pack_digest,
+        "prompt_version": attempt.prompt_version,
+        "schema_version": attempt.schema_version,
+        "prompt_digest": prompt_digest,
+        "schema_digest": schema_digest,
+        "digests": {
+            "corpus": attempt.corpus_digest,
+            "expectation": attempt.expectation_digest,
+            "principle_pack": attempt.principle_pack_digest,
+            "prompt": prompt_digest,
+            "schema": schema_digest,
+        },
+        "model_manifest": attempt.model_manifest,
+        "role_manifest": attempt.role_manifest,
+        "retrieval_log": attempt.retrieval_log,
+        "usage": attempt.usage,
+        "candidates": [_finding_to_dict(item) for item in attempt.candidates],
+        "objections": [_objection_to_dict(item) for item in attempt.objections],
+        "rejected_findings": [
+            _finding_to_dict(item) for item in attempt.rejected_findings
+        ],
+        "final_findings": [_finding_to_dict(item) for item in attempt.final_findings],
+        "status": _enum_text(attempt.status, "status"),
+        "limitations": list(attempt.limitations),
+        "fallback_available": attempt.fallback_available,
+    }
+
+
+def _attempt_from_dict(value: Mapping[str, object]) -> SynthesisAttempt:
+    if value.get("artifact_schema_version") != _ARTIFACT_SCHEMA_VERSION:
+        raise SynthesisArtifactError("unsupported artifact schema version")
+    digests = _mapping(value.get("digests"), "digests")
+    attempt_id = _text(value.get("attempt_id"), "attempt ID")
+    prompt_version = _text(value.get("prompt_version"), "prompt_version")
+    schema_version = _text(value.get("schema_version"), "schema_version")
+    if _digest(digests.get("prompt"), "prompt digest") != _digest_identifier(
+        prompt_version
+    ) or _digest(value.get("prompt_digest"), "prompt_digest") != _digest_identifier(
+        prompt_version
+    ):
+        raise SynthesisArtifactError("prompt digest mismatch")
+    if _digest(digests.get("schema"), "schema digest") != _digest_identifier(
+        schema_version
+    ) or _digest(value.get("schema_digest"), "schema_digest") != _digest_identifier(
+        schema_version
+    ):
+        raise SynthesisArtifactError("schema digest mismatch")
+
+    fallback_available = value.get("fallback_available", True)
+    if not isinstance(fallback_available, bool):
+        raise SynthesisArtifactError("fallback_available must be boolean")
+    created_at_value = value.get("created_at")
+    if created_at_value is None:
+        raise SynthesisArtifactError("created_at is required for persisted attempts")
+    created_at = _text(created_at_value, "created_at")
+    _validate_attempt_id(attempt_id)
+    if not _created_at_matches_attempt_id(created_at, attempt_id):
+        raise SynthesisArtifactError("attempt timestamp does not match attempt ID")
+    return SynthesisAttempt(
+        attempt_id=attempt_id,
+        status=_text(value.get("status"), "status"),
+        corpus_digest=_digest(value.get("corpus_digest"), "corpus_digest"),
+        expectation_digest=_digest(
+            value.get("expectation_digest"), "expectation_digest"
+        ),
+        principle_pack_digest=_digest(
+            value.get("principle_pack_digest"), "principle_pack_digest"
+        ),
+        model_manifest=_mapping(value.get("model_manifest"), "model_manifest"),
+        role_manifest=_mapping(value.get("role_manifest"), "role_manifest"),
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        retrieval_log=tuple(
+            _mapping(item, "retrieval log entry")
+            for item in _list(value.get("retrieval_log"), "retrieval_log")
+        ),
+        usage={
+            key: _float(item, f"usage.{key}")
+            for key, item in _mapping(value.get("usage"), "usage").items()
+        },
+        candidate_findings=tuple(
+            _finding_from_dict(item)
+            for item in _list(value.get("candidates"), "candidates")
+        ),
+        objections=tuple(
+            _objection_from_dict(item)
+            for item in _list(value.get("objections"), "objections")
+        ),
+        rejected_findings=tuple(
+            _finding_from_dict(item)
+            for item in _list(value.get("rejected_findings"), "rejected_findings")
+        ),
+        findings=tuple(
+            _finding_from_dict(item)
+            for item in _list(value.get("final_findings"), "final_findings")
+        ),
+        limitations=tuple(
+            _text(item, "limitation")
+            for item in _list(value.get("limitations"), "limitations")
+        ),
+        fallback_available=fallback_available,
+        created_at=created_at,
+    )
+
+
+def _expectation_digest_from_manifest(value: Mapping[str, object]) -> str:
+    entries = _list(value.get("entries"), "corpus entries")
+    payloads: list[object] = []
+    for item in entries:
+        entry = _mapping(item, "corpus entry")
+        if entry.get("kind") == "expectation":
+            payloads.append(entry.get("payload"))
+    return _sha256(_canonical_bytes(payloads, trailing_newline=False))
+
+
+class SynthesisArtifactStore:
+    """Persist and select immutable experiment-level synthesis attempts."""
+
+    def __init__(self, experiment_output: Path) -> None:
+        self.output = Path(experiment_output)
+        self.synthesis_root = self.output / "synthesis"
+        self.attempts_root = self.synthesis_root / "attempts"
+        self.index_path = self.synthesis_root / "index.json"
+        self._validate_existing_roots()
+
+    @property
+    def attempts(self) -> tuple[SynthesisAttempt, ...]:
+        """Return every complete published attempt, including rejected attempts."""
+
+        self._validate_existing_roots()
+        self._read_index()
+        return tuple(
+            self._read_attempt_bundle(attempt_id)[0]
+            for attempt_id in self._attempt_ids()
+        )
+
+    @property
+    def accepted_attempt(self) -> SynthesisAttempt | None:
+        """Return the attempt selected by the durable accepted pointer."""
+
+        self._validate_existing_roots()
+        index = self._read_index()
+        if index is None or index.get("accepted_attempt_id") is None:
+            return None
+        attempt_id = _text(index.get("accepted_attempt_id"), "accepted_attempt_id")
+        attempt, _, _ = self._read_attempt_bundle(attempt_id)
+        if attempt.status not in _ACCEPTED_STATUSES:
+            raise SynthesisArtifactError(
+                "accepted index points at a non-accepted attempt"
+            )
+        return attempt
+
+    def write_attempt(
+        self, attempt: SynthesisAttempt, corpus: SynthesisCorpusPort
+    ) -> Path:
+        """Publish one complete attempt and update the accepted pointer when eligible."""
+
+        self._ensure_layout()
+        self._read_index()
+        _, digest_prefix, _ = _validate_attempt_id(attempt.attempt_id)
+        corpus_digest = corpus.digest
+        if not _DIGEST_PATTERN.fullmatch(attempt.corpus_digest):
+            raise SynthesisArtifactError(
+                "corpus_digest must be a lowercase SHA-256 digest"
+            )
+        _digest(attempt.expectation_digest, "expectation_digest")
+        _digest(attempt.principle_pack_digest, "principle_pack_digest")
+        _digest(corpus.principle_pack_digest, "corpus principle_pack_digest")
+        if attempt.corpus_digest != corpus_digest:
+            raise SynthesisArtifactError("corpus digest mismatch")
+        if digest_prefix != corpus_digest[:12]:
+            raise SynthesisArtifactError("attempt ID corpus digest prefix mismatch")
+        if attempt.expectation_digest != _expectation_digest_from_manifest(
+            cast(Mapping[str, object], json.loads(corpus.to_json()))
+        ):
+            raise SynthesisArtifactError("expectation digest mismatch")
+        if attempt.principle_pack_digest != corpus.principle_pack_digest:
+            raise SynthesisArtifactError("principle-pack digest mismatch")
+        if attempt.created_at is None:
+            raise SynthesisArtifactError(
+                "created_at is required for persisted attempts"
+            )
+
+        destination = self.attempts_root / attempt.attempt_id
+        if secure_is_link_or_reparse(destination):
+            raise SynthesisArtifactError(
+                "attempt destination must not be a symlink or reparse point"
+            )
+        if os.path.lexists(destination):
+            raise SynthesisArtifactError("attempt already exists; overwrite refused")
+
+        staging = self._temporary_attempt_directory(attempt.attempt_id)
+        try:
+            synthesis_bytes = _canonical_bytes(_attempt_to_dict(attempt))
+            corpus_bytes = corpus.to_json().encode("ascii")
+            secure_write_bytes(staging / "synthesis.json", synthesis_bytes)
+            secure_write_bytes(staging / "corpus-manifest.json", corpus_bytes)
+            self._publish_attempt(staging, destination)
+        except BaseException:
+            self._remove_temporary_directory(staging)
+            raise
+
+        selected = attempt.attempt_id if attempt.status in _ACCEPTED_STATUSES else None
+        self._write_index(selected)
+        return destination
+
+    def select_accepted(self, attempt_id: str | None = None) -> SynthesisAttempt | None:
+        """Select a persisted accepted/no-issues attempt, or read the current selection."""
+
+        if attempt_id is None:
+            return self.accepted_attempt
+        self._ensure_layout()
+        _validate_attempt_id(attempt_id)
+        self._read_index()
+        if attempt_id not in self._attempt_ids():
+            raise SynthesisArtifactError("cannot select missing synthesis attempt")
+        attempt, _, _ = self._read_attempt_bundle(attempt_id)
+        if attempt.status not in _ACCEPTED_STATUSES:
+            raise SynthesisArtifactError(
+                "only accepted or no-issues attempts can be selected"
+            )
+        self._write_index(attempt_id)
+        return attempt
+
+    def _validate_existing_roots(self) -> None:
+        try:
+            secure_assert_ancestors(self.output, "experiment output root")
+            if secure_is_link_or_reparse(self.output):
+                raise SynthesisArtifactError(
+                    "experiment output root must not be a link"
+                )
+            if os.path.lexists(self.synthesis_root):
+                secure_assert_ancestors(self.synthesis_root, "synthesis root")
+                if (
+                    secure_is_link_or_reparse(self.synthesis_root)
+                    or not self.synthesis_root.is_dir()
+                ):
+                    raise SynthesisArtifactError(
+                        "synthesis root must be a real directory"
+                    )
+            if os.path.lexists(self.attempts_root):
+                secure_assert_ancestors(self.attempts_root, "synthesis attempts root")
+                if (
+                    secure_is_link_or_reparse(self.attempts_root)
+                    or not self.attempts_root.is_dir()
+                ):
+                    raise SynthesisArtifactError(
+                        "synthesis attempts root must be a real directory"
+                    )
+            if os.path.lexists(self.index_path) and secure_is_link_or_reparse(
+                self.index_path
+            ):
+                raise SynthesisArtifactError("synthesis index must not be a link")
+        except SynthesisArtifactError:
+            raise
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SynthesisArtifactError(str(error)) from error
+
+    def _ensure_layout(self) -> None:
+        self._validate_existing_roots()
+        try:
+            secure_ensure_directory(self.output, "experiment output root")
+            secure_ensure_directory(self.synthesis_root, "synthesis root")
+            secure_ensure_directory(self.attempts_root, "synthesis attempts root")
+        except SynthesisArtifactError:
+            raise
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SynthesisArtifactError(str(error)) from error
+
+    def _attempt_ids(self) -> tuple[str, ...]:
+        if not os.path.lexists(self.attempts_root):
+            return ()
+        result: list[str] = []
+        try:
+            children = tuple(self.attempts_root.iterdir())
+        except OSError as error:
+            raise SynthesisArtifactError("cannot list synthesis attempts") from error
+        for child in children:
+            if secure_is_link_or_reparse(child):
+                raise SynthesisArtifactError(
+                    "synthesis attempts must not contain symlinks or reparse points"
+                )
+            if child.name.startswith("."):
+                continue
+            if not child.is_dir():
+                raise SynthesisArtifactError(
+                    "synthesis attempts contain a non-directory"
+                )
+            _validate_attempt_id(child.name)
+            result.append(child.name)
+        return tuple(sorted(result))
+
+    def _read_index(self) -> Mapping[str, object] | None:
+        if not os.path.lexists(self.index_path):
+            return None
+        value, _ = self._read_json_object(self.index_path, "synthesis index")
+        if value.get("schema_version") != _INDEX_SCHEMA_VERSION:
+            raise SynthesisArtifactError("unsupported synthesis index schema")
+        records = _list(value.get("attempts"), "synthesis index attempts")
+        seen: set[str] = set()
+        for item in records:
+            record = _mapping(item, "synthesis index record")
+            attempt_id = _text(record.get("attempt_id"), "index attempt ID")
+            _validate_attempt_id(attempt_id)
+            if attempt_id in seen:
+                raise SynthesisArtifactError(
+                    "synthesis index contains duplicate attempt"
+                )
+            seen.add(attempt_id)
+            status = _text(record.get("status"), "index status")
+            try:
+                SynthesisStatus(status)
+            except ValueError as error:
+                raise SynthesisArtifactError(
+                    "synthesis index contains unknown status"
+                ) from error
+            _digest(record.get("synthesis_digest"), "index synthesis_digest")
+            _digest(
+                record.get("corpus_manifest_digest"), "index corpus_manifest_digest"
+            )
+            if attempt_id not in self._attempt_ids():
+                raise SynthesisArtifactError(
+                    "synthesis index references missing attempt"
+                )
+            attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(
+                attempt_id
+            )
+            if status != _enum_text(attempt.status, "status"):
+                raise SynthesisArtifactError("synthesis index status mismatch")
+            if record.get("created_at") != attempt.created_at:
+                raise SynthesisArtifactError("synthesis index created_at mismatch")
+            if record.get("corpus_digest") != attempt.corpus_digest:
+                raise SynthesisArtifactError("synthesis index corpus digest mismatch")
+            if record.get("synthesis_digest") != _sha256(synthesis_bytes):
+                raise SynthesisArtifactError(
+                    "synthesis index synthesis digest mismatch"
+                )
+            if record.get("corpus_manifest_digest") != _sha256(corpus_bytes):
+                raise SynthesisArtifactError(
+                    "synthesis index corpus manifest digest mismatch"
+                )
+
+        accepted = value.get("accepted_attempt_id")
+        if accepted is not None:
+            accepted_id = _text(accepted, "accepted_attempt_id")
+            _validate_attempt_id(accepted_id)
+            if accepted_id not in seen:
+                raise SynthesisArtifactError(
+                    "accepted index points at an unlisted attempt"
+                )
+            accepted_attempt = self._read_attempt_bundle(accepted_id)[0]
+            if accepted_attempt.status not in _ACCEPTED_STATUSES:
+                raise SynthesisArtifactError(
+                    "accepted index points at a non-accepted attempt"
+                )
+        return value
+
+    def _read_attempt_bundle(
+        self, attempt_id: str
+    ) -> tuple[SynthesisAttempt, bytes, bytes]:
+        _, digest_prefix, _ = _validate_attempt_id(attempt_id)
+        directory = self.attempts_root / attempt_id
+        if secure_is_link_or_reparse(directory) or not directory.is_dir():
+            raise SynthesisArtifactError("synthesis attempt is not a real directory")
+        synthesis_value, synthesis_bytes = self._read_json_object(
+            directory / "synthesis.json", "synthesis artifact"
+        )
+        _, corpus_bytes = self._read_json_object(
+            directory / "corpus-manifest.json", "synthesis corpus manifest"
+        )
+        try:
+            attempt = _attempt_from_dict(synthesis_value)
+        except SynthesisArtifactError:
+            raise
+        except (TypeError, ValueError, RuntimeError) as error:
+            raise SynthesisArtifactError("invalid synthesis artifact record") from error
+        if attempt.attempt_id != attempt_id:
+            raise SynthesisArtifactError("synthesis artifact attempt ID mismatch")
+        if attempt.corpus_digest[:12] != digest_prefix:
+            raise SynthesisArtifactError(
+                "synthesis artifact attempt ID digest prefix mismatch"
+            )
+        if attempt.corpus_digest != _sha256(corpus_bytes):
+            raise SynthesisArtifactError("synthesis corpus digest mismatch")
+        corpus_value = cast(
+            Mapping[str, object],
+            json.loads(corpus_bytes.decode("ascii")),
+        )
+        if attempt.expectation_digest != _expectation_digest_from_manifest(
+            corpus_value
+        ):
+            raise SynthesisArtifactError("synthesis expectation digest mismatch")
+        if corpus_value.get("principle_pack_digest") != attempt.principle_pack_digest:
+            raise SynthesisArtifactError("synthesis principle-pack digest mismatch")
+        digests = _mapping(synthesis_value.get("digests"), "digests")
+        if _digest(digests.get("corpus"), "corpus digest") != attempt.corpus_digest:
+            raise SynthesisArtifactError("synthesis corpus digest field mismatch")
+        if (
+            _digest(digests.get("expectation"), "expectation digest")
+            != attempt.expectation_digest
+        ):
+            raise SynthesisArtifactError("synthesis expectation digest field mismatch")
+        if (
+            _digest(digests.get("principle_pack"), "principle-pack digest")
+            != attempt.principle_pack_digest
+        ):
+            raise SynthesisArtifactError(
+                "synthesis principle-pack digest field mismatch"
+            )
+        return attempt, synthesis_bytes, corpus_bytes
+
+    def _read_json_object(
+        self, path: Path, label: str
+    ) -> tuple[dict[str, object], bytes]:
+        try:
+            raw = secure_read_bytes(path, label, max_bytes=_MAX_JSON_BYTES)
+            value = json.loads(
+                raw.decode("ascii"),
+                object_pairs_hook=_json_object_without_duplicates,
+            )
+        except SynthesisArtifactError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            UnicodeError,
+            json.JSONDecodeError,
+            TypeError,
+        ) as error:
+            raise SynthesisArtifactError(f"invalid {label}: {error}") from error
+        if not isinstance(value, dict):
+            raise SynthesisArtifactError(f"invalid {label}: expected an object")
+        typed_value = cast(dict[str, object], value)
+        try:
+            canonical = _canonical_bytes(typed_value)
+        except (TypeError, ValueError) as error:
+            raise SynthesisArtifactError(f"invalid {label}: {error}") from error
+        if raw != canonical:
+            raise SynthesisArtifactError(f"{label} is not canonical JSON")
+        return typed_value, raw
+
+    def _temporary_attempt_directory(self, attempt_id: str) -> Path:
+        try:
+            return secure_make_temporary_directory(
+                self.attempts_root,
+                f".{attempt_id}.",
+                "synthesis attempt staging",
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SynthesisArtifactError(str(error)) from error
+
+    def _publish_attempt(self, staging: Path, destination: Path) -> None:
+        if os.path.lexists(destination) or secure_is_link_or_reparse(destination):
+            raise SynthesisArtifactError("attempt already exists; overwrite refused")
+        try:
+            secure_replace(staging, destination, "synthesis attempt publication")
+        except SynthesisArtifactError:
+            raise
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SynthesisArtifactError(str(error)) from error
+
+    def _write_index(self, preferred_accepted_id: str | None) -> None:
+        previous = self._read_index()
+        previous_accepted = (
+            cast(str | None, previous.get("accepted_attempt_id"))
+            if previous is not None
+            else None
+        )
+        selected = preferred_accepted_id or previous_accepted
+        ids = self._attempt_ids()
+        records: list[dict[str, object]] = []
+        attempts: dict[str, SynthesisAttempt] = {}
+        for attempt_id in ids:
+            attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(
+                attempt_id
+            )
+            attempts[attempt_id] = attempt
+            records.append(
+                {
+                    "attempt_id": attempt_id,
+                    "created_at": attempt.created_at,
+                    "status": _enum_text(attempt.status, "status"),
+                    "corpus_digest": attempt.corpus_digest,
+                    "synthesis_digest": _sha256(synthesis_bytes),
+                    "corpus_manifest_digest": _sha256(corpus_bytes),
+                }
+            )
+        if selected is not None:
+            if selected not in attempts:
+                raise SynthesisArtifactError("accepted index points at missing attempt")
+            if attempts[selected].status not in _ACCEPTED_STATUSES:
+                raise SynthesisArtifactError(
+                    "accepted index points at a non-accepted attempt"
+                )
+        index_value = {
+            "schema_version": _INDEX_SCHEMA_VERSION,
+            "accepted_attempt_id": selected,
+            "attempts": records,
+        }
+        temporary = self.synthesis_root / f".index.{uuid4().hex}.tmp"
+        try:
+            secure_write_bytes(temporary, _canonical_bytes(index_value))
+            _replace_index(temporary, self.index_path)
+        except BaseException:
+            try:
+                secure_unlink(
+                    temporary, "synthesis index temporary file", missing_ok=True
+                )
+            except (OSError, RuntimeError, ValueError):
+                pass
+            raise
+
+    def _remove_temporary_directory(self, path: Path) -> None:
+        try:
+            secure_remove_tree(
+                path, "synthesis attempt staging cleanup", missing_ok=True
+            )
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+
+def _replace_index(source: Path, destination: Path) -> None:
+    """Atomically replace index.json while refusing link/reparse paths."""
+
+    try:
+        secure_assert_ancestors(source, "synthesis index")
+        secure_assert_ancestors(destination, "synthesis index")
+        if secure_is_link_or_reparse(source) or secure_is_link_or_reparse(destination):
+            raise SynthesisArtifactError("synthesis index must not contain links")
+        if os.name == "nt" and os.path.lexists(destination):
+            os.replace(source, destination)
+        else:
+            secure_replace(source, destination, "synthesis index publication")
+        secure_assert_ancestors(destination, "synthesis index")
+        if secure_is_link_or_reparse(destination):
+            raise SynthesisArtifactError("synthesis index must not contain links")
+    except SynthesisArtifactError:
+        raise
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SynthesisArtifactError(str(error)) from error
+
+
+__all__ = ["SynthesisArtifactError", "SynthesisArtifactStore"]
