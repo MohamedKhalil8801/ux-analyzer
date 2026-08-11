@@ -55,6 +55,10 @@ def _empty_float_mapping() -> dict[str, float]:
     return {}
 
 
+def _empty_string_path_list() -> list[list[str]]:
+    return []
+
+
 class _ConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -226,15 +230,21 @@ class FrozenExpectationDocumentModel(_ConfigModel):
     desired_outcomes: list[str] = Field(min_length=1)
     required_invariants: list[str] = Field(default_factory=list)
     acceptable_alternatives: list[str] = Field(default_factory=list)
-    reference_paths: list[list[str]] = Field(default_factory=list)
+    reference_paths: list[list[str]] = Field(default_factory=_empty_string_path_list)
     effort_bounds: dict[str, float] = Field(default_factory=_empty_float_mapping)
     warning_signals: list[str] = Field(default_factory=list)
+
+
+def _empty_expectation_documents() -> list[FrozenExpectationDocumentModel]:
+    return []
 
 
 class ExpectationProviderModel(_ConfigModel):
     enabled: bool = False
     provider_id: Literal["frozen-expectation-v1"] = "frozen-expectation-v1"
-    documents: list[FrozenExpectationDocumentModel] = Field(default_factory=list)
+    documents: list[FrozenExpectationDocumentModel] = Field(
+        default_factory=_empty_expectation_documents
+    )
 
     @model_validator(mode="after")
     def _require_documents_when_enabled(self) -> ExpectationProviderModel:
@@ -346,10 +356,18 @@ class StateUpdatesModel(_ConfigModel):
     failure_frustration_delta: float = 0.2
 
 
+class ReportSynthesisModel(_ConfigModel):
+    enabled: bool = False
+    max_retrieval_rounds: int = Field(default=3, ge=1, le=5)
+    max_adjudication_revisions: int = Field(default=1, ge=0, le=2)
+    max_final_verifications: int = Field(default=1, ge=1, le=2)
+
+
 class EvaluationModel(_ConfigModel):
     discovery_cost: DiscoveryCostModel = Field(default_factory=DiscoveryCostModel)
     findings: FindingRulesModel = Field(default_factory=FindingRulesModel)
     state_updates: StateUpdatesModel = Field(default_factory=StateUpdatesModel)
+    report_synthesis: ReportSynthesisModel = Field(default_factory=ReportSynthesisModel)
 
 
 class ProjectModel(_ConfigModel):

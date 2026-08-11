@@ -858,6 +858,34 @@ def test_loads_versioned_runtime_provider_and_evaluation_formulas(
     assert target.roles_by_version == {"defective": "button", "improved": "link"}
 
 
+def test_loads_report_synthesis_runtime_configuration(tmp_path: Path) -> None:
+    project = _read_project()
+    project["evaluation"] = {
+        "report_synthesis": {
+            "enabled": True,
+            "max_retrieval_rounds": 5,
+            "max_adjudication_revisions": 2,
+            "max_final_verifications": 2,
+        }
+    }
+
+    loaded = load_project(_write_project(tmp_path, project))
+
+    assert loaded.runtime.report_synthesis.enabled is True
+    assert loaded.runtime.report_synthesis.max_retrieval_rounds == 5
+    assert loaded.runtime.report_synthesis.max_adjudication_revisions == 2
+    assert loaded.runtime.report_synthesis.max_final_verifications == 2
+
+
+def test_legacy_project_defaults_report_synthesis_disabled() -> None:
+    loaded = load_project(FIXTURE_PATH)
+
+    assert loaded.runtime.report_synthesis.enabled is False
+    assert loaded.runtime.report_synthesis.max_retrieval_rounds == 3
+    assert loaded.runtime.report_synthesis.max_adjudication_revisions == 1
+    assert loaded.runtime.report_synthesis.max_final_verifications == 1
+
+
 def test_expectation_provider_requires_documents_when_enabled(tmp_path: Path) -> None:
     project = _read_project()
     project["providers"] = {"expectation": {"enabled": True}}

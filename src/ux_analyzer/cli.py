@@ -8,6 +8,7 @@ import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, NoReturn, cast
@@ -48,6 +49,10 @@ from ux_analyzer.application.evaluation import (
     evaluation_target_for,
     persisted_comparison_sample_is_valid,
 )
+from ux_analyzer.application.evidence_corpus import (
+    EvidenceCorpus,
+    EvidenceCorpusBuilder,
+)
 from ux_analyzer.application.experiment import (
     ExperimentContext,
     ExperimentFailure,
@@ -55,6 +60,7 @@ from ux_analyzer.application.experiment import (
     ExperimentRunner,
     expand_experiment,
 )
+from ux_analyzer.application.report_synthesis import ReportSynthesisService
 from ux_analyzer.application.run_agent import (
     AttentionPolicy,
     ModelRecordSource,
@@ -80,12 +86,13 @@ from ux_analyzer.domain.benchmark import (
 )
 from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
+from ux_analyzer.domain.synthesis import SynthesisAttempt
 from ux_analyzer.ports.artifacts import (
     BundleManifest,
     RedactionPolicy,
     RunBundleWriter,
 )
-from ux_analyzer.ports.models import StructuredModelClient
+from ux_analyzer.ports.models import ModelRole, StructuredModelClient
 from ux_analyzer.ports.observation import (
     ObservationCapture,
     ObservationProvider,
@@ -106,6 +113,12 @@ from ux_analyzer.providers.finding_rules import FindingRuleSet
 from ux_analyzer.providers.full_list_policy import FullListPolicy
 from ux_analyzer.providers.prominence import HeuristicProminenceProvider
 from ux_analyzer.providers.ranked_list_policy import ProminenceRankedListPolicy
+from ux_analyzer.providers.report_synthesis import (
+    EvidenceAuditor,
+    PatternReviewer,
+    ReportAdjudicator,
+    ReportAnalyst,
+)
 from ux_analyzer.providers.saliency_prominence import (
     AttentionStageSelector,
     FoveacastProminenceProvider,
@@ -114,6 +127,7 @@ from ux_analyzer.providers.scent import (
     StructuredCoarseScentEvaluator,
     StructuredFullScentEvaluator,
 )
+from ux_analyzer.providers.ux_principles import ux_principles
 from ux_analyzer.reporting.renderer import render_experiment_report
 from ux_analyzer.saliency.model_registry import (
     DEFAULT_MODEL_ID,
@@ -124,6 +138,7 @@ from ux_analyzer.saliency.model_registry import (
 )
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 from ux_analyzer.storage.saliency_cache import SaliencyCache
+from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
 
 app = typer.Typer(add_completion=False)
 fixture_app = typer.Typer(add_completion=False)
@@ -144,6 +159,12 @@ class _ResolvedMatrix:
     loaded: LoadedProject
     definition: ExperimentDefinition
     specs: tuple[RunSpec, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalizedRunReference:
+    run_id: str
+    bundle_path: Path
 
 
 @app.callback()
@@ -274,6 +295,11 @@ def run(
     check_env: bool = typer.Option(False, "--check-env"),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
     resume: bool = typer.Option(False, "--resume"),
+    no_synthesis: bool = typer.Option(
+        False,
+        "--no-synthesis",
+        help="Skip configured post-run report synthesis.",
+    ),
     profile_output: Path | None = typer.Option(
         None,
         "--profile-output",
@@ -293,6 +319,7 @@ def run(
         fixture_origin=fixture_origin,
         resume=resume,
         profile_output=profile_output,
+        no_synthesis=no_synthesis,
     )
 
 
@@ -404,6 +431,7 @@ def ablate(
         fixture_origin=fixture_origin,
         resume=resume,
         profile_output=profile_output,
+        no_synthesis=False,
     )
 
 
@@ -418,6 +446,44 @@ def report(
     except (FileNotFoundError, OSError, ValueError) as error:
         _exit_with_error(f"report failed: {error}")
     typer.echo(f"report generated: {rendered}")
+
+
+@app.command()
+def synthesize(
+    project: Path,
+    experiment: str = typer.Option(..., "--experiment"),
+    output: Path = typer.Option(Path("reports"), "--output"),
+) -> None:
+    """Run report synthesis for finalized experiment evidence."""
+    matrix = _resolve_matrix_or_exit(
+        project,
+        experiment,
+        run_count=None,
+        policies=(),
+    )
+    _read_json_or_exit(output / "experiment.json")
+    try:
+        result = _finalized_experiment_result(matrix, output)
+        settings = _model_settings_or_exit(report_synthesis_enabled=True)
+        attempt = asyncio.run(
+            _run_report_synthesis(
+                result=result,
+                output=output,
+                loaded=matrix.loaded,
+                settings=settings,
+            )
+        )
+        attempt_path = _persist_synthesis_attempt(
+            attempt,
+            result=result,
+            output=output,
+            loaded=matrix.loaded,
+        )
+        report_path = _render_completed_report(output=output)
+    except Exception as error:
+        _exit_with_error(f"synthesis failed: {type(error).__name__}: {error}")
+    typer.echo(f"synthesis attempt: {attempt_path}")
+    typer.echo(f"report generated: {report_path}")
 
 
 @app.command("inspect-run")
@@ -456,6 +522,7 @@ def _run_experiment_command(
     fixture_origin: str,
     resume: bool,
     profile_output: Path | None,
+    no_synthesis: bool,
 ) -> None:
     if workers <= 0:
         _exit_with_error("workers must be greater than zero")
@@ -467,6 +534,8 @@ def _run_experiment_command(
     )
     settings: OpenAICompatibleSettings | None = None
     if check_env or not dry_run:
+        # Report synthesis is best-effort. Keep missing report-role settings
+        # from preventing deterministic experiment execution and fallback rendering.
         settings = _model_settings_or_exit()
     _print_matrix(
         matrix,
@@ -516,12 +585,38 @@ def _run_experiment_command(
     except Exception as error:
         _exit_with_error(f"run failed: {error}")
     _print_result_summary(result)
-    summary_path, report_path = _complete_experiment(
+    summary_path = _write_experiment_summary(
         result,
         output=output,
-        runtime=matrix.loaded.runtime,
         selected_specs=selected_specs,
     )
+    if matrix.loaded.runtime.report_synthesis.enabled and not no_synthesis:
+        try:
+            attempt = asyncio.run(
+                _run_report_synthesis(
+                    result=result,
+                    output=output,
+                    loaded=matrix.loaded,
+                    settings=settings,
+                )
+            )
+            _persist_synthesis_attempt(
+                attempt,
+                result=result,
+                output=output,
+                loaded=matrix.loaded,
+            )
+        except Exception as error:
+            _persist_unavailable_synthesis(
+                result=result,
+                output=output,
+                loaded=matrix.loaded,
+            )
+            typer.echo(
+                "warning: report synthesis unavailable; "
+                f"deterministic findings retained ({type(error).__name__})"
+            )
+    report_path = _render_completed_report(output=output)
     typer.echo(f"evaluation summary: {summary_path}")
     typer.echo(f"report generated: {report_path}")
     if profile_output is not None:
@@ -735,9 +830,13 @@ def _print_matrix(
         )
 
 
-def _model_settings_or_exit() -> OpenAICompatibleSettings:
+def _model_settings_or_exit(
+    *, report_synthesis_enabled: bool = False
+) -> OpenAICompatibleSettings:
     try:
-        settings = OpenAICompatibleSettings.from_env()
+        settings = OpenAICompatibleSettings.from_env(
+            report_synthesis_enabled=report_synthesis_enabled
+        )
     except ModelConfigurationError as error:
         typer.echo(f"model environment error: {error}")
         raise typer.Exit(1) from error
@@ -914,7 +1013,10 @@ class _FixtureObservationProvider:
             if self._http_client is not None:
                 response = await self._http_client.post(
                     f"{self._fixture_origin}/__control/reset",
-                    json={"session_id": session.session_id, "inputs": self._fixture_inputs},
+                    json={
+                        "session_id": session.session_id,
+                        "inputs": self._fixture_inputs,
+                    },
                 )
                 response.raise_for_status()
             else:
@@ -1253,9 +1355,7 @@ def _build_agent(
         client,
         model=settings.cognitive_model,
         fixture_keys=(
-            ()
-            if live_version
-            else tuple(sorted(spec.scenario.fixture_inputs.values))
+            () if live_version else tuple(sorted(spec.scenario.fixture_inputs.values))
         ),
     )
     fixture_state_client = (
@@ -1352,15 +1452,12 @@ def _evaluate_result(result: object, runtime: RuntimeConfig):
     return replace(result, metrics=metrics, findings=findings)
 
 
-def _complete_experiment(
+def _write_experiment_summary(
     result: ExperimentResult,
     *,
     output: Path,
-    runtime: RuntimeConfig,
-    selected_specs: Sequence[RunSpec] | None = None,
-    render_report: bool = True,
-) -> tuple[Path, Path]:
-    del runtime
+    selected_specs: Sequence[RunSpec] | None,
+) -> Path:
     completed: list[RunResult] = []
     for item in result.results:
         if not isinstance(item, RunResult):
@@ -1417,9 +1514,179 @@ def _complete_experiment(
         encoding="utf-8",
     )
     temporary.replace(summary_path)
+    return summary_path
+
+
+def _render_completed_report(*, output: Path) -> Path:
+    return render_experiment_report(output, output / "report.html")
+
+
+def _synthesis_corpus(
+    *,
+    result: ExperimentResult,
+    output: Path,
+    loaded: LoadedProject,
+) -> EvidenceCorpus:
+    expectations = {
+        expectation.key: expectation for expectation in loaded.runtime.expectations
+    }
+    return EvidenceCorpusBuilder().build(result, output, expectations)
+
+
+async def _run_report_synthesis(
+    *,
+    result: ExperimentResult,
+    output: Path,
+    loaded: LoadedProject,
+    settings: OpenAICompatibleSettings,
+) -> SynthesisAttempt:
+    corpus = _synthesis_corpus(result=result, output=output, loaded=loaded)
+    http_client = httpx.AsyncClient(timeout=settings.timeout_seconds)
+    try:
+        client = create_structured_model_client(
+            settings,
+            http_client=http_client,
+            call_limiter=asyncio.Semaphore(settings.max_concurrent_calls),
+        )
+        synthesis = loaded.runtime.report_synthesis
+        service = ReportSynthesisService(
+            analyst=ReportAnalyst(
+                client, model=settings.model_for_role(ModelRole.REPORT_ANALYST)
+            ),
+            evidence_auditor=EvidenceAuditor(
+                client,
+                model=settings.model_for_role(ModelRole.REPORT_EVIDENCE_AUDITOR),
+            ),
+            pattern_reviewer=PatternReviewer(
+                client,
+                model=settings.model_for_role(ModelRole.REPORT_PATTERN_REVIEWER),
+            ),
+            adjudicator=ReportAdjudicator(
+                client,
+                model=settings.model_for_role(ModelRole.REPORT_ADJUDICATOR),
+            ),
+            principles=ux_principles(),
+            max_retrieval_rounds=synthesis.max_retrieval_rounds,
+            max_adjudication_revisions=synthesis.max_adjudication_revisions,
+            max_final_verifications=synthesis.max_final_verifications,
+            model_record_source=client,
+        )
+        return await service.synthesize(corpus)
+    finally:
+        await http_client.aclose()
+
+
+def _finalized_experiment_result(
+    matrix: _ResolvedMatrix,
+    output: Path,
+) -> ExperimentResult:
+    finalized_specs: list[RunSpec] = []
+    references: list[_FinalizedRunReference] = []
+    for spec in matrix.specs:
+        bundle = output / "runs" / spec.run_id
+        if not finalized_bundle_is_valid(
+            output,
+            spec.run_id,
+            expected_prominence_provider_id=spec.prominence_provider_id,
+        ):
+            continue
+        finalized_specs.append(spec)
+        references.append(
+            _FinalizedRunReference(run_id=spec.run_id, bundle_path=bundle)
+        )
+    if not finalized_specs:
+        raise CheckpointError("no finalized runs available for synthesis")
+    return ExperimentResult(
+        specs=tuple(finalized_specs),
+        results=tuple(references),
+        failures=(),
+    )
+
+
+def _storage_attempt_id(
+    attempt: SynthesisAttempt, store: SynthesisArtifactStore
+) -> str:
+    if not attempt.corpus_digest:
+        raise ValueError("synthesis attempt has no corpus digest")
+    if attempt.created_at:
+        try:
+            created = datetime.fromisoformat(attempt.created_at.replace("Z", "+00:00"))
+        except ValueError:
+            created = datetime.now(UTC)
+    else:
+        created = datetime.now(UTC)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    created_token = created.astimezone(UTC).strftime("%Y-%m-%dT%H%M%SZ")
+    existing = {item.attempt_id for item in store.attempts}
+    sequence = 1
+    while True:
+        candidate = f"{created_token}-{attempt.corpus_digest[:12]}-{sequence}"
+        if candidate not in existing:
+            return candidate
+        sequence += 1
+
+
+def _persist_synthesis_attempt(
+    attempt: SynthesisAttempt,
+    *,
+    result: ExperimentResult,
+    output: Path,
+    loaded: LoadedProject,
+) -> Path:
+    corpus = _synthesis_corpus(result=result, output=output, loaded=loaded)
+    store = SynthesisArtifactStore(output)
+    persisted_attempt = replace(
+        attempt,
+        attempt_id=_storage_attempt_id(attempt, store),
+    )
+    return store.write_attempt(persisted_attempt, corpus)
+
+
+def _persist_unavailable_synthesis(
+    *,
+    result: ExperimentResult,
+    output: Path,
+    loaded: LoadedProject,
+) -> None:
+    try:
+        corpus = _synthesis_corpus(result=result, output=output, loaded=loaded)
+        synthesis = loaded.runtime.report_synthesis
+        attempt = asyncio.run(
+            ReportSynthesisService(
+                max_retrieval_rounds=synthesis.max_retrieval_rounds,
+                max_adjudication_revisions=synthesis.max_adjudication_revisions,
+                max_final_verifications=synthesis.max_final_verifications,
+                principles=ux_principles(),
+            ).synthesize(corpus)
+        )
+        _persist_synthesis_attempt(
+            attempt,
+            result=result,
+            output=output,
+            loaded=loaded,
+        )
+    except Exception:
+        return
+
+
+def _complete_experiment(
+    result: ExperimentResult,
+    *,
+    output: Path,
+    runtime: RuntimeConfig,
+    selected_specs: Sequence[RunSpec] | None = None,
+    render_report: bool = True,
+) -> tuple[Path, Path]:
+    del runtime
+    summary_path = _write_experiment_summary(
+        result,
+        output=output,
+        selected_specs=selected_specs,
+    )
     report_path = output / "report.html"
     if render_report:
-        report_path = render_experiment_report(output, report_path)
+        report_path = _render_completed_report(output=output)
     return summary_path, report_path
 
 

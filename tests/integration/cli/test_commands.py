@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -26,6 +27,7 @@ from ux_analyzer.config.loader import load_project
 from ux_analyzer.domain.attention import AttentionState
 from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy, FixtureInputs
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
+from ux_analyzer.domain.synthesis import SynthesisStatus
 from ux_analyzer.ports.observation import (
     ObservationCapture,
     SessionHandle,
@@ -60,9 +62,7 @@ def _live_run_spec(tmp_path: Path):
         "type": "visible-result",
         "text": "Frontend Engineer",
     }
-    project["scenarios"][0]["evaluation_target"]["labels_by_version"] = {
-        "live": "Work"
-    }
+    project["scenarios"][0]["evaluation_target"]["labels_by_version"] = {"live": "Work"}
     project["experiments"][0]["application_version_ids"] = ["portfolio-live"]
     project_path = tmp_path / "live-project.yaml"
     project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
@@ -248,6 +248,7 @@ def test_env_check_reports_api_mode_without_secret_value(
     monkeypatch.setenv("UXA_LLM_API_KEY", secret)
     monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
     monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
 
     result = runner.invoke(
         app,
@@ -288,6 +289,7 @@ def test_run_dry_run_prints_matrix_model_calls_and_serial_default(
     monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
     monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
     monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
 
     result = runner.invoke(
         app,
@@ -1312,6 +1314,470 @@ def test_report_regenerates_from_finalized_bundles(tmp_path: Path) -> None:
     assert "report generated" in result.stdout
 
 
+def test_completion_exposes_summary_and_report_render_phases(
+    tmp_path: Path,
+) -> None:
+    summary = cli._write_experiment_summary(
+        ExperimentResult(specs=(), results=(), failures=()),
+        output=tmp_path,
+        selected_specs=(),
+    )
+
+    assert summary == tmp_path / "experiment.json"
+    assert summary.is_file()
+
+
+def test_configured_run_synthesizes_after_summary_before_render(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {"enabled": True}
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("UXA_REPORT_MODEL", "report-model")
+    calls: list[str] = []
+
+    async def fake_execute_matrix(*args: object, **kwargs: object) -> ExperimentResult:
+        del args, kwargs
+        return ExperimentResult(specs=(), results=(), failures=())
+
+    def fake_write_summary(
+        result: ExperimentResult,
+        *,
+        output: Path,
+        selected_specs: object,
+    ) -> Path:
+        del result, selected_specs
+        calls.append("summary")
+        summary = output / "experiment.json"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text("{}", encoding="utf-8")
+        return summary
+
+    async def fake_synthesis(**kwargs: object) -> object:
+        del kwargs
+        calls.append("synthesis")
+        return object()
+
+    def fake_persist(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        calls.append("persist")
+
+    def fake_render(*, output: Path) -> Path:
+        calls.append("render")
+        report = output / "report.html"
+        report.write_text("<html></html>", encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(cli, "_execute_matrix", fake_execute_matrix)
+    monkeypatch.setattr(cli, "_write_experiment_summary", fake_write_summary)
+    monkeypatch.setattr(cli, "_run_report_synthesis", fake_synthesis)
+    monkeypatch.setattr(cli, "_persist_synthesis_attempt", fake_persist)
+    monkeypatch.setattr(cli, "_render_completed_report", fake_render)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "core-pair",
+            "--run-count",
+            "1",
+            "--output",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["summary", "synthesis", "persist", "render"]
+
+
+def test_configured_synthesis_bounds_reach_service_without_clamping(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {
+        "enabled": True,
+        "max_retrieval_rounds": 5,
+        "max_adjudication_revisions": 2,
+        "max_final_verifications": 2,
+    }
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    loaded = load_project(project_path)
+    output = tmp_path / "output"
+    output.mkdir()
+    settings = OpenAICompatibleSettings(
+        base_url="https://llm.example.test/v1",
+        api_key="secret",
+        scent_model="scent-model",
+        cognitive_model="cognitive-model",
+        report_model="report-model",
+    )
+    captured: dict[str, object] = {}
+
+    class RecordingService:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def synthesize(self, corpus: object) -> object:
+            del corpus
+            return object()
+
+    monkeypatch.setattr(
+        cli, "create_structured_model_client", lambda *args, **kwargs: object()
+    )
+    monkeypatch.setattr(cli, "ReportSynthesisService", RecordingService)
+    monkeypatch.setattr(cli, "_synthesis_corpus", lambda **kwargs: object())
+
+    asyncio.run(
+        cli._run_report_synthesis(
+            result=ExperimentResult(specs=(), results=(), failures=()),
+            output=output,
+            loaded=loaded,
+            settings=settings,
+        )
+    )
+
+    assert captured["max_retrieval_rounds"] == 5
+    assert captured["max_adjudication_revisions"] == 2
+    assert captured["max_final_verifications"] == 2
+
+
+def test_no_synthesis_skips_report_model_and_synthesis(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {"enabled": True}
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    monkeypatch.delenv("UXA_REPORT_MODEL", raising=False)
+    calls: list[str] = []
+
+    async def fake_execute_matrix(*args: object, **kwargs: object) -> ExperimentResult:
+        del args, kwargs
+        return ExperimentResult(specs=(), results=(), failures=())
+
+    def fake_write_summary(
+        result: ExperimentResult,
+        *,
+        output: Path,
+        selected_specs: object,
+    ) -> Path:
+        del result, selected_specs
+        calls.append("summary")
+        summary = output / "experiment.json"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text("{}", encoding="utf-8")
+        return summary
+
+    async def unexpected_synthesis(**kwargs: object) -> object:
+        del kwargs
+        raise AssertionError("synthesis must be disabled")
+
+    def fake_render(*, output: Path) -> Path:
+        calls.append("render")
+        report = output / "report.html"
+        report.write_text("<html></html>", encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(cli, "_execute_matrix", fake_execute_matrix)
+    monkeypatch.setattr(cli, "_write_experiment_summary", fake_write_summary)
+    monkeypatch.setattr(cli, "_run_report_synthesis", unexpected_synthesis)
+    monkeypatch.setattr(cli, "_render_completed_report", fake_render)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "core-pair",
+            "--run-count",
+            "1",
+            "--output",
+            str(tmp_path / "output"),
+            "--no-synthesis",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["summary", "render"]
+
+
+def test_synthesis_missing_report_model_keeps_completed_run_successful(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {"enabled": True}
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    monkeypatch.delenv("UXA_REPORT_MODEL", raising=False)
+    calls: list[str] = []
+
+    async def fake_execute_matrix(*args: object, **kwargs: object) -> ExperimentResult:
+        del args, kwargs
+        return ExperimentResult(specs=(), results=(), failures=())
+
+    def fake_write_summary(
+        result: ExperimentResult,
+        *,
+        output: Path,
+        selected_specs: object,
+    ) -> Path:
+        del result, selected_specs
+        calls.append("summary")
+        summary = output / "experiment.json"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text("{}", encoding="utf-8")
+        return summary
+
+    persist_unavailable = cli._persist_unavailable_synthesis
+
+    def record_unavailable(**kwargs: object) -> None:
+        calls.append("unavailable")
+        persist_unavailable(**kwargs)
+
+    def fake_render(*, output: Path) -> Path:
+        calls.append("render")
+        report = output / "report.html"
+        report.write_text("<html></html>", encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(cli, "_execute_matrix", fake_execute_matrix)
+    monkeypatch.setattr(cli, "_write_experiment_summary", fake_write_summary)
+    monkeypatch.setattr(cli, "_persist_unavailable_synthesis", record_unavailable)
+    monkeypatch.setattr(cli, "_render_completed_report", fake_render)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "core-pair",
+            "--run-count",
+            "1",
+            "--output",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["summary", "unavailable", "render"]
+    assert "warning: report synthesis unavailable" in result.stdout
+    attempts = list((tmp_path / "output" / "synthesis" / "attempts").iterdir())
+    assert len(attempts) == 1
+    synthesis = json.loads((attempts[0] / "synthesis.json").read_text())
+    assert synthesis["status"] == "unavailable"
+
+
+def test_synthesis_failure_does_not_change_run_exit_code(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {"enabled": True}
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_REPORT_MODEL", "report-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    calls: list[str] = []
+
+    async def fake_execute_matrix(*args: object, **kwargs: object) -> ExperimentResult:
+        del args, kwargs
+        return ExperimentResult(specs=(), results=(), failures=())
+
+    def fake_write_summary(
+        result: ExperimentResult,
+        *,
+        output: Path,
+        selected_specs: object,
+    ) -> Path:
+        del result, selected_specs
+        calls.append("summary")
+        summary = output / "experiment.json"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text("{}", encoding="utf-8")
+        return summary
+
+    async def failing_synthesis(**kwargs: object) -> object:
+        del kwargs
+        calls.append("synthesis")
+        raise RuntimeError("provider unavailable")
+
+    def fake_persist_unavailable(**kwargs: object) -> None:
+        del kwargs
+        calls.append("unavailable")
+
+    def fake_render(*, output: Path) -> Path:
+        calls.append("render")
+        report = output / "report.html"
+        report.write_text("<html></html>", encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(cli, "_execute_matrix", fake_execute_matrix)
+    monkeypatch.setattr(cli, "_write_experiment_summary", fake_write_summary)
+    monkeypatch.setattr(cli, "_run_report_synthesis", failing_synthesis)
+    monkeypatch.setattr(cli, "_persist_unavailable_synthesis", fake_persist_unavailable)
+    monkeypatch.setattr(cli, "_render_completed_report", fake_render)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "core-pair",
+            "--run-count",
+            "1",
+            "--output",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["summary", "synthesis", "unavailable", "render"]
+    assert "warning: report synthesis unavailable" in result.stdout
+
+
+def test_report_command_does_not_call_synthesis(monkeypatch, tmp_path: Path) -> None:
+    _write_run(tmp_path)
+
+    def unexpected_synthesis(**kwargs: object) -> object:
+        del kwargs
+        raise AssertionError("report must remain model-free")
+
+    monkeypatch.setattr(cli, "_run_report_synthesis", unexpected_synthesis)
+    output = tmp_path / "report.html"
+
+    result = runner.invoke(
+        app,
+        ["report", str(tmp_path), "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert output.is_file()
+
+
+def test_synthesize_uses_only_finalized_output_specs(
+    monkeypatch, tmp_path: Path
+) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    finalized = SimpleNamespace(
+        run_id="run-finalized", prominence_provider_id="heuristic"
+    )
+    pending = SimpleNamespace(run_id="run-pending", prominence_provider_id="heuristic")
+    matrix = SimpleNamespace(loaded=loaded, specs=(finalized, pending))
+
+    monkeypatch.setattr(
+        cli,
+        "finalized_bundle_is_valid",
+        lambda output, run_id, *, expected_prominence_provider_id: (
+            run_id == "run-finalized"
+        ),
+    )
+
+    result = cli._finalized_experiment_result(matrix, tmp_path)
+
+    assert result.specs == (finalized,)
+    assert result.results[0].run_id == "run-finalized"
+    assert result.results[0].bundle_path == tmp_path / "runs" / "run-finalized"
+
+
+def test_synthesize_regeneration_retains_immutable_attempts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    monkeypatch.setattr(
+        cli,
+        "_resolve_matrix_or_exit",
+        lambda *args, **kwargs: SimpleNamespace(loaded=loaded, specs=()),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_finalized_experiment_result",
+        lambda *args, **kwargs: ExperimentResult(specs=(), results=(), failures=()),
+    )
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_REPORT_MODEL", "report-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "experiment.json").write_text("{}", encoding="utf-8")
+
+    async def fake_synthesis(**kwargs: object):
+        result = kwargs["result"]
+        loaded_project = kwargs["loaded"]
+        corpus = cli._synthesis_corpus(
+            result=result,
+            output=output,
+            loaded=loaded_project,
+        )
+        attempt = await cli.ReportSynthesisService().synthesize(corpus)
+        return replace(attempt, status=SynthesisStatus.NO_ISSUES)
+
+    def fake_render(*, output: Path) -> Path:
+        report = output / "report.html"
+        report.write_text("<html></html>", encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(cli, "_run_report_synthesis", fake_synthesis)
+    monkeypatch.setattr(cli, "_render_completed_report", fake_render)
+
+    for _ in range(2):
+        result = runner.invoke(
+            app,
+            [
+                "synthesize",
+                str(DEMO_PROJECT),
+                "--experiment",
+                "core-pair",
+                "--output",
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+
+    attempts = list((output / "synthesis" / "attempts").iterdir())
+    assert len(attempts) == 2
+    assert attempts[0].name != attempts[1].name
+    index = json.loads((output / "synthesis" / "index.json").read_text())
+    assert index["accepted_attempt_id"] in {attempt.name for attempt in attempts}
+
+
 def test_inspect_run_prints_terminal_outcome_and_artifacts(tmp_path: Path) -> None:
     run = _write_run(tmp_path)
 
@@ -1375,34 +1841,43 @@ def test_production_run_completes_evaluation_summary_and_report(
     monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
     monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
     monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+
+    async def unexpected_synthesis(**kwargs: object) -> object:
+        del kwargs
+        raise AssertionError("legacy project must keep synthesis disabled")
+
+    monkeypatch.setattr(cli, "_run_report_synthesis", unexpected_synthesis)
     completed: dict[str, object] = {}
 
     async def fake_execute_matrix(*args: object, **kwargs: object) -> ExperimentResult:
         del args, kwargs
         return ExperimentResult(specs=(), results=(), failures=())
 
-    def fake_complete(
+    def fake_write_summary(
         result: ExperimentResult,
         *,
         output: Path,
-        runtime: object,
         selected_specs: object,
-    ) -> tuple[Path, Path]:
+    ) -> Path:
         completed.update(
             result=result,
             output=output,
-            runtime=runtime,
             selected_specs=selected_specs,
         )
         summary = output / "experiment.json"
-        report = output / "report.html"
         summary.parent.mkdir(parents=True, exist_ok=True)
         summary.write_text("{}", encoding="utf-8")
+        return summary
+
+    def fake_render(*, output: Path) -> Path:
+        report = output / "report.html"
         report.write_text("<html></html>", encoding="utf-8")
-        return summary, report
+        return report
 
     monkeypatch.setattr(cli, "_execute_matrix", fake_execute_matrix)
-    monkeypatch.setattr(cli, "_complete_experiment", fake_complete, raising=False)
+    monkeypatch.setattr(cli, "_write_experiment_summary", fake_write_summary)
+    monkeypatch.setattr(cli, "_render_completed_report", fake_render)
 
     result = runner.invoke(
         app,
@@ -1420,7 +1895,6 @@ def test_production_run_completes_evaluation_summary_and_report(
 
     assert result.exit_code == 0
     assert completed["output"] == tmp_path
-    assert completed["runtime"] is not None
     assert completed["selected_specs"]
     assert "evaluation summary:" in result.stdout
     assert "report generated:" in result.stdout

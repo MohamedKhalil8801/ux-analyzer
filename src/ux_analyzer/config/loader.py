@@ -95,6 +95,16 @@ class SaliencyRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportSynthesisConfig:
+    """Resolved bounds for the post-run report-synthesis pipeline."""
+
+    enabled: bool = False
+    max_retrieval_rounds: int = 3
+    max_adjudication_revisions: int = 1
+    max_final_verifications: int = 1
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """Resolved versioned provider and evaluation formulas for composition."""
 
@@ -105,6 +115,7 @@ class RuntimeConfig:
     state_updates: StateUpdateConfig
     expectations: tuple[FrozenExpectation, ...]
     expectation_enabled: bool
+    report_synthesis: ReportSynthesisConfig
     saliency: SaliencyRuntimeConfig
 
 
@@ -181,6 +192,7 @@ def _to_runtime(config: ProjectModel) -> RuntimeConfig:
     discovery = config.evaluation.discovery_cost
     findings = config.evaluation.findings
     state_updates = config.evaluation.state_updates
+    report_synthesis = config.evaluation.report_synthesis
     saliency = config.providers.saliency or SaliencyProviderModel()
     try:
         prominence_runtime = HeuristicProminenceConfig(
@@ -237,6 +249,12 @@ def _to_runtime(config: ProjectModel) -> RuntimeConfig:
         ),
         expectations=_to_expectations(config.providers.expectation.documents),
         expectation_enabled=config.providers.expectation.enabled,
+        report_synthesis=ReportSynthesisConfig(
+            enabled=report_synthesis.enabled,
+            max_retrieval_rounds=report_synthesis.max_retrieval_rounds,
+            max_adjudication_revisions=report_synthesis.max_adjudication_revisions,
+            max_final_verifications=report_synthesis.max_final_verifications,
+        ),
         saliency=saliency_runtime,
     )
 
@@ -648,6 +666,20 @@ def _digest_compatibility_payload(payload: dict[str, object]) -> dict[str, objec
     """Keep omitted default settings out of legacy config identity."""
 
     normalized = dict(payload)
+    evaluation_value = normalized.get("evaluation")
+    if isinstance(evaluation_value, dict):
+        evaluation = dict(cast(dict[str, object], evaluation_value))
+        report_synthesis_value = evaluation.get("report_synthesis")
+        if isinstance(report_synthesis_value, dict):
+            report_synthesis = cast(dict[str, object], report_synthesis_value)
+            if report_synthesis == {
+                "enabled": False,
+                "max_adjudication_revisions": 1,
+                "max_final_verifications": 1,
+                "max_retrieval_rounds": 3,
+            }:
+                evaluation.pop("report_synthesis", None)
+        normalized["evaluation"] = evaluation
     applications_value = normalized.get("applications")
     if isinstance(applications_value, list):
         applications: list[object] = []
