@@ -307,6 +307,30 @@ def _expectations() -> dict[ExpectationKey, FrozenExpectation]:
     }
 
 
+def test_corpus_accepts_cli_relative_output_and_bundle_reference(
+    monkeypatch, tmp_path: Path
+) -> None:
+    experiment, _ = _experiment(tmp_path)
+    monkeypatch.chdir(tmp_path.parent)
+    relative_output = Path(tmp_path.name)
+    original_result = experiment.results[0]
+    relative_result = SimpleNamespace(
+        run_id=original_result.run_id,
+        bundle_path=relative_output / "runs" / original_result.run_id,
+        state=original_result.state,
+    )
+    relative_experiment = replace(experiment, results=(relative_result,))
+
+    corpus = EvidenceCorpusBuilder().build(
+        relative_experiment,
+        relative_output,
+        _expectations(),
+    )
+
+    assert corpus.output_root == tmp_path
+    assert corpus.require("verification:run-a").payload["verified"] is True
+
+
 def test_corpus_redacts_prior_narrative_and_includes_allowlisted_evidence(
     tmp_path: Path,
 ) -> None:

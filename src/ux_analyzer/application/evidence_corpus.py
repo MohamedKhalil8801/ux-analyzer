@@ -1515,13 +1515,27 @@ class EvidenceCorpusBuilder:
         if bundle_value is None:
             raise ValueError(f"run {run_id} has no finalized bundle path")
         bundle = Path(bundle_value)
-        if not bundle.is_absolute():
-            bundle = root / bundle
         expected_bundle = root / "runs" / run_id
-        if os.path.normcase(os.path.abspath(bundle)) != os.path.normcase(
-            os.path.abspath(expected_bundle)
-        ):
+        candidates = (
+            (bundle,)
+            if bundle.is_absolute()
+            else (
+                bundle.absolute(),
+                root / bundle,
+            )
+        )
+        expected_identity = os.path.normcase(os.path.abspath(expected_bundle))
+        matching_bundle = next(
+            (
+                candidate
+                for candidate in candidates
+                if os.path.normcase(os.path.abspath(candidate)) == expected_identity
+            ),
+            None,
+        )
+        if matching_bundle is None:
             raise ValueError(f"run {run_id} bundle path does not match output root")
+        bundle = matching_bundle
         provider_id = _text(expected["prominence_provider_id"], "heuristic")
         failures = finalized_bundle_failures(
             bundle,

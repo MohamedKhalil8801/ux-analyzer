@@ -1584,12 +1584,15 @@ def _finalized_experiment_result(
     matrix: _ResolvedMatrix,
     output: Path,
 ) -> ExperimentResult:
+    output_root = Path(output)
+    if not output_root.is_absolute():
+        output_root = output_root.absolute()
     finalized_specs: list[RunSpec] = []
     references: list[_FinalizedRunReference] = []
     for spec in matrix.specs:
-        bundle = output / "runs" / spec.run_id
+        bundle = output_root / "runs" / spec.run_id
         if not finalized_bundle_is_valid(
-            output,
+            output_root,
             spec.run_id,
             expected_prominence_provider_id=spec.prominence_provider_id,
         ):

@@ -1823,6 +1823,30 @@ def test_synthesize_uses_only_finalized_output_specs(
     assert result.results[0].bundle_path == tmp_path / "runs" / "run-finalized"
 
 
+def test_finalized_synthesis_reference_is_absolute_for_relative_output(
+    monkeypatch, tmp_path: Path
+) -> None:
+    loaded = load_project(DEMO_PROJECT)
+    finalized = SimpleNamespace(
+        run_id="run-finalized", prominence_provider_id="heuristic"
+    )
+    matrix = SimpleNamespace(loaded=loaded, specs=(finalized,))
+    monkeypatch.chdir(tmp_path.parent)
+    relative_output = Path(tmp_path.name)
+
+    monkeypatch.setattr(
+        cli,
+        "finalized_bundle_is_valid",
+        lambda output, run_id, *, expected_prominence_provider_id: (
+            run_id == "run-finalized" and expected_prominence_provider_id == "heuristic"
+        ),
+    )
+
+    result = cli._finalized_experiment_result(matrix, relative_output)
+
+    assert result.results[0].bundle_path == tmp_path / "runs" / "run-finalized"
+
+
 def test_synthesize_regeneration_retains_immutable_attempts(
     monkeypatch, tmp_path: Path
 ) -> None:
