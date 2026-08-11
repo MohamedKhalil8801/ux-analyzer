@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+import threading
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -43,10 +45,66 @@ _ATTEMPT_CREATED_PATTERN = re.compile(
     r"^(?:\d{8}T\d{6}(?:\d{6})?Z|\d{4}-\d{2}-\d{2}T\d{6}(?:\.\d{1,6})?Z)$"
 )
 _ACCEPTED_STATUSES = frozenset({SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES})
+_PUBLICATION_LOCKS: dict[str, threading.RLock] = {}
+_PUBLICATION_LOCKS_GUARD = threading.Lock()
 
 
 class SynthesisArtifactError(ValueError):
     """Raised when synthesis artifact state is invalid or cannot be trusted."""
+
+
+def _publication_thread_lock(synthesis_root: Path) -> threading.RLock:
+    key = os.path.normcase(os.path.abspath(os.fspath(synthesis_root)))
+    with _PUBLICATION_LOCKS_GUARD:
+        lock = _PUBLICATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PUBLICATION_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _publication_lock(synthesis_root: Path) -> Generator[None, None, None]:
+    """Serialize attempt publication and index replacement across writers."""
+
+    with _publication_thread_lock(synthesis_root):
+        lock_path = synthesis_root / ".publication.lock"
+        secure_assert_ancestors(lock_path, "synthesis publication lock")
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags, 0o600)
+        try:
+            secure_assert_ancestors(lock_path, "synthesis publication lock")
+            if secure_is_link_or_reparse(lock_path):
+                raise SynthesisArtifactError(
+                    "synthesis publication lock must not be a link"
+                )
+            if os.name == "nt":
+                import msvcrt
+
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"0")
+                    os.fsync(descriptor)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    import msvcrt
+
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def _json_object_without_duplicates(
@@ -488,6 +546,12 @@ class SynthesisArtifactStore:
         """Publish one complete attempt and update the accepted pointer when eligible."""
 
         self._ensure_layout()
+        with _publication_lock(self.synthesis_root):
+            return self._write_attempt_locked(attempt, corpus)
+
+    def _write_attempt_locked(
+        self, attempt: SynthesisAttempt, corpus: SynthesisCorpusPort
+    ) -> Path:
         self._read_index()
         _, digest_prefix, _ = _validate_attempt_id(attempt.attempt_id)
         corpus_digest = corpus.digest
@@ -522,18 +586,23 @@ class SynthesisArtifactStore:
             raise SynthesisArtifactError("attempt already exists; overwrite refused")
 
         staging = self._temporary_attempt_directory(attempt.attempt_id)
+        published = False
         try:
             synthesis_bytes = _canonical_bytes(_attempt_to_dict(attempt))
             corpus_bytes = corpus.to_json().encode("ascii")
             secure_write_bytes(staging / "synthesis.json", synthesis_bytes)
             secure_write_bytes(staging / "corpus-manifest.json", corpus_bytes)
             self._publish_attempt(staging, destination)
+            published = True
+            selected = (
+                attempt.attempt_id if attempt.status in _ACCEPTED_STATUSES else None
+            )
+            self._write_index(selected)
         except BaseException:
             self._remove_temporary_directory(staging)
+            if published:
+                self._remove_published_attempt(destination)
             raise
-
-        selected = attempt.attempt_id if attempt.status in _ACCEPTED_STATUSES else None
-        self._write_index(selected)
         return destination
 
     def select_accepted(self, attempt_id: str | None = None) -> SynthesisAttempt | None:
@@ -542,17 +611,18 @@ class SynthesisArtifactStore:
         if attempt_id is None:
             return self.accepted_attempt
         self._ensure_layout()
-        _validate_attempt_id(attempt_id)
-        self._read_index()
-        if attempt_id not in self._attempt_ids():
-            raise SynthesisArtifactError("cannot select missing synthesis attempt")
-        attempt, _, _ = self._read_attempt_bundle(attempt_id)
-        if attempt.status not in _ACCEPTED_STATUSES:
-            raise SynthesisArtifactError(
-                "only accepted or no-issues attempts can be selected"
-            )
-        self._write_index(attempt_id)
-        return attempt
+        with _publication_lock(self.synthesis_root):
+            _validate_attempt_id(attempt_id)
+            self._read_index()
+            if attempt_id not in self._attempt_ids():
+                raise SynthesisArtifactError("cannot select missing synthesis attempt")
+            attempt, _, _ = self._read_attempt_bundle(attempt_id)
+            if attempt.status not in _ACCEPTED_STATUSES:
+                raise SynthesisArtifactError(
+                    "only accepted or no-issues attempts can be selected"
+                )
+            self._write_index(attempt_id)
+            return attempt
 
     def _validate_existing_roots(self) -> None:
         try:
@@ -785,7 +855,12 @@ class SynthesisArtifactStore:
         if os.path.lexists(destination) or secure_is_link_or_reparse(destination):
             raise SynthesisArtifactError("attempt already exists; overwrite refused")
         try:
-            secure_replace(staging, destination, "synthesis attempt publication")
+            secure_replace(
+                staging,
+                destination,
+                "synthesis attempt publication",
+                replace_existing=False,
+            )
         except SynthesisArtifactError:
             raise
         except (OSError, RuntimeError, ValueError) as error:
@@ -850,6 +925,14 @@ class SynthesisArtifactStore:
         except (OSError, RuntimeError, ValueError):
             pass
 
+    def _remove_published_attempt(self, path: Path) -> None:
+        try:
+            secure_remove_tree(
+                path, "synthesis failed attempt cleanup", missing_ok=True
+            )
+        except (OSError, RuntimeError, ValueError):
+            pass
+
 
 def _replace_index(source: Path, destination: Path) -> None:
     """Atomically replace index.json while refusing link/reparse paths."""
@@ -862,7 +945,12 @@ def _replace_index(source: Path, destination: Path) -> None:
         if os.name == "nt" and os.path.lexists(destination):
             os.replace(source, destination)
         else:
-            secure_replace(source, destination, "synthesis index publication")
+            secure_replace(
+                source,
+                destination,
+                "synthesis index publication",
+                replace_existing=True,
+            )
         secure_assert_ancestors(destination, "synthesis index")
         if secure_is_link_or_reparse(destination):
             raise SynthesisArtifactError("synthesis index must not contain links")

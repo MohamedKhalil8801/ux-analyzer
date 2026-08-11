@@ -265,7 +265,13 @@ def _read_bytes(path: Path, label: str, *, max_bytes: int | None = None) -> byte
         return content
 
 
-def _secure_replace(source: Path, destination: Path, label: str) -> None:
+def _secure_replace(
+    source: Path,
+    destination: Path,
+    label: str,
+    *,
+    replace_existing: bool = False,
+) -> None:
     """Rename only after adjacent no-link checks and verify destination ancestry."""
 
     _assert_secure_ancestors(source, label)
@@ -273,7 +279,15 @@ def _secure_replace(source: Path, destination: Path, label: str) -> None:
     if _is_link_or_reparse(source) or _is_link_or_reparse(destination):
         raise BundleStateError(f"{label} must not contain symlinks or reparse points")
     if os.name == "nt":
-        _replace_windows_handle_relative(source, destination, label)
+        if replace_existing:
+            _replace_windows_handle_relative(
+                source,
+                destination,
+                label,
+                replace_existing=True,
+            )
+        else:
+            _replace_windows_handle_relative(source, destination, label)
     else:
         source_parent_flags = (
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -286,12 +300,21 @@ def _secure_replace(source: Path, destination: Path, label: str) -> None:
                 _assert_open_descriptor_path(
                     destination_parent, destination.parent, label
                 )
-                os.replace(
-                    source.name,
-                    destination.name,
-                    src_dir_fd=source_parent,
-                    dst_dir_fd=destination_parent,
-                )
+                if replace_existing:
+                    os.replace(
+                        source.name,
+                        destination.name,
+                        src_dir_fd=source_parent,
+                        dst_dir_fd=destination_parent,
+                    )
+                else:
+                    _rename_posix_without_replacement(
+                        source,
+                        destination,
+                        source_parent,
+                        destination_parent,
+                        label,
+                    )
                 os.fsync(destination_parent)
             finally:
                 os.close(destination_parent)
@@ -302,10 +325,58 @@ def _secure_replace(source: Path, destination: Path, label: str) -> None:
         raise BundleStateError(f"{label} must not contain symlinks or reparse points")
 
 
+def _rename_posix_without_replacement(
+    source: Path,
+    destination: Path,
+    source_parent: int,
+    destination_parent: int,
+    label: str,
+) -> None:
+    """Use the native no-replace rename when available, with lock-safe fallback."""
+
+    import ctypes
+    import errno
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is not None:
+        renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            source_parent,
+            os.fsencode(source.name),
+            destination_parent,
+            os.fsencode(destination.name),
+            1,
+        )
+        if result == 0:
+            return
+        error_number = ctypes.get_errno()
+        if error_number not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
+            raise OSError(error_number, f"atomic {label} rename failed")
+
+    if os.path.lexists(destination):
+        raise FileExistsError(errno.EEXIST, f"{label} destination already exists")
+    os.rename(
+        source.name,
+        destination.name,
+        src_dir_fd=source_parent,
+        dst_dir_fd=destination_parent,
+    )
+
+
 def _replace_windows_handle_relative(
     source: Path,
     destination: Path,
     label: str,
+    *,
+    replace_existing: bool = False,
 ) -> None:
     import ctypes
     from ctypes import wintypes
@@ -390,7 +461,7 @@ def _replace_windows_handle_relative(
                 )
 
             rename_info = FileRenameInfo()
-            rename_info.replace_if_exists = 0
+            rename_info.replace_if_exists = 1 if replace_existing else 0
             rename_info.root_directory = destination_parent_handle
             rename_info.filename_length = len(filename.encode("utf-16-le"))
             rename_info.filename = filename

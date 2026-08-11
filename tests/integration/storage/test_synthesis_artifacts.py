@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -252,7 +253,32 @@ def test_failed_index_replace_keeps_previous_accepted_pointer_and_attempt(
         store.write_attempt(second, corpus)
 
     assert store.accepted_attempt == first
-    assert (tmp_path / "synthesis" / "attempts" / second.attempt_id).is_dir()
+    assert not (tmp_path / "synthesis" / "attempts" / second.attempt_id).exists()
+
+
+def test_concurrent_writers_keep_each_attempt_and_index_record(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempts = tuple(_attempt(corpus, sequence=index) for index in (1, 2))
+
+    def write(attempt: SynthesisAttempt) -> Path:
+        return SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        paths = tuple(executor.map(write, attempts))
+
+    assert {path.name for path in paths} == {attempt.attempt_id for attempt in attempts}
+    store = SynthesisArtifactStore(tmp_path)
+    assert {attempt.attempt_id for attempt in store.attempts} == {
+        attempt.attempt_id for attempt in attempts
+    }
+    index = json.loads(
+        (tmp_path / "synthesis" / "index.json").read_text(encoding="ascii")
+    )
+    assert {record["attempt_id"] for record in index["attempts"]} == {
+        attempt.attempt_id for attempt in attempts
+    }
 
 
 @pytest.mark.parametrize(
