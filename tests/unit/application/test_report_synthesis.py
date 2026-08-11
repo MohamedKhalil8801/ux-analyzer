@@ -821,6 +821,52 @@ async def test_unresolved_blocking_objection_rejects_finding(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_unresolved_blocker_rejects_only_its_finding(tmp_path: Path) -> None:
+    blocked = _candidate()
+    independent = _candidate(
+        finding_id="independent-finding",
+        evidence_id=SECOND_EVIDENCE_ID,
+        title="The settings entry point is hard to find",
+        issue="The user searches outside the settings area before finding the entry point.",
+        impact="A separate settings task takes longer to complete.",
+        root_cause="The entry point is labeled around internal product structure.",
+    )
+    objection = _blocking_objection(blocked.finding_id)
+    service, _ = _scripted_service(
+        analyst=[
+            AnalystResponse(
+                complete=True,
+                candidate_findings=[blocked, independent],
+            )
+        ],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        adjudicator=[
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[blocked, independent],
+            ),
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[blocked, independent],
+            ),
+        ],
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_second_event_entry(),))
+    )
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert [finding.finding_id for finding in attempt.findings] == [
+        "independent-finding"
+    ]
+    assert [finding.finding_id for finding in attempt.rejected_findings] == [
+        "invite-control"
+    ]
+    assert not attempt.objections[0].resolved
+
+
+@pytest.mark.asyncio
 async def test_one_adjudication_revision_can_resolve_blocking_objection(
     tmp_path: Path,
 ) -> None:

@@ -668,16 +668,6 @@ class ReportSynthesisService:
         )
         limitations.extend(verification_limitations)
         unresolved_blocking = self._has_unresolved_blocking(resolved_objections)
-        if unresolved_blocking and accepted:
-            limitations.append(
-                "Publication validation rejected all final findings because a blocking objection remained unresolved."
-            )
-            rejected.extend(
-                self._not_established(
-                    accepted, "An unresolved blocking objection prevented publication."
-                )
-            )
-            accepted = []
 
         if duplicate_candidate_ids:
             limitations.append("Publication validation rejected duplicate finding IDs.")
