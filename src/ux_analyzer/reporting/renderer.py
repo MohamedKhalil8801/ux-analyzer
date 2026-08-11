@@ -12,7 +12,7 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from io import BytesIO
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
@@ -22,6 +22,13 @@ from ux_analyzer.application.checkpoint import finalized_bundle_failures
 from ux_analyzer.application.evaluation import (
     persisted_comparison_sample_is_valid,
 )
+from ux_analyzer.application.evidence_corpus import (
+    EvidenceCorpus,
+    EvidenceEntry,
+    validate_evidence_refs,
+)
+from ux_analyzer.domain.findings import EvidenceClass
+from ux_analyzer.domain.synthesis import EvidenceRef, SynthesisAttempt, SynthesisStatus
 from ux_analyzer.ports.artifacts import (
     validate_saliency_artifact_path,
     validate_timeline_event_order,
@@ -39,6 +46,10 @@ from ux_analyzer.storage.saliency_replay import (
 )
 from ux_analyzer.storage.saliency_replay import (
     saliency_artifact_data_uri as _trusted_saliency_artifact_data_uri,
+)
+from ux_analyzer.storage.synthesis_artifacts import (
+    SynthesisArtifactError,
+    SynthesisArtifactStore,
 )
 
 DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
@@ -75,6 +86,16 @@ _METRIC_IDENTITY_KEYS = frozenset(
     }
 )
 _SALIENCY_DURATIONS = ("1s", "3s", "7s")
+_SYNTHESIS_SELECTED_STATUSES = frozenset(
+    {SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES}
+)
+_FALLBACK_SEVERITY_ORDER = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+}
+_SYNTHESIS_ARTIFACT_FILES = ("index.json", "synthesis.json", "corpus-manifest.json")
 
 
 def _json_object_without_duplicates(
@@ -177,6 +198,7 @@ def render_experiment_report(
         run_context = _report_context(
             {**experiment, "runs": [run]},
             run_links={run["run_id"]: ""},
+            run_scope=frozenset({run["run_id"]}),
         )
         run_html = _render_html(
             run_context,
@@ -200,7 +222,10 @@ def _estimated_full_report_bytes(experiment: dict[str, Any]) -> int:
             template_root / "static" / "report.js",
         )
     )
-    return shell_bytes + len(_safe_json(experiment).encode("utf-8"))
+    synthesis_bytes = experiment.get("_synthesis_artifact_bytes", 0)
+    if not isinstance(synthesis_bytes, int) or synthesis_bytes < 0:
+        synthesis_bytes = 0
+    return shell_bytes + len(_safe_json(experiment).encode("utf-8")) + synthesis_bytes
 
 
 def _oversized_run_html(run_id: str, threshold: int) -> str:
@@ -239,6 +264,7 @@ def _load_experiment(root: Path) -> dict[str, Any]:
         raise ValueError(f"no run or failure evidence found under {root}")
     ordered_runs = tuple(sorted(runs, key=lambda item: item["run_id"]))
     gate_rows = _gate_rows(summary, ordered_runs)
+    synthesis, synthesis_artifact_bytes = _load_synthesis(root, ordered_runs)
     return {
         "runs": ordered_runs,
         "run_rows": _run_overview_rows(ordered_runs, gate_rows),
@@ -251,7 +277,769 @@ def _load_experiment(root: Path) -> dict[str, Any]:
         "limitations": _unique(
             limitation for run in ordered_runs for limitation in run["limitations"]
         ),
+        "synthesis": synthesis,
+        "_synthesis_artifact_bytes": synthesis_artifact_bytes,
     }
+
+
+def _load_synthesis(
+    root: Path,
+    runs: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], int]:
+    fallback_findings = _deterministic_fallback_findings(runs)
+    index_path = root / "synthesis" / "index.json"
+    if secure_is_link_or_reparse(index_path):
+        return (
+            _fallback_synthesis(
+                "invalid",
+                runs,
+                fallback_findings,
+                "Persisted report synthesis failed deterministic validation.",
+            ),
+            _synthesis_artifact_bytes(root, None),
+        )
+    if not index_path.is_file():
+        return (
+            _fallback_synthesis(
+                "missing",
+                runs,
+                fallback_findings,
+                "No persisted report synthesis is available.",
+            ),
+            0,
+        )
+
+    try:
+        store = SynthesisArtifactStore(root)
+        attempts = store.attempts
+        attempt = store.accepted_attempt
+        selected_id = attempt.attempt_id if attempt is not None else None
+        artifact_bytes = _synthesis_artifact_bytes(root, selected_id)
+        if attempt is None:
+            status = (
+                _synthesis_enum_text(attempts[-1].status) if attempts else "missing"
+            )
+            if status not in {"rejected", "unavailable"}:
+                status = "unavailable"
+            return (
+                _fallback_synthesis(
+                    status,
+                    runs,
+                    fallback_findings,
+                    "Only rejected or unavailable synthesis attempts were published.",
+                ),
+                artifact_bytes,
+            )
+        if attempt.status not in _SYNTHESIS_SELECTED_STATUSES:
+            raise SynthesisArtifactError(
+                "selected synthesis attempt has an ineligible status"
+            )
+        corpus = _load_synthesis_corpus(root, attempt)
+        findings = _synthesis_findings(attempt, corpus, runs, root)
+        status = _synthesis_enum_text(attempt.status)
+        assessment = (
+            "No supported UX issues were established in the tested scenarios."
+            if attempt.status is SynthesisStatus.NO_ISSUES
+            else "Accepted evidence-grounded synthesis findings are shown for the tested scenarios."
+        )
+        return (
+            {
+                "synthesis_status": status,
+                "status": status,
+                "using_fallback": False,
+                "attempt_id": attempt.attempt_id,
+                "corpus_digest": attempt.corpus_digest,
+                "assessment": assessment,
+                "findings": findings,
+                "fallback_findings": fallback_findings,
+                "limitations": list(attempt.limitations),
+                "tested_scope": _synthesis_scope(runs),
+            },
+            artifact_bytes,
+        )
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+        SynthesisArtifactError,
+    ):
+        return (
+            _fallback_synthesis(
+                "invalid",
+                runs,
+                fallback_findings,
+                "Persisted report synthesis failed deterministic validation.",
+            ),
+            _synthesis_artifact_bytes(root, None),
+        )
+
+
+def _fallback_synthesis(
+    status: str,
+    runs: Sequence[Mapping[str, Any]],
+    fallback_findings: list[dict[str, Any]],
+    limitation: str,
+) -> dict[str, Any]:
+    return {
+        "synthesis_status": status,
+        "status": status,
+        "using_fallback": True,
+        "attempt_id": None,
+        "corpus_digest": None,
+        "assessment": (
+            "Deterministic findings are shown because report synthesis is unavailable."
+        ),
+        "findings": fallback_findings,
+        "fallback_findings": fallback_findings,
+        "limitations": [limitation],
+        "tested_scope": _synthesis_scope(runs),
+    }
+
+
+def _deterministic_fallback_findings(
+    runs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for run in runs:
+        run_id = _text(run.get("run_id"))
+        for finding in _list_of_mappings(run.get("findings")):
+            evidence_refs, evidence_targets = _fallback_evidence_targets(
+                finding,
+                run,
+                run_id,
+            )
+            findings.append(
+                {
+                    **finding,
+                    "run_ids": _unique([*_strings(finding.get("run_ids")), run_id]),
+                    "source": "deterministic-fallback",
+                    "evidence_refs": evidence_refs,
+                    "evidence_targets": evidence_targets,
+                }
+            )
+    return sorted(
+        findings,
+        key=lambda item: (
+            _FALLBACK_SEVERITY_ORDER.get(
+                _text(item.get("severity"), "").lower(),
+                len(_FALLBACK_SEVERITY_ORDER),
+            ),
+            _text(item.get("finding_id"), ""),
+        ),
+    )
+
+
+def _fallback_evidence_targets(
+    finding: Mapping[str, Any],
+    run: Mapping[str, Any],
+    run_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    refs: list[dict[str, Any]] = []
+    targets: list[dict[str, Any]] = []
+    for evidence_id in _strings(finding.get("evidence_ids")):
+        target = _fallback_evidence_target(evidence_id, run, run_id)
+        if target is None:
+            target = {
+                "kind": "unavailable",
+                "run_id": run_id,
+                "reason": "Recorded evidence target unavailable.",
+            }
+            refs.append(
+                {
+                    "evidence_id": evidence_id,
+                    "available": False,
+                    "target": target,
+                }
+            )
+        else:
+            refs.append(
+                {
+                    "evidence_id": evidence_id,
+                    "available": True,
+                    "target": target,
+                }
+            )
+        targets.append(target)
+    return refs, targets
+
+
+def _fallback_evidence_target(
+    evidence_id: str,
+    run: Mapping[str, Any],
+    run_id: str,
+) -> dict[str, Any] | None:
+    prefix = f"{run_id}:"
+    if evidence_id.startswith(prefix):
+        metric_id = evidence_id.removeprefix(prefix)
+        if any(
+            row.get("name") == metric_id
+            for row in _list_of_mappings(run.get("metrics"))
+        ):
+            return {
+                "kind": "metric",
+                "run_id": run_id,
+                "metric_id": metric_id,
+            }
+
+    parts = evidence_id.split(":")
+    if len(parts) == 3 and parts[0] in {"event", "replay"}:
+        evidence_run_id = parts[1]
+        sequence = _integer(parts[2])
+        if evidence_run_id != run_id or sequence is None:
+            return None
+        event = _event_by_sequence(run, sequence)
+        if event is None:
+            return None
+        target: dict[str, Any] = {
+            "kind": parts[0],
+            "run_id": run_id,
+            "sequence": sequence,
+            "event_id": _text(event.get("event_id"), f"event-{sequence}"),
+        }
+        viewport_id = _recorded_event_viewport_id(run, event)
+        if viewport_id is not None:
+            target["viewport_id"] = viewport_id
+        element_id = _recorded_event_element_id(event)
+        if element_id is not None:
+            target["element_id"] = element_id
+        return target
+    return None
+
+
+def _synthesis_scope(runs: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+    return {
+        "run_ids": _unique(_text(run.get("run_id")) for run in runs),
+        "scenario_ids": _unique(_text(run.get("scenario_id")) for run in runs),
+        "version_ids": _unique(_text(run.get("version_id")) for run in runs),
+        "persona_ids": _unique(_text(run.get("persona_id")) for run in runs),
+    }
+
+
+def _synthesis_artifact_bytes(root: Path, attempt_id: str | None) -> int:
+    paths = [root / "synthesis" / "index.json"]
+    if attempt_id is not None:
+        attempt_root = root / "synthesis" / "attempts" / attempt_id
+        paths.extend(attempt_root / name for name in _SYNTHESIS_ARTIFACT_FILES[1:])
+    total = 0
+    for path in paths:
+        if not path.is_file() or secure_is_link_or_reparse(path):
+            continue
+        try:
+            total += len(secure_read_bytes(path, "synthesis artifact"))
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return total
+
+
+def _load_synthesis_corpus(root: Path, attempt: SynthesisAttempt) -> EvidenceCorpus:
+    attempt_root = root / "synthesis" / "attempts" / attempt.attempt_id
+    manifest_path = attempt_root / "corpus-manifest.json"
+    raw = secure_read_bytes(manifest_path, "synthesis corpus manifest")
+    if hashlib.sha256(raw).hexdigest() != attempt.corpus_digest:
+        raise SynthesisArtifactError("synthesis corpus digest mismatch")
+    value = json.loads(
+        raw.decode("ascii"), object_pairs_hook=_json_object_without_duplicates
+    )
+    manifest = _mapping(value)
+    if manifest.get("schema_version") != "evidence-corpus-v1":
+        raise SynthesisArtifactError("unsupported synthesis corpus schema")
+    entries: list[EvidenceEntry] = []
+    for raw_entry in _list_of_mappings(manifest.get("entries")):
+        raw_ref = {
+            name: raw_entry.get(name)
+            for name in (
+                "evidence_id",
+                "kind",
+                "run_id",
+                "viewport_id",
+                "element_id",
+                "event_id",
+                "metric_id",
+                "artifact_path",
+                "replay_sequence",
+                "sha256",
+            )
+        }
+        replay_sequence = raw_ref["replay_sequence"]
+        if replay_sequence is not None and (
+            isinstance(replay_sequence, bool) or not isinstance(replay_sequence, int)
+        ):
+            raise SynthesisArtifactError("synthesis replay sequence is invalid")
+        attachment_value = raw_entry.get("attachment_path")
+        if attachment_value is not None and not isinstance(attachment_value, str):
+            raise SynthesisArtifactError("synthesis attachment path is invalid")
+        artifact_value = raw_ref["artifact_path"]
+        if artifact_value is not None:
+            _synthesis_relative_path(artifact_value, "synthesis artifact path")
+        if attachment_value is not None:
+            attachment_path = _synthesis_relative_path(
+                attachment_value, "synthesis attachment path"
+            )
+            if artifact_value is None or attachment_path != _synthesis_relative_path(
+                artifact_value, "synthesis artifact path"
+            ):
+                raise SynthesisArtifactError(
+                    "synthesis attachment path does not match artifact path"
+                )
+            attachment = Path(attachment_path)
+        else:
+            attachment = None
+        payload = raw_entry.get("payload")
+        if not isinstance(payload, Mapping):
+            raise SynthesisArtifactError("synthesis corpus payload is invalid")
+        try:
+            entries.append(
+                EvidenceEntry(
+                    ref=EvidenceRef(
+                        evidence_id=_text(raw_ref.get("evidence_id")),
+                        kind=_text(raw_ref.get("kind")),
+                        run_id=_text(raw_ref.get("run_id")),
+                        viewport_id=_optional_text(raw_ref.get("viewport_id")),
+                        element_id=_optional_text(raw_ref.get("element_id")),
+                        event_id=_optional_text(raw_ref.get("event_id")),
+                        metric_id=_optional_text(raw_ref.get("metric_id")),
+                        artifact_path=_optional_text(raw_ref.get("artifact_path")),
+                        replay_sequence=replay_sequence,
+                        sha256=_optional_text(raw_ref.get("sha256")),
+                    ),
+                    evidence_class=EvidenceClass(raw_entry.get("evidence_class", "")),
+                    summary=_text(raw_entry.get("summary")),
+                    payload=cast(Mapping[str, object], payload),
+                    attachment_path=attachment,
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise SynthesisArtifactError("invalid synthesis corpus entry") from error
+    try:
+        corpus = EvidenceCorpus(
+            output_root=root,
+            entries=tuple(entries),
+            principle_pack_version=_text(
+                manifest.get("principle_pack_version"), "unavailable"
+            ),
+            principle_pack_digest=_text(
+                manifest.get("principle_pack_digest"), "unavailable"
+            ),
+            metadata=cast(Mapping[str, object], _mapping(manifest.get("metadata"))),
+        )
+    except (TypeError, ValueError) as error:
+        raise SynthesisArtifactError("invalid synthesis corpus") from error
+    if (
+        corpus.to_json().encode("ascii") != raw
+        or corpus.digest != attempt.corpus_digest
+    ):
+        raise SynthesisArtifactError("synthesis corpus is not canonical")
+    return corpus
+
+
+def _synthesis_relative_path(value: object, label: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value.strip():
+        raise SynthesisArtifactError(f"{label} must be a relative path")
+    normalized = value.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    windows = PureWindowsPath(value)
+    if (
+        path.is_absolute()
+        or windows.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or ":" in path.parts[0]
+    ):
+        raise SynthesisArtifactError(f"{label} must be a safe relative path")
+    return path
+
+
+def _synthesis_findings(
+    attempt: SynthesisAttempt,
+    corpus: EvidenceCorpus,
+    runs: Sequence[Mapping[str, Any]],
+    root: Path,
+) -> list[dict[str, Any]]:
+    run_map = {str(run.get("run_id")): run for run in runs}
+    finding_ids: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for finding in attempt.findings:
+        if finding.finding_id in finding_ids:
+            raise SynthesisArtifactError("synthesis findings contain duplicate IDs")
+        finding_ids.add(finding.finding_id)
+        validate_evidence_refs(corpus, finding.evidence_refs)
+        targets: list[dict[str, Any]] = []
+        public_refs: list[dict[str, Any]] = []
+        for reference in finding.evidence_refs:
+            entry = corpus.require(reference.evidence_id)
+            target = _synthesis_navigation_target(entry, run_map, root)
+            targets.append(target)
+            public_refs.append(_public_synthesis_ref(entry.ref))
+        counterevidence: list[object] = []
+        counter_refs = tuple(
+            item for item in finding.counterevidence if isinstance(item, EvidenceRef)
+        )
+        if counter_refs:
+            validate_evidence_refs(corpus, counter_refs)
+        for item in finding.counterevidence:
+            if isinstance(item, EvidenceRef):
+                entry = corpus.require(item.evidence_id)
+                counterevidence.append(
+                    {
+                        "reference": _public_synthesis_ref(entry.ref),
+                        "target": _synthesis_navigation_target(entry, run_map, root),
+                    }
+                )
+            else:
+                counterevidence.append(item)
+        result.append(
+            {
+                "finding_id": finding.finding_id,
+                "title": finding.title,
+                "issue": finding.issue,
+                "impact": finding.impact,
+                "root_cause": finding.root_cause,
+                "fixes": list(finding.fixes),
+                "severity": _synthesis_enum_text(finding.severity),
+                "confidence": finding.confidence,
+                "evidence_refs": public_refs,
+                "evidence_targets": targets,
+                "affected_surfaces": list(finding.affected_surfaces),
+                "principles": list(finding.principles),
+                "counterevidence": counterevidence,
+                "limitations": list(finding.limitations),
+                "reviewer_state": finding.reviewer_state,
+                "evidence_class": _synthesis_enum_text(finding.evidence_class),
+                "reproducibility": _synthesis_enum_text(finding.reproducibility),
+                "severity_justification": finding.severity_justification,
+                "reviewer_notes": list(finding.reviewer_notes),
+            }
+        )
+    return result
+
+
+def _public_synthesis_ref(reference: EvidenceRef) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "evidence_id": reference.evidence_id,
+        "kind": reference.kind,
+        "run_id": reference.run_id,
+    }
+    for name in (
+        "viewport_id",
+        "element_id",
+        "event_id",
+        "metric_id",
+        "replay_sequence",
+        "sha256",
+    ):
+        value = getattr(reference, name)
+        if value is not None:
+            result[name] = value
+    return result
+
+
+def _synthesis_navigation_target(
+    entry: EvidenceEntry,
+    run_map: Mapping[str, Mapping[str, Any]],
+    root: Path,
+) -> dict[str, Any]:
+    reference = entry.ref
+    run = run_map.get(reference.run_id)
+    if run is None or not bool(run.get("trusted", False)):
+        raise SynthesisArtifactError(
+            "synthesis reference does not target a trusted run"
+        )
+    target: dict[str, Any] = {
+        "kind": reference.kind,
+        "run_id": reference.run_id,
+    }
+    if reference.kind in {"event", "replay"}:
+        sequence = reference.replay_sequence
+        if sequence is None:
+            raise SynthesisArtifactError("synthesis event reference has no sequence")
+        event = _event_by_sequence(run, sequence)
+        if event is None:
+            raise SynthesisArtifactError("synthesis event reference is not recorded")
+        if reference.event_id and event.get("event_id") != reference.event_id:
+            raise SynthesisArtifactError("synthesis event reference ID mismatch")
+        recorded_viewport_id = _recorded_event_viewport_id(run, event)
+        if (
+            reference.viewport_id is not None
+            and recorded_viewport_id != reference.viewport_id
+        ):
+            raise SynthesisArtifactError(
+                "synthesis event reference viewport ID mismatch"
+            )
+        recorded_element_id = _recorded_event_element_id(event)
+        if (
+            reference.element_id is not None
+            and recorded_element_id != reference.element_id
+        ):
+            raise SynthesisArtifactError(
+                "synthesis event reference element ID mismatch"
+            )
+        target.update(
+            {
+                "sequence": sequence,
+                "event_id": _text(event.get("event_id")),
+                "viewport_id": reference.viewport_id or recorded_viewport_id,
+            }
+        )
+        if reference.element_id is not None or recorded_element_id is not None:
+            target["element_id"] = reference.element_id or recorded_element_id
+        return target
+    if reference.kind == "viewport":
+        if _snapshot_by_id(run, reference.viewport_id) is None:
+            raise SynthesisArtifactError("synthesis viewport reference is not recorded")
+        target["viewport_id"] = reference.viewport_id
+        return target
+    if reference.kind == "element":
+        snapshot = _snapshot_by_id(run, reference.viewport_id)
+        if snapshot is None or not any(
+            element.get("id") == reference.element_id
+            for element in _list_of_mappings(snapshot.get("elements"))
+        ):
+            raise SynthesisArtifactError("synthesis element reference is not recorded")
+        target.update(
+            {"viewport_id": reference.viewport_id, "element_id": reference.element_id}
+        )
+        return target
+    if reference.kind in {"heatmap", "native-map", "saliency-metadata"}:
+        namespace = _text(
+            _mapping(entry.payload).get("namespace"), reference.viewport_id or ""
+        )
+        duration = _optional_text(_mapping(entry.payload).get("duration"))
+        group = next(
+            (
+                group
+                for group in _list_of_mappings(run.get("saliency"))
+                if group.get("artifact_namespace") == namespace
+                or group.get("viewport_id") == namespace
+            ),
+            None,
+        )
+        if group is None or group.get("replay_available") is False:
+            raise SynthesisArtifactError("synthesis saliency reference is unavailable")
+        if duration is not None and not any(
+            entry.get("duration") == duration
+            for entry in _list_of_mappings(group.get("entries"))
+        ):
+            raise SynthesisArtifactError("synthesis saliency duration is not recorded")
+        target.update(
+            {
+                "viewport_id": reference.viewport_id,
+                "duration": duration,
+                "namespace": namespace,
+            }
+        )
+        return target
+    if reference.kind == "screenshot":
+        return _screenshot_navigation_target(entry, run, root, target)
+    if reference.kind == "metric":
+        metric_id = reference.metric_id
+        if metric_id is None or not any(
+            row.get("name") == metric_id
+            for row in _list_of_mappings(run.get("metrics"))
+        ):
+            raise SynthesisArtifactError("synthesis metric reference is not recorded")
+        target["metric_id"] = metric_id
+        return target
+    if reference.kind == "model-estimate":
+        sequence = (
+            _integer(reference.event_id.removeprefix("event-"))
+            if reference.event_id
+            else None
+        )
+        if sequence is not None and _event_by_sequence(run, sequence) is None:
+            raise SynthesisArtifactError("synthesis estimate event is not recorded")
+        target.update(
+            {
+                "viewport_id": reference.viewport_id,
+                "element_id": reference.element_id,
+            }
+        )
+        return target
+    target.update(
+        {
+            name: value
+            for name in ("viewport_id", "element_id", "metric_id")
+            if (value := getattr(reference, name)) is not None
+        }
+    )
+    return target
+
+
+def _event_by_sequence(run: Mapping[str, Any], sequence: int) -> dict[str, Any] | None:
+    return next(
+        (
+            event
+            for event in _list_of_mappings(run.get("timeline"))
+            if int(_number(event.get("sequence"), 0)) == sequence
+        ),
+        None,
+    )
+
+
+def _recorded_event_viewport_id(
+    run: Mapping[str, Any], event: Mapping[str, Any]
+) -> str | None:
+    direct = _optional_text(event.get("viewport_id"))
+    if direct is not None:
+        return direct
+    if _text(event.get("kind")) == "viewport-captured":
+        snapshot_id = _optional_text(event.get("viewport_id"))
+        if snapshot_id is not None:
+            return snapshot_id
+    observation = _mapping(event.get("observation"))
+    observed = _optional_text(observation.get("viewport_id"))
+    if observed is not None:
+        return observed
+    sequence = _integer(event.get("sequence"))
+    if sequence is None:
+        return None
+    viewport_id: str | None = None
+    for record in _list_of_mappings(run.get("timeline")):
+        record_sequence = _integer(record.get("sequence"))
+        if record_sequence is None or record_sequence > sequence:
+            break
+        if _text(record.get("kind")) == "viewport-captured":
+            viewport_id = _optional_text(record.get("viewport_id"))
+    return viewport_id
+
+
+def _recorded_event_element_id(event: Mapping[str, Any]) -> str | None:
+    direct = _optional_text(event.get("element_id"))
+    if direct is not None:
+        return direct
+    action = _mapping(event.get("action"))
+    return _optional_text(action.get("element_id"))
+
+
+def _snapshot_by_id(
+    run: Mapping[str, Any], viewport_id: str | None
+) -> dict[str, Any] | None:
+    if viewport_id is None:
+        return None
+    return next(
+        (
+            snapshot
+            for snapshot in _list_of_mappings(run.get("snapshots"))
+            if snapshot.get("id") == viewport_id
+        ),
+        None,
+    )
+
+
+def _screenshot_navigation_target(
+    entry: EvidenceEntry,
+    run: Mapping[str, Any],
+    root: Path,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    reference = entry.ref
+    artifact = reference.artifact_path
+    if artifact is None or reference.sha256 is None:
+        raise SynthesisArtifactError("synthesis screenshot reference is incomplete")
+    root_relative = _synthesis_relative_path(artifact, "synthesis screenshot path")
+    parts = root_relative.parts
+    if len(parts) < 3 or parts[0] != "runs" or parts[1] != reference.run_id:
+        raise SynthesisArtifactError("synthesis screenshot path is outside its run")
+    run_relative = PurePosixPath(*parts[2:])
+    snapshot = next(
+        (
+            snapshot
+            for snapshot in _list_of_mappings(run.get("snapshots"))
+            if _text(snapshot.get("artifact"), "").replace("\\", "/")
+            == run_relative.as_posix()
+            and (
+                reference.viewport_id is None
+                or snapshot.get("id") == reference.viewport_id
+            )
+        ),
+        None,
+    )
+    if snapshot is None:
+        raise SynthesisArtifactError("synthesis screenshot is not recorded")
+    run_path = root / _text(run.get("bundle_path"))
+    candidate = _secure_bundle_file(run_path, run_relative)
+    if candidate is None:
+        raise SynthesisArtifactError("synthesis screenshot path is unavailable")
+    content = secure_read_bytes(candidate, "synthesis screenshot")
+    if hashlib.sha256(content).hexdigest() != reference.sha256:
+        raise SynthesisArtifactError("synthesis screenshot digest mismatch")
+    target["viewport_id"] = snapshot.get("id")
+    return target
+
+
+def _integer(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _project_synthesis(
+    synthesis: dict[str, Any],
+    *,
+    run_links: Mapping[str, str] | None,
+    run_scope: frozenset[str] | None,
+) -> dict[str, Any]:
+    if not synthesis:
+        return {
+            "synthesis_status": "missing",
+            "status": "missing",
+            "using_fallback": True,
+            "findings": [],
+            "fallback_findings": [],
+            "limitations": ["No persisted report synthesis is available."],
+            "tested_scope": {},
+            "assessment": (
+                "Deterministic findings are shown because report synthesis is unavailable."
+            ),
+        }
+    projected = dict(synthesis)
+    for name in ("findings", "fallback_findings"):
+        projected[name] = [
+            _project_synthesis_finding(item, run_links=run_links)
+            for item in _list_of_mappings(synthesis.get(name))
+            if run_scope is None or _finding_targets_run(item, run_scope)
+        ]
+    return projected
+
+
+def _project_synthesis_finding(
+    finding: Mapping[str, Any],
+    *,
+    run_links: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    projected = dict(finding)
+    targets: list[dict[str, Any]] = []
+    for target in _list_of_mappings(finding.get("evidence_targets")):
+        item = dict(target)
+        if run_links is not None:
+            item["run_page"] = run_links.get(_text(item.get("run_id")), "")
+        targets.append(item)
+    projected["evidence_targets"] = targets
+    references: list[dict[str, Any]] = []
+    for reference in _list_of_mappings(finding.get("evidence_refs")):
+        item = dict(reference)
+        target = _mapping(reference.get("target"))
+        if target:
+            target = dict(target)
+            if run_links is not None:
+                target["run_page"] = run_links.get(_text(target.get("run_id")), "")
+            item["target"] = target
+        references.append(item)
+    projected["evidence_refs"] = references
+    return projected
+
+
+def _finding_targets_run(finding: Mapping[str, Any], run_scope: frozenset[str]) -> bool:
+    if any(run_id in run_scope for run_id in _strings(finding.get("run_ids"))):
+        return True
+    return any(
+        _text(target.get("run_id")) in run_scope
+        for target in _list_of_mappings(finding.get("evidence_targets"))
+    )
 
 
 def _run_directories(root: Path) -> tuple[Path, ...]:
@@ -564,6 +1352,7 @@ def _report_context(
     *,
     include_run_payload: bool = True,
     run_links: dict[str, str] | None = None,
+    run_scope: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     runs: list[dict[str, Any]] = []
     for source in _list_of_mappings(experiment["runs"]):
@@ -641,6 +1430,30 @@ def _report_context(
         if include_run_payload
         else ["Run-specific limitations are available on self-contained run pages."]
     )
+    synthesis = _project_synthesis(
+        _mapping(experiment.get("synthesis")),
+        run_links=run_links,
+        run_scope=run_scope,
+    )
+    concise_index_fallback = (
+        not include_run_payload
+        and run_scope is None
+        and bool(synthesis.get("using_fallback"))
+    )
+    report_payload = {
+        "runs": runs,
+        "run_rows": experiment["run_rows"],
+        "comparison_rows": experiment["comparison_rows"],
+        "provider_comparisons": provider_comparisons,
+        "gate_rows": experiment["gate_rows"],
+        "failure_rows": failure_rows,
+        "evidence_summary": experiment["evidence_summary"],
+        "focused_acceptance": experiment["focused_acceptance"],
+        "limitations": limitations,
+    }
+    if not concise_index_fallback:
+        report_payload["synthesis"] = synthesis
+        report_payload["synthesis_status"] = synthesis["synthesis_status"]
     return {
         "runs": runs,
         "run_rows": experiment["run_rows"],
@@ -652,19 +1465,9 @@ def _report_context(
         "focused_acceptance": experiment["focused_acceptance"],
         "limitations": limitations,
         "initial_viewport_width": initial_width,
-        "report_json": _safe_json(
-            {
-                "runs": runs,
-                "run_rows": experiment["run_rows"],
-                "comparison_rows": experiment["comparison_rows"],
-                "provider_comparisons": provider_comparisons,
-                "gate_rows": experiment["gate_rows"],
-                "failure_rows": failure_rows,
-                "evidence_summary": experiment["evidence_summary"],
-                "focused_acceptance": experiment["focused_acceptance"],
-                "limitations": limitations,
-            }
-        ),
+        "synthesis": synthesis,
+        "synthesis_status": synthesis["synthesis_status"],
+        "report_json": _safe_json(report_payload),
     }
 
 
@@ -2818,6 +3621,10 @@ def _text(value: object, default: str = "") -> str:
 
 def _optional_text(value: object) -> str | None:
     return None if value is None else _text(value)
+
+
+def _synthesis_enum_text(value: object) -> str:
+    return _text(getattr(value, "value", value))
 
 
 def _first_string(*values: object) -> str:

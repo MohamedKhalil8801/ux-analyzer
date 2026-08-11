@@ -4,7 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }}</title>
-  <style>{{ css | safe }}</style>
+  {% set compact_index = runs and runs[0].run_page is defined and runs[0].run_page %}
+  <style>
+    {% if compact_index %}
+    :root{--ink:#1b2426;--muted:#5e6a6d;--wash:#f3f4f1;--line:#d2d9d6;--accent:#0b7180}*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:14px/1.45 system-ui,sans-serif}a{color:var(--accent)}button:focus-visible,a:focus-visible,summary:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}main,.page-header{width:min(1600px,calc(100% - 28px));margin:0 auto}.page-header{display:flex;justify-content:space-between;gap:24px;padding:24px 0 16px}.section,.report-section{margin-bottom:16px;border:1px solid var(--line);border-radius:6px;background:#fff;overflow-wrap:anywhere}.report-section{padding:20px 0}.report-section-heading{display:flex;justify-content:space-between;gap:18px}.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-block:1px solid var(--line)}.summary-item{min-width:0;padding:12px 14px;border-right:1px solid var(--line)}.summary-item span,.finding-header h3,.finding p,.finding li{display:block;overflow-wrap:anywhere}.summary-item span{font-weight:700}.finding{min-width:0;padding:22px 0 24px;border-top:1px solid var(--line)}.finding-header{display:flex;justify-content:space-between;gap:16px}.finding-header h3{margin:7px 0 0;font-size:1.15rem}.severity-label{display:inline-block;padding:3px 7px;border:1px solid currentColor;border-radius:4px;font-size:.68rem;font-weight:800;text-transform:uppercase}.finding-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:18px}.finding-verification{margin-top:18px;border-top:1px solid var(--line)}.evidence-ref-list{margin:0;padding:0;list-style:none}.evidence-ref{max-width:100%;padding:4px 7px;border:1px solid var(--line);border-radius:4px;background:#f8faf8;color:var(--accent);overflow-wrap:anywhere;white-space:normal}.evidence-nav{display:flex;flex-wrap:wrap;gap:8px}.evidence-nav a{display:inline-flex;padding:6px 10px;border:1px solid var(--line);border-radius:4px;background:#f8faf8;text-decoration:none;overflow-wrap:anywhere}@media(max-width:760px){main,.page-header{width:calc(100% - 16px)}.page-header,.report-section-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.summary-item:nth-child(2){border-right:0}.summary-item:nth-child(n+3){border-top:1px solid var(--line)}.finding-header,.finding-grid{grid-template-columns:1fr}.finding-header{display:grid}.evidence-nav a{max-width:100%}}
+    {% else %}
+    {{ css | safe }}
+    {% endif %}
+  </style>
 </head>
 <body>
   <header class="page-header">
@@ -16,7 +23,387 @@
   </header>
 
   <main>
-    <section class="section overview-section" aria-labelledby="overview-title">
+{% set synthesis_status = synthesis.synthesis_status | default("missing") %}
+{% set using_fallback = synthesis.using_fallback if synthesis.using_fallback is defined else true %}
+{% set tested_scope = synthesis.tested_scope if synthesis.tested_scope is defined else {} %}
+
+    {% macro status_label(status) -%}
+      {%- if status == "accepted" -%}Evidence review complete
+      {%- elif status == "no-issues" -%}No supported issues established
+      {%- elif status in ["missing", "unavailable"] -%}Evidence review unavailable
+      {%- elif status == "invalid" -%}Evidence review could not be validated
+      {%- elif status == "rejected" -%}Evidence review needs caution
+      {%- else -%}Evidence review status unavailable
+      {%- endif -%}
+    {%- endmacro %}
+
+    {% macro confidence_label(confidence) -%}
+      {%- if confidence is not none and confidence >= 0.85 -%}High confidence
+      {%- elif confidence is not none and confidence >= 0.65 -%}Moderate confidence
+      {%- else -%}Limited confidence
+      {%- endif -%}
+    {%- endmacro %}
+
+    {% macro render_evidence_refs(finding) -%}
+      <ul class="evidence-ref-list">
+      {% for ref in finding.evidence_refs %}
+        {% set target = finding.evidence_targets[loop.index0] %}
+        <li>
+          <button
+            class="evidence-ref"
+            type="button"
+            data-evidence-id="{{ ref.evidence_id }}"
+            data-evidence-target="{{ target | tojson | forceescape }}"
+            aria-label="Open evidence {{ ref.evidence_id }}"
+          >{{ ref.evidence_id }}</button>
+        </li>
+      {% else %}
+        <li class="empty">No recorded evidence references.</li>
+      {% endfor %}
+      </ul>
+    {%- endmacro %}
+
+    {% macro render_finding(finding) -%}
+      <article
+        id="finding-{{ finding.finding_id }}"
+        class="finding finding-{{ finding.severity }}"
+        data-finding-id="{{ finding.finding_id }}"
+        data-severity="{{ finding.severity }}"
+      >
+        <header class="finding-header">
+          <div>
+            <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }} priority</span>
+            <h3>{{ finding.title }}</h3>
+          </div>
+          <span class="confidence-label">{{ confidence_label(finding.confidence) }}</span>
+        </header>
+        <div class="finding-grid">
+          <div class="finding-field">
+            <h4>Issue</h4>
+            <p>{{ finding.issue }}</p>
+          </div>
+          <div class="finding-field">
+            <h4>Why it matters</h4>
+            <p>{{ finding.impact }}</p>
+          </div>
+          <div class="finding-field">
+            <h4>Likely root cause</h4>
+            <p>{{ finding.root_cause }}</p>
+          </div>
+          <div class="finding-field">
+            <h4>What to fix</h4>
+            <ul class="finding-list">
+            {% for fix in finding.fixes %}
+              <li>{{ fix }}</li>
+            {% else %}
+              <li class="empty">No fix was recorded.</li>
+            {% endfor %}
+            </ul>
+          </div>
+        </div>
+        <div class="finding-meta">
+          <div>
+            <strong>Affected surfaces</strong>
+            <span>{{ finding.affected_surfaces | join(", ") if finding.affected_surfaces else "Not isolated to a named surface." }}</span>
+          </div>
+          <div>
+            <strong>Confidence</strong>
+            <span>{{ confidence_label(finding.confidence) }} ({{ "%.0f%%" | format(finding.confidence * 100) }})</span>
+          </div>
+        </div>
+        <details class="finding-verification">
+          <summary>Verify evidence</summary>
+          <div class="verification-content">
+            <div class="verification-block">
+              <h4>Evidence references</h4>
+              {{ render_evidence_refs(finding) }}
+            </div>
+            <div class="verification-block">
+              <h4>Relevant principles</h4>
+              <ul class="finding-list">
+              {% for principle in finding.principles %}
+                <li>{{ principle }}</li>
+              {% else %}
+                <li class="empty">No principle was recorded.</li>
+              {% endfor %}
+              </ul>
+            </div>
+            <div class="verification-block">
+              <h4>Counterevidence</h4>
+              <ul class="finding-list">
+              {% for item in finding.counterevidence %}
+                {% if item is mapping and item.reference is defined %}
+                <li>
+                  <button
+                    class="evidence-ref"
+                    type="button"
+                    data-evidence-id="{{ item.reference.evidence_id }}"
+                    data-evidence-target="{{ item.target | tojson | forceescape }}"
+                    aria-label="Open counterevidence {{ item.reference.evidence_id }}"
+                  >{{ item.reference.evidence_id }}</button>
+                </li>
+                {% else %}
+                <li>{{ item }}</li>
+                {% endif %}
+              {% else %}
+                <li class="empty">No counterevidence was recorded.</li>
+              {% endfor %}
+              </ul>
+            </div>
+            <div class="verification-block">
+              <h4>Limitations</h4>
+              <ul class="finding-list">
+              {% for limitation in finding.limitations %}
+                <li>{{ limitation }}</li>
+              {% else %}
+                <li class="empty">No additional limitation was recorded.</li>
+              {% endfor %}
+              </ul>
+            </div>
+            <div class="verification-block">
+              <h4>Reviewer status</h4>
+              <p>{{ finding.reviewer_state | replace("-", " ") | title }}</p>
+              {% if finding.severity_justification %}
+              <p class="muted">{{ finding.severity_justification }}</p>
+              {% endif %}
+              {% for note in finding.reviewer_notes %}
+              <p class="muted">{{ note }}</p>
+              {% endfor %}
+            </div>
+          </div>
+        </details>
+      </article>
+    {%- endmacro %}
+
+    <section
+      id="analysis-summary"
+      class="report-section analysis-summary"
+      aria-labelledby="analysis-summary-title"
+      data-synthesis-status="{{ synthesis_status }}"
+      data-using-fallback="{{ 'true' if using_fallback else 'false' }}"
+    >
+      <div class="report-section-heading">
+        <div>
+          <p class="eyebrow">At a glance</p>
+          <h2 id="analysis-summary-title">Analysis summary</h2>
+        </div>
+        <span class="synthesis-status status-{{ synthesis_status }}">{{ status_label(synthesis_status) }}</span>
+      </div>
+      <p class="summary-assessment">
+        {% if synthesis_status == "no-issues" %}
+        No supported UX issues were established in the tested scenarios.
+        {% elif synthesis_status == "accepted" %}
+        The tested scenarios show supported issues, with priority and fixes listed below.
+        {% elif using_fallback %}
+        Recorded findings are shown while the complete evidence review is unavailable.
+        {% else %}
+        Evidence review is unavailable; inspect recorded run evidence below.
+        {% endif %}
+      </p>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <strong>{{ "Recorded findings" if using_fallback else "Accepted findings" }}</strong>
+          <span>{{ synthesis.findings | length }}</span>
+        </div>
+        <div class="summary-item">
+          <strong>Tested scope</strong>
+          <span>{{ tested_scope.get("run_ids", []) | length }} run{% if tested_scope.get("run_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("scenario_ids", []) | length }} scenario{% if tested_scope.get("scenario_ids", []) | length != 1 %}s{% endif %}</span>
+        </div>
+        <div class="summary-item">
+          <strong>Versions and personas</strong>
+          <span>{{ tested_scope.get("version_ids", []) | length }} version{% if tested_scope.get("version_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("persona_ids", []) | length }} persona{% if tested_scope.get("persona_ids", []) | length != 1 %}s{% endif %}</span>
+        </div>
+        <div class="summary-item">
+          <strong>Report basis</strong>
+          <span>{{ "Recorded findings (backup view)" if using_fallback else "Recorded evidence and reviewed findings" }}</span>
+        </div>
+      </div>
+      {% if using_fallback %}
+      <p class="fallback-notice">Backup view in use. Recorded findings remain available while the complete evidence review is unavailable.</p>
+      {% endif %}
+    </section>
+
+    <section id="priority-findings" class="report-section" aria-labelledby="priority-findings-title">
+      <div class="report-section-heading">
+        <div>
+          <p class="eyebrow">Conclusions</p>
+          <h2 id="priority-findings-title">Priority findings</h2>
+        </div>
+        <span class="finding-count">{{ synthesis.findings | length }} {{ "recorded" if using_fallback else "accepted" }}</span>
+      </div>
+      {% if synthesis.findings %}
+        {% if using_fallback %}
+          {% for finding in synthesis.findings %}
+          {% set fallback_viewport_ids = finding.get("viewport_ids", []) %}
+          {% set fallback_element_ids = finding.get("element_ids", []) %}
+          <article
+            id="finding-{{ finding.finding_id }}"
+            class="finding finding-fallback finding-{{ finding.severity }}"
+            data-finding-id="{{ finding.finding_id }}"
+            data-severity="{{ finding.severity }}"
+          >
+            <header class="finding-header">
+              <div>
+                <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }} priority</span>
+                <h3>{{ finding.title }}</h3>
+              </div>
+              <span class="confidence-label">Recorded finding</span>
+            </header>
+            <div class="finding-grid">
+              <div class="finding-field">
+                <h4>Issue</h4>
+                <p>{{ finding.get("cause") or finding.get("category") or "Recorded interaction evidence needs review." }}</p>
+              </div>
+              <div class="finding-field">
+                <h4>Why it matters</h4>
+                <p>Recorded interaction evidence suggests this area may slow or interrupt the tested task.</p>
+              </div>
+              <div class="finding-field">
+                <h4>Likely root cause</h4>
+                <p>{{ finding.get("cause") or "The recorded cause is unavailable." }}</p>
+              </div>
+              <div class="finding-field">
+                <h4>What to fix</h4>
+                <ul class="finding-list">
+                  <li>Review this area with the recorded evidence before making a product change.</li>
+                </ul>
+              </div>
+            </div>
+            <div class="finding-meta">
+              <div>
+                <strong>Affected surfaces</strong>
+                    <span>{{ fallback_element_ids | join(", ") if fallback_element_ids else "Recorded run evidence" }}</span>
+              </div>
+              <div>
+                <strong>Confidence</strong>
+                <span>Recorded finding; full evidence review unavailable.</span>
+              </div>
+            </div>
+            <details class="finding-verification">
+              <summary>Verify evidence</summary>
+              <div class="verification-content">
+                <div class="verification-block">
+                  <h4>Evidence references</h4>
+                  <ul class="evidence-ref-list">
+                  {% for evidence in finding.get("evidence_refs", []) %}
+                    {% set evidence_id = evidence.get("evidence_id", "") %}
+                    <li>
+                    {% if evidence.get("available") and evidence.get("target") %}
+                      <button
+                        class="evidence-ref"
+                        type="button"
+                        data-evidence-id="{{ evidence_id }}"
+                        data-evidence-target="{{ evidence.get("target") | tojson | forceescape }}"
+                        aria-label="Open evidence {{ evidence_id }}"
+                      >{{ evidence_id }}</button>
+                    {% else %}
+                      <span class="evidence-ref-unavailable">{{ evidence_id }} (target unavailable)</span>
+                    {% endif %}
+                    </li>
+                  {% else %}
+                    <li class="empty">No recorded evidence references.</li>
+                  {% endfor %}
+                  </ul>
+                </div>
+                <div class="verification-block">
+                  <h4>Limitations</h4>
+                  <ul class="finding-list">
+                      {% for limitation in finding.get("limitations", []) %}
+                    <li>{{ limitation }}</li>
+                  {% else %}
+                    <li class="empty">Complete evidence review unavailable.</li>
+                  {% endfor %}
+                  </ul>
+                </div>
+                <div class="verification-block">
+                  <h4>Principles</h4>
+                  <p class="empty">Unavailable: synthesis principles were not recorded.</p>
+                </div>
+                <div class="verification-block">
+                  <h4>Counterevidence</h4>
+                  <p class="empty">Unavailable: counterevidence was not recorded.</p>
+                </div>
+                <div class="verification-block">
+                  <h4>Reviewer status</h4>
+                  <p>Recorded finding; not reviewed by the complete evidence process.</p>
+                </div>
+              </div>
+            </details>
+          </article>
+          {% endfor %}
+        {% else %}
+          {% for severity in ("critical", "high", "medium", "low") %}
+            {% for finding in synthesis.findings if finding.severity == severity %}
+              {{ render_finding(finding) }}
+            {% endfor %}
+          {% endfor %}
+        {% endif %}
+      {% else %}
+      <p class="empty-conclusion">
+        {% if synthesis_status == "no-issues" %}
+        No supported UX issues were established in the tested scenarios.
+        {% elif using_fallback %}
+        No recorded findings are available for this report.
+        {% else %}
+        No accepted findings are available for this report.
+        {% endif %}
+      </p>
+      {% endif %}
+    </section>
+
+    <section id="fix-first" class="report-section" aria-labelledby="fix-first-title">
+      <div class="report-section-heading">
+        <div>
+          <p class="eyebrow">Action</p>
+          <h2 id="fix-first-title">Fix first</h2>
+        </div>
+      </div>
+      {% if synthesis.findings %}
+      <ol class="fix-first-list">
+        {% for severity in ("critical", "high", "medium", "low") %}
+          {% for finding in synthesis.findings if finding.severity == severity %}
+          <li>
+            <a href="#finding-{{ finding.finding_id }}">
+              <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }}</span>
+              <strong>{{ finding.title }}</strong>
+            </a>
+                {% if finding.get("fixes") %}
+                <span>{{ finding.fixes[0] }}</span>
+                {% elif finding.get("cause") %}
+                <span>Review recorded cause: {{ finding.get("cause") }}</span>
+            {% endif %}
+          </li>
+          {% endfor %}
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="empty-conclusion">No fix is prioritized because no supported issue was established in the tested scenarios.</p>
+      {% endif %}
+    </section>
+
+    <section id="evidence-workspace" class="report-section evidence-navigation" aria-labelledby="evidence-workspace-title">
+      <div class="report-section-heading">
+        <div>
+          <p class="eyebrow">Evidence</p>
+          <h2 id="evidence-workspace-title">Evidence workspace</h2>
+        </div>
+        <span class="muted">Recorded detail and comparison</span>
+      </div>
+      <p>Use recorded evidence to verify a finding, compare runs, inspect saliency, or replay an interaction.</p>
+      <nav class="evidence-nav" aria-label="Evidence sections">
+        <a href="#comparison-overview" aria-controls="comparison-overview">Comparison table</a>
+        {% if focused_acceptance %}
+        <a href="#focused-acceptance" aria-controls="focused-acceptance">Saliency gate</a>
+        {% endif %}
+        {% if provider_comparisons %}
+        <a href="#provider-comparison-section" aria-controls="provider-comparison-section">Provider methods</a>
+        {% endif %}
+        <a href="#playback-workspace" aria-controls="playback-workspace">Replay workspace</a>
+        <a href="#report-limitations" aria-controls="report-limitations">Limitations</a>
+      </nav>
+    </section>
+
+    <section id="comparison-overview" class="section evidence-panel overview-section" aria-labelledby="overview-title" aria-describedby="evidence-workspace-title">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Experiment</p>
@@ -120,7 +507,7 @@
     </section>
 
     {% if focused_acceptance %}
-    <section class="section focused-acceptance" aria-labelledby="focused-acceptance-title">
+    <section id="focused-acceptance" class="section evidence-panel focused-acceptance" aria-labelledby="focused-acceptance-title" aria-describedby="evidence-workspace-title">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Focused saliency validation</p>
@@ -186,7 +573,7 @@
         .comparison-cell-heading { align-items: flex-start; flex-direction: column; }
       }
     </style>
-    <section class="section provider-comparison-section" aria-labelledby="provider-comparison-title">
+    <section id="provider-comparison-section" class="section evidence-panel provider-comparison-section" aria-labelledby="provider-comparison-title" aria-describedby="evidence-workspace-title">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Methods</p>
@@ -202,7 +589,7 @@
     </section>
     {% endif %}
 
-    <section class="section workspace-shell" id="playback-workspace" aria-labelledby="workspace-title">
+    <section class="section evidence-panel workspace-shell" id="playback-workspace" aria-labelledby="workspace-title" aria-describedby="evidence-workspace-title">
       <div class="workspace-heading">
         <div>
           <p class="eyebrow">Playback</p>
@@ -268,7 +655,7 @@
       </div>
     </section>
 
-    <details class="section limitations">
+    <details id="report-limitations" class="section evidence-panel limitations">
       <summary>Trust boundaries and limitations</summary>
       <ul>
       {% for limitation in limitations %}
@@ -280,6 +667,27 @@
   </main>
 
   <script type="application/json" id="report-data">{{ report_json | safe }}</script>
-  <script>{{ javascript | safe }}</script>
+  <script>
+  {% if compact_index %}
+  (function () {
+    document.querySelectorAll(".evidence-ref").forEach(function (control) {
+      control.addEventListener("click", function () {
+        var target = {};
+        try { target = JSON.parse(control.dataset.evidenceTarget || "{}"); }
+        catch (_error) { return; }
+        if (!target.run_page) return;
+        var hash = new URLSearchParams();
+        if (target.run_id) hash.set("run", target.run_id);
+        if (target.event_id) hash.set("event", target.event_id);
+        else if (target.sequence !== undefined) hash.set("event", "event-" + target.sequence);
+        if (target.element_id) hash.set("element", target.element_id);
+        window.location.href = target.run_page + "#" + hash.toString();
+      });
+    });
+  }());
+  {% else %}
+  {{ javascript | safe }}
+  {% endif %}
+  </script>
 </body>
 </html>

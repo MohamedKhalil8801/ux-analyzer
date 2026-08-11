@@ -12,6 +12,7 @@
     viewportId: "",
     elementId: "",
     saliencyKey: "",
+    evidenceId: "",
     comparisonKey: "",
     comparisonDuration: "1s",
     playing: false,
@@ -230,6 +231,7 @@
     params.set("run", run.run_id);
     if (event && event.event_id) params.set("event", event.event_id);
     if (state.elementId) params.set("element", state.elementId);
+    if (state.evidenceId) params.set("evidence", state.evidenceId);
     window.history.replaceState(null, "", "#" + params.toString());
   }
 
@@ -259,6 +261,7 @@
     state.eventIndex = 0;
     state.viewportId = "";
     state.elementId = "";
+    state.evidenceId = "";
     renderRunOptions();
     renderWorkspace();
     if (scrollWorkspace) {
@@ -283,6 +286,151 @@
 
   function findSnapshot(run, viewportId) {
     return run && (run.snapshots || []).find(function (snapshot) { return snapshot.id === viewportId; }) || null;
+  }
+
+  function eventIndexForEvidence(run, target) {
+    if (!run) return 0;
+    var events = run.timeline || [];
+    if (target.sequence !== undefined && target.sequence !== null) {
+      var bySequence = events.findIndex(function (record) {
+        return Number(record.sequence) === Number(target.sequence);
+      });
+      if (bySequence >= 0) return bySequence;
+    }
+    if (target.event_id) {
+      var byId = events.findIndex(function (record) {
+        return record.event_id === target.event_id;
+      });
+      if (byId >= 0) return byId;
+    }
+    if (target.viewport_id) {
+      var byViewport = events.findIndex(function (record) {
+        return record.viewport_id === target.viewport_id ||
+          (record.snapshot && record.snapshot.id === target.viewport_id) ||
+          (record.observation && record.observation.viewport_id === target.viewport_id);
+      });
+      if (byViewport >= 0) return byViewport;
+    }
+    if (target.namespace) {
+      var group = (run.saliency || []).find(function (item) {
+        return item.artifact_namespace === target.namespace || item.viewport_id === target.namespace;
+      });
+      if (group) {
+        var sourceEvent = (group.source_event_ids || [])[0];
+        if (sourceEvent) {
+          var sourceIndex = events.findIndex(function (record) {
+            return record.event_id === sourceEvent;
+          });
+          if (sourceIndex >= 0) return sourceIndex;
+        }
+      }
+    }
+    return 0;
+  }
+
+  function evidenceControl(evidenceId) {
+    var controls = document.querySelectorAll(".evidence-ref");
+    for (var index = 0; index < controls.length; index += 1) {
+      if (controls[index].dataset.evidenceId === evidenceId) return controls[index];
+    }
+    return null;
+  }
+
+  function resolveEvidence(ref) {
+    if (typeof ref === "string") {
+      var control = evidenceControl(ref);
+      if (!control) return { evidenceId: ref, target: {} };
+      var controlTarget = {};
+      try { controlTarget = JSON.parse(control.dataset.evidenceTarget || "{}"); }
+      catch (_error) { controlTarget = {}; }
+      return { evidenceId: ref, target: controlTarget };
+    }
+    if (!ref || typeof ref !== "object") return { evidenceId: "", target: {} };
+    if (ref.target) {
+      return {
+        evidenceId: ref.evidence_id || ref.evidenceId || "",
+        target: ref.target
+      };
+    }
+    return {
+      evidenceId: ref.evidence_id || ref.evidenceId || "",
+      target: ref
+    };
+  }
+
+  function evidenceHash(run, target, evidenceId) {
+    var params = new URLSearchParams();
+    if (run && run.run_id) params.set("run", run.run_id);
+    if (target.event_id) params.set("event", target.event_id);
+    else if (target.sequence !== undefined && target.sequence !== null) {
+      params.set("event", "event-" + target.sequence);
+    }
+    if (target.element_id) params.set("element", target.element_id);
+    if (evidenceId) params.set("evidence", evidenceId);
+    return "#" + params.toString();
+  }
+
+  function normalizeEvidenceTarget(run, target, evidenceId) {
+    var normalized = Object.assign({}, target || {});
+    if (normalized.kind !== "heatmap" && normalized.kind !== "native-map" && normalized.kind !== "saliency-metadata") {
+      return normalized;
+    }
+    var evidenceParts = String(evidenceId || "").split(":");
+    if (!normalized.duration && evidenceParts.length >= 4 && evidenceParts[0] === "heatmap") {
+      normalized.duration = evidenceParts[evidenceParts.length - 1];
+    }
+    var group = (run && run.saliency || []).find(function (item) {
+      return item.viewport_id === normalized.viewport_id ||
+        item.artifact_namespace === normalized.namespace;
+    });
+    if (group && (!normalized.namespace || normalized.namespace === normalized.viewport_id)) {
+      normalized.namespace = group.artifact_namespace || group.viewport_id;
+    }
+    return normalized;
+  }
+
+  function openEvidence(ref) {
+    var resolved = resolveEvidence(ref);
+    var evidenceId = resolved.evidenceId;
+    var target = resolved.target || {};
+    if (!evidenceId && target.evidence_id) evidenceId = target.evidence_id;
+    var runId = target.run_id || target.runId;
+    var run = runs.find(function (item) { return item.run_id === runId; });
+    if (!run) return false;
+    target = normalizeEvidenceTarget(run, target, evidenceId);
+
+    state.evidenceId = evidenceId;
+    state.runId = run.run_id;
+    state.scenarioId = run.scenario_id;
+    state.eventIndex = eventIndexForEvidence(run, target);
+    state.viewportId = "";
+    state.elementId = "";
+    if (target.namespace && target.duration) {
+      state.saliencyKey = target.namespace + ":" + target.duration;
+    }
+    renderRunOptions();
+
+    if (run.run_page && !(run.timeline || []).length) {
+      window.location.href = run.run_page + evidenceHash(run, target, evidenceId);
+      return true;
+    }
+
+    setEventIndex(state.eventIndex, false);
+    var snapshot = snapshotAt(run, state.eventIndex);
+    if (target.viewport_id && snapshot && snapshot.id !== target.viewport_id) {
+      var viewportIndex = eventIndexForEvidence(run, { viewport_id: target.viewport_id });
+      setEventIndex(viewportIndex, false);
+      snapshot = snapshotAt(run, state.eventIndex);
+    }
+    if (target.element_id && snapshot && findElement(snapshot, target.element_id)) {
+      state.viewportId = snapshot.id;
+      state.elementId = target.element_id;
+      renderWorkspace();
+    }
+    var workspace = document.getElementById("playback-workspace");
+    if (workspace) workspace.scrollIntoView({ block: "start" });
+    updateHash(run, currentEvent(run));
+    return true;
   }
 
   function snapshotAt(run, eventIndex) {
@@ -954,6 +1102,7 @@
     var runId = params.get("run");
     var eventId = params.get("event");
     var elementId = params.get("element");
+    var evidenceId = params.get("evidence");
     if (runId && runs.some(function (run) { return run.run_id === runId; })) {
       state.runId = runId;
       var selectedRun = currentRun();
@@ -965,6 +1114,7 @@
       if (index >= 0) state.eventIndex = index;
     }
     if (elementId) state.elementId = elementId;
+    if (evidenceId) state.evidenceId = evidenceId;
   }
 
   fillScenarioOptions();
@@ -972,6 +1122,11 @@
   applyHash();
   renderRunOptions();
   renderWorkspace();
+  window.openEvidence = openEvidence;
+  var initialEvidenceId = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("evidence");
+  if (initialEvidenceId) {
+    window.setTimeout(function () { openEvidence(initialEvidenceId); }, 0);
+  }
 
   scenarioSelect.addEventListener("change", function () {
     state.scenarioId = scenarioSelect.value;
@@ -1004,8 +1159,16 @@
       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
     });
   });
+  document.querySelectorAll(".evidence-ref").forEach(function (control) {
+    control.addEventListener("click", function () { openEvidence(control.dataset.evidenceId); });
+  });
   window.addEventListener("hashchange", function () {
     setPlaying(false);
+    var evidenceId = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("evidence");
+    if (evidenceId) {
+      openEvidence(evidenceId);
+      return;
+    }
     applyHash();
     renderRunOptions();
     renderWorkspace();

@@ -430,6 +430,17 @@ async def test_production_cli_report_is_interactive_and_causal(
         await context.route("**/*", block_external)
         page = await context.new_page()
         await page.goto(report_path.resolve().as_uri())
+        assert await page.locator("#analysis-summary").is_visible()
+        assert await page.locator("#priority-findings").is_visible()
+        assert await page.locator("#fix-first").is_visible()
+        assert await page.locator("#evidence-workspace").is_visible()
+        assert await page.locator("#analysis-summary").evaluate(
+            "node => node.compareDocumentPosition(document.querySelector('#comparison-table')) & Node.DOCUMENT_POSITION_FOLLOWING"
+        )
+        assert "Recorded findings are shown" in (
+            await page.locator("#analysis-summary").text_content() or ""
+        )
+        assert await page.locator("#priority-findings .finding").count() >= 1
         await page.locator(f'tr[data-run-id="{persisted["run_id"]}"]').click()
         await page.locator('[data-event-kind="prominence-recorded"]').first.click()
         selected = page.locator(f'[data-element-id="{element_id}"]').first
@@ -457,6 +468,13 @@ async def test_production_cli_report_is_interactive_and_causal(
         assert '"selector"' not in report_payload
         assert '"execution_reference"' not in report_payload
         assert "ci-api-key" not in report_payload
+        await page.set_viewport_size({"width": 390, "height": 844})
+        dimensions = await page.evaluate(
+            "({scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth})"
+        )
+        assert dimensions["scrollWidth"] <= dimensions["innerWidth"]
+        assert await page.locator("#analysis-summary").is_visible()
+        assert await page.locator("#priority-findings").is_visible()
         await browser.close()
 
     assert not external_requests

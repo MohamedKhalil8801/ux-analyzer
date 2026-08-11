@@ -12,7 +12,15 @@ from PIL import Image
 from playwright.async_api import Route, async_playwright
 
 import ux_analyzer.reporting.renderer as renderer
+from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntry
+from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.run import RunStarted
+from ux_analyzer.domain.synthesis import (
+    EvidenceRef,
+    SynthesisAttempt,
+    SynthesisFinding,
+    SynthesisStatus,
+)
 from ux_analyzer.ports.artifacts import (
     BundleManifest,
     RedactionPolicy,
@@ -21,11 +29,137 @@ from ux_analyzer.ports.artifacts import (
 )
 from ux_analyzer.reporting.renderer import render_experiment_report
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
+from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
 
 
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _synthesis_expectation_digest() -> str:
+    return hashlib.sha256(b"[]").hexdigest()
+
+
+def _synthesis_ref(
+    kind: str,
+    run_id: str = "run-1",
+    *,
+    sequence: int = 7,
+    viewport_id: str | None = "viewport-1",
+    element_id: str | None = None,
+    metric_id: str | None = None,
+) -> EvidenceRef:
+    evidence_id = f"{kind}:{run_id}:"
+    if kind in {"event", "replay"}:
+        evidence_id += str(sequence)
+        return EvidenceRef(
+            evidence_id,
+            kind,
+            run_id,
+            viewport_id=viewport_id,
+            event_id=f"event-{sequence}",
+            replay_sequence=sequence,
+        )
+    if kind == "viewport":
+        return EvidenceRef(
+            f"viewport:{run_id}:{viewport_id}",
+            kind,
+            run_id,
+            viewport_id=viewport_id,
+        )
+    if kind == "element":
+        return EvidenceRef(
+            f"element:{run_id}:{viewport_id}:{element_id}",
+            kind,
+            run_id,
+            viewport_id=viewport_id,
+            element_id=element_id,
+        )
+    if kind == "metric":
+        return EvidenceRef(
+            f"metric:{run_id}:{metric_id}",
+            kind,
+            run_id,
+            metric_id=metric_id,
+        )
+    if kind == "heatmap":
+        return EvidenceRef(
+            f"heatmap:{run_id}:{viewport_id}:3s",
+            kind,
+            run_id,
+            viewport_id=viewport_id,
+        )
+    raise AssertionError(f"unsupported synthesis fixture reference: {kind}")
+
+
+def _synthesis_payload(ref: EvidenceRef) -> dict[str, object]:
+    payload: dict[str, object] = {"evidence_id": ref.evidence_id}
+    if ref.kind == "heatmap":
+        payload.update({"namespace": "inference-1", "duration": "3s"})
+    return payload
+
+
+def _write_synthesis(
+    root: Path,
+    *,
+    status: SynthesisStatus = SynthesisStatus.ACCEPTED,
+    corpus_refs: tuple[EvidenceRef, ...] | None = None,
+    finding_refs: tuple[EvidenceRef, ...] = (),
+    finding_title: str = "Accepted synthesis finding",
+    sequence: int = 1,
+    run_id: str = "run-1",
+    findings: tuple[SynthesisFinding, ...] | None = None,
+) -> None:
+    finding_values = findings
+    if finding_values is None:
+        finding_values = ()
+        if finding_refs:
+            finding_values = (
+                SynthesisFinding(
+                    finding_id="synthesis-finding",
+                    title=finding_title,
+                    issue="The tested task takes extra navigation.",
+                    impact="The tested task takes longer to complete.",
+                    root_cause="The task entry point is hard to identify.",
+                    fixes=("Label the entry point around the user's task.",),
+                    severity="high",
+                    confidence=0.9,
+                    evidence_refs=finding_refs,
+                    reviewer_state="accepted",
+                    severity_justification="The recorded action sequence shows extra navigation.",
+                ),
+            )
+    refs = (
+        corpus_refs
+        or finding_refs
+        or tuple(ref for finding in finding_values for ref in finding.evidence_refs)
+    )
+    entries = tuple(
+        EvidenceEntry(
+            ref=ref,
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"Recorded {ref.evidence_id}.",
+            payload=_synthesis_payload(ref),
+        )
+        for ref in refs
+    )
+    corpus = EvidenceCorpus(output_root=root, entries=entries)
+    created_at = "2026-08-10T12:00:00+00:00"
+    attempt = SynthesisAttempt(
+        attempt_id=f"20260810T120000Z-{corpus.digest[:12]}-{sequence}",
+        status=status,
+        corpus_digest=corpus.digest,
+        expectation_digest=_synthesis_expectation_digest(),
+        principle_pack_digest=corpus.principle_pack_digest,
+        prompt_version="report-synthesis-orchestrator-v1",
+        schema_version="synthesis-v1",
+        candidate_findings=finding_values,
+        findings=finding_values,
+        limitations=("Fixture synthesis evidence only.",),
+        created_at=created_at,
+    )
+    SynthesisArtifactStore(root).write_attempt(attempt, corpus)
 
 
 def _write_checksums(run: Path) -> None:
@@ -577,6 +711,462 @@ def _write_run(
     _write_checksums(run)
 
 
+def test_renderer_loads_accepted_synthesis_and_maps_safe_evidence_targets(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    refs = (
+        _synthesis_ref("event"),
+        _synthesis_ref("replay"),
+        _synthesis_ref("viewport"),
+        _synthesis_ref("element", element_id="target"),
+        _synthesis_ref("metric", viewport_id=None, metric_id="discovery-cost"),
+    )
+    _write_synthesis(tmp_path, finding_refs=refs)
+
+    context = renderer._report_context(renderer._load_experiment(tmp_path))
+    synthesis = context["synthesis"]
+
+    assert synthesis["synthesis_status"] == "accepted"
+    assert synthesis["using_fallback"] is False
+    assert synthesis["findings"][0]["title"] == "Accepted synthesis finding"
+    targets = synthesis["findings"][0]["evidence_targets"]
+    assert {target["kind"] for target in targets} == {
+        "event",
+        "replay",
+        "viewport",
+        "element",
+        "metric",
+    }
+    assert (
+        next(target for target in targets if target["kind"] == "event")["sequence"] == 7
+    )
+    assert (
+        next(target for target in targets if target["kind"] == "element")["element_id"]
+        == "target"
+    )
+    assert "artifact_path" not in json.dumps(synthesis)
+    assert "attachment_path" not in json.dumps(synthesis)
+
+
+@pytest.mark.parametrize("attempt_status", [None, SynthesisStatus.UNAVAILABLE])
+def test_renderer_missing_or_unavailable_synthesis_uses_deterministic_fallback(
+    tmp_path: Path,
+    attempt_status: SynthesisStatus | None,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    if attempt_status is not None:
+        _write_synthesis(tmp_path, status=attempt_status)
+
+    context = renderer._report_context(renderer._load_experiment(tmp_path))
+    synthesis = context["synthesis"]
+
+    assert synthesis["synthesis_status"] == (
+        "missing" if attempt_status is None else "unavailable"
+    )
+    assert synthesis["using_fallback"] is True
+    finding = next(
+        finding
+        for finding in synthesis["findings"]
+        if finding["finding_id"] == "run-1:weak-scent"
+    )
+    assert finding["evidence_refs"] == [
+        {
+            "evidence_id": "run-1:discovery-cost",
+            "available": True,
+            "target": {
+                "kind": "metric",
+                "run_id": "run-1",
+                "metric_id": "discovery-cost",
+            },
+        }
+    ]
+    assert finding["evidence_targets"] == [
+        {
+            "kind": "metric",
+            "run_id": "run-1",
+            "metric_id": "discovery-cost",
+        }
+    ]
+
+
+def test_renderer_split_fallback_preserves_scope_findings_and_limitations(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+
+    experiment = renderer._load_experiment(tmp_path)
+    index_context = renderer._report_context(
+        experiment,
+        include_run_payload=False,
+        run_links={"run-1": "report-runs/run-1.html"},
+    )
+    run_context = renderer._report_context(
+        experiment,
+        run_links={"run-1": "report-runs/run-1.html"},
+        run_scope=frozenset({"run-1"}),
+    )
+
+    assert index_context["synthesis"]["assessment"]
+    assert index_context["synthesis"]["tested_scope"] == {
+        "run_ids": ["run-1"],
+        "scenario_ids": ["invite"],
+        "version_ids": ["defective"],
+        "persona_ids": ["persona"],
+    }
+    assert index_context["synthesis"]["limitations"]
+    assert index_context["synthesis"]["findings"]
+    assert run_context["synthesis"]["findings"]
+
+
+def test_renderer_rejects_forged_synthesis_event_viewport(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    forged_ref = _synthesis_ref("event", viewport_id="forged-viewport")
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(forged_ref,),
+        finding_refs=(forged_ref,),
+        finding_title="Forged viewport finding must not render",
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Forged viewport finding must not render"
+        for finding in synthesis["findings"]
+    )
+
+
+def test_renderer_sorts_fallback_findings_by_severity() -> None:
+    runs = (
+        {
+            "run_id": "run-1",
+            "findings": [
+                {"finding_id": "low", "severity": "low"},
+                {"finding_id": "critical", "severity": "critical"},
+                {"finding_id": "medium", "severity": "medium"},
+                {"finding_id": "high", "severity": "high"},
+            ],
+        },
+    )
+
+    findings = renderer._deterministic_fallback_findings(runs)
+
+    assert [finding["finding_id"] for finding in findings] == [
+        "critical",
+        "high",
+        "medium",
+        "low",
+    ]
+
+
+def test_renderer_scopes_no_issues_copy_to_tested_scenarios(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path, status=SynthesisStatus.NO_ISSUES)
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "no-issues"
+    assert synthesis["using_fallback"] is False
+    assert synthesis["findings"] == []
+    assert synthesis["assessment"] == (
+        "No supported UX issues were established in the tested scenarios."
+    )
+    assert "issue-free" not in synthesis["assessment"]
+
+
+def test_renderer_rejects_forged_synthesis_evidence_references(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    valid_ref = _synthesis_ref("event")
+    forged_ref = _synthesis_ref("event", sequence=999)
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(valid_ref,),
+        finding_refs=(forged_ref,),
+        finding_title="Forged finding must not render",
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Forged finding must not render"
+        for finding in synthesis["findings"]
+    )
+
+
+def test_renderer_does_not_promote_rejected_attempt_findings(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.REJECTED,
+        corpus_refs=(_synthesis_ref("event"),),
+        finding_refs=(_synthesis_ref("event"),),
+        finding_title="Rejected attempt finding",
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "rejected"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Rejected attempt finding"
+        for finding in synthesis["findings"]
+    )
+
+
+def test_render_experiment_report_is_offline_and_does_not_call_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+
+    def fail_model_call(*args: object, **kwargs: object) -> None:
+        raise AssertionError("report rendering must not call a model")
+
+    monkeypatch.setattr(
+        renderer, "create_structured_model_client", fail_model_call, raising=False
+    )
+    monkeypatch.setattr(
+        renderer, "ReportSynthesisService", fail_model_call, raising=False
+    )
+
+    output = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    assert output.is_file()
+
+
+def test_renderer_split_index_keeps_accepted_findings_and_counts_synthesis_bytes(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run.active", version="defective", discovery_cost=8)
+    _write_run(tmp_path, "run_active", version="improved", discovery_cost=3)
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(_synthesis_ref("event", run_id="run.active"),),
+        finding_refs=(_synthesis_ref("event", run_id="run.active"),),
+    )
+
+    experiment = renderer._load_experiment(tmp_path)
+    without_artifact_bytes = {
+        key: value
+        for key, value in experiment.items()
+        if key != "_synthesis_artifact_bytes"
+    }
+    assert renderer._estimated_full_report_bytes(
+        experiment
+    ) > renderer._estimated_full_report_bytes(without_artifact_bytes)
+
+    output = render_experiment_report(
+        tmp_path,
+        tmp_path / "report.html",
+        max_single_file_bytes=100,
+    )
+    html = output.read_text(encoding="utf-8")
+    run_pages = tuple((tmp_path / "report-runs").glob("*.html"))
+
+    assert "Accepted synthesis finding" in html
+    assert len(run_pages) == 2
+    assert all(path.name in html for path in run_pages)
+
+
+def test_renderer_places_conclusions_before_comparison_and_orders_severity(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    findings = tuple(
+        SynthesisFinding(
+            finding_id=f"finding-{severity}",
+            title=title,
+            issue=f"Issue for {severity} priority.",
+            impact=f"Impact for {severity} priority.",
+            root_cause=f"Cause for {severity} priority.",
+            fixes=(f"Fix {severity} priority first.",),
+            severity=severity,
+            confidence=0.9,
+            evidence_refs=(ref,),
+            affected_surfaces=("Invite flow",),
+            principles=("mental-models",),
+            counterevidence=(),
+            limitations=("Fixture limitation.",),
+            reviewer_state="accepted",
+            severity_justification="Recorded event evidence supports this priority.",
+        )
+        for severity, title, ref in (
+            ("low", "Low priority finding", _synthesis_ref("event", sequence=6)),
+            (
+                "critical",
+                "Critical priority finding",
+                _synthesis_ref("event", sequence=8),
+            ),
+            ("high", "High priority finding", _synthesis_ref("event", sequence=7)),
+        )
+    )
+    _write_synthesis(tmp_path, findings=findings)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    section_positions = [
+        html.index('id="analysis-summary"'),
+        html.index('id="priority-findings"'),
+        html.index('id="fix-first"'),
+        html.index('id="evidence-workspace"'),
+        html.index('id="comparison-table"'),
+    ]
+    assert section_positions == sorted(section_positions)
+    priority_html = html[
+        html.index('id="priority-findings"') : html.index('id="fix-first"')
+    ]
+    assert priority_html.index("Critical priority finding") < priority_html.index(
+        "High priority finding"
+    )
+    assert priority_html.index("High priority finding") < priority_html.index(
+        "Low priority finding"
+    )
+    assert "Accepted findings" in html
+    assert "Tested scope" in html
+    assert "Evidence review complete" in html
+    assert html.count("Verify evidence") == 3
+    assert "Affected surfaces" in html
+    assert "mental-models" in html
+
+
+def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="improved", discovery_cost=3)
+    _write_synthesis(tmp_path, status=SynthesisStatus.NO_ISSUES)
+
+    no_issue_html = render_experiment_report(
+        tmp_path, tmp_path / "no-issues.html"
+    ).read_text(encoding="utf-8")
+
+    assert "No supported UX issues were established in the tested scenarios." in (
+        no_issue_html
+    )
+    assert "Accepted findings" in no_issue_html
+    assert 'data-synthesis-status="no-issues"' in no_issue_html
+
+    fallback_root = tmp_path / "fallback"
+    _write_run(fallback_root, "run-1", version="defective", discovery_cost=8)
+    fallback_html = render_experiment_report(
+        fallback_root, fallback_root / "report.html"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "Recorded findings are shown while the complete evidence review is unavailable."
+        in (fallback_html)
+    )
+    assert 'data-synthesis-status="missing"' in fallback_html
+    assert "Target wording gives weak goal cues" in fallback_html
+    assert "1 recorded" in fallback_html
+    assert "Unavailable: synthesis principles were not recorded." in fallback_html
+    assert "Unavailable: counterevidence was not recorded." in fallback_html
+    assert 'data-evidence-target="{&#34;kind&#34;: &#34;metric&#34;' in fallback_html
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_browser_opens_finding_evidence_and_wraps_on_mobile(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-1",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-1")
+    _write_synthesis(
+        tmp_path,
+        finding_refs=(_synthesis_ref("event"), _synthesis_ref("heatmap")),
+    )
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page(viewport={"width": 1440, "height": 900})
+        await page.goto(report_path.resolve().as_uri())
+        await page.screenshot(path=str(tmp_path / "report-desktop.png"))
+        await page.screenshot(path=str(tmp_path / "report-full.png"), full_page=True)
+
+        verify = page.locator("summary", has_text="Verify evidence").first
+        await verify.focus()
+        await verify.press("Enter")
+        assert await page.locator(".finding-verification[open]").count() == 1
+
+        event_ref = page.locator('[data-evidence-id="event:run-1:7"]')
+        await event_ref.click()
+        assert "Event 7 /" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+
+        heatmap_ref = page.locator('[data-evidence-id="heatmap:run-1:viewport-1:3s"]')
+        await heatmap_ref.click()
+        assert "run=run-1" in page.url
+        assert "evidence=heatmap%3Arun-1%3Aviewport-1%3A3s" in page.url
+        assert (
+            await page.locator('#saliency-tabs [aria-selected="true"]').text_content()
+            == "3s"
+        )
+        await page.screenshot(path=str(tmp_path / "report-evidence.png"))
+
+        await page.set_viewport_size({"width": 360, "height": 800})
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.screenshot(path=str(tmp_path / "report-mobile.png"))
+        dimensions = await page.evaluate(
+            "({scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth})"
+        )
+        assert dimensions["scrollWidth"] <= dimensions["innerWidth"]
+        assert await heatmap_ref.evaluate(
+            "node => node.getBoundingClientRect().right <= window.innerWidth"
+        )
+        await page.set_viewport_size({"width": 390, "height": 844})
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.screenshot(path=str(tmp_path / "report-mobile-390.png"))
+        await browser.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_split_index_evidence_button_opens_run_page(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run.active", version="defective", discovery_cost=8)
+    _write_run(tmp_path, "run_active", version="improved", discovery_cost=3)
+    _write_synthesis(
+        tmp_path,
+        finding_refs=(_synthesis_ref("event", run_id="run.active"),),
+    )
+    report_path = render_experiment_report(
+        tmp_path, tmp_path / "report.html", max_single_file_bytes=100
+    )
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri())
+        await page.locator("summary", has_text="Verify evidence").first.click()
+        await page.locator('[data-evidence-id="event:run.active:7"]').click()
+        assert "report-runs" in page.url
+        assert "run.active" in page.url or "run.active-" in page.url
+        await browser.close()
+
+
 def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) -> None:
     _write_run(
         tmp_path,
@@ -722,9 +1312,7 @@ def test_renderer_pairs_provider_heatmaps_and_recorded_action_paths(
     comparisons = experiment["provider_comparisons"]
 
     assert len(comparisons) == 1
-    providers = {
-        item["provider_id"]: item for item in comparisons[0]["providers"]
-    }
+    providers = {item["provider_id"]: item for item in comparisons[0]["providers"]}
     assert set(providers) == {"heuristic", "foveacast"}
     assert providers["foveacast"]["heatmaps"][0]["heatmap"].startswith(
         "data:image/png;base64,"
