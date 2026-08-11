@@ -33,22 +33,27 @@ from ux_analyzer.domain.synthesis import (
     SynthesisStatus,
 )
 from ux_analyzer.ports.models import (
+    ModelCallRecord,
     ModelManifest,
     ModelResponseValidationError,
     ModelRole,
 )
-from ux_analyzer.providers.report_synthesis import (
+from ux_analyzer.ports.report_synthesis import (
     AdjudicationResponse,
     AnalystResponse,
     CandidateFinding,
     EvidenceAuditResponse,
     ObjectionResolution,
     PatternReviewResponse,
+    ReportAdjudicatorPort,
+    ReportAnalystPort,
+    ReportEvidenceAuditorPort,
+    ReportPatternReviewerPort,
     TypedObjection,
+    UxPrinciple,
     contains_forbidden_narrative,
     redact_forbidden_narrative,
 )
-from ux_analyzer.providers.ux_principles import UxPrinciple, ux_principles
 
 REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION = "synthesis-v1"
 REPORT_SYNTHESIS_PROMPT_VERSION = "report-synthesis-orchestrator-v1"
@@ -104,6 +109,14 @@ _SEVERITY_ORDER = {
     "high": 1,
     "medium": 2,
     "low": 3,
+}
+_REVIEWER_ROLE_ALIASES = {
+    "report-evidence-auditor": ModelRole.REPORT_EVIDENCE_AUDITOR,
+    "evidence-auditor": ModelRole.REPORT_EVIDENCE_AUDITOR,
+    "report-pattern-reviewer": ModelRole.REPORT_PATTERN_REVIEWER,
+    "pattern-reviewer": ModelRole.REPORT_PATTERN_REVIEWER,
+    "report-analyst": ModelRole.REPORT_ANALYST,
+    "ux-analyst": ModelRole.REPORT_ANALYST,
 }
 
 _Response = (
@@ -278,10 +291,10 @@ class ReportSynthesisService:
 
     def __init__(
         self,
-        analyst: object | None = None,
-        evidence_auditor: object | None = None,
-        pattern_reviewer: object | None = None,
-        adjudicator: object | None = None,
+        analyst: ReportAnalystPort | None = None,
+        evidence_auditor: ReportEvidenceAuditorPort | None = None,
+        pattern_reviewer: ReportPatternReviewerPort | None = None,
+        adjudicator: ReportAdjudicatorPort | None = None,
         *,
         roles: Mapping[object, object] | None = None,
         resolver: EvidenceResolver | None = None,
@@ -291,6 +304,7 @@ class ReportSynthesisService:
         max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES,
         max_adjudication_revisions: int = 1,
         max_final_verifications: int = 1,
+        model_record_source: object | None = None,
         clock: Callable[[], str] | None = None,
     ) -> None:
         supplied_roles = _provider_roles(roles or {})
@@ -304,28 +318,24 @@ class ReportSynthesisService:
         self.adjudicator = adjudicator or supplied_roles.get(
             ModelRole.REPORT_ADJUDICATOR
         )
-        if type(max_retrieval_rounds) is not int or not 1 <= max_retrieval_rounds <= 3:
-            raise ValueError("max_retrieval_rounds must be between 1 and 3")
+        if type(max_retrieval_rounds) is not int or not 1 <= max_retrieval_rounds <= 5:
+            raise ValueError("max_retrieval_rounds must be between 1 and 5")
         if type(max_retrieval_entries) is not int or max_retrieval_entries <= 0:
             raise ValueError("max_retrieval_entries must be greater than zero")
         if type(max_attachment_bytes) is not int or max_attachment_bytes <= 0:
             raise ValueError("max_attachment_bytes must be greater than zero")
         if (
             type(max_adjudication_revisions) is not int
-            or not 0 <= max_adjudication_revisions <= 1
+            or not 0 <= max_adjudication_revisions <= 2
         ):
-            raise ValueError("max_adjudication_revisions must be between 0 and 1")
+            raise ValueError("max_adjudication_revisions must be between 0 and 2")
         if (
             type(max_final_verifications) is not int
-            or not 1 <= max_final_verifications <= 1
+            or not 1 <= max_final_verifications <= 2
         ):
-            raise ValueError("max_final_verifications must be one")
+            raise ValueError("max_final_verifications must be between 1 and 2")
         self.resolver = resolver or EvidenceResolver()
-        raw_principles: Sequence[object] = (
-            cast(Sequence[object], principles)
-            if principles is not None
-            else cast(Sequence[object], ux_principles())
-        )
+        raw_principles: Sequence[object] = cast(Sequence[object], principles or ())
         if any(not isinstance(item, UxPrinciple) for item in raw_principles):
             raise TypeError("principles must contain UxPrinciple values")
         self.principles = tuple(cast(Sequence[UxPrinciple], raw_principles))
@@ -334,6 +344,7 @@ class ReportSynthesisService:
         self.max_attachment_bytes = max_attachment_bytes
         self.max_adjudication_revisions = max_adjudication_revisions
         self.max_final_verifications = max_final_verifications
+        self._model_record_source = model_record_source
         self._clock = clock
         self._sequence = 0
 
@@ -375,7 +386,11 @@ class ReportSynthesisService:
                 corpus,
                 attempt_id=attempt_id,
                 created_at=created_at,
-                status=SynthesisStatus.UNAVAILABLE,
+                status=(
+                    SynthesisStatus.UNAVAILABLE
+                    if analyst_run.unavailable
+                    else SynthesisStatus.REJECTED
+                ),
                 limitations=limitations
                 + [
                     analyst_run.limitation
@@ -436,7 +451,11 @@ class ReportSynthesisService:
                 corpus,
                 attempt_id=attempt_id,
                 created_at=created_at,
-                status=SynthesisStatus.UNAVAILABLE,
+                status=(
+                    SynthesisStatus.UNAVAILABLE
+                    if auditor_run.unavailable
+                    else SynthesisStatus.REJECTED
+                ),
                 limitations=limitations
                 + [
                     auditor_run.limitation
@@ -445,6 +464,10 @@ class ReportSynthesisService:
                 retrieval_log=retrieval_log,
                 role_manifest=role_manifest,
                 candidate_findings=tuple(candidate_findings),
+                rejected_findings=self._not_established(
+                    candidate_findings,
+                    "Evidence auditor output was not trustworthy.",
+                ),
             )
 
         pattern_run = await self._run_role(
@@ -460,7 +483,11 @@ class ReportSynthesisService:
                 corpus,
                 attempt_id=attempt_id,
                 created_at=created_at,
-                status=SynthesisStatus.UNAVAILABLE,
+                status=(
+                    SynthesisStatus.UNAVAILABLE
+                    if pattern_run.unavailable
+                    else SynthesisStatus.REJECTED
+                ),
                 limitations=limitations
                 + [
                     pattern_run.limitation
@@ -469,6 +496,10 @@ class ReportSynthesisService:
                 retrieval_log=retrieval_log,
                 role_manifest=role_manifest,
                 candidate_findings=tuple(candidate_findings),
+                rejected_findings=self._not_established(
+                    candidate_findings,
+                    "Pattern reviewer output was not trustworthy.",
+                ),
             )
 
         try:
@@ -521,7 +552,11 @@ class ReportSynthesisService:
                 corpus,
                 attempt_id=attempt_id,
                 created_at=created_at,
-                status=SynthesisStatus.UNAVAILABLE,
+                status=(
+                    SynthesisStatus.UNAVAILABLE
+                    if adjudication_run.unavailable
+                    else SynthesisStatus.REJECTED
+                ),
                 limitations=limitations
                 + [
                     adjudication_run.limitation
@@ -531,16 +566,40 @@ class ReportSynthesisService:
                 role_manifest=role_manifest,
                 candidate_findings=tuple(candidate_findings),
                 objections=objections,
+                rejected_findings=self._not_established(
+                    candidate_findings,
+                    "Adjudicator output was not trustworthy.",
+                ),
             )
 
         adjudication_response = cast(AdjudicationResponse, adjudication_run.response)
         final_models = tuple(adjudication_response.final_findings)
-        resolved_objections = self._apply_resolutions(
-            corpus,
-            objections,
-            adjudication_response.objection_resolutions,
-            limitations,
-        )
+        try:
+            resolved_objections = self._apply_resolutions(
+                corpus,
+                objections,
+                adjudication_response.objection_resolutions,
+                limitations,
+            )
+        except (TypeError, ValueError) as error:
+            limitations.append(
+                f"Resolution validation failed: {self._safe_validation_reason(error)}."
+            )
+            return self._attempt(
+                corpus,
+                attempt_id=attempt_id,
+                created_at=created_at,
+                status=SynthesisStatus.REJECTED,
+                limitations=limitations,
+                retrieval_log=retrieval_log,
+                role_manifest=role_manifest,
+                candidate_findings=tuple(candidate_findings),
+                objections=objections,
+                rejected_findings=self._not_established(
+                    candidate_findings,
+                    "Resolution validation rejected the adjudication output.",
+                ),
+            )
         accepted, rejected, final_limitations = self._validated_final_findings(
             corpus,
             final_models,
@@ -574,19 +633,32 @@ class ReportSynthesisService:
                 adjudication_response = cast(
                     AdjudicationResponse, revision_run.response
                 )
-                resolved_objections = self._apply_resolutions(
-                    corpus,
-                    resolved_objections,
-                    adjudication_response.objection_resolutions,
-                    limitations,
-                )
-                accepted, rejected, final_limitations = self._validated_final_findings(
-                    corpus,
-                    tuple(adjudication_response.final_findings),
-                    candidate_findings,
-                    resolved_objections,
-                )
-                limitations.extend(final_limitations)
+                try:
+                    resolved_objections = self._apply_resolutions(
+                        corpus,
+                        resolved_objections,
+                        adjudication_response.objection_resolutions,
+                        limitations,
+                    )
+                except (TypeError, ValueError) as error:
+                    limitations.append(
+                        f"Resolution validation failed during adjudication repair: {self._safe_validation_reason(error)}."
+                    )
+                    accepted = []
+                    rejected = self._not_established(
+                        candidate_findings,
+                        "Resolution validation rejected the adjudication repair.",
+                    )
+                else:
+                    accepted, rejected, final_limitations = (
+                        self._validated_final_findings(
+                            corpus,
+                            tuple(adjudication_response.final_findings),
+                            candidate_findings,
+                            resolved_objections,
+                        )
+                    )
+                    limitations.extend(final_limitations)
 
         accepted, rejected, verification_limitations = self._final_verification(
             corpus,
@@ -734,7 +806,7 @@ class ReportSynthesisService:
                     limitation=(
                         "Synthesis model transport or configuration failed."
                         if operational
-                        else "A synthesis role returned no usable structured output."
+                        else "A synthesis role returned invalid structured output."
                     ),
                 )
 
@@ -998,8 +1070,16 @@ class ReportSynthesisService:
                     max_entries=self.max_retrieval_entries,
                     max_attachment_bytes=self.max_attachment_bytes,
                 )
-            if not domain.reviewer_role:
-                domain = replace(domain, reviewer_role=role.value)
+            reviewer_role = domain.reviewer_role.strip().casefold()
+            if not reviewer_role:
+                canonical_role = role
+            else:
+                canonical_role = _REVIEWER_ROLE_ALIASES.get(reviewer_role)
+                if canonical_role is None:
+                    raise ValueError("reviewer role is not a canonical report role")
+                if canonical_role is not role:
+                    raise ValueError("reviewer role does not match the reviewing role")
+            domain = replace(domain, reviewer_role=canonical_role.value)
             objections.append(domain)
         return tuple(objections)
 
@@ -1023,7 +1103,23 @@ class ReportSynthesisService:
         resolutions: Sequence[ObjectionResolution],
         limitations: list[str],
     ) -> tuple[SynthesisObjection, ...]:
-        by_id = {item.objection_id: item for item in resolutions}
+        objections_by_id = {item.objection_id: item for item in objections}
+        by_id: dict[str, ObjectionResolution] = {}
+        for resolution in resolutions:
+            if resolution.objection_id in by_id:
+                raise ValueError(
+                    f"resolution {resolution.objection_id} was provided more than once"
+                )
+            objection = objections_by_id.get(resolution.objection_id)
+            if objection is None:
+                raise ValueError(
+                    f"resolution {resolution.objection_id} references an unknown objection"
+                )
+            if resolution.finding_id != objection.finding_id:
+                raise ValueError(
+                    f"resolution {resolution.objection_id} finding ID does not match objection"
+                )
+            by_id[resolution.objection_id] = resolution
         result: list[SynthesisObjection] = []
         for objection in objections:
             resolution = by_id.get(objection.objection_id)
@@ -1251,6 +1347,35 @@ class ReportSynthesisService:
             "No frozen expectation matched the tested scope; synthesis is limited to observed outcomes and interactions."
         ]
 
+    def _usage(self) -> Mapping[str, float]:
+        source = self._model_record_source
+        if source is None:
+            return {"role_calls": 0.0, "usage_available": 0.0}
+        try:
+            raw_records = getattr(source, "records")
+            records = tuple(raw_records)
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return {"role_calls": 0.0, "usage_available": 0.0}
+        if not records or any(
+            not isinstance(item, ModelCallRecord) for item in records
+        ):
+            return {"role_calls": 0.0, "usage_available": 0.0}
+        return {
+            "role_calls": float(len(records)),
+            "model_attempts": float(sum(item.attempts for item in records)),
+            "prompt_tokens": float(
+                sum(item.token_usage.prompt_tokens for item in records)
+            ),
+            "completion_tokens": float(
+                sum(item.token_usage.completion_tokens for item in records)
+            ),
+            "total_tokens": float(
+                sum(item.token_usage.total_tokens for item in records)
+            ),
+            "latency_ms": float(sum(item.latency_ms for item in records)),
+            "usage_available": 1.0,
+        }
+
     def _attempt_identity(self, corpus: EvidenceCorpus) -> tuple[str, str]:
         if self._clock is not None:
             created_at = self._clock()
@@ -1294,7 +1419,7 @@ class ReportSynthesisService:
             prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
             schema_version=REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION,
             retrieval_log=tuple(retrieval_log),
-            usage={"role_calls": float(len(retrieval_log))},
+            usage=self._usage(),
             candidate_findings=tuple(candidate_findings),
             objections=tuple(objections),
             rejected_findings=tuple(rejected_findings),

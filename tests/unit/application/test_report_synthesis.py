@@ -18,6 +18,12 @@ from ux_analyzer.domain.synthesis import (
     ObjectionSeverity,
     SynthesisStatus,
 )
+from ux_analyzer.ports.models import (
+    ModelCallRecord,
+    ModelResponseValidationError,
+    ModelRole,
+    TokenUsage,
+)
 from ux_analyzer.providers.report_synthesis import (
     AdjudicationResponse,
     AnalystResponse,
@@ -225,6 +231,11 @@ class _RecordingResolver(EvidenceResolver):
         return super().resolve(corpus, evidence_ids, **kwargs)
 
 
+class _ModelRecordSource:
+    def __init__(self, records: Sequence[ModelCallRecord]) -> None:
+        self.records = tuple(records)
+
+
 def _scripted_service(
     *,
     analyst: Sequence[object] = (),
@@ -233,6 +244,7 @@ def _scripted_service(
     adjudicator: Sequence[object] = (),
     resolver: EvidenceResolver | None = None,
     max_adjudication_revisions: int = 1,
+    model_record_source: object | None = None,
 ) -> tuple[ReportSynthesisService, tuple[_ScriptedRole, ...]]:
     roles = (
         _ScriptedRole("analyst", analyst),
@@ -248,6 +260,7 @@ def _scripted_service(
             adjudicator=roles[3],
             resolver=resolver,
             max_adjudication_revisions=max_adjudication_revisions,
+            model_record_source=model_record_source,
         ),
         roles,
     )
@@ -870,3 +883,146 @@ async def test_transport_failure_returns_safe_unavailable_state(tmp_path: Path) 
         "secret endpoint details" not in limitation
         for limitation in attempt.limitations
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_kind", ["duplicate", "orphan", "mismatch"])
+async def test_invalid_objection_resolutions_are_rejected_without_clearing_objection(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    candidate = _candidate()
+    objection = _blocking_objection(candidate.finding_id)
+    resolution = ObjectionResolution(
+        objection_id=("orphan" if invalid_kind == "orphan" else objection.objection_id),
+        finding_id=(
+            "other-finding" if invalid_kind == "mismatch" else candidate.finding_id
+        ),
+        resolved=True,
+        resolution="The evidence supports this resolution.",
+        evidence_refs=objection.evidence_refs,
+    )
+    resolutions = (
+        [resolution, resolution] if invalid_kind == "duplicate" else [resolution]
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        adjudicator=[
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[candidate],
+                objection_resolutions=resolutions,
+            )
+        ],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert attempt.objections[0].resolved is False
+    assert attempt.rejected_findings[0].reviewer_state == "not-established"
+    assert any("resolution" in limitation.lower() for limitation in attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_invalid_structured_role_output_is_rejected_not_unavailable(
+    tmp_path: Path,
+) -> None:
+    service, _ = _scripted_service(
+        analyst=[
+            ModelResponseValidationError(
+                ModelRole.REPORT_ANALYST,
+                "invalid structured output",
+            )
+        ]
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is not SynthesisStatus.UNAVAILABLE
+    assert any("invalid" in limitation.lower() for limitation in attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_reviewer_alias_is_normalized_to_canonical_role(tmp_path: Path) -> None:
+    candidate = _candidate()
+    objection = _blocking_objection(candidate.finding_id).model_copy(
+        update={"reviewer_role": "evidence-auditor"}
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        adjudicator=[AdjudicationResponse(complete=True)],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.objections[0].reviewer_role == "report-evidence-auditor"
+    assert all(
+        item.reviewer_role in {"report-evidence-auditor", "report-pattern-reviewer"}
+        for item in attempt.objections
+    )
+
+
+@pytest.mark.asyncio
+async def test_unknown_reviewer_alias_rejects_synthesis(tmp_path: Path) -> None:
+    candidate = _candidate()
+    objection = _blocking_objection(candidate.finding_id).model_copy(
+        update={"reviewer_role": "arbitrary-reviewer"}
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        adjudicator=[AdjudicationResponse(complete=True)],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.objections
+    assert any("Reviewer objections failed" in item for item in attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_attempt_usage_aggregates_model_call_records(tmp_path: Path) -> None:
+    source = _ModelRecordSource(
+        (
+            ModelCallRecord(
+                role=ModelRole.REPORT_ANALYST,
+                model="report-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest="a" * 64,
+                schema_version="report-analyst-v1",
+                attempts=1,
+                latency_ms=17,
+                token_usage=TokenUsage(4, 3, 7),
+                request={},
+                response={},
+            ),
+            ModelCallRecord(
+                role=ModelRole.REPORT_ADJUDICATOR,
+                model="report-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest="b" * 64,
+                schema_version="report-adjudicator-v1",
+                attempts=2,
+                latency_ms=23,
+                token_usage=TokenUsage(8, 5, 13),
+                request={},
+                response={},
+            ),
+        )
+    )
+    service, _ = _scripted_service(model_record_source=source)
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.usage["role_calls"] == 2
+    assert attempt.usage["prompt_tokens"] == 12
+    assert attempt.usage["completion_tokens"] == 8
+    assert attempt.usage["total_tokens"] == 20
+    assert attempt.usage["latency_ms"] == 40
+    assert attempt.usage["usage_available"] == 1

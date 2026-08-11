@@ -4,55 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
+
+from ux_analyzer.ports.report_synthesis import UxPrinciple
 
 UX_PRINCIPLE_PACK_VERSION = "ux-principles-v1"
-
-
-def _require_text(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field_name} must not be empty")
-    return value
-
-
-def _text_tuple(values: Iterable[str], field_name: str) -> tuple[str, ...]:
-    if isinstance(values, (str, bytes)):
-        raise TypeError(f"{field_name} must be a collection of strings")
-    normalized = tuple(values)
-    if not normalized:
-        raise ValueError(f"{field_name} must not be empty")
-    for value in normalized:
-        _require_text(value, field_name)
-    return normalized
-
-
-@dataclass(frozen=True, slots=True)
-class UxPrinciple:
-    """Immutable interpretive lens for evidence-backed UX analysis."""
-
-    principle_id: str
-    name: str
-    explanation: str
-    diagnostic_questions: tuple[str, ...]
-    misuse_warning: str
-    applicability_cues: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        _require_text(self.principle_id, "principle_id")
-        _require_text(self.name, "name")
-        _require_text(self.explanation, "explanation")
-        _require_text(self.misuse_warning, "misuse_warning")
-        object.__setattr__(
-            self,
-            "diagnostic_questions",
-            _text_tuple(self.diagnostic_questions, "diagnostic_questions"),
-        )
-        object.__setattr__(
-            self,
-            "applicability_cues",
-            _text_tuple(self.applicability_cues, "applicability_cues"),
-        )
 
 
 def _principle(
