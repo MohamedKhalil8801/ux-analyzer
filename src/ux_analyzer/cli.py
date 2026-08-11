@@ -548,7 +548,8 @@ def _run_experiment_command(
         return
     if settings is None:
         _exit_with_error("model settings are required for execution")
-    selected_specs = matrix.specs
+    selected_matrix = matrix
+    selected_specs = selected_matrix.specs
     try:
         if resume:
             matrix, checkpoint = _prepare_resumed_matrix(matrix, output)
@@ -591,26 +592,29 @@ def _run_experiment_command(
         selected_specs=selected_specs,
     )
     if matrix.loaded.runtime.report_synthesis.enabled and not no_synthesis:
+        synthesis_result = result
         try:
+            if resume:
+                synthesis_result = _finalized_experiment_result(selected_matrix, output)
             attempt = asyncio.run(
                 _run_report_synthesis(
-                    result=result,
+                    result=synthesis_result,
                     output=output,
-                    loaded=matrix.loaded,
+                    loaded=selected_matrix.loaded,
                     settings=settings,
                 )
             )
             _persist_synthesis_attempt(
                 attempt,
-                result=result,
+                result=synthesis_result,
                 output=output,
-                loaded=matrix.loaded,
+                loaded=selected_matrix.loaded,
             )
         except Exception as error:
             _persist_unavailable_synthesis(
-                result=result,
+                result=synthesis_result,
                 output=output,
-                loaded=matrix.loaded,
+                loaded=selected_matrix.loaded,
             )
             typer.echo(
                 "warning: report synthesis unavailable; "

@@ -1400,6 +1400,115 @@ def test_configured_run_synthesizes_after_summary_before_render(
     assert calls == ["summary", "synthesis", "persist", "render"]
 
 
+@pytest.mark.parametrize("pending_count", (1, 0))
+def test_resume_synthesis_uses_all_finalized_selected_specs(
+    monkeypatch,
+    tmp_path: Path,
+    pending_count: int,
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {"enabled": True}
+    project_path = tmp_path / f"resume-project-{pending_count}.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+    selected_matrix = cli._resolve_matrix_or_exit(
+        project_path,
+        "core-pair",
+        run_count=1,
+        policies=(),
+    )
+    all_finalized = ExperimentResult(
+        specs=selected_matrix.specs,
+        results=(),
+        failures=(),
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("UXA_REPORT_MODEL", "report-model")
+
+    def fake_prepare(matrix: object, output: Path) -> tuple[object, object]:
+        del output
+        assert matrix == selected_matrix
+        pending_matrix = replace(matrix, specs=matrix.specs[:pending_count])
+        captured["pending_specs"] = pending_matrix.specs
+        checkpoint = SimpleNamespace(
+            state=SimpleNamespace(
+                finalized_run_ids=(),
+                interrupted_run_ids=(),
+                pending_run_ids=tuple(spec.run_id for spec in pending_matrix.specs),
+            )
+        )
+        return pending_matrix, checkpoint
+
+    async def fake_execute_matrix(*args: object, **kwargs: object) -> ExperimentResult:
+        del kwargs
+        pending_matrix = args[0]
+        return ExperimentResult(specs=pending_matrix.specs, results=(), failures=())
+
+    def fake_finalized(matrix: object, output: Path) -> ExperimentResult:
+        del output
+        captured["finalized_matrix"] = matrix
+        return all_finalized
+
+    def fake_write_summary(
+        result: ExperimentResult,
+        *,
+        output: Path,
+        selected_specs: object,
+    ) -> Path:
+        del result, selected_specs
+        summary = output / "experiment.json"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text("{}", encoding="utf-8")
+        return summary
+
+    async def fake_synthesis(**kwargs: object) -> object:
+        captured["synthesis_result"] = kwargs["result"]
+        return object()
+
+    def fake_persist(*args: object, **kwargs: object) -> None:
+        del args
+        captured["persist_result"] = kwargs["result"]
+
+    def fake_render(*, output: Path) -> Path:
+        report = output / "report.html"
+        report.write_text("<html></html>", encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(cli, "_prepare_resumed_matrix", fake_prepare)
+    monkeypatch.setattr(cli, "_execute_matrix", fake_execute_matrix)
+    monkeypatch.setattr(cli, "_finalized_experiment_result", fake_finalized)
+    monkeypatch.setattr(cli, "_write_experiment_summary", fake_write_summary)
+    monkeypatch.setattr(cli, "_run_report_synthesis", fake_synthesis)
+    monkeypatch.setattr(cli, "_persist_synthesis_attempt", fake_persist)
+    monkeypatch.setattr(cli, "_render_completed_report", fake_render)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "core-pair",
+            "--run-count",
+            "1",
+            "--output",
+            str(tmp_path / "output"),
+            "--resume",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["finalized_matrix"] == selected_matrix
+    assert captured["synthesis_result"] is all_finalized
+    assert captured["persist_result"] is all_finalized
+
+
 def test_configured_synthesis_bounds_reach_service_without_clamping(
     monkeypatch,
     tmp_path: Path,
