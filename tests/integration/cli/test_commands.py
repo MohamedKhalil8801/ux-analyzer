@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -201,6 +202,52 @@ def _write_resumable_metrics_bundle(
             f"{hashlib.sha256(content).hexdigest()}  {name}\n"
             for name, content in contents.items()
         )
+    )
+
+
+def _write_synthesis_finalized_bundle(root: Path, spec: Any) -> None:
+    _write_resumable_metrics_bundle(root, spec, cost=1.0)
+    identity = {
+        "run_id": spec.run_id,
+        "seed": spec.seed,
+        "model_trial": spec.model_trial,
+        "policy": spec.policy.value,
+        "prominence_provider_id": spec.prominence_provider_id,
+        "config_digest": spec.config_digest,
+        "scenario_id": spec.scenario.id,
+        "application_version_id": spec.application_version.id,
+        "persona_id": spec.persona.id,
+    }
+    raw_spec = {
+        **identity,
+        "scenario": {
+            "id": spec.scenario.id,
+            "name": spec.scenario.name,
+            "goal": spec.scenario.goal,
+        },
+        "application_version": {
+            "id": spec.application_version.id,
+            "label": spec.application_version.label,
+        },
+        "persona": {"id": spec.persona.id, "name": spec.persona.name},
+    }
+    run = root / "runs" / spec.run_id
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    manifest.update(identity)
+    _write_json(run / "manifest.json", manifest)
+    result = json.loads((run / "result.json").read_text(encoding="utf-8"))
+    result["state"] = {"spec": raw_spec}
+    result["metrics"].update(identity)
+    _write_json(run / "result.json", result)
+    _write_json(root / "experiment.json", {"run_metrics": [identity]})
+    (run / "checksums.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  "
+            f"{path.relative_to(run).as_posix()}\n"
+            for path in sorted(run.rglob("*"))
+            if path.is_file() and path.name != "checksums.sha256"
+        ),
+        encoding="utf-8",
     )
 
 
@@ -1845,6 +1892,118 @@ def test_finalized_synthesis_reference_is_absolute_for_relative_output(
     result = cli._finalized_experiment_result(matrix, relative_output)
 
     assert result.results[0].bundle_path == tmp_path / "runs" / "run-finalized"
+
+
+def test_synthesize_relative_output_reaches_report_roles_and_persists_artifacts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    experiment = next(
+        item for item in project["experiments"] if item["id"] == "focused-validation"
+    )
+    experiment["id"] = "cli-relative-synthesis"
+    experiment["scenario_ids"] = ["invite-teammate"]
+    experiment["application_version_ids"] = ["fixture-app-improved"]
+    experiment["policies"] = ["full-list"]
+    project["experiments"] = [experiment]
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    matrix = cli._resolve_matrix_or_exit(
+        project_path,
+        "cli-relative-synthesis",
+        run_count=None,
+        policies=(),
+    )
+    assert len(matrix.specs) == 1
+    output_root = tmp_path / "relative-synthesis-output"
+    _write_synthesis_finalized_bundle(output_root, matrix.specs[0])
+
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_REPORT_MODEL", "report-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+
+    class FakeReportClient:
+        provider_id = "fake-report-client"
+        provider_version = "fake-report-v1"
+        endpoint_origin = "https://llm.example.test"
+        records: tuple[object, ...] = ()
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[Any, str, tuple[Any, ...]]] = []
+
+        async def complete(
+            self,
+            schema: type[Any],
+            messages: Sequence[Any],
+            model: str,
+            role: Any,
+        ) -> object:
+            self.calls.append((role, model, tuple(messages)))
+            payload: dict[str, object] = {
+                "complete": True,
+                "evidence_requests": [],
+            }
+            for field_name in (
+                "candidate_findings",
+                "objections",
+                "final_findings",
+                "objection_resolutions",
+            ):
+                if field_name in schema.model_fields:
+                    payload[field_name] = []
+            return schema.model_validate(payload)
+
+    client = FakeReportClient()
+    monkeypatch.setattr(
+        cli,
+        "create_structured_model_client",
+        lambda *args, **kwargs: client,
+    )
+    captured: dict[str, object] = {}
+    original_corpus = cli._synthesis_corpus
+
+    def capture_corpus(*, result: Any, output: Path, loaded: Any) -> Any:
+        captured["bundle_path"] = getattr(result.results[0], "bundle_path")
+        return original_corpus(result=result, output=output, loaded=loaded)
+
+    monkeypatch.setattr(cli, "_synthesis_corpus", capture_corpus)
+    monkeypatch.chdir(tmp_path.parent)
+    relative_output = Path(tmp_path.name) / output_root.name
+
+    result = runner.invoke(
+        app,
+        [
+            "synthesize",
+            str(project_path),
+            "--experiment",
+            "cli-relative-synthesis",
+            "--output",
+            str(relative_output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    bundle_path = captured["bundle_path"]
+    assert isinstance(bundle_path, Path)
+    assert bundle_path == output_root / "runs" / matrix.specs[0].run_id
+    assert bundle_path.is_absolute()
+    assert [role.value for role, _, _ in client.calls] == [
+        "report-analyst",
+        "report-evidence-auditor",
+        "report-pattern-reviewer",
+        "report-adjudicator",
+    ]
+    assert {model for _, model, _ in client.calls} == {"report-model"}
+    attempts = list((output_root / "synthesis" / "attempts").iterdir())
+    assert len(attempts) == 1
+    synthesis = json.loads((attempts[0] / "synthesis.json").read_text(encoding="utf-8"))
+    assert synthesis["status"] == "no-issues"
+    assert (output_root / "report.html").is_file()
 
 
 def test_synthesize_regeneration_retains_immutable_attempts(
