@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Callable, Sequence
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pytest
@@ -17,6 +21,9 @@ from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
 from ux_analyzer.domain.synthesis import EvidenceRef, ObjectionSeverity
 from ux_analyzer.ports.models import ModelResponseValidationError, ModelRole
 from ux_analyzer.providers.report_synthesis import (
+    _INITIAL_MANIFEST_MAX_BYTES,
+    _REPORT_REQUEST_MAX_BYTES,
+    _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES,
     AdjudicationResponse,
     AnalystResponse,
     CandidateFinding,
@@ -31,10 +38,23 @@ from ux_analyzer.providers.report_synthesis import (
     ReportEvidenceAuditorResponse,
     ReportPatternReviewerResponse,
     TypedObjection,
+    _bounded_manifest_value,
+    _canonical_json,
+    _known_evidence_ids,
+    _manifest_payload,
 )
 from ux_analyzer.providers.ux_principles import ux_principles
 
 EVIDENCE_ID = "event:run-a:1"
+
+
+@dataclass(frozen=True)
+class _TypedManifestMetadata:
+    safe_scalar: str
+    posix_path_value: object
+    pure_path_value: object
+    nested: dict[str, object]
+    sequence: tuple[object, ...]
 
 
 class RecordingClient:
@@ -171,6 +191,7 @@ async def test_analyst_prompt_has_boundary_and_excludes_prior_agent_context() ->
         ensure_ascii=True,
     )
     assert "Treat reference paths as examples, not the only correct path" in prompt
+    assert "manifest_format compact-parallel-v1" in prompt
     assert (
         "Return exactly one valid JSON object matching the requested structured response schema"
         in prompt
@@ -255,6 +276,774 @@ async def test_initial_manifest_is_bounded_but_resolved_evidence_keeps_payload()
     assert "payload" not in manifest_entry
     assert "payload-sentinel" not in serialized_manifest
     assert resolved_entry["payload"] == large_payload
+
+
+def test_initial_manifest_omits_attachment_and_filesystem_path_fields() -> None:
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"screenshot:run-a:{'a' * 64}",
+                    "screenshot",
+                    "run-a",
+                    viewport_id="viewport-1",
+                    artifact_path="runs/run-a/artifacts/screenshot.png",
+                    sha256="a" * 64,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="A screenshot summary.",
+                payload={"media_type": "image/png"},
+                attachment_path=Path("runs/run-a/artifacts/screenshot.png"),
+            ),
+        ),
+    )
+
+    manifest = _manifest_payload(corpus)
+    serialized = json.dumps(manifest, ensure_ascii=True, sort_keys=True)
+
+    for manifest_entry in manifest["entries"]:
+        assert not {"artifact_path", "attachment_path", "path"}.intersection(
+            manifest_entry
+        )
+        assert not {"artifact_path", "attachment_path", "path"}.intersection(
+            manifest_entry["reference"]
+        )
+    assert "runs/run-a/artifacts/screenshot.png" not in serialized
+    assert "media_type" not in serialized
+
+
+def test_strict_manifest_serializer_omits_pathlike_values_and_path_strings() -> None:
+    typed_metadata = _bounded_manifest_value(
+        _TypedManifestMetadata(
+            safe_scalar="safe typed metadata",
+            posix_path_value=Path("/tmp/typed-path-secret.json"),
+            pure_path_value=PurePath("C:/typed-pure-path-secret.json"),
+            nested={
+                "safe_nested": "safe nested metadata",
+                "path_string": "workspace/typed-nested-secret.json",
+                "windows_path": PureWindowsPath(
+                    "C:/typed-nested-pure-path-secret.json"
+                ),
+            },
+            sequence=(
+                "safe sequence metadata",
+                "/tmp/typed-sequence-secret.json",
+                PurePosixPath("/tmp/typed-sequence-pure-path-secret.json"),
+            ),
+        )
+    )
+    mapping_manifest = _manifest_payload(
+        {
+            "metadata": {
+                "safe_scalar": "safe mapping metadata",
+                "posix_path_value": "/tmp/mapping-path-secret.json",
+                "pure_path_value": PurePath("C:/mapping-pure-path-secret.json"),
+                "nested": {
+                    "safe_nested": "safe nested mapping metadata",
+                    "path_string": "workspace/mapping-nested-secret.json",
+                    "/tmp/path-named-key.json": "path-key-secret",
+                },
+                "sequence": [
+                    "safe mapping sequence metadata",
+                    r"C:\mapping-sequence-secret.json",
+                    "file:///tmp/file-uri-secret.json",
+                    {"nested_path_string": "reports/mapping-report.json"},
+                ],
+            },
+            "entries": [
+                {
+                    "evidence_id": EVIDENCE_ID,
+                    "kind": "event",
+                    "run_id": "run-a",
+                    "summary": "Summary contains /tmp/mapping-summary-secret.json",
+                }
+            ],
+        }
+    )
+    serialized = _canonical_json({"typed": typed_metadata, "mapping": mapping_manifest})
+
+    assert typed_metadata == {
+        "safe_scalar": "safe typed metadata",
+        "nested": {"safe_nested": "safe nested metadata"},
+        "sequence": ["safe sequence metadata"],
+    }
+    assert mapping_manifest["metadata"] == {
+        "safe_scalar": "safe mapping metadata",
+        "nested": {"safe_nested": "safe nested mapping metadata"},
+        "sequence": ["safe mapping sequence metadata", {}],
+    }
+    assert mapping_manifest["entries"][0]["summary"] == ""
+    for secret in (
+        "typed-path-secret",
+        "typed-pure-path-secret",
+        "typed-nested-secret",
+        "typed-nested-pure-path-secret",
+        "typed-sequence-secret",
+        "typed-sequence-pure-path-secret",
+        "mapping-path-secret",
+        "mapping-pure-path-secret",
+        "mapping-nested-secret",
+        "mapping-sequence-secret",
+        "mapping-report.json",
+        "mapping-summary-secret",
+        "path-key-secret",
+        "file:///tmp/file-uri-secret.json",
+    ):
+        assert secret not in serialized
+
+
+def test_strict_manifest_serializer_omits_drive_relative_paths() -> None:
+    typed_corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        metadata={"drive_relative": "H:typed-corpus-drive-relative-secret.txt"},
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(EVIDENCE_ID, "event", "run-a"),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="I:typed-corpus-summary-drive-relative-secret.txt",
+                payload={"drive_relative": "J:typed-corpus-payload-secret.txt"},
+            ),
+        ),
+    )
+    typed = _bounded_manifest_value(
+        {
+            "safe": "safe typed value",
+            "drive_relative": "C:typed-drive-relative-secret.txt",
+            "nested": {"drive_relative": "D:nested-drive-relative-secret.txt"},
+            "sequence": ["E:sequence-drive-relative-secret.txt"],
+        }
+    )
+    mapping = _manifest_payload(
+        {
+            "metadata": {
+                "drive_relative": "F:mapping-drive-relative-secret.txt",
+            },
+            "entries": [
+                {
+                    "evidence_id": EVIDENCE_ID,
+                    "kind": "event",
+                    "run_id": "run-a",
+                    "summary": "G:summary-drive-relative-secret.txt",
+                }
+            ],
+        }
+    )
+
+    serialized = _canonical_json(
+        {"corpus": _manifest_payload(typed_corpus), "typed": typed, "mapping": mapping}
+    )
+
+    assert typed == {"safe": "safe typed value", "nested": {}, "sequence": []}
+    assert mapping["metadata"] == {}
+    assert mapping["entries"][0]["summary"] == ""
+    for secret in (
+        "typed-drive-relative-secret",
+        "nested-drive-relative-secret",
+        "sequence-drive-relative-secret",
+        "mapping-drive-relative-secret",
+        "summary-drive-relative-secret",
+        "typed-corpus-drive-relative-secret",
+        "typed-corpus-summary-drive-relative-secret",
+        "typed-corpus-payload-secret",
+    ):
+        assert secret not in serialized
+
+
+def test_typed_corpus_summary_uses_strict_manifest_serializer() -> None:
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        metadata={
+            "safe": "safe corpus metadata",
+            "nested": {"path_value": "/tmp/corpus-metadata-secret.json"},
+        },
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(EVIDENCE_ID, "event", "run-a"),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="Observed at C:/corpus-summary-secret.json",
+                payload={"safe": "payload stays resolved-only"},
+            ),
+        ),
+    )
+
+    serialized = _canonical_json(_manifest_payload(corpus))
+
+    assert "safe corpus metadata" in serialized
+    assert "corpus-metadata-secret" not in serialized
+    assert "corpus-summary-secret" not in serialized
+
+
+def test_mapping_manifest_rejects_duplicate_entry_ids_before_compaction() -> None:
+    entry = {
+        "evidence_id": EVIDENCE_ID,
+        "kind": "event",
+        "run_id": "run-a",
+        "event_id": "event-1",
+        "summary": "Duplicate mapping evidence.",
+    }
+
+    with pytest.raises(ValueError, match="duplicate evidence ID"):
+        _manifest_payload({"entries": [entry, dict(entry)]})
+
+
+def test_mapping_manifest_rejects_missing_entry_ids_before_compaction() -> None:
+    with pytest.raises(ValueError, match="evidence ID"):
+        _manifest_payload(
+            {
+                "entries": [
+                    {
+                        "kind": "event",
+                        "run_id": "run-a",
+                        "event_id": "event-without-id",
+                        "summary": "Mapping evidence without an ID.",
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("evidence_id", "kind", "run_id", "message"),
+    (
+        ("forged:run-a:1", "forged", "run-a", "namespace"),
+        (EVIDENCE_ID, "metric", "run-a", "kind"),
+        (EVIDENCE_ID, "event", "run-b", "run"),
+        ("event:run-a:event-1", "event", "run-a", "sequence"),
+    ),
+)
+def test_mapping_manifest_rejects_noncanonical_or_mismatched_ids(
+    evidence_id: str,
+    kind: str,
+    run_id: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _manifest_payload(
+            {
+                "entries": [
+                    {
+                        "evidence_id": evidence_id,
+                        "kind": kind,
+                        "run_id": run_id,
+                        "summary": "Mapping evidence with an invalid reference.",
+                    }
+                ]
+            }
+        )
+
+
+def test_mapping_manifest_rejects_conflicting_nested_reference_fields() -> None:
+    with pytest.raises(ValueError, match="reference field"):
+        _manifest_payload(
+            {
+                "entries": [
+                    {
+                        "evidence_id": EVIDENCE_ID,
+                        "kind": "event",
+                        "run_id": "run-a",
+                        "summary": "Mapping evidence with conflicting fields.",
+                        "reference": {
+                            "evidence_id": EVIDENCE_ID,
+                            "kind": "metric",
+                            "run_id": "run-a",
+                        },
+                    }
+                ]
+            }
+        )
+
+
+def test_mapping_manifest_rejects_mismatched_nested_event_fields() -> None:
+    with pytest.raises(ValueError, match="sequence"):
+        _manifest_payload(
+            {
+                "entries": [
+                    {
+                        "evidence_id": EVIDENCE_ID,
+                        "kind": "event",
+                        "run_id": "run-a",
+                        "event_id": "event-2",
+                        "replay_sequence": 1,
+                        "summary": "Mapping evidence with a mismatched event field.",
+                    }
+                ]
+            }
+        )
+
+
+def test_mapping_manifest_rejects_invalid_declared_and_known_ids() -> None:
+    with pytest.raises(ValueError, match="namespace"):
+        _manifest_payload(
+            {
+                "evidence_ids": ["forged:run-a:1"],
+                "entries": [
+                    {
+                        "evidence_id": EVIDENCE_ID,
+                        "kind": "event",
+                        "run_id": "run-a",
+                        "summary": "Mapping evidence with a forged declaration.",
+                    }
+                ],
+            }
+        )
+
+    with pytest.raises(ValueError, match="namespace"):
+        _known_evidence_ids({"evidence_ids": ["forged:run-a:1"], "entries": []})
+
+    with pytest.raises(ValueError, match="evidence_ids"):
+        _known_evidence_ids(
+            {
+                "evidence_ids": ["event:run-a:2"],
+                "entries": [
+                    {
+                        "evidence_id": EVIDENCE_ID,
+                        "kind": "event",
+                        "run_id": "run-a",
+                        "summary": "Mapping evidence with a mismatched declaration.",
+                    }
+                ],
+            }
+        )
+
+
+def test_mapping_manifest_accepts_valid_ids_at_all_reference_levels() -> None:
+    manifest = {
+        "evidence_ids": [EVIDENCE_ID],
+        "entries": [
+            {
+                "evidence_id": EVIDENCE_ID,
+                "kind": "event",
+                "run_id": "run-a",
+                "event_id": "event-1",
+                "replay_sequence": 1,
+                "summary": "Canonical mapping evidence.",
+                "reference": {
+                    "evidence_id": EVIDENCE_ID,
+                    "kind": "event",
+                    "run_id": "run-a",
+                    "event_id": "event-1",
+                    "replay_sequence": 1,
+                },
+            }
+        ],
+    }
+
+    bounded = _manifest_payload(manifest)
+
+    assert bounded["evidence_ids"] == [EVIDENCE_ID]
+    assert bounded["entries"][0]["reference"] == {
+        "evidence_id": EVIDENCE_ID,
+        "kind": "event",
+        "run_id": "run-a",
+        "event_id": "event-1",
+        "replay_sequence": 1,
+    }
+    assert _known_evidence_ids(manifest) == frozenset({EVIDENCE_ID})
+
+
+def test_mapping_manifest_rejects_declared_ids_that_do_not_match_rows() -> None:
+    with pytest.raises(ValueError, match="evidence_ids"):
+        _manifest_payload(
+            {
+                "evidence_ids": [EVIDENCE_ID, "event:run-a:2"],
+                "entries": [
+                    {
+                        "evidence_id": EVIDENCE_ID,
+                        "kind": "event",
+                        "run_id": "run-a",
+                        "summary": "One mapping row.",
+                    }
+                ],
+            }
+        )
+
+
+def test_mapping_manifest_uses_bounded_allowlisted_entries_and_context() -> None:
+    evidence_id = "event:run-a:1"
+    manifest = {
+        "schema_version": "evidence-corpus-v1",
+        "principle_pack_version": "ux-principles-v1",
+        "payload": {"top_level": "mapping-payload-sentinel" * 1000},
+        "artifact_path": "C:/private/top-level-artifact.json",
+        "attachment_path": "C:/private/top-level-attachment.png",
+        "path": "C:/private/top-level-path.txt",
+        "metadata": {
+            "payload": "nested-payload-sentinel",
+            "path": "C:/private/nested-path.txt",
+            "safe": "safe metadata" * 1000,
+        },
+        "expectation": {
+            "reference_paths": [["open-team", "invite", "confirm"]],
+            "payload": "expectation-payload-sentinel",
+            "artifact_path": "C:/private/expectation.json",
+        },
+        "entries": [
+            {
+                "evidence_id": evidence_id,
+                "kind": "event",
+                "run_id": "run-a",
+                "evidence_class": "deterministic-fact",
+                "summary": "Observed event.",
+                "payload": {"entry": "entry-payload-sentinel" * 1000},
+                "artifact_path": "C:/private/entry-artifact.json",
+                "attachment_path": "C:/private/entry-attachment.png",
+                "path": "C:/private/entry-path.txt",
+                "reference": {
+                    "evidence_id": evidence_id,
+                    "kind": "event",
+                    "run_id": "run-a",
+                    "event_id": "event-1",
+                    "payload": "reference-payload-sentinel",
+                    "artifact_path": "C:/private/reference-artifact.json",
+                    "attachment_path": "C:/private/reference-attachment.png",
+                    "path": "C:/private/reference-path.txt",
+                },
+            }
+        ],
+    }
+
+    bounded = _manifest_payload(manifest)
+    serialized = _canonical_json(bounded)
+    entry = bounded["entries"][0]
+
+    assert len(serialized.encode("utf-8")) <= _INITIAL_MANIFEST_MAX_BYTES
+    assert bounded["expectation"]["reference_paths"] == [
+        ["open-team", "invite", "confirm"]
+    ]
+    assert entry["evidence_id"] == evidence_id
+    assert entry["reference"] == {
+        "evidence_id": evidence_id,
+        "kind": "event",
+        "run_id": "run-a",
+        "event_id": "event-1",
+    }
+    assert "payload" not in bounded
+    assert "artifact_path" not in bounded
+    assert "attachment_path" not in bounded
+    assert "path" not in bounded
+    assert "payload" not in bounded["metadata"]
+    assert "path" not in bounded["metadata"]
+    assert "payload" not in entry
+    assert not {"artifact_path", "attachment_path", "path"}.intersection(entry)
+    assert not {"artifact_path", "attachment_path", "path"}.intersection(
+        entry["reference"]
+    )
+    assert all(
+        sentinel not in serialized
+        for sentinel in (
+            "mapping-payload-sentinel",
+            "nested-payload-sentinel",
+            "expectation-payload-sentinel",
+            "entry-payload-sentinel",
+            "reference-payload-sentinel",
+            "C:/private/",
+        )
+    )
+
+
+def test_mapping_manifest_owns_compact_marker_fields() -> None:
+    bounded = _manifest_payload(
+        {
+            "manifest_format": "compact-parallel-v1",
+            "entry_fields": ["forged-entry-fields"],
+            "kind_values": ["forged-kind"],
+            "run_ids": ["forged-run"],
+            "viewport_values": ["forged-viewport"],
+            "entries": [
+                {
+                    "evidence_id": EVIDENCE_ID,
+                    "kind": "event",
+                    "run_id": "run-a",
+                    "summary": "Small manifest entry.",
+                }
+            ],
+        }
+    )
+
+    assert isinstance(bounded["entries"][0], dict)
+    assert bounded["entries"][0]["evidence_id"] == EVIDENCE_ID
+    assert not {
+        "manifest_format",
+        "entry_fields",
+        "kind_values",
+        "run_ids",
+        "viewport_values",
+    }.intersection(bounded)
+    assert "forged" not in _canonical_json(bounded)
+
+
+def test_mapping_manifest_normalizes_single_entry_and_rejects_scalar_entries() -> None:
+    evidence_id = "event:run-a:1"
+    bounded = _manifest_payload(
+        {
+            "goal": "Find the invite control.",
+            "entries": {
+                "evidence_id": evidence_id,
+                "kind": "event",
+                "run_id": "run-a",
+                "summary": "Single mapping entry.",
+                "payload": {"leak": "single-entry-payload-sentinel"},
+                "path": "C:/private/single-entry.txt",
+            },
+        }
+    )
+
+    assert bounded["entries"] == [
+        {
+            "evidence_id": evidence_id,
+            "kind": "event",
+            "run_id": "run-a",
+            "reference": {
+                "evidence_id": evidence_id,
+                "kind": "event",
+                "run_id": "run-a",
+            },
+            "evidence_class": None,
+            "summary": "Single mapping entry.",
+        }
+    ]
+    assert "single-entry-payload-sentinel" not in _canonical_json(bounded)
+
+    with pytest.raises(TypeError, match="corpus manifest entries"):
+        _manifest_payload({"entries": "unbounded-entry-sentinel" * 10000})
+
+
+def test_large_mapping_manifest_is_bounded_and_keeps_every_evidence_id() -> None:
+    entry_count = 2_070
+    entries = [
+        {
+            "evidence_id": f"event:run-{index % 6}:{index}",
+            "kind": "event",
+            "run_id": f"run-{index % 6}",
+            "event_id": f"event-{index}",
+            "summary": (f"Mapping evidence summary {index}. " * 40),
+            "payload": "mapping-payload-sentinel" * 1000,
+            "artifact_path": f"runs/run-{index % 6}/events/{index}.json",
+            "attachment_path": f"runs/run-{index % 6}/events/{index}.png",
+            "reference": {
+                "evidence_id": f"event:run-{index % 6}:{index}",
+                "kind": "event",
+                "run_id": f"run-{index % 6}",
+                "event_id": f"event-{index}",
+                "path": f"C:/private/event-{index}.json",
+            },
+        }
+        for index in range(1, entry_count + 1)
+    ]
+
+    manifest = _manifest_payload(
+        {
+            "schema_version": "evidence-corpus-v1",
+            "payload": "top-level-mapping-payload-sentinel" * 1000,
+            "artifact_path": "C:/private/top-level.json",
+            "entries": entries,
+        }
+    )
+    serialized = _canonical_json(manifest).encode("utf-8")
+    expected_ids = [entry["evidence_id"] for entry in entries]
+
+    assert len(serialized) <= _INITIAL_MANIFEST_MAX_BYTES
+    assert manifest["manifest_format"] == "compact-parallel-v1"
+    assert manifest["evidence_ids"] == expected_ids
+    assert len(manifest["entries"]) == entry_count
+    event_index = manifest["entry_fields"].index("event_id")
+    assert [row[event_index] for row in manifest["entries"]] == [
+        f"event-{index}" for index in range(1, entry_count + 1)
+    ]
+    assert "mapping-payload-sentinel" not in serialized.decode("utf-8")
+    assert "C:/private/" not in serialized.decode("utf-8")
+
+
+def test_mapping_manifest_serializes_set_metadata_deterministically() -> None:
+    code = (
+        "from ux_analyzer.providers.report_synthesis import "
+        "_canonical_json, _manifest_payload; "
+        "print(_canonical_json(_manifest_payload({"
+        "'metadata': {'values': {'alpha', 'bravo', 'charlie', 'delta', "
+        "'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet'}}, "
+        "'entries': []})))"
+    )
+    outputs: list[str] = []
+    for seed in ("1", "2", "3"):
+        environment = os.environ.copy()
+        environment["PYTHONHASHSEED"] = seed
+        outputs.append(
+            subprocess.check_output(
+                (sys.executable, "-c", code),
+                cwd=Path.cwd(),
+                env=environment,
+                text=True,
+            ).strip()
+        )
+
+    assert outputs[0] == outputs[1] == outputs[2]
+
+
+def test_full_size_initial_manifest_stays_under_hard_budget_and_keeps_ids() -> None:
+    entry_count = 2_070
+    entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(
+                f"element:run-{index % 6}-{'a' * 64}:"
+                f"viewport-{index % 10}-verification-1:"
+                f"run-{index % 6}-{'a' * 64}-element-{index}",
+                "element",
+                run_id := f"run-{index % 6}-{'a' * 64}",
+                f"viewport-{index % 10}-verification-1",
+                f"{run_id}-element-{index}",
+                artifact_path=f"runs/{run_id}/elements/{index}.json",
+                replay_sequence=index,
+            ),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=(f"Evidence summary {index}. " * 40),
+            payload={"sequence": index, "full_payload": "payload-sentinel"},
+        )
+        for index in range(1, entry_count + 1)
+    )
+    corpus = EvidenceCorpus(output_root=Path.cwd(), entries=entries)
+
+    manifest = _manifest_payload(corpus)
+    serialized = _canonical_json(manifest).encode("utf-8")
+    manifest_ids = set(manifest["evidence_ids"])
+    expected_ids = {entry.ref.evidence_id for entry in corpus.entries}
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [entries[0].ref.evidence_id],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+
+    assert manifest_ids == expected_ids
+    assert len(serialized) <= _INITIAL_MANIFEST_MAX_BYTES
+    assert not {"artifact_path", "attachment_path", "path"}.intersection(
+        manifest["entry_fields"]
+    )
+    assert "payload" not in manifest["entry_fields"]
+    assert "payload-sentinel" not in serialized.decode("utf-8")
+    assert "summary" not in manifest["entry_fields"]
+    serialized_text = serialized.decode("utf-8")
+    for forbidden_key in ("artifact_path", "attachment_path", "path"):
+        assert forbidden_key not in serialized_text
+    assert manifest["entry_fields"] == [
+        "kind_index",
+        "run_index",
+        "viewport_index",
+        "element_id",
+        "event_id",
+        "metric_id",
+        "replay_sequence",
+        "sha256",
+    ]
+    assert not {"artifact_path", "attachment_path", "path"}.intersection(
+        manifest["entry_fields"]
+    )
+    assert manifest["kind_values"]
+    assert manifest["run_ids"]
+    assert manifest["viewport_values"]
+    assert manifest["manifest_format"] == "compact-parallel-v1"
+    assert manifest["evidence_ids"] == [
+        entry.ref.evidence_id for entry in corpus.entries
+    ]
+    first_row = manifest["entries"][0]
+    assert manifest["kind_values"][first_row[0]] == corpus.entries[0].ref.kind
+    assert manifest["run_ids"][first_row[1]] == corpus.entries[0].ref.run_id
+    assert (
+        manifest["viewport_values"][first_row[2]] == corpus.entries[0].ref.viewport_id
+    )
+    assert all(
+        len(entry) <= len(manifest["entry_fields"]) for entry in manifest["entries"]
+    )
+    assert resolved.entries[0].payload["full_payload"] == "payload-sentinel"
+
+
+@pytest.mark.asyncio
+async def test_complete_near_limit_request_stays_below_transport_ceiling() -> None:
+    entry_count = 2_070
+    entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(
+                f"element:run-{index % 6}-{'a' * 64}:"
+                f"viewport-{index % 10}-verification-1:"
+                f"run-{index % 6}-{'a' * 64}-element-{index}",
+                "element",
+                run_id := f"run-{index % 6}-{'a' * 64}",
+                f"viewport-{index % 10}-verification-1",
+                f"{run_id}-element-{index}",
+                artifact_path=f"runs/{run_id}/elements/{index}.json",
+                replay_sequence=index,
+            ),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=(f"Evidence summary {index}. " * 40),
+            payload={"sequence": index, "full_payload": "payload-sentinel"},
+        )
+        for index in range(1, entry_count + 1)
+    )
+    corpus = EvidenceCorpus(output_root=Path.cwd(), entries=entries)
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(corpus)
+
+    schema = AnalystResponse
+    messages = client.calls[0][1]
+    request = {
+        "model": "gpt-report",
+        "messages": [message.model_dump() for message in messages],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema.schema_version.replace("-", "_"),
+                "strict": True,
+                "schema": schema.model_json_schema(),
+            },
+        },
+    }
+    serialized_request = json.dumps(
+        request,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    message_payload = json.loads(messages[1].content)
+
+    assert len(serialized_request) <= _REPORT_REQUEST_MAX_BYTES
+    assert (
+        len(serialized_request) + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
+        <= _REPORT_REQUEST_MAX_BYTES
+    )
+    assert message_payload["corpus_manifest"]["evidence_ids"] == [
+        entry.ref.evidence_id for entry in entries
+    ]
+
+
+@pytest.mark.asyncio
+async def test_oversized_resolved_context_is_rejected_before_model_client() -> None:
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(EVIDENCE_ID, "event", "run-a", replay_sequence=1),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="Large resolved evidence.",
+                payload={"large": "resolved-payload-sentinel" * 40_000},
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+    client = RecordingClient()
+
+    with pytest.raises(ValueError, match="transport-safe byte budget"):
+        await ReportAnalyst(client, model="gpt-report").analyze(
+            corpus,
+            resolved_evidence=resolved,
+        )
+
+    assert client.calls == []
 
 
 @pytest.mark.asyncio
