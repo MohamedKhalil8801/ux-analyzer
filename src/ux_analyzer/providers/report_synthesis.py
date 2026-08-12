@@ -61,6 +61,19 @@ from ux_analyzer.ports.report_synthesis import (
 from ux_analyzer.providers.ux_principles import ux_principles
 
 _SAFE_EVIDENCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9._-]+)+$")
+_MANIFEST_REFERENCE_FIELDS = (
+    "evidence_id",
+    "kind",
+    "run_id",
+    "viewport_id",
+    "element_id",
+    "event_id",
+    "metric_id",
+    "artifact_path",
+    "replay_sequence",
+    "sha256",
+)
+_INITIAL_MANIFEST_SUMMARY_MAX_CHARS = 512
 
 ManifestInput = EvidenceCorpus | Mapping[str, object]
 
@@ -144,6 +157,60 @@ def _safe_entry(entry: EvidenceEntry, *, depth: int = 0) -> dict[str, object]:
     }
 
 
+def _bounded_manifest_summary(value: object) -> str:
+    summary = _safe_prompt_value(value)
+    if not isinstance(summary, str):
+        summary = str(summary)
+    if len(summary) <= _INITIAL_MANIFEST_SUMMARY_MAX_CHARS:
+        return summary
+    return summary[: _INITIAL_MANIFEST_SUMMARY_MAX_CHARS - 3] + "..."
+
+
+def _bounded_manifest_entry(entry: object) -> dict[str, object]:
+    if isinstance(entry, EvidenceEntry):
+        return {
+            "evidence_id": entry.ref.evidence_id,
+            "kind": entry.ref.kind,
+            "run_id": entry.ref.run_id,
+            "reference": _safe_evidence_ref(entry.ref),
+            "evidence_class": entry.evidence_class.value,
+            "summary": _bounded_manifest_summary(entry.summary),
+        }
+    if not isinstance(entry, Mapping):
+        raise TypeError("corpus manifest entries must be evidence entries or mappings")
+
+    entry_mapping = cast(Mapping[object, object], entry)
+    raw_reference = entry_mapping.get("reference")
+    reference_mapping: Mapping[object, object]
+    if isinstance(raw_reference, Mapping):
+        reference_mapping = cast(Mapping[object, object], raw_reference)
+    else:
+        reference_mapping = {}
+
+    def field(name: str) -> object:
+        value = entry_mapping.get(name)
+        if value is None:
+            value = reference_mapping.get(name)
+        return value
+
+    reference: dict[str, object] = {}
+    for name in _MANIFEST_REFERENCE_FIELDS:
+        value = reference_mapping.get(name)
+        if value is None:
+            value = entry_mapping.get(name)
+        if value is not None:
+            reference[name] = _safe_prompt_value(value)
+
+    return {
+        "evidence_id": _safe_prompt_value(field("evidence_id")),
+        "kind": _safe_prompt_value(field("kind")),
+        "run_id": _safe_prompt_value(field("run_id")),
+        "reference": reference,
+        "evidence_class": _safe_prompt_value(field("evidence_class")),
+        "summary": _bounded_manifest_summary(field("summary")),
+    }
+
+
 def _domain_finding_payload(finding: SynthesisFinding) -> dict[str, object]:
     return {
         "finding_id": finding.finding_id,
@@ -185,21 +252,29 @@ def _domain_objection_payload(objection: SynthesisObjection) -> dict[str, object
 
 def _manifest_payload(manifest: object) -> dict[str, object]:
     if isinstance(manifest, EvidenceCorpus):
-        source: object = manifest.to_dict()
-    elif isinstance(manifest, Mapping):
-        source = cast(Mapping[str, object], manifest)
-    else:
+        return {
+            "schema_version": "evidence-corpus-v1",
+            "principle_pack_version": manifest.principle_pack_version,
+            "principle_pack_digest": manifest.principle_pack_digest,
+            "metadata": _safe_prompt_value(manifest.metadata),
+            "entries": [_bounded_manifest_entry(entry) for entry in manifest.entries],
+        }
+    if not isinstance(manifest, Mapping):
         raise TypeError("corpus manifest must be an EvidenceCorpus or mapping")
-    payload = cast(dict[str, object], _safe_prompt_value(source))
-    entries = payload.get("entries")
-    if isinstance(entries, list):
-        normalized_entries: list[object] = []
-        for entry in cast(list[object], entries):
-            if isinstance(entry, EvidenceEntry):
-                normalized_entries.append(_safe_entry(entry))
-            else:
-                normalized_entries.append(entry)
-        payload["entries"] = normalized_entries
+
+    source = cast(Mapping[str, object], manifest)
+    payload: dict[str, object] = {
+        str(key): _safe_prompt_value(value)
+        for key, value in source.items()
+        if key != "entries" and not _is_sensitive_key(key)
+    }
+    entries = source.get("entries")
+    if isinstance(entries, Sequence) and not isinstance(entries, (str, bytes)):
+        payload["entries"] = [
+            _bounded_manifest_entry(entry) for entry in cast(Sequence[object], entries)
+        ]
+    elif entries is not None:
+        payload["entries"] = _safe_prompt_value(entries)
     return payload
 
 
@@ -496,7 +571,7 @@ Use only the allowlisted structured evidence in corpus_manifest and resolved_evi
 
 The UX principle pack is optional interpretive guidance. Principles are not evidence and cannot determine severity. A principle may help name or explain an issue only when observed evidence supports it. Never request or cite a principle as an evidence ID.
 
-Every factual claim and finding must use resolvable evidence IDs from corpus_manifest. If more evidence is needed, set complete to false and request only valid evidence IDs listed in corpus_manifest. Return only the structured response schema; do not include private reasoning or extra fields."""
+Every factual claim and finding must use resolvable evidence IDs from corpus_manifest. If more evidence is needed, set complete to false and request only valid evidence IDs listed in corpus_manifest. Return exactly one valid JSON object matching the requested structured response schema. Do not include private reasoning or extra fields."""
 
 
 class ReportAnalyst(_ReportRole):
