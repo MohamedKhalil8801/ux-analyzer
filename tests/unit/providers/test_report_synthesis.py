@@ -171,8 +171,90 @@ async def test_analyst_prompt_has_boundary_and_excludes_prior_agent_context() ->
         ensure_ascii=True,
     )
     assert "Treat reference paths as examples, not the only correct path" in prompt
+    assert (
+        "Return exactly one valid JSON object matching the requested structured response schema"
+        in prompt
+    )
     assert "PRIOR_AGENT_PRIVATE_REASONING_SENTINEL" not in serialized_messages
     assert "PRIOR_FINDING_PROSE_SENTINEL" not in serialized_messages
+
+
+@pytest.mark.asyncio
+async def test_initial_manifest_is_bounded_but_resolved_evidence_keeps_payload() -> (
+    None
+):
+    client = RecordingClient()
+    analyst = ReportAnalyst(client, model="gpt-report")
+    second_evidence_id = "event:run-a:2"
+    large_payload = {"large": "payload-sentinel" * 1000}
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    EVIDENCE_ID,
+                    "event",
+                    "run-a",
+                    event_id="event-1",
+                    replay_sequence=1,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="summary-sentinel" * 1000,
+                payload=large_payload,
+            ),
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    second_evidence_id,
+                    "event",
+                    "run-a",
+                    event_id="event-2",
+                    replay_sequence=2,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="Second event.",
+                payload={"sequence": 2},
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=2,
+        max_attachment_bytes=1024,
+    )
+
+    await analyst.analyze(corpus, resolved_evidence=resolved)
+
+    message = json.loads(client.messages[1].content)
+    manifest_entries = message["corpus_manifest"]["entries"]
+    manifest_entry = manifest_entries[0]
+    resolved_entry = message["resolved_evidence"][0]
+    serialized_manifest = json.dumps(
+        message["corpus_manifest"], ensure_ascii=True, separators=(",", ":")
+    )
+    assert [entry["evidence_id"] for entry in manifest_entries] == [
+        EVIDENCE_ID,
+        second_evidence_id,
+    ]
+    assert manifest_entry == {
+        "evidence_id": EVIDENCE_ID,
+        "kind": "event",
+        "run_id": "run-a",
+        "reference": {
+            "evidence_id": EVIDENCE_ID,
+            "kind": "event",
+            "run_id": "run-a",
+            "event_id": "event-1",
+            "replay_sequence": 1,
+        },
+        "evidence_class": "deterministic-fact",
+        "summary": ("summary-sentinel" * 1000)[:509] + "...",
+    }
+    assert len(serialized_manifest.encode("utf-8")) < 2_000
+    assert len(manifest_entry["summary"]) == 512
+    assert "payload" not in manifest_entry
+    assert "payload-sentinel" not in serialized_manifest
+    assert resolved_entry["payload"] == large_payload
 
 
 @pytest.mark.asyncio
