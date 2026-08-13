@@ -41,6 +41,7 @@ from ux_analyzer.providers.report_synthesis import (
     TypedObjection,
     _bounded_manifest_value,
     _canonical_json,
+    _initial_manifest_payload,
     _known_evidence_ids,
     _manifest_payload,
 )
@@ -261,35 +262,78 @@ async def test_initial_manifest_is_bounded_but_resolved_evidence_keeps_payload()
     await analyst.analyze(corpus, resolved_evidence=resolved)
 
     message = json.loads(client.messages[1].content)
-    manifest_entries = message["corpus_manifest"]["entries"]
+    manifest = message["corpus_manifest"]
+    manifest_entries = manifest["entries"]
     manifest_entry = manifest_entries[0]
     resolved_entry = message["resolved_evidence"][0]
-    serialized_manifest = json.dumps(
-        message["corpus_manifest"], ensure_ascii=True, separators=(",", ":")
-    )
-    assert [entry["evidence_id"] for entry in manifest_entries] == [
+    serialized_manifest = json.dumps(manifest, ensure_ascii=True, separators=(",", ":"))
+    assert manifest["manifest_format"] == "compact-parallel-v1"
+    assert manifest["evidence_ids"] == [
         EVIDENCE_ID,
         second_evidence_id,
     ]
-    assert manifest_entry == {
-        "evidence_id": EVIDENCE_ID,
-        "kind": "event",
-        "run_id": "run-a",
-        "reference": {
-            "evidence_id": EVIDENCE_ID,
-            "kind": "event",
-            "run_id": "run-a",
-            "event_id": "event-1",
-            "replay_sequence": 1,
-        },
-        "evidence_class": "deterministic-fact",
-        "summary": ("summary-sentinel" * 1000)[:509] + "...",
-    }
-    assert len(serialized_manifest.encode("utf-8")) < 2_000
-    assert len(manifest_entry["summary"]) == 512
-    assert "payload" not in manifest_entry
+    assert manifest["entry_fields"] == [
+        "kind_index",
+        "run_index",
+        "viewport_index",
+        "evidence_class_index",
+        "element_id",
+        "event_id",
+        "metric_id",
+        "replay_sequence",
+        "sha256",
+    ]
+    assert manifest["kind_values"] == ["event"]
+    assert manifest["run_ids"] == ["run-a"]
+    assert manifest_entry == [0, 0, None, 0, None, "event-1", None, 1]
+    assert manifest_entries[1] == [0, 0, None, 0, None, "event-2", None, 2]
+    assert len(serialized_manifest.encode("utf-8")) < 1_000
+    assert "summary" not in manifest["entry_fields"]
     assert "payload-sentinel" not in serialized_manifest
+    assert "summary-sentinel" not in serialized_manifest
     assert resolved_entry["payload"] == large_payload
+
+
+def test_initial_manifest_index_preserves_context_and_reference_metadata() -> None:
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        metadata={
+            "scenario": {"id": "invite", "name": "Invite"},
+            "persona": {"id": "admin", "name": "Workspace administrator"},
+            "goal": "Invite a teammate to the workspace",
+        },
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    EVIDENCE_ID,
+                    "event",
+                    "run-a",
+                    event_id="event-1",
+                    replay_sequence=1,
+                    viewport_id="viewport-1",
+                    element_id="target",
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="Do not send this summary in the initial prompt.",
+                payload={"secret": "full evidence payload"},
+            ),
+        ),
+    )
+
+    manifest = _initial_manifest_payload(corpus)
+    fields = manifest["entry_fields"]
+    row = manifest["entries"][0]
+
+    assert manifest["metadata"] == corpus.metadata
+    assert manifest["evidence_ids"] == [EVIDENCE_ID]
+    assert manifest["run_ids"] == ["run-a"]
+    assert manifest["viewport_values"] == ["viewport-1"]
+    assert row[fields.index("element_id")] == "target"
+    assert row[fields.index("event_id")] == "event-1"
+    assert row[fields.index("replay_sequence")] == 1
+    serialized = _canonical_json(manifest)
+    assert "full evidence payload" not in serialized
+    assert "Do not send this summary" not in serialized
 
 
 def test_initial_manifest_omits_attachment_and_filesystem_path_fields() -> None:
@@ -967,6 +1011,7 @@ def test_full_size_initial_manifest_stays_under_hard_budget_and_keeps_ids() -> N
         "kind_index",
         "run_index",
         "viewport_index",
+        "evidence_class_index",
         "element_id",
         "event_id",
         "metric_id",

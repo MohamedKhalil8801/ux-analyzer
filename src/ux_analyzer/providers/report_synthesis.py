@@ -95,6 +95,7 @@ _COMPACT_MANIFEST_ENTRY_FIELDS = (
     "kind_index",
     "run_index",
     "viewport_index",
+    "evidence_class_index",
     "element_id",
     "event_id",
     "metric_id",
@@ -607,6 +608,8 @@ def _compact_manifest_candidate(
     run_indexes: dict[str, int] = {}
     viewport_values: list[str] = []
     viewport_indexes: dict[str, int] = {}
+    evidence_class_values: list[str] = []
+    evidence_class_indexes: dict[str, int] = {}
 
     def index_value(
         value: object,
@@ -647,10 +650,20 @@ def _compact_manifest_candidate(
             viewport_values,
             viewport_indexes,
         )
-        compact: list[object] = [kind_index, run_index, viewport_index]
+        evidence_class_index = index_value(
+            entry.get("evidence_class"),
+            evidence_class_values,
+            evidence_class_indexes,
+        )
+        compact: list[object] = [
+            kind_index,
+            run_index,
+            viewport_index,
+            evidence_class_index,
+        ]
         compact.extend(
             reference.get(field) if reference is not None else None
-            for field in _COMPACT_MANIFEST_ENTRY_FIELDS[3:]
+            for field in _COMPACT_MANIFEST_ENTRY_FIELDS[4:]
         )
         while compact and compact[-1] is None:
             compact.pop()
@@ -671,6 +684,7 @@ def _compact_manifest_candidate(
     result["kind_values"] = kind_values
     result["run_ids"] = run_ids
     result["viewport_values"] = viewport_values
+    result["evidence_class_values"] = evidence_class_values
     result["entries"] = compact_entries
     return result
 
@@ -786,6 +800,26 @@ def _manifest_payload(manifest: object) -> dict[str, object]:
             "initial evidence manifest identifiers exceed hard byte budget"
         )
     return compact
+
+
+def _initial_manifest_payload(manifest: ManifestInput) -> dict[str, object]:
+    """Return the compact, index-only context sent at role invocation time."""
+
+    bounded = _manifest_payload(manifest)
+    if bounded.get("manifest_format") == _COMPACT_MANIFEST_FORMAT:
+        return bounded
+    entries = bounded.get("entries")
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise TypeError("bounded corpus manifest entries must be a sequence")
+    bounded_entries = cast(Sequence[object], entries)
+    mapping_entries = [
+        cast(Mapping[str, object], entry)
+        for entry in bounded_entries
+        if isinstance(entry, Mapping)
+    ]
+    if len(mapping_entries) != len(bounded_entries):
+        raise TypeError("bounded corpus manifest entries must be mappings")
+    return _compact_manifest_candidate(bounded, mapping_entries)
 
 
 def _known_evidence_ids(manifest: ManifestInput) -> frozenset[str]:
@@ -987,7 +1021,7 @@ class _ReportRole:
         ):
             raise ValueError("previous output must belong to this role")
         message_payload: dict[str, object] = {
-            "corpus_manifest": _manifest_payload(manifest),
+            "corpus_manifest": _initial_manifest_payload(manifest),
             "resolved_evidence": _resolved_payload(resolved_evidence),
             "ux_principle_pack": [asdict(item) for item in normalized_principles],
             "role_input": dict(role_input or {}),
@@ -1156,7 +1190,7 @@ _COMMON_PROMPT = """You are one isolated report-synthesis role.
 
 Use only the allowlisted structured evidence in corpus_manifest and resolved_evidence. Do not use prior prompts, raw model responses, private reasoning, chat history, cognitive prose, or existing finding prose. Frozen Expectations describe outcomes, invariants, acceptable alternatives, and warning signals. Treat reference paths as examples, not the only correct path. Judge path deviations only through observed user impact and supported outcomes.
 
-Large corpus_manifest values may use manifest_format compact-parallel-v1. In that format, each entries row position corresponds to the same position in evidence_ids and follows entry_fields; trailing null fields may be omitted. kind_index, run_index, and viewport_index index kind_values, run_ids, and viewport_values. Use row metadata to choose evidence IDs, then request full evidence only by those IDs.
+The initial corpus_manifest is always an index-only manifest_format compact-parallel-v1. Each entries row position corresponds to the same position in evidence_ids and follows entry_fields; trailing null fields may be omitted. kind_index, run_index, viewport_index, and evidence_class_index index kind_values, run_ids, viewport_values, and evidence_class_values. Use row metadata to choose evidence IDs, then request full evidence only by those IDs. The initial manifest has no full evidence payload or summary; resolved_evidence is the exact on-demand retrieval channel.
 
 The UX principle pack is optional interpretive guidance. Principles are not evidence and cannot determine severity. A principle may help name or explain an issue only when observed evidence supports it. Never request or cite a principle as an evidence ID.
 
