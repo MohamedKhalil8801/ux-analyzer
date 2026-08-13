@@ -645,6 +645,21 @@ def _write_run(
         run / "result.json",
         {
             "run_id": run_id,
+            "spec": {
+                "scenario": {
+                    "id": "invite",
+                    "name": "Invite",
+                    "goal": "Invite a teammate to the workspace",
+                },
+                "application_version": {
+                    "id": version,
+                    "label": version.title(),
+                },
+                "persona": {
+                    "id": "persona",
+                    "name": "Workspace administrator",
+                },
+            },
             "agent_claimed_success": True,
             "outcome": {"kind": outcome},
             "terminal_reason": terminal_reason,
@@ -1068,9 +1083,7 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     normalized_html = " ".join(html.split())
 
     assert 'data-synthesis-status="rejected"' in normalized_html
-    assert "Evidence review rejected; candidate findings are not publishable." in (
-        normalized_html
-    )
+    assert "Model review rejected; recorded evidence available" in (normalized_html)
     assert (
         "No prioritized fix is available because all candidate findings were rejected."
         in (normalized_html)
@@ -1220,14 +1233,41 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     ).read_text(encoding="utf-8")
 
     assert (
-        "Recorded findings are shown while the complete evidence review is unavailable."
+        "Model review is unavailable. Recorded deterministic findings and evidence are shown for the tested scenarios."
         in (fallback_html)
     )
     assert 'data-synthesis-status="missing"' in fallback_html
-    assert "Target wording gives weak goal cues" in fallback_html
+    priority_html = fallback_html[
+        fallback_html.index('id="priority-findings"') : fallback_html.index(
+            'id="fix-first"'
+        )
+    ]
+    assert "Target wording gives weak goal cues" not in priority_html
+    assert "Invite" in fallback_html
+    assert "Invite a teammate to the workspace" in fallback_html
+    assert "Workspace administrator" in fallback_html
+    assert "run-1" in fallback_html
+    assert "verified-success" in fallback_html
+    assert "Model review unavailable; recorded evidence available" in fallback_html
+    fallback_copy = " ".join(fallback_html.split()).lower()
+    assert (
+        "model review did not complete. recorded deterministic evidence remains available. "
+        "ux principles, counterevidence, and reviewer status are unavailable."
+        in fallback_copy
+    )
+    assert "Recorded deterministic evidence only" in fallback_html
     assert "1 recorded" in fallback_html
-    assert "Unavailable: synthesis principles were not recorded." in fallback_html
-    assert "Unavailable: counterevidence was not recorded." in fallback_html
+    assert (
+        "Unavailable: model review did not complete, so synthesis principles were not recorded."
+        in fallback_html
+    )
+    assert (
+        "Unavailable: model review did not complete, so counterevidence was not recorded."
+        in fallback_html
+    )
+    assert 'data-report-navigation="true"' in fallback_html
+    assert "max-width: 1440px" in fallback_html
+    assert "padding-inline: clamp(" in fallback_html
     assert 'data-evidence-target="{&#34;kind&#34;: &#34;metric&#34;' in fallback_html
 
 
@@ -1244,13 +1284,73 @@ def test_renderer_uses_unavailable_fix_first_copy_without_fallback_findings(
     normalized_html = " ".join(html.split())
 
     assert (
-        "No prioritized fix is available because the evidence review is unavailable."
+        "No model-reviewed fix is available because model review is unavailable; inspect recorded evidence in the workspace."
         in normalized_html
     )
     assert (
         "No fix is prioritized because no supported issue was established"
         not in normalized_html
     )
+
+
+def test_renderer_fallback_finding_is_self_contained(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+
+    context = renderer._report_context(renderer._load_experiment(tmp_path))
+    finding = context["synthesis"]["findings"][0]
+
+    assert finding["source"] == "deterministic-fallback"
+    assert finding["fallback_context"] == {
+        "run_id": "run-1",
+        "scenario": "Invite",
+        "persona": "Workspace administrator",
+        "goal": "Invite a teammate to the workspace",
+        "version": "Defective",
+        "target": "target",
+        "action": "interact-with-element target: succeeded",
+        "outcome": "verified-success",
+        "verification": "verified",
+    }
+    assert "does not clearly signal the task goal" in finding["fallback_title"]
+    assert "model review" in finding["fallback_issue"].lower()
+    assert finding["evidence_refs"][0]["available"] is True
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_browser_fallback_navigation_context_and_evidence_on_mobile(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page(viewport={"width": 1440, "height": 900})
+        await page.goto(report_path.resolve().as_uri())
+
+        assert await page.locator('[data-report-navigation="true"]').count() == 1
+        assert "Model review unavailable" in (
+            await page.locator("#analysis-summary").text_content() or ""
+        )
+        assert "Invite a teammate to the workspace" in (
+            await page.locator("#priority-findings").text_content() or ""
+        )
+        assert await page.locator('a[href="#playback-workspace"]').count() == 1
+
+        await page.locator("summary", has_text="Verify evidence").first.press("Enter")
+        await page.locator('[data-evidence-id="run-1:discovery-cost"]').click()
+        assert "evidence=run-1%3Adiscovery-cost" in page.url
+
+        await page.set_viewport_size({"width": 360, "height": 800})
+        dimensions = await page.evaluate(
+            "({scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth})"
+        )
+        assert dimensions["scrollWidth"] <= dimensions["innerWidth"]
+        assert await page.locator('[data-report-navigation="true"]').evaluate(
+            "node => node.getBoundingClientRect().right <= window.innerWidth"
+        )
+        await browser.close()
 
 
 @pytest.mark.e2e

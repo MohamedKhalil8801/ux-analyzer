@@ -385,19 +385,42 @@ def _fallback_synthesis(
     fallback_findings: list[dict[str, Any]],
     limitation: str,
 ) -> dict[str, Any]:
+    if status in {"missing", "unavailable"}:
+        assessment = (
+            "Model review is unavailable. Recorded deterministic findings and evidence "
+            "are shown for the tested scenarios."
+        )
+        model_review_status = "unavailable"
+    elif status == "invalid":
+        assessment = (
+            "Model review could not be validated. Recorded deterministic findings and "
+            "evidence are shown for the tested scenarios."
+        )
+        model_review_status = "invalid"
+    else:
+        assessment = (
+            "Model review was rejected. Recorded deterministic findings and evidence "
+            "are shown for the tested scenarios."
+        )
+        model_review_status = "rejected"
     return {
         "synthesis_status": status,
         "status": status,
         "using_fallback": True,
         "attempt_id": None,
         "corpus_digest": None,
-        "assessment": (
-            "Deterministic findings are shown because report synthesis is unavailable."
-        ),
+        "assessment": assessment,
         "findings": fallback_findings,
         "fallback_findings": fallback_findings,
         "limitations": [limitation],
         "tested_scope": _synthesis_scope(runs),
+        "model_review_status": model_review_status,
+        "review_basis": "recorded-deterministic-evidence",
+        "missing_review_fields": [
+            "UX principles",
+            "counterevidence",
+            "reviewer status",
+        ],
     }
 
 
@@ -413,13 +436,22 @@ def _deterministic_fallback_findings(
                 run,
                 run_id,
             )
+            fallback_context = _fallback_finding_context(finding, run, run_id)
+            fallback_copy = _fallback_finding_copy(finding, fallback_context)
             findings.append(
                 {
                     **finding,
+                    "title": fallback_copy["title"],
                     "run_ids": _unique([*_strings(finding.get("run_ids")), run_id]),
                     "source": "deterministic-fallback",
                     "evidence_refs": evidence_refs,
                     "evidence_targets": evidence_targets,
+                    "fallback_context": fallback_context,
+                    "fallback_title": fallback_copy["title"],
+                    "fallback_issue": fallback_copy["issue"],
+                    "fallback_impact": fallback_copy["impact"],
+                    "fallback_root_cause": fallback_copy["root_cause"],
+                    "fallback_fix": fallback_copy["fix"],
                 }
             )
     return sorted(
@@ -432,6 +464,127 @@ def _deterministic_fallback_findings(
             _text(item.get("finding_id"), ""),
         ),
     )
+
+
+def _fallback_finding_context(
+    finding: Mapping[str, Any],
+    run: Mapping[str, Any],
+    run_id: str,
+) -> dict[str, str]:
+    actions = _comparison_action_path(dict(run))
+    action_values = _strings(finding.get("action_sequence"))
+    if not action_values:
+        action_values = [
+            action_text
+            for action in actions
+            if (action_text := _fallback_action_text(action))
+        ]
+    target_ids = _strings(finding.get("element_ids"))
+    if not target_ids:
+        target_ids = [
+            _text(action.get("element_id"))
+            for action in actions
+            if action.get("element_id")
+        ]
+    target = target_ids[0] if target_ids else "recorded interaction target"
+    return {
+        "run_id": run_id,
+        "scenario": _text(run.get("scenario_label"), "Scenario unavailable"),
+        "persona": _text(run.get("persona_label"), "Persona unavailable"),
+        "goal": _text(run.get("goal"), "Goal unavailable"),
+        "version": _text(run.get("version_label"), "Version unavailable"),
+        "target": target,
+        "action": "; ".join(action_values) or "No action context recorded",
+        "outcome": _text(run.get("outcome"), "Outcome unavailable"),
+        "verification": "verified" if bool(run.get("verified")) else "not verified",
+    }
+
+
+def _fallback_action_text(action: Mapping[str, Any]) -> str:
+    kind = _text(action.get("kind"), "action")
+    element_id = _optional_text(action.get("element_id"))
+    label = f"{kind} {element_id}" if element_id else kind
+    succeeded = action.get("succeeded")
+    if succeeded is True:
+        return f"{label}: succeeded"
+    if succeeded is False:
+        return f"{label}: failed"
+    return label
+
+
+def _fallback_finding_copy(
+    finding: Mapping[str, Any],
+    context: Mapping[str, str],
+) -> dict[str, str]:
+    category = _text(finding.get("category")).casefold()
+    target = context["target"]
+    scenario = context["scenario"]
+    persona = context["persona"]
+    goal = context["goal"]
+    run_id = context["run_id"]
+    cause = _text(finding.get("cause"), "Recorded cause unavailable")
+    if category == "weak-scent":
+        title = f"{target} does not clearly signal the task goal"
+        issue = (
+            f"Run {run_id} in the {scenario} scenario recorded weak goal cues on "
+            f'"{target}" while {persona} worked toward "{goal}".'
+        )
+        impact = (
+            f"The recorded interaction gives {persona} less information about where "
+            f'to start the task "{goal}".'
+        )
+        fix = (
+            f'Inspect "{target}" in the linked replay and make its label or nearby '
+            f'cue name the goal "{goal}".'
+        )
+    elif category == "missing-feedback":
+        title = f"{target} does not confirm the completed result"
+        issue = (
+            f'After the recorded action on "{target}" in run {run_id}, no visible '
+            f'confirmation for "{goal}" was captured.'
+        )
+        impact = (
+            f"{persona} cannot tell from the recorded result whether the task "
+            f'"{goal}" completed.'
+        )
+        fix = (
+            f'Inspect the post-action replay for "{target}" and add a visible, '
+            f'goal-specific confirmation for "{goal}".'
+        )
+    elif category == "poor-recovery":
+        title = f"{target} recovery does not restore the task"
+        issue = (
+            f'Run {run_id} recorded an error or failed step around "{target}" '
+            f'without restoring progress toward "{goal}".'
+        )
+        impact = (
+            f"{persona} is left without a recorded path back to the task after the "
+            f"failure, so the outcome is harder to trust."
+        )
+        fix = (
+            f'Inspect the failed action and replay sequence for "{target}"; provide '
+            f'a recovery path that restores progress toward "{goal}".'
+        )
+    else:
+        category_label = category or "unclassified"
+        title = f"Recorded interaction needs review for {target}"
+        issue = (
+            f"Run {run_id} in the {scenario} scenario recorded category "
+            f'"{category_label}" for "{target}" while pursuing "{goal}".'
+        )
+        impact = (
+            f"The recorded result may affect {persona} during the tested task, but "
+            "the fallback evidence does not establish a broader user claim."
+        )
+        fix = f'Inspect the linked evidence for "{target}" before making a product change.'
+    return {
+        "title": title,
+        "issue": issue
+        + " Model review is unavailable, so this statement uses recorded fallback evidence only.",
+        "impact": impact,
+        "root_cause": f"Recorded cause for run {run_id}: {cause}",
+        "fix": fix,
+    }
 
 
 def _fallback_evidence_targets(
@@ -1587,6 +1740,8 @@ def _report_context(
         run_links=run_links,
         run_scope=run_scope,
     )
+    if synthesis.get("using_fallback"):
+        runs = _project_fallback_run_findings(runs, synthesis.get("findings"))
     concise_index_fallback = (
         not include_run_payload
         and run_scope is None
@@ -1621,6 +1776,46 @@ def _report_context(
         "synthesis_status": synthesis["synthesis_status"],
         "report_json": _safe_json(report_payload),
     }
+
+
+def _project_fallback_run_findings(
+    runs: Sequence[Mapping[str, Any]],
+    fallback_findings: object,
+) -> list[dict[str, Any]]:
+    fallback_by_key = {
+        (
+            _text(finding.get("run_ids", [""])[0]),
+            _text(finding.get("finding_id")),
+        ): finding
+        for finding in _list_of_mappings(fallback_findings)
+        if _strings(finding.get("run_ids"))
+    }
+    projected_runs: list[dict[str, Any]] = []
+    for source in runs:
+        run = dict(source)
+        projected_findings: list[dict[str, Any]] = []
+        for finding in _list_of_mappings(source.get("findings")):
+            key = (_text(source.get("run_id")), _text(finding.get("finding_id")))
+            fallback = fallback_by_key.get(key)
+            if fallback is None:
+                projected_findings.append(dict(finding))
+                continue
+            projected_findings.append(
+                {
+                    **finding,
+                    "title": fallback.get("fallback_title", finding.get("title")),
+                    "cause": fallback.get("fallback_issue", finding.get("cause")),
+                    "fallback_context": fallback.get("fallback_context", {}),
+                    "fallback_title": fallback.get("fallback_title", ""),
+                    "fallback_issue": fallback.get("fallback_issue", ""),
+                    "fallback_impact": fallback.get("fallback_impact", ""),
+                    "fallback_root_cause": fallback.get("fallback_root_cause", ""),
+                    "fallback_fix": fallback.get("fallback_fix", ""),
+                }
+            )
+        run["findings"] = projected_findings
+        projected_runs.append(run)
+    return projected_runs
 
 
 def _render_html(context: dict[str, Any], title: str) -> str:

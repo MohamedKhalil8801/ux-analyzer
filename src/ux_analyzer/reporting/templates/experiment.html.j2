@@ -6,11 +6,7 @@
   <title>{{ title }}</title>
   {% set compact_index = runs and runs[0].run_page is defined and runs[0].run_page %}
   <style>
-    {% if compact_index %}
-    :root{--ink:#1b2426;--muted:#5e6a6d;--wash:#f3f4f1;--line:#d2d9d6;--accent:#0b7180}*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:14px/1.45 system-ui,sans-serif}a{color:var(--accent)}button:focus-visible,a:focus-visible,summary:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}main,.page-header{width:min(1600px,calc(100% - 28px));margin:0 auto}.page-header{display:flex;justify-content:space-between;gap:24px;padding:24px 0 16px}.section,.report-section{margin-bottom:16px;border:1px solid var(--line);border-radius:6px;background:#fff;overflow-wrap:anywhere}.report-section{padding:20px 0}.report-section-heading{display:flex;justify-content:space-between;gap:18px}.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-block:1px solid var(--line)}.summary-item{min-width:0;padding:12px 14px;border-right:1px solid var(--line)}.summary-item span,.finding-header h3,.finding p,.finding li{display:block;overflow-wrap:anywhere}.summary-item span{font-weight:700}.finding{min-width:0;padding:22px 0 24px;border-top:1px solid var(--line)}.finding-header{display:flex;justify-content:space-between;gap:16px}.finding-header h3{margin:7px 0 0;font-size:1.15rem}.severity-label{display:inline-block;padding:3px 7px;border:1px solid currentColor;border-radius:4px;font-size:.68rem;font-weight:800;text-transform:uppercase}.finding-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:18px}.finding-verification{margin-top:18px;border-top:1px solid var(--line)}.evidence-ref-list{margin:0;padding:0;list-style:none}.evidence-ref{max-width:100%;padding:4px 7px;border:1px solid var(--line);border-radius:4px;background:#f8faf8;color:var(--accent);overflow-wrap:anywhere;white-space:normal}.evidence-nav{display:flex;flex-wrap:wrap;gap:8px}.evidence-nav a{display:inline-flex;padding:6px 10px;border:1px solid var(--line);border-radius:4px;background:#f8faf8;text-decoration:none;overflow-wrap:anywhere}@media(max-width:760px){main,.page-header{width:calc(100% - 16px)}.page-header,.report-section-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.summary-item:nth-child(2){border-right:0}.summary-item:nth-child(n+3){border-top:1px solid var(--line)}.finding-header,.finding-grid{grid-template-columns:1fr}.finding-header{display:grid}.evidence-nav a{max-width:100%}}
-    {% else %}
     {{ css | safe }}
-    {% endif %}
   </style>
 </head>
 <body>
@@ -30,9 +26,9 @@
     {% macro status_label(status) -%}
       {%- if status == "accepted" -%}Evidence review complete
       {%- elif status == "no-issues" -%}No supported issues established
-      {%- elif status in ["missing", "unavailable"] -%}Evidence review unavailable
-      {%- elif status == "invalid" -%}Evidence review could not be validated
-      {%- elif status == "rejected" -%}Evidence review rejected; candidate findings are not publishable.
+      {%- elif status in ["missing", "unavailable"] -%}Model review unavailable; recorded evidence available
+      {%- elif status == "invalid" -%}Model review could not be validated; recorded evidence available
+      {%- elif status == "rejected" -%}Model review rejected; recorded evidence available
       {%- else -%}Evidence review status unavailable
       {%- endif -%}
     {%- endmacro %}
@@ -197,9 +193,9 @@
         {% elif synthesis_status == "rejected" %}
         No report-synthesis finding was publishable because all candidate findings were rejected.
         {% elif using_fallback %}
-        Recorded findings are shown while the complete evidence review is unavailable.
+        {{ synthesis.assessment }}
         {% else %}
-        Evidence review is unavailable; inspect recorded run evidence below.
+        Model review is unavailable; inspect recorded run evidence below.
         {% endif %}
       </p>
       <div class="summary-grid">
@@ -217,15 +213,19 @@
         </div>
         <div class="summary-item">
           <strong>Report basis</strong>
-          <span>{{ "Recorded findings (backup view)" if using_fallback else "Recorded evidence and reviewed findings" }}</span>
+          <span>{{ "Recorded deterministic evidence only" if using_fallback else "Recorded evidence and reviewed findings" }}</span>
         </div>
       </div>
       {% if using_fallback %}
       <p class="fallback-notice">
         {% if synthesis_status == "rejected" %}
-        Report synthesis was rejected. Candidate findings are not publishable; recorded findings remain available as a fallback.
+        Model review was rejected. Candidate findings are not publishable; recorded deterministic evidence remains available.
+        {% elif synthesis_status == "invalid" %}
+        Model review could not be validated. Recorded deterministic evidence remains available, but principles, counterevidence, and reviewer status are unavailable.
+        {% elif synthesis_status in ["missing", "unavailable"] %}
+        Model review did not complete. Recorded deterministic evidence remains available. UX principles, counterevidence, and reviewer status are unavailable.
         {% else %}
-        Backup view in use. Recorded findings remain available while the complete evidence review is unavailable.
+        Model review status is unavailable. The findings below are deterministic recorded evidence. UX principles, counterevidence, and reviewer status are unavailable.
         {% endif %}
       </p>
       {% endif %}
@@ -253,38 +253,56 @@
             <header class="finding-header">
               <div>
                 <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }} priority</span>
-                <h3>{{ finding.title }}</h3>
+                <h3>{{ finding.get("fallback_title", finding.title) }}</h3>
               </div>
-              <span class="confidence-label">Recorded finding</span>
+              <span class="confidence-label">Recorded deterministic evidence</span>
             </header>
+            <div class="finding-context" data-fallback-context="true">
+              <div><strong>Scenario</strong><span>{{ finding.fallback_context.scenario }}</span></div>
+              <div><strong>Persona</strong><span>{{ finding.fallback_context.persona }}</span></div>
+              <div><strong>Goal</strong><span>{{ finding.fallback_context.goal }}</span></div>
+              <div><strong>Run</strong><span>{{ finding.fallback_context.run_id }} / {{ finding.fallback_context.version }}</span></div>
+              <div><strong>Target</strong><span>{{ finding.fallback_context.target }}</span></div>
+              <div><strong>Action</strong><span>{{ finding.fallback_context.action }}</span></div>
+              <div><strong>Outcome</strong><span>{{ finding.fallback_context.outcome }}</span></div>
+              <div><strong>Verification</strong><span>{{ finding.fallback_context.verification }}</span></div>
+            </div>
             <div class="finding-grid">
               <div class="finding-field">
                 <h4>Issue</h4>
-                <p>{{ finding.get("cause") or finding.get("category") or "Recorded interaction evidence needs review." }}</p>
+                <p>{{ finding.get("fallback_issue") }}</p>
               </div>
               <div class="finding-field">
                 <h4>Why it matters</h4>
-                <p>Recorded interaction evidence suggests this area may slow or interrupt the tested task.</p>
+                <p>{{ finding.get("fallback_impact") }}</p>
               </div>
               <div class="finding-field">
                 <h4>Likely root cause</h4>
-                <p>{{ finding.get("cause") or "The recorded cause is unavailable." }}</p>
+                <p>{{ finding.get("fallback_root_cause") }}</p>
               </div>
               <div class="finding-field">
                 <h4>What to fix</h4>
                 <ul class="finding-list">
-                  <li>Review this area with the recorded evidence before making a product change.</li>
+                  <li>{{ finding.get("fallback_fix") }}</li>
                 </ul>
               </div>
             </div>
             <div class="finding-meta">
               <div>
                 <strong>Affected surfaces</strong>
-                    <span>{{ fallback_element_ids | join(", ") if fallback_element_ids else "Recorded run evidence" }}</span>
+                    <span>{{ finding.fallback_context.target }}</span>
               </div>
               <div>
                 <strong>Confidence</strong>
-                <span>Recorded finding; full evidence review unavailable.</span>
+                <span>
+                  {% if synthesis_status in ["missing", "unavailable"] %}
+                  Recorded deterministic evidence; model review unavailable.
+                  {% elif synthesis_status == "invalid" %}
+                  Recorded deterministic evidence; model review could not be validated.
+                  {% else %}
+                  Recorded deterministic evidence; model review was rejected.
+                  {% endif %}
+                </span>
               </div>
             </div>
             <details class="finding-verification">
@@ -319,21 +337,29 @@
                       {% for limitation in finding.get("limitations", []) %}
                     <li>{{ limitation }}</li>
                   {% else %}
-                    <li class="empty">Complete evidence review unavailable.</li>
+                    <li class="empty">Model review did not complete; no additional synthesis limitation was recorded.</li>
                   {% endfor %}
                   </ul>
                 </div>
                 <div class="verification-block">
                   <h4>Principles</h4>
-                  <p class="empty">Unavailable: synthesis principles were not recorded.</p>
+                  <p class="empty">Unavailable: model review did not complete, so synthesis principles were not recorded.</p>
                 </div>
                 <div class="verification-block">
                   <h4>Counterevidence</h4>
-                  <p class="empty">Unavailable: counterevidence was not recorded.</p>
+                  <p class="empty">Unavailable: model review did not complete, so counterevidence was not recorded.</p>
                 </div>
                 <div class="verification-block">
                   <h4>Reviewer status</h4>
-                  <p>Recorded finding; not reviewed by the complete evidence process.</p>
+                  <p>
+                    {% if synthesis_status in ["missing", "unavailable"] %}
+                    Model review unavailable; recorded deterministic evidence only.
+                    {% elif synthesis_status == "invalid" %}
+                    Model review could not be validated; recorded deterministic evidence only.
+                    {% else %}
+                    Model review was rejected; recorded deterministic evidence only.
+                    {% endif %}
+                  </p>
                 </div>
               </div>
             </details>
@@ -375,12 +401,12 @@
           <li>
             <a href="#finding-{{ finding.finding_id }}">
               <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }}</span>
-              <strong>{{ finding.title }}</strong>
+              <strong>{{ finding.get("fallback_title", finding.title) }}</strong>
             </a>
                 {% if finding.get("fixes") %}
                 <span>{{ finding.fixes[0] }}</span>
-                {% elif finding.get("cause") %}
-                <span>Review recorded cause: {{ finding.get("cause") }}</span>
+                {% elif finding.get("fallback_fix") %}
+                <span>{{ finding.get("fallback_fix") }}</span>
             {% endif %}
           </li>
           {% endfor %}
@@ -393,7 +419,7 @@
         {% elif synthesis_status == "rejected" %}
         No prioritized fix is available because all candidate findings were rejected. Rejected findings are not publishable.
         {% elif using_fallback %}
-        No prioritized fix is available because the evidence review is unavailable.
+        No model-reviewed fix is available because model review is unavailable; inspect recorded evidence in the workspace.
         {% else %}
         No prioritized fix is available from this report.
         {% endif %}
@@ -410,7 +436,11 @@
         <span class="muted">Recorded detail and comparison</span>
       </div>
       <p>Use recorded evidence to verify a finding, compare runs, inspect saliency, or replay an interaction.</p>
-      <nav class="evidence-nav" aria-label="Evidence sections">
+      <nav class="evidence-nav" aria-label="Evidence sections" data-report-navigation="true">
+        <a href="#analysis-summary" aria-controls="analysis-summary">Analysis summary</a>
+        <a href="#priority-findings" aria-controls="priority-findings">Priority findings</a>
+        <a href="#fix-first" aria-controls="fix-first">Fix first</a>
+        <a href="#evidence-workspace" aria-controls="evidence-workspace">Evidence workspace</a>
         <a href="#comparison-overview" aria-controls="comparison-overview">Comparison table</a>
         {% if focused_acceptance %}
         <a href="#focused-acceptance" aria-controls="focused-acceptance">Saliency gate</a>
