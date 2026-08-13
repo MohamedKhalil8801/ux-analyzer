@@ -89,6 +89,7 @@ class _ManagedSession:
     context: BrowserContext
     page: Page
     policy: NetworkPolicy
+    raw_trace_path: Path
     trace_started: bool = False
     capture_index: int = 0
     cleanup_started: bool = False
@@ -139,7 +140,13 @@ class PlaywrightSessionAdapter:
         if config.session_id in self._sessions:
             raise ProviderFailure("session ID already active")
         config.trace_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_trace_path = _raw_trace_path(config.trace_path)
         config.trace_path.unlink(missing_ok=True)
+        _discard_trace(
+            config.trace_path,
+            raw_trace_path,
+            include_published=False,
+        )
         policy = NetworkPolicy(allowed_origins)
         context: BrowserContext | None = None
         managed: _ManagedSession | None = None
@@ -213,6 +220,7 @@ class PlaywrightSessionAdapter:
                 context=context,
                 page=page,
                 policy=policy,
+                raw_trace_path=raw_trace_path,
                 trace_started=True,
             )
             assert managed is not None
@@ -574,7 +582,7 @@ class PlaywrightSessionAdapter:
                 await _cancel_and_gather_tasks(managed.popup_tasks)
                 if managed.trace_started:
                     await managed.context.tracing.stop(
-                        path=str(managed.handle.trace_path)
+                        path=str(managed.raw_trace_path)
                     )
             except BaseException as error:
                 if cleanup_error is None:
@@ -587,7 +595,7 @@ class PlaywrightSessionAdapter:
                     cleanup_error = error
 
             if cleanup_error is not None:
-                _discard_trace(managed.handle.trace_path)
+                _discard_trace(managed.handle.trace_path, managed.raw_trace_path)
                 if isinstance(cleanup_error, PlaywrightError):
                     return
                 raise cleanup_error
@@ -596,9 +604,9 @@ class PlaywrightSessionAdapter:
                 try:
                     _sanitize_trace(managed)
                 except PlaywrightError:
-                    _discard_trace(managed.handle.trace_path)
+                    _discard_trace(managed.handle.trace_path, managed.raw_trace_path)
                 except BaseException:
-                    _discard_trace(managed.handle.trace_path)
+                    _discard_trace(managed.handle.trace_path, managed.raw_trace_path)
                     raise
         except BaseException as error:
             managed.cleanup_error = error
@@ -612,17 +620,20 @@ class PlaywrightSessionAdapter:
 
 
 def _sanitize_trace(managed: _ManagedSession) -> None:
-    path = managed.handle.trace_path
-    if not path.is_file():
+    raw_path = managed.raw_trace_path
+    if not raw_path.is_file():
         return
     sanitized = sanitize_artifact_content(
-        path.name,
-        path.read_bytes(),
+        managed.handle.trace_path.name,
+        raw_path.read_bytes(),
         managed.config.artifact_redaction,
     )
-    temporary = path.with_name(f".{path.name}.sanitized")
+    temporary = managed.handle.trace_path.with_name(
+        f".{managed.handle.trace_path.name}.sanitized"
+    )
     temporary.write_bytes(sanitized)
-    _replace_trace_with_retry(temporary, path)
+    _replace_trace_with_retry(temporary, managed.handle.trace_path)
+    _discard_file(raw_path)
 
 
 def _replace_trace_with_retry(source: Path, destination: Path) -> None:
@@ -636,16 +647,34 @@ def _replace_trace_with_retry(source: Path, destination: Path) -> None:
             sleep(_TRACE_REPLACE_DELAY_SECONDS)
 
 
-def _discard_trace(path: Path) -> None:
-    for candidate in (path, path.with_name(f".{path.name}.sanitized")):
+def _raw_trace_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.raw")
+
+
+def _discard_trace(
+    path: Path,
+    raw_path: Path | None = None,
+    *,
+    include_published: bool = True,
+) -> None:
+    candidates = (
+        (path,) if include_published else ()
+    ) + (path.with_name(f".{path.name}.sanitized"),)
+    if raw_path is not None:
+        candidates += (raw_path,)
+    for candidate in candidates:
         try:
-            with candidate.open("r+b") as trace:
-                trace.truncate(0)
-                trace.flush()
-                os.fsync(trace.fileno())
+            _discard_file(candidate)
         except FileNotFoundError:
             continue
-        candidate.unlink(missing_ok=True)
+
+
+def _discard_file(path: Path) -> None:
+    with path.open("r+b") as trace:
+        trace.truncate(0)
+        trace.flush()
+        os.fsync(trace.fileno())
+    path.unlink(missing_ok=True)
 
 
 def _retrieve_task_exception(task: asyncio.Task[None]) -> None:

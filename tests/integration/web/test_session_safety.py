@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import sys
+import zipfile
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -55,6 +56,7 @@ from ux_analyzer.adapters.web.session import (
 from ux_analyzer.adapters.web.verifier import WebVerifier
 from ux_analyzer.domain.attention import ProgressiveObservation
 from ux_analyzer.domain.benchmark import VisibleResultVerifierSpec
+from ux_analyzer.ports.artifacts import RedactionPolicy
 from ux_analyzer.ports.observation import (
     BackAction,
     BlockedRequest,
@@ -1941,6 +1943,7 @@ async def test_trace_sanitization_failure_propagates_after_context_cleanup(
     )
 
     page = browser_adapter.page_for_testing(session)
+    raw_path = browser_adapter._sessions[session.session_id].raw_trace_path
 
     def fail_sanitization(*_args: object) -> bytes:
         assert page.is_closed()
@@ -1955,6 +1958,47 @@ async def test_trace_sanitization_failure_propagates_after_context_cleanup(
         await browser_adapter.end_session(session)
 
     assert browser_adapter.active_session_count == 0
+    assert not session.trace_path.exists()
+    assert not raw_path.exists()
+    assert not session.trace_path.with_name(f".{session.trace_path.name}.sanitized").exists()
+
+
+@pytest.mark.asyncio
+async def test_trace_finalization_uses_private_raw_archive_and_publishes_sanitized_trace(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_origin, _ = running_servers
+    sensitive = "invitee@example.test"
+    config = replace(
+        _session_config(fixture_origin, tmp_path / "private-raw.zip"),
+        artifact_redaction=RedactionPolicy(exact_values=(sensitive,)),
+    )
+    session = await browser_adapter.start_session(config)
+    managed = browser_adapter._sessions[session.session_id]
+    raw_path: Path | None = None
+
+    async def write_raw_trace(*, path: str) -> None:
+        nonlocal raw_path
+        raw_path = Path(path)
+        with zipfile.ZipFile(raw_path, "w") as archive:
+            archive.writestr("trace.network", f"email = '{sensitive}'")
+
+    monkeypatch.setattr(managed.context.tracing, "stop", write_raw_trace)
+
+    await browser_adapter.end_session(session)
+
+    assert raw_path is not None
+    assert raw_path != session.trace_path
+    assert raw_path.parent == session.trace_path.parent
+    assert raw_path.name == f".{session.trace_path.name}.raw"
+    assert not raw_path.exists()
+    with zipfile.ZipFile(session.trace_path) as archive:
+        sanitized_member = archive.read("trace.network")
+    assert sensitive.encode("utf-8") not in sanitized_member
+    assert b"[REDACTED]" in sanitized_member
 
 
 @pytest.mark.asyncio
@@ -2000,6 +2044,7 @@ async def test_persistent_trace_replace_failure_discards_trace_and_propagates(
         _session_config(fixture_origin, tmp_path / "persistent-replace.zip")
     )
     attempts = 0
+    raw_path = browser_adapter._sessions[session.session_id].raw_trace_path
 
     def always_fail_replace(_source: str, _destination: str) -> None:
         nonlocal attempts
@@ -2015,6 +2060,7 @@ async def test_persistent_trace_replace_failure_discards_trace_and_propagates(
     assert browser_adapter.active_session_count == 0
     assert not session.trace_path.exists()
     assert not session.trace_path.with_name(f".{session.trace_path.name}.sanitized").exists()
+    assert not raw_path.exists()
 
 
 @pytest.mark.asyncio
@@ -2031,6 +2077,7 @@ async def test_trace_stop_failure_removes_partially_written_sensitive_bytes(
     )
     page = browser_adapter.page_for_testing(session)
     managed = browser_adapter._sessions[session.session_id]
+    raw_path = managed.raw_trace_path
 
     async def fail_after_partial_write(*, path: str) -> None:
         Path(path).write_bytes(sensitive)
@@ -2042,6 +2089,7 @@ async def test_trace_stop_failure_removes_partially_written_sensitive_bytes(
 
     assert browser_adapter.active_session_count == 0
     assert page.is_closed()
+    assert not raw_path.exists()
     artifact_bytes = b"".join(
         path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     )
