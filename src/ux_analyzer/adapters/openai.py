@@ -32,6 +32,12 @@ from dotenv import dotenv_values, load_dotenv
 from PIL import Image
 from pydantic import BaseModel, ValidationError
 
+from ux_analyzer.ports.model_transport import (
+    TransportBudgetError,
+    enforce_transport_size,
+    serialize_transport_json,
+    transport_size,
+)
 from ux_analyzer.ports.models import (
     ChatMessage,
     ModelAttachment,
@@ -916,6 +922,9 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             request_payload = self._request_payload(
                 schema, normalized_messages, model, role_value, mode
             )
+            request_body = serialize_transport_json(request_payload)
+            if role_value in _REPORT_ROLES:
+                enforce_transport_size(request_body)
             try:
                 async with _model_call_slot(self._call_limiter):
                     response = await self._http_client.post(
@@ -925,7 +934,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                             "content-type": "application/json",
                             "authorization": f"Bearer {self.settings.api_key}",
                         },
-                        json=request_payload,
+                        content=request_body,
                     )
                 response_payload = _response_body(response)
             except httpx.TransportError as error:
@@ -1112,6 +1121,22 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         elif mode == "json-object":
             payload["response_format"] = {"type": "json_object"}
         return payload
+
+    def request_size(
+        self,
+        schema: type[BaseModel],
+        messages: Sequence[ChatMessage],
+        *,
+        model: str,
+        role: ModelRole,
+    ) -> int:
+        role_value = ModelRole(role)
+        mode = "json-object" if role_value is ModelRole.COGNITIVE else "strict"
+        return len(
+            serialize_transport_json(
+                self._request_payload(schema, messages, model, role_value, mode)
+            )
+        )
 
 
 class _CodexAttemptError(RuntimeError):
@@ -1519,11 +1544,7 @@ def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
         attachment for message in messages for attachment in message.attachments
     ]
     if not attachments:
-        return json.dumps(
-            serialized_messages,
-            ensure_ascii=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        return serialize_transport_json(serialized_messages)
 
     manifest: list[dict[str, object]] = []
     for attachment in attachments:
@@ -1534,7 +1555,7 @@ def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
                 "path": str(_absolute_attachment_path(attachment)),
             }
         )
-    return json.dumps(
+    return serialize_transport_json(
         {
             "messages": serialized_messages,
             "evidence_manifest": manifest,
@@ -1542,10 +1563,8 @@ def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
                 "Only read evidence files listed in evidence_manifest. "
                 "Do not inspect the repository or conversation history."
             ),
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+        }
+    )
 
 
 def _schema_allows_null(schema: object) -> bool:
@@ -1667,6 +1686,8 @@ class CodexStructuredClient(_StructuredCallSupport):
                 )
                 await self._sleep(retries[-1].delay_seconds)
                 continue
+            except TransportBudgetError:
+                raise
             except (ValueError, TypeError, ValidationError):
                 last_reason = "invalid structured output"
                 response_metadata = {"failure": "invalid-structured-output"}
@@ -1740,16 +1761,19 @@ class CodexStructuredClient(_StructuredCallSupport):
         role: ModelRole,
     ) -> object:
         prompt = _serialize_codex_messages(messages)
+        schema_bytes = serialize_transport_json(
+            _codex_transport_schema(schema),
+            sort_keys=False,
+        )
+        if role in _REPORT_ROLES:
+            enforce_transport_size(prompt, schema_bytes)
         output = ""
         loop = asyncio.get_running_loop()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 schema_path = Path(temp_dir) / "schema.json"
                 response_path = Path(temp_dir) / "response.json"
-                schema_path.write_text(
-                    json.dumps(_codex_transport_schema(schema), ensure_ascii=True),
-                    encoding="utf-8",
-                )
+                schema_path.write_bytes(schema_bytes)
                 command = ["codex", "exec", "--ephemeral"]
                 reasoning_effort = _reasoning_effort(self.settings, role)
                 if reasoning_effort is not None:
@@ -1798,6 +1822,8 @@ class CodexStructuredClient(_StructuredCallSupport):
                         raise
 
                     process_group_id = _codex_process_group_id(process)
+                    if role in _REPORT_ROLES:
+                        enforce_transport_size(prompt, schema_bytes)
                     communication_task = asyncio.create_task(
                         process.communicate(input=prompt)
                     )
@@ -1876,6 +1902,26 @@ class CodexStructuredClient(_StructuredCallSupport):
         if not isinstance(parsed, Mapping):
             raise ValueError("structured response must be one JSON object")
         return cast(dict[str, object], parsed)
+
+    def request_size(
+        self,
+        schema: type[BaseModel],
+        messages: Sequence[ChatMessage],
+        *,
+        model: str,
+        role: ModelRole,
+    ) -> int:
+        del model
+        role_value = ModelRole(role)
+        prompt = _serialize_codex_messages(messages)
+        schema_bytes = serialize_transport_json(
+            _codex_transport_schema(schema),
+            sort_keys=False,
+        )
+        size = transport_size(prompt, schema_bytes)
+        if role_value in _REPORT_ROLES:
+            enforce_transport_size(prompt, schema_bytes)
+        return size
 
 
 def create_structured_model_client(

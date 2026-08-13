@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import ClassVar, Literal, cast
@@ -23,6 +23,10 @@ from ux_analyzer.domain.synthesis import (
     ObjectionSeverity,
     SynthesisFinding,
     SynthesisObjection,
+)
+from ux_analyzer.ports.model_transport import (
+    MODEL_REQUEST_MAX_BYTES,
+    require_finite_float,
 )
 from ux_analyzer.ports.models import (
     ChatMessage,
@@ -80,7 +84,7 @@ _MANIFEST_REFERENCE_FIELDS = tuple(
 _INITIAL_MANIFEST_SUMMARY_MAX_CHARS = 512
 # Reserve measured room for role prompts, principles, schemas, and transport data.
 _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES = 50_000
-_REPORT_REQUEST_MAX_BYTES = 750_000
+_REPORT_REQUEST_MAX_BYTES = MODEL_REQUEST_MAX_BYTES
 _INITIAL_MANIFEST_MAX_BYTES = (
     _REPORT_REQUEST_MAX_BYTES - _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
 )
@@ -218,6 +222,9 @@ def _is_manifest_path_like_string(value: str) -> bool:
 def _bounded_manifest_value(value: object, *, depth: int = 0) -> object:
     if depth > 8:
         return "[truncated]"
+    if isinstance(value, float):
+        require_finite_float(value, context="bounded manifest")
+        return value
     if isinstance(value, os.PathLike):
         return _OMIT_MANIFEST_VALUE
     if isinstance(value, BaseModel):
@@ -228,6 +235,8 @@ def _bounded_manifest_value(value: object, *, depth: int = 0) -> object:
         mapping = cast(Mapping[object, object], value)
         result: dict[str, object] = {}
         for key, item in mapping.items():
+            if isinstance(key, float):
+                require_finite_float(key, context="bounded manifest key")
             if (
                 isinstance(key, os.PathLike)
                 or (isinstance(key, str) and _is_manifest_path_like_string(key))
@@ -266,7 +275,7 @@ def _bounded_manifest_value(value: object, *, depth: int = 0) -> object:
         if len(safe_value) <= _MANIFEST_VALUE_MAX_CHARS:
             return safe_value
         return safe_value[: _MANIFEST_VALUE_MAX_CHARS - 3] + "..."
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, (bool, int)):
         return value
     return _bounded_manifest_value(str(cast(object, value)), depth=depth + 1)
 
@@ -444,6 +453,9 @@ def _safe_string(value: str) -> str:
 def _safe_prompt_value(value: object, *, depth: int = 0) -> object:
     if depth > 8:
         return "[truncated]"
+    if isinstance(value, float):
+        require_finite_float(value, context="canonical JSON")
+        return value
     if isinstance(value, EvidenceEntry):
         return _safe_entry(value, depth=depth + 1)
     if isinstance(value, EvidenceRef):
@@ -462,6 +474,8 @@ def _safe_prompt_value(value: object, *, depth: int = 0) -> object:
         mapping = cast(Mapping[object, object], value)
         result: dict[str, object] = {}
         for key, item in mapping.items():
+            if isinstance(key, float):
+                require_finite_float(key, context="canonical JSON key")
             if _is_sensitive_key(key):
                 continue
             safe_item = _safe_prompt_value(item, depth=depth + 1)
@@ -476,7 +490,7 @@ def _safe_prompt_value(value: object, *, depth: int = 0) -> object:
         return value.as_posix()
     if isinstance(value, str):
         return _safe_string(value)
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, (bool, int)):
         return value
     return str(value)
 
@@ -852,6 +866,7 @@ def _canonical_json(value: object) -> str:
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     )
 
 
@@ -861,6 +876,7 @@ def _raw_canonical_json(value: object) -> str:
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     )
 
 
@@ -871,7 +887,19 @@ def _request_context_size(
     model: str,
     role: ModelRole,
     resolved_evidence: ResolvedEvidence | None,
+    client: StructuredModelClient | None = None,
 ) -> int:
+    request_size = getattr(client, "request_size", None)
+    if callable(request_size):
+        transport_request_size = cast(Callable[..., int], request_size)
+        return int(
+            transport_request_size(
+                schema,
+                messages,
+                model=model,
+                role=role,
+            )
+        )
     request: dict[str, object] = {
         "model": model,
         "role": role.value,
@@ -982,10 +1010,15 @@ class _ReportRole:
             model=self.model,
             role=self.role,
             resolved_evidence=resolved_evidence,
+            client=self.client,
         )
-        if request_size + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES > (
-            _REPORT_REQUEST_MAX_BYTES
-        ):
+        has_transport_measurement = callable(getattr(self.client, "request_size", None))
+        measured_size = (
+            request_size
+            if has_transport_measurement
+            else (request_size + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES)
+        )
+        if measured_size > _REPORT_REQUEST_MAX_BYTES:
             raise ValueError(
                 "report synthesis request context exceeds transport-safe byte budget"
             )

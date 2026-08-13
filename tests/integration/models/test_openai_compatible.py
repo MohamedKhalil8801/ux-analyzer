@@ -23,6 +23,7 @@ from ux_analyzer.adapters.openai import (
     OpenAICompatibleStructuredClient,
     create_structured_model_client,
 )
+from ux_analyzer.ports.model_transport import MODEL_REQUEST_MAX_BYTES
 from ux_analyzer.ports.models import ChatMessage, ModelAttachment, ModelRole
 from ux_analyzer.providers.cognitive import CognitiveModelResponse
 from ux_analyzer.providers.scent import CoarseScentResponse
@@ -1493,3 +1494,158 @@ async def test_codex_attachment_manifest_lists_only_validated_evidence_paths(
     ]
     assert str(attachment.path) not in json.dumps(client.records[0].request)
     assert client.records[0].request["reasoning_effort"] == "medium"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overage", [0, 1])
+async def test_http_report_transport_enforces_exact_byte_boundary_with_data_uri(
+    tmp_path: Path,
+    overage: int,
+) -> None:
+    sent: list[bytes] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+        )
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    attachment = _attachment(tmp_path)
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 1, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+    seed_message = ChatMessage(
+        role="user",
+        content="x",
+        attachments=(attachment,),
+    )
+    seed_payload = client._request_payload(
+        SimpleResponse,
+        (seed_message,),
+        "report-model",
+        ModelRole.REPORT_ANALYST,
+        "strict",
+    )
+    seed_size = len(openai_adapter.serialize_transport_json(seed_payload))
+    content_length = 1 + MODEL_REQUEST_MAX_BYTES - seed_size + overage
+    message = ChatMessage(
+        role="user",
+        content="x" * content_length,
+        attachments=(attachment,),
+    )
+    payload = client._request_payload(
+        SimpleResponse,
+        (message,),
+        "report-model",
+        ModelRole.REPORT_ANALYST,
+        "strict",
+    )
+    expected_size = len(openai_adapter.serialize_transport_json(payload))
+    assert expected_size == MODEL_REQUEST_MAX_BYTES + overage
+
+    if overage:
+        with pytest.raises(ValueError, match="transport-safe byte budget"):
+            await client.complete(
+                SimpleResponse,
+                (message,),
+                model="report-model",
+                role=ModelRole.REPORT_ANALYST,
+            )
+        assert sent == []
+    else:
+        result = await client.complete(
+            SimpleResponse,
+            (message,),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+        assert result.ok
+        assert len(sent) == 1
+        assert len(sent[0]) == MODEL_REQUEST_MAX_BYTES
+        assert "data:image/png;base64," in sent[0].decode("utf-8")
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overage", [0, 1])
+async def test_codex_report_transport_enforces_exact_byte_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    overage: int,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    processes: list[_FakeCodexProcess] = []
+    schemas: list[object] = []
+
+    class SimpleResponse(BaseModel):
+        ok: bool
+
+    _patch_codex_process(
+        monkeypatch,
+        calls,
+        processes,
+        schemas,
+        output=json.dumps({"ok": True}),
+        returncode=0,
+    )
+    attachment = _attachment(tmp_path)
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
+        )
+    )
+    seed_message = ChatMessage(
+        role="user",
+        content="x",
+        attachments=(attachment,),
+    )
+    seed_prompt_size = len(openai_adapter._serialize_codex_messages((seed_message,)))
+    schema_size = len(
+        openai_adapter.serialize_transport_json(
+            openai_adapter._codex_transport_schema(SimpleResponse),
+            sort_keys=False,
+        )
+    )
+    content_length = (
+        1 + MODEL_REQUEST_MAX_BYTES - seed_prompt_size - schema_size + overage
+    )
+    message = ChatMessage(
+        role="user",
+        content="x" * content_length,
+        attachments=(attachment,),
+    )
+    expected_prompt = openai_adapter._serialize_codex_messages((message,))
+    assert len(expected_prompt) + schema_size == MODEL_REQUEST_MAX_BYTES + overage
+
+    if overage:
+        with pytest.raises(ValueError, match="transport-safe byte budget"):
+            await client.complete(
+                SimpleResponse,
+                (message,),
+                model="report-model",
+                role=ModelRole.REPORT_ANALYST,
+            )
+        assert calls == []
+        assert processes == []
+    else:
+        result = await client.complete(
+            SimpleResponse,
+            (message,),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+        assert result.ok
+        assert len(processes) == 1
+        assert (
+            len(processes[0].input or b"")
+            + len(openai_adapter.serialize_transport_json(schemas[0], sort_keys=False))
+            == MODEL_REQUEST_MAX_BYTES
+        )
+        assert attachment.evidence_id in (processes[0].input or b"").decode("utf-8")

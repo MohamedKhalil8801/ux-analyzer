@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -97,6 +98,19 @@ class RecordingClient:
             payload["final_findings"] = []
             payload["objection_resolutions"] = []
         return schema.model_validate(payload)
+
+
+class MeasuringRecordingClient(RecordingClient):
+    def request_size(
+        self,
+        schema: type[Any],
+        messages: Sequence[Any],
+        *,
+        model: str,
+        role: ModelRole,
+    ) -> int:
+        del schema, messages, model, role
+        return _REPORT_REQUEST_MAX_BYTES + 1
 
 
 def _manifest(*, include_sentinels: bool = False) -> dict[str, object]:
@@ -880,6 +894,30 @@ def test_mapping_manifest_serializes_set_metadata_deterministically() -> None:
     assert outputs[0] == outputs[1] == outputs[2]
 
 
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_bounded_manifest_rejects_non_finite_float_nested_in_dataclass(
+    value: float,
+) -> None:
+    metadata = _TypedManifestMetadata(
+        safe_scalar="safe",
+        posix_path_value="/private/omit.txt",
+        pure_path_value=PurePath("private/omit.txt"),
+        nested={"values": [value]},
+        sequence=(value,),
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        _bounded_manifest_value({"metadata": [metadata]})
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_canonical_json_rejects_non_finite_float_nested_in_mapping_and_list(
+    value: float,
+) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        _canonical_json({"outer": [{"value": value}]})
+
+
 def test_full_size_initial_manifest_stays_under_hard_budget_and_keeps_ids() -> None:
     entry_count = 2_070
     entries = tuple(
@@ -1042,6 +1080,16 @@ async def test_oversized_resolved_context_is_rejected_before_model_client() -> N
             corpus,
             resolved_evidence=resolved,
         )
+
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_report_preflight_uses_transport_owned_request_measurement() -> None:
+    client = MeasuringRecordingClient()
+
+    with pytest.raises(ValueError, match="transport-safe byte budget"):
+        await ReportAnalyst(client, model="gpt-report").analyze(_manifest())
 
     assert client.calls == []
 
