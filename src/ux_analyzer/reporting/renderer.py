@@ -323,12 +323,17 @@ def _load_synthesis(
             )
             if status not in {"rejected", "unavailable"}:
                 status = "unavailable"
+            limitation = (
+                attempts[-1].limitations[-1]
+                if attempts and attempts[-1].limitations
+                else "Only rejected or unavailable synthesis attempts were published."
+            )
             return (
                 _fallback_synthesis(
                     status,
                     runs,
                     fallback_findings,
-                    "Only rejected or unavailable synthesis attempts were published.",
+                    limitation,
                 ),
                 artifact_bytes,
             )
@@ -385,6 +390,9 @@ def _fallback_synthesis(
     fallback_findings: list[dict[str, Any]],
     limitation: str,
 ) -> dict[str, Any]:
+    boundary_rejection = (
+        status == "rejected" and "evidence boundary" in limitation.casefold()
+    )
     if status in {"missing", "unavailable"}:
         assessment = (
             "Model review is unavailable. Recorded deterministic findings and evidence "
@@ -397,6 +405,12 @@ def _fallback_synthesis(
             "evidence are shown for the tested scenarios."
         )
         model_review_status = "invalid"
+    elif boundary_rejection:
+        assessment = (
+            "Model review was rejected at the bounded evidence boundary. Recorded "
+            "deterministic findings and evidence are shown for the tested scenarios."
+        )
+        model_review_status = "rejected"
     else:
         assessment = (
             "Model review was rejected. Recorded deterministic findings and evidence "

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from hashlib import sha256
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -102,6 +103,19 @@ _COMPACT_MANIFEST_ENTRY_FIELDS = (
     "replay_sequence",
     "sha256",
 )
+_COMPACT_PROVIDER_MANIFEST_FORMAT = "compact-parallel-v2"
+_COMPACT_PROVIDER_MANIFEST_ENTRY_FIELDS = (
+    "handle_index",
+    "kind_index",
+    "run_index",
+    "viewport_index",
+    "evidence_class_index",
+    "event_index",
+    "metric_index",
+    "replay_sequence",
+    "element_index",
+)
+_PROVIDER_EVIDENCE_HANDLE = re.compile(r"^e[0-9]+$")
 
 ManifestInput = EvidenceCorpus | Mapping[str, object]
 
@@ -689,6 +703,123 @@ def _compact_manifest_candidate(
     return result
 
 
+def _compact_provider_manifest_candidate(
+    payload: Mapping[str, object],
+    entries: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Build the small provider index while retaining one handle per corpus row."""
+
+    compact = _compact_manifest_candidate(payload, entries)
+    source_fields = list(_COMPACT_MANIFEST_ENTRY_FIELDS)
+    source_index = {name: index for index, name in enumerate(source_fields)}
+    element_values: list[str] = []
+    element_indexes: dict[str, int] = {}
+    element_sources: dict[str, str] = {}
+    event_values: list[str] = []
+    event_indexes: dict[str, int] = {}
+    metric_values: list[str] = []
+    metric_indexes: dict[str, int] = {}
+
+    def index_reference_value(
+        source_row: Sequence[object],
+        field_name: str,
+        values: list[str],
+        indexes: dict[str, int],
+    ) -> int | None:
+        field_index = source_index[field_name]
+        source_value = (
+            source_row[field_index] if len(source_row) > field_index else None
+        )
+        if not isinstance(source_value, str) or not source_value:
+            return None
+        value_index = indexes.get(source_value)
+        if value_index is None:
+            value_index = len(values)
+            indexes[source_value] = value_index
+            values.append(source_value)
+        return value_index
+
+    def index_element_value(source_row: Sequence[object]) -> int | None:
+        field_index = source_index["element_id"]
+        source_value = (
+            source_row[field_index] if len(source_row) > field_index else None
+        )
+        if not isinstance(source_value, str) or not source_value:
+            return None
+        marker = "-element-"
+        if marker in source_value:
+            compact_value = f"element-{source_value.rsplit(marker, 1)[1]}"
+        elif len(source_value) <= 64:
+            compact_value = source_value
+        else:
+            compact_value = f"element-{sha256(source_value.encode()).hexdigest()[:12]}"
+        existing_source = element_sources.get(compact_value)
+        if existing_source is not None and existing_source != source_value:
+            compact_value = (
+                f"{compact_value}-{sha256(source_value.encode()).hexdigest()[:8]}"
+            )
+        value_index = element_indexes.get(compact_value)
+        if value_index is None:
+            value_index = len(element_values)
+            element_indexes[compact_value] = value_index
+            element_sources[compact_value] = source_value
+            element_values.append(compact_value)
+        return value_index
+
+    provider_entries: list[list[object]] = []
+    for row_index, row in enumerate(cast(Sequence[object], compact["entries"])):
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
+            raise TypeError("compact manifest rows must be sequences")
+        source_row = list(cast(Sequence[object], row))
+        provider_row: list[object] = [row_index]
+        provider_row.extend(source_row[:4])
+        provider_row.append(
+            index_reference_value(source_row, "event_id", event_values, event_indexes)
+        )
+        provider_row.append(
+            index_reference_value(
+                source_row, "metric_id", metric_values, metric_indexes
+            )
+        )
+        replay_index = source_index["replay_sequence"]
+        provider_row.append(
+            source_row[replay_index] if len(source_row) > replay_index else None
+        )
+        provider_row.append(index_element_value(source_row))
+        while provider_row and provider_row[-1] is None:
+            provider_row.pop()
+        provider_entries.append(provider_row)
+
+    result = dict(compact)
+    result["manifest_format"] = _COMPACT_PROVIDER_MANIFEST_FORMAT
+    result.pop("evidence_ids", None)
+    result["entry_fields"] = list(_COMPACT_PROVIDER_MANIFEST_ENTRY_FIELDS)
+    result["element_values"] = element_values
+    result["event_values"] = event_values
+    result["metric_values"] = metric_values
+    result.pop("sha256_values", None)
+    result["entries"] = provider_entries
+    for row in provider_entries:
+        for field_name, values in (
+            ("viewport_index", result.get("viewport_values")),
+            ("element_index", element_values),
+            ("event_index", event_values),
+            ("metric_index", metric_values),
+        ):
+            field_index = _COMPACT_PROVIDER_MANIFEST_ENTRY_FIELDS.index(field_name)
+            value = row[field_index] if len(row) > field_index else None
+            if value is not None and (
+                type(value) is not int
+                or not isinstance(values, Sequence)
+                or value < 0
+                or value >= len(values)
+            ):
+                raise ValueError(
+                    f"compact provider manifest {field_name} is inconsistent"
+                )
+    return result
+
+
 _MANIFEST_CONTEXT_FIELDS = (
     "schema_version",
     "principle_pack_version",
@@ -807,7 +938,77 @@ def _initial_manifest_payload(manifest: ManifestInput) -> dict[str, object]:
 
     bounded = _manifest_payload(manifest)
     if bounded.get("manifest_format") == _COMPACT_MANIFEST_FORMAT:
-        return bounded
+        raw_entries = bounded.get("entries")
+        evidence_ids = bounded.get("evidence_ids")
+        if (
+            not isinstance(raw_entries, Sequence)
+            or isinstance(raw_entries, (str, bytes))
+            or not isinstance(evidence_ids, Sequence)
+            or isinstance(evidence_ids, (str, bytes))
+        ):
+            raise TypeError("bounded compact manifest is malformed")
+        fields = bounded.get("entry_fields")
+        if not isinstance(fields, Sequence) or isinstance(fields, (str, bytes)):
+            raise TypeError("bounded compact manifest fields are malformed")
+        field_indexes = {
+            name: index
+            for index, name in enumerate(cast(Sequence[object], fields))
+            if isinstance(name, str)
+        }
+        provider_entries: list[dict[str, object]] = []
+        for row_index, raw_row in enumerate(cast(Sequence[object], raw_entries)):
+            if not isinstance(raw_row, Sequence) or isinstance(raw_row, (str, bytes)):
+                raise TypeError("bounded compact manifest rows are malformed")
+            row = cast(Sequence[object], raw_row)
+
+            def row_value(name: str) -> object:
+                index = field_indexes.get(name)
+                return row[index] if index is not None and len(row) > index else None
+
+            def row_index_value(name: str) -> int:
+                value = row_value(name)
+                if type(value) is not int:
+                    raise TypeError(
+                        f"bounded compact manifest {name} must be an integer"
+                    )
+                return value
+
+            reference = {
+                name: row_value(name)
+                for name in (
+                    "element_id",
+                    "event_id",
+                    "metric_id",
+                    "replay_sequence",
+                )
+                if row_value(name) is not None
+            }
+            viewport_index = row_value("viewport_index")
+            if viewport_index is not None:
+                viewport_values = bounded.get("viewport_values")
+                if not isinstance(viewport_values, Sequence) or isinstance(
+                    viewport_values, (str, bytes)
+                ):
+                    raise TypeError("bounded compact viewport values are malformed")
+                reference["viewport_id"] = cast(Sequence[object], viewport_values)[
+                    row_index_value("viewport_index")
+                ]
+            provider_entries.append(
+                {
+                    "evidence_id": cast(Sequence[object], evidence_ids)[row_index],
+                    "kind": cast(Sequence[object], bounded["kind_values"])[
+                        row_index_value("kind_index")
+                    ],
+                    "run_id": cast(Sequence[object], bounded["run_ids"])[
+                        row_index_value("run_index")
+                    ],
+                    "reference": reference,
+                    "evidence_class": cast(
+                        Sequence[object], bounded["evidence_class_values"]
+                    )[row_index_value("evidence_class_index")],
+                }
+            )
+        return _compact_provider_manifest_candidate(bounded, provider_entries)
     entries = bounded.get("entries")
     if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
         raise TypeError("bounded corpus manifest entries must be a sequence")
@@ -819,7 +1020,69 @@ def _initial_manifest_payload(manifest: ManifestInput) -> dict[str, object]:
     ]
     if len(mapping_entries) != len(bounded_entries):
         raise TypeError("bounded corpus manifest entries must be mappings")
-    return _compact_manifest_candidate(bounded, mapping_entries)
+    return _compact_provider_manifest_candidate(bounded, mapping_entries)
+
+
+def _provider_evidence_handle_map(manifest: ManifestInput) -> dict[str, str]:
+    if isinstance(manifest, EvidenceCorpus):
+        evidence_ids = [entry.ref.evidence_id for entry in manifest.entries]
+    else:
+        entries = _manifest_entries(manifest.get("entries"))
+        evidence_ids = [
+            entry.ref.evidence_id
+            if isinstance(entry, EvidenceEntry)
+            else _mapping_manifest_entry_id(cast(Mapping[object, object], entry))
+            for entry in entries
+        ]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise ValueError("corpus manifest contains duplicate evidence ID")
+    return {f"e{index}": evidence_id for index, evidence_id in enumerate(evidence_ids)}
+
+
+def _expand_provider_handles(
+    response: InvestigativeResponse,
+    manifest: ManifestInput,
+) -> InvestigativeResponse:
+    handles = _provider_evidence_handle_map(manifest)
+    payload = cast(dict[str, object], response.model_dump(mode="python"))
+    handle_was_expanded = False
+
+    def expand(value: object) -> object:
+        nonlocal handle_was_expanded
+        if isinstance(value, str) and _PROVIDER_EVIDENCE_HANDLE.fullmatch(value):
+            expanded_value = handles.get(value, value)
+            if expanded_value != value:
+                handle_was_expanded = True
+            return expanded_value
+        return value
+
+    requests = payload.get("evidence_requests")
+    if isinstance(requests, list):
+        request_values = cast(list[object], requests)
+        payload["evidence_requests"] = [expand(value) for value in request_values]
+
+    def replace_reference_ids(value: object) -> object:
+        if isinstance(value, Mapping):
+            mapping = cast(Mapping[object, object], value)
+            replaced: dict[object, object] = {}
+            for key, item in mapping.items():
+                replaced[key] = (
+                    expand(item)
+                    if key == "evidence_id"
+                    else replace_reference_ids(item)
+                )
+            return replaced
+        if isinstance(value, list):
+            values = cast(list[object], value)
+            return [replace_reference_ids(item) for item in values]
+        return value
+
+    expanded = replace_reference_ids(payload)
+    if not isinstance(expanded, Mapping):
+        raise TypeError("structured response payload must be a mapping")
+    if not handle_was_expanded:
+        return response
+    return type(response).model_validate(expanded)
 
 
 def _known_evidence_ids(manifest: ManifestInput) -> frozenset[str]:
@@ -951,16 +1214,6 @@ def _request_context_size(
             }
             for message in messages
         ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": str(getattr(schema, "schema_version", schema.__name__)).replace(
-                    "-", "_"
-                ),
-                "strict": True,
-                "schema": schema.model_json_schema(),
-            },
-        },
     }
     serialized_size = len(_raw_canonical_json(request).encode("utf-8"))
     if resolved_evidence is not None and resolved_evidence.attachment_bytes:
@@ -1087,6 +1340,7 @@ class _ReportRole:
                     "response schema validation failed",
                     response_summary={"schema": self.response_schema.__name__},
                 ) from error
+        response = _expand_provider_handles(response, manifest)
         self._validate_response(response, manifest, normalized_principles)
         return response
 
@@ -1190,7 +1444,7 @@ _COMMON_PROMPT = """You are one isolated report-synthesis role.
 
 Use only the allowlisted structured evidence in corpus_manifest and resolved_evidence. Do not use prior prompts, raw model responses, private reasoning, chat history, cognitive prose, or existing finding prose. Frozen Expectations describe outcomes, invariants, acceptable alternatives, and warning signals. Treat reference paths as examples, not the only correct path. Judge path deviations only through observed user impact and supported outcomes.
 
-The initial corpus_manifest is always an index-only manifest_format compact-parallel-v1. Each entries row position corresponds to the same position in evidence_ids and follows entry_fields; trailing null fields may be omitted. kind_index, run_index, viewport_index, and evidence_class_index index kind_values, run_ids, viewport_values, and evidence_class_values. Use row metadata to choose evidence IDs, then request full evidence only by those IDs. The initial manifest has no full evidence payload or summary; resolved_evidence is the exact on-demand retrieval channel.
+The initial corpus_manifest is always an index-only manifest_format compact-parallel-v2. Each entries row contains a handle_index; the provider handle is e followed by that row index. Use that handle in evidence_requests and every evidence_id field. The application expands handles to the exact allowlisted evidence IDs before validation and retrieval. Rows follow entry_fields; trailing null fields may be omitted. kind_index, run_index, viewport_index, evidence_class_index, event_index, metric_index, and element_index index kind_values, run_ids, viewport_values, evidence_class_values, event_values, and element_values. element_values contains bounded local element tokens only; combine element_index with the row's run and viewport indexes to distinguish element and ranked-element evidence without exposing full evidence IDs. The initial manifest has no full evidence IDs, hashes, payload, or summary; resolved_evidence is the exact on-demand retrieval channel. Use row metadata to choose handles, then request full evidence only by those handles.
 
 The UX principle pack is optional interpretive guidance. Principles are not evidence and cannot determine severity. A principle may help name or explain an issue only when observed evidence supports it. Never request or cite a principle as an evidence ID.
 
@@ -1201,7 +1455,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v1"
+    prompt_version = "report-analyst-v2"
     response_schema = AnalystResponse
 
     @property
@@ -1230,7 +1484,7 @@ class EvidenceAuditor(_ReportRole):
     """Challenge factual and visual support for analyst candidates."""
 
     role = ModelRole.REPORT_EVIDENCE_AUDITOR
-    prompt_version = "report-evidence-auditor-v1"
+    prompt_version = "report-evidence-auditor-v2"
     response_schema = EvidenceAuditResponse
 
     @property
@@ -1284,7 +1538,7 @@ class PatternReviewer(_ReportRole):
     """Review recurrence, cross-surface impact, severity, and fix leverage."""
 
     role = ModelRole.REPORT_PATTERN_REVIEWER
-    prompt_version = "report-pattern-reviewer-v1"
+    prompt_version = "report-pattern-reviewer-v2"
     response_schema = PatternReviewResponse
 
     @property
@@ -1319,7 +1573,7 @@ class ReportAdjudicator(_ReportRole):
     """Resolve reviewer objections and write plain-language final findings."""
 
     role = ModelRole.REPORT_ADJUDICATOR
-    prompt_version = "report-adjudicator-v1"
+    prompt_version = "report-adjudicator-v2"
     response_schema = AdjudicationResponse
 
     @property

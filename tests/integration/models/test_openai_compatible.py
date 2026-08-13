@@ -25,6 +25,7 @@ from ux_analyzer.adapters.openai import (
 )
 from ux_analyzer.ports.model_transport import MODEL_REQUEST_MAX_BYTES
 from ux_analyzer.ports.models import ChatMessage, ModelAttachment, ModelRole
+from ux_analyzer.ports.report_synthesis import AnalystResponse
 from ux_analyzer.providers.cognitive import CognitiveModelResponse
 from ux_analyzer.providers.scent import CoarseScentResponse
 
@@ -998,6 +999,65 @@ async def test_cognitive_role_starts_in_json_object_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_report_role_uses_plain_json_transport_and_validates_locally() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "complete": False,
+                                    "evidence_requests": ["e0"],
+                                    "findings": [],
+                                }
+                            )
+                        }
+                    }
+                ],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.candidate_findings == []
+    assert result.evidence_requests == ["e0"]
+    assert "response_format" not in requests[0]
+    await http_client.aclose()
+
+
+def test_report_output_alias_does_not_override_canonical_findings_field() -> None:
+    with pytest.raises(ValueError, match="conflicting findings fields"):
+        openai_adapter._normalize_report_output(
+            ModelRole.REPORT_ANALYST,
+            {"findings": [], "candidate_findings": []},
+        )
+
+
+def test_report_output_alias_is_not_applied_to_reviewer_roles() -> None:
+    parsed = {"findings": []}
+    assert (
+        openai_adapter._normalize_report_output(
+            ModelRole.REPORT_EVIDENCE_AUDITOR, parsed
+        )
+        == parsed
+    )
+
+
+@pytest.mark.asyncio
 async def test_cognitive_reasoning_effort_is_forwarded_when_configured() -> None:
     requests: list[dict[str, object]] = []
 
@@ -1134,6 +1194,51 @@ async def test_authentication_failure_is_terminal_without_retry() -> None:
 
     assert calls == 1
     assert client.retry_events == ()
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 503])
+async def test_provider_error_records_safe_http_metadata(status_code: int) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            status_code,
+            headers={"x-request-id": "request-123"},
+            json={
+                "error": {
+                    "code": "MODEL_UNAVAILABLE",
+                    "type": "server_error",
+                    "message": "provider internal detail must not become diagnostics",
+                }
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 1, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    with pytest.raises(ModelFailureError, match="model unavailable") as failure:
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="{}"),),
+            model="scent-model",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    assert failure.value.status_code == status_code
+    assert failure.value.error_code == "MODEL_UNAVAILABLE"
+    assert failure.value.request_id == "request-123"
+    provider_metadata = client.records[0].response["provider"]
+    assert provider_metadata == {
+        "status_code": status_code,
+        "error_code": "MODEL_UNAVAILABLE",
+        "error_type": "server_error",
+        "request_id": "request-123",
+    }
+    assert "provider internal detail" not in json.dumps(provider_metadata)
     await http_client.aclose()
 
 
@@ -1530,7 +1635,7 @@ async def test_http_report_transport_enforces_exact_byte_boundary_with_data_uri(
         (seed_message,),
         "report-model",
         ModelRole.REPORT_ANALYST,
-        "strict",
+        openai_adapter._response_mode(ModelRole.REPORT_ANALYST),
     )
     seed_size = len(openai_adapter.serialize_transport_json(seed_payload))
     content_length = 1 + MODEL_REQUEST_MAX_BYTES - seed_size + overage
@@ -1544,7 +1649,7 @@ async def test_http_report_transport_enforces_exact_byte_boundary_with_data_uri(
         (message,),
         "report-model",
         ModelRole.REPORT_ANALYST,
-        "strict",
+        openai_adapter._response_mode(ModelRole.REPORT_ANALYST),
     )
     expected_size = len(openai_adapter.serialize_transport_json(payload))
     assert expected_size == MODEL_REQUEST_MAX_BYTES + overage

@@ -206,11 +206,14 @@ async def test_analyst_prompt_has_boundary_and_excludes_prior_agent_context() ->
         ensure_ascii=True,
     )
     assert "Treat reference paths as examples, not the only correct path" in prompt
-    assert "manifest_format compact-parallel-v1" in prompt
+    assert "manifest_format compact-parallel-v2" in prompt
     assert (
         "Return exactly one valid JSON object matching the requested structured response schema"
         in prompt
     )
+    assert "element_index" in prompt
+    assert "element_values" in prompt
+    assert "run_ids, viewport_values" in prompt
     assert "PRIOR_AGENT_PRIVATE_REASONING_SENTINEL" not in serialized_messages
     assert "PRIOR_FINDING_PROSE_SENTINEL" not in serialized_messages
 
@@ -233,6 +236,7 @@ async def test_initial_manifest_is_bounded_but_resolved_evidence_keeps_payload()
                     "run-a",
                     event_id="event-1",
                     replay_sequence=1,
+                    viewport_id="viewport-1",
                 ),
                 evidence_class=EvidenceClass.DETERMINISTIC_FACT,
                 summary="summary-sentinel" * 1000,
@@ -245,6 +249,7 @@ async def test_initial_manifest_is_bounded_but_resolved_evidence_keeps_payload()
                     "run-a",
                     event_id="event-2",
                     replay_sequence=2,
+                    viewport_id="viewport-1",
                 ),
                 evidence_class=EvidenceClass.DETERMINISTIC_FACT,
                 summary="Second event.",
@@ -267,26 +272,26 @@ async def test_initial_manifest_is_bounded_but_resolved_evidence_keeps_payload()
     manifest_entry = manifest_entries[0]
     resolved_entry = message["resolved_evidence"][0]
     serialized_manifest = json.dumps(manifest, ensure_ascii=True, separators=(",", ":"))
-    assert manifest["manifest_format"] == "compact-parallel-v1"
-    assert manifest["evidence_ids"] == [
-        EVIDENCE_ID,
-        second_evidence_id,
-    ]
+    assert manifest["manifest_format"] == "compact-parallel-v2"
+    assert "evidence_ids" not in manifest
     assert manifest["entry_fields"] == [
+        "handle_index",
         "kind_index",
         "run_index",
         "viewport_index",
         "evidence_class_index",
-        "element_id",
-        "event_id",
-        "metric_id",
+        "event_index",
+        "metric_index",
         "replay_sequence",
-        "sha256",
+        "element_index",
     ]
     assert manifest["kind_values"] == ["event"]
     assert manifest["run_ids"] == ["run-a"]
-    assert manifest_entry == [0, 0, None, 0, None, "event-1", None, 1]
-    assert manifest_entries[1] == [0, 0, None, 0, None, "event-2", None, 2]
+    assert manifest["viewport_values"] == ["viewport-1"]
+    assert manifest["event_values"] == ["event-1", "event-2"]
+    assert manifest["metric_values"] == []
+    assert manifest_entry == [0, 0, 0, 0, 0, 0, None, 1]
+    assert manifest_entries[1] == [1, 0, 0, 0, 0, 1, None, 2]
     assert len(serialized_manifest.encode("utf-8")) < 1_000
     assert "summary" not in manifest["entry_fields"]
     assert "payload-sentinel" not in serialized_manifest
@@ -325,15 +330,97 @@ def test_initial_manifest_index_preserves_context_and_reference_metadata() -> No
     row = manifest["entries"][0]
 
     assert manifest["metadata"] == corpus.metadata
-    assert manifest["evidence_ids"] == [EVIDENCE_ID]
+    assert "evidence_ids" not in manifest
     assert manifest["run_ids"] == ["run-a"]
     assert manifest["viewport_values"] == ["viewport-1"]
-    assert row[fields.index("element_id")] == "target"
-    assert row[fields.index("event_id")] == "event-1"
+    assert manifest["element_values"] == ["target"]
+    assert row[fields.index("handle_index")] == 0
+    assert row[fields.index("element_index")] == 0
     assert row[fields.index("replay_sequence")] == 1
     serialized = _canonical_json(manifest)
     assert "full evidence payload" not in serialized
     assert "Do not send this summary" not in serialized
+
+
+def test_initial_manifest_uses_compact_handles_without_exposing_full_ids() -> None:
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    EVIDENCE_ID,
+                    "event",
+                    "run-a",
+                    event_id="event-1",
+                    replay_sequence=1,
+                    viewport_id="viewport-1",
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="Event summary stays out of the initial manifest.",
+                payload={"secret": "resolved evidence only"},
+            ),
+        ),
+    )
+
+    manifest = _initial_manifest_payload(corpus)
+    serialized = _canonical_json(manifest)
+
+    assert manifest["manifest_format"] == "compact-parallel-v2"
+    assert "evidence_ids" not in manifest
+    assert manifest["entry_fields"] == [
+        "handle_index",
+        "kind_index",
+        "run_index",
+        "viewport_index",
+        "evidence_class_index",
+        "event_index",
+        "metric_index",
+        "replay_sequence",
+        "element_index",
+    ]
+    assert manifest["entries"][0][0] == 0
+    assert manifest["run_ids"] == ["run-a"]
+    assert manifest["viewport_values"] == ["viewport-1"]
+    assert manifest["event_values"] == ["event-1"]
+    assert manifest["metric_values"] == []
+    assert EVIDENCE_ID not in serialized
+    assert "resolved evidence only" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_report_role_expands_provider_handles_before_reference_validation() -> (
+    None
+):
+    class HandleClient(RecordingClient):
+        @staticmethod
+        def _handle_response(schema: type[Any], role: ModelRole) -> object:
+            del role
+            if schema is AnalystResponse:
+                candidate = _finding_payload()
+                candidate["evidence_refs"] = [
+                    {
+                        **candidate["evidence_refs"][0],  # type: ignore[index]
+                        "evidence_id": "e0",
+                    }
+                ]
+                return schema.model_validate(
+                    {
+                        "complete": False,
+                        "evidence_requests": ["e0"],
+                        "candidate_findings": [candidate],
+                    }
+                )
+            return RecordingClient._default_response(schema, ModelRole.REPORT_ANALYST)
+
+        def __init__(self) -> None:
+            super().__init__(self._handle_response)
+
+    response = await ReportAnalyst(HandleClient(), model="gpt-report").analyze(
+        _manifest(), ux_principles()
+    )
+
+    assert response.candidate_findings[0].evidence_refs[0].evidence_id == EVIDENCE_ID
+    assert response.evidence_requests == [EVIDENCE_ID]
 
 
 def test_initial_manifest_omits_attachment_and_filesystem_path_fields() -> None:
@@ -1067,19 +1154,10 @@ async def test_complete_near_limit_request_stays_below_transport_ceiling() -> No
 
     await ReportAnalyst(client, model="gpt-report").analyze(corpus)
 
-    schema = AnalystResponse
     messages = client.calls[0][1]
     request = {
         "model": "gpt-report",
         "messages": [message.model_dump() for message in messages],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": schema.schema_version.replace("-", "_"),
-                "strict": True,
-                "schema": schema.model_json_schema(),
-            },
-        },
     }
     serialized_request = json.dumps(
         request,
@@ -1094,9 +1172,22 @@ async def test_complete_near_limit_request_stays_below_transport_ceiling() -> No
         len(serialized_request) + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
         <= _REPORT_REQUEST_MAX_BYTES
     )
-    assert message_payload["corpus_manifest"]["evidence_ids"] == [
-        entry.ref.evidence_id for entry in entries
+    provider_manifest = message_payload["corpus_manifest"]
+    assert provider_manifest["manifest_format"] == "compact-parallel-v2"
+    assert "evidence_ids" not in provider_manifest
+    assert len(provider_manifest["entries"]) == entry_count
+    assert provider_manifest["viewport_values"] == [
+        f"viewport-{index % 10}-verification-1" for index in range(1, 11)
     ]
+    viewport_index = provider_manifest["entry_fields"].index("viewport_index")
+    assert (
+        provider_manifest["viewport_values"][
+            provider_manifest["entries"][0][viewport_index]
+        ]
+        == "viewport-1-verification-1"
+    )
+    assert provider_manifest["event_values"] == []
+    assert provider_manifest["metric_values"] == []
 
 
 @pytest.mark.asyncio
@@ -1424,6 +1515,9 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     assert (
         ReportAnalyst(client, model="gpt-report").manifest.role
         is ModelRole.REPORT_ANALYST
+    )
+    assert ReportAnalyst(client, model="gpt-report").manifest.prompt_version == (
+        "report-analyst-v2"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role

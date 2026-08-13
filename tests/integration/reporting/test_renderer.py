@@ -1092,6 +1092,43 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     assert "the evidence review is unavailable" not in normalized_html
 
 
+def test_renderer_labels_boundary_rejection_separately_from_unavailable(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+
+    synthesis = renderer._fallback_synthesis(
+        "rejected",
+        renderer._load_experiment(tmp_path)["runs"],
+        [],
+        "A synthesis retrieval request could not be resolved through the evidence boundary.",
+    )
+
+    assert synthesis["model_review_status"] == "rejected"
+    assert "evidence boundary" in synthesis["assessment"]
+    assert "unavailable" not in synthesis["assessment"].casefold()
+
+
+def test_renderer_preserves_boundary_limitation_from_rejected_attempt(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.REJECTED,
+        limitations=(
+            "The synthesis evidence boundary rejected a retrieval request.",
+        ),
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert "evidence boundary" in synthesis["assessment"]
+    assert "unavailable" not in synthesis["assessment"].casefold()
+
+
 def test_render_experiment_report_is_offline_and_does_not_call_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

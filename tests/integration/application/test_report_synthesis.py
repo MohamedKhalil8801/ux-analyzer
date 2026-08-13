@@ -7,6 +7,7 @@ from typing import TypeVar, cast
 import pytest
 from pydantic import BaseModel
 
+from ux_analyzer.adapters.openai import ModelFailureError
 from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntry
 from ux_analyzer.application.report_synthesis import ReportSynthesisService
 from ux_analyzer.domain.findings import EvidenceClass
@@ -205,3 +206,40 @@ async def test_integration_transport_failure_keeps_fallback_available(
     assert attempt.status is SynthesisStatus.UNAVAILABLE
     assert attempt.fallback_available
     assert all("do not persist" not in item for item in attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_integration_provider_failure_keeps_safe_diagnostics_in_fallback(
+    tmp_path: Path,
+) -> None:
+    client = _StructuredClient(
+        {
+            ModelRole.REPORT_ANALYST: [
+                ModelFailureError(
+                    "model unavailable",
+                    status_code=503,
+                    error_code="MODEL_UNAVAILABLE",
+                    error_type="server_error",
+                    request_id="request-123",
+                )
+            ],
+            ModelRole.REPORT_EVIDENCE_AUDITOR: [],
+            ModelRole.REPORT_PATTERN_REVIEWER: [],
+            ModelRole.REPORT_ADJUDICATOR: [],
+        }
+    )
+
+    attempt = await _providers(client).synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.UNAVAILABLE
+    assert attempt.fallback_available
+    provider_metadata = attempt.retrieval_log[0]["response"]["provider"]
+    assert provider_metadata == {
+        "status_code": 503,
+        "error_code": "MODEL_UNAVAILABLE",
+        "error_type": "server_error",
+        "request_id": "request-123",
+    }
+    assert attempt.retrieval_log[0]["error"] == "model provider unavailable"
+    assert "HTTP 503" in attempt.limitations[-1]
+    assert "request-123" in attempt.limitations[-1]

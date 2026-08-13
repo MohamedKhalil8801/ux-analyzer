@@ -131,6 +131,19 @@ class _BenignCandidate(ValueError):
     """Candidate rejected because it describes a harmless valid alternative."""
 
 
+class _EvidenceBatchResolutionError(ValueError):
+    """Carry per-batch audit records when bounded evidence resolution fails."""
+
+    def __init__(
+        self,
+        cause: BaseException,
+        batch_logs: Sequence[Mapping[str, object]],
+    ) -> None:
+        self.cause = cause
+        self.batch_logs = tuple(batch_logs)
+        super().__init__(str(cause))
+
+
 @dataclass(frozen=True, slots=True)
 class _RoleRun:
     response: _Response | None
@@ -199,6 +212,17 @@ def _response_payload(response: _Response) -> Mapping[str, object]:
 
 def _error_category(error: BaseException) -> tuple[bool, str]:
     name = type(error).__name__
+    reason = getattr(error, "reason", None)
+    if name == "ModelFailureError" and reason == "invalid structured output":
+        return False, "invalid structured synthesis output"
+    if name == "ModelFailureError" and reason == "model unavailable":
+        return True, "model provider unavailable"
+    if name == "ModelFailureError" and reason in {
+        "request rejected",
+        "safety rejection",
+        "authentication failure",
+    }:
+        return True, "model provider rejected request"
     if name in _OPERATIONAL_FAILURE_NAMES or isinstance(error, RuntimeError):
         return True, "model transport or configuration failure"
     if isinstance(
@@ -206,6 +230,49 @@ def _error_category(error: BaseException) -> tuple[bool, str]:
     ):
         return False, "invalid structured synthesis output"
     return False, "synthesis role failure"
+
+
+def _provider_failure_details(error: BaseException) -> dict[str, object]:
+    details: dict[str, object] = {}
+    status_code = getattr(error, "status_code", None)
+    if type(status_code) is int:
+        details["status_code"] = status_code
+    for attribute, key in (
+        ("error_code", "error_code"),
+        ("error_type", "error_type"),
+        ("request_id", "request_id"),
+    ):
+        value = getattr(error, attribute, None)
+        if (
+            isinstance(value, str)
+            and 0 < len(value) <= 256
+            and "\r" not in value
+            and "\n" not in value
+        ):
+            details[key] = value
+    return details
+
+
+def _operational_limitation(error: BaseException, category: str) -> str:
+    if category == "model provider unavailable":
+        limitation = (
+            "The synthesis provider reports that the configured model is unavailable."
+        )
+    elif category == "model provider rejected request":
+        limitation = "The synthesis provider rejected the report request."
+    else:
+        limitation = "Synthesis model transport or configuration failed."
+    details = _provider_failure_details(error)
+    status_code = details.get("status_code")
+    if type(status_code) is int:
+        limitation += f" HTTP {status_code}."
+    error_code = details.get("error_code")
+    if isinstance(error_code, str):
+        limitation += f" Provider code: {error_code}."
+    request_id = details.get("request_id")
+    if isinstance(request_id, str):
+        limitation += f" Request ID: {request_id}."
+    return limitation
 
 
 def _role_schema(role: ModelRole) -> type[_Response]:
@@ -726,13 +793,16 @@ class ReportSynthesisService:
         resolved: ResolvedEvidence | None = None
         if initial_evidence_ids:
             try:
-                resolved = self.resolver.resolve(
+                resolved, batches = self._resolve_evidence_batches(
                     corpus,
                     tuple(dict.fromkeys(initial_evidence_ids)),
-                    max_entries=self.max_retrieval_entries,
-                    max_attachment_bytes=self.max_attachment_bytes,
+                    role=role,
+                    phase="context",
+                    round_number=0,
                 )
             except (OSError, RuntimeError, ValueError, TypeError) as error:
+                cause = getattr(error, "cause", error)
+                batches = getattr(error, "batch_logs", ())
                 return _RoleRun(
                     response=None,
                     retrieval_log=(
@@ -741,13 +811,17 @@ class ReportSynthesisService:
                             "phase": "context",
                             "round": 0,
                             "request": tuple(initial_evidence_ids),
-                            "response": {"status": "unavailable"},
-                            "error": self._safe_validation_reason(error),
+                            "batches": tuple(batches),
+                            "response": {"status": "rejected"},
+                            "error": self._safe_validation_reason(cause),
                         },
                     ),
                     unavailable=False,
                     invalid=True,
-                    limitation="Relevant evidence could not be resolved through the evidence boundary.",
+                    limitation=(
+                        "The synthesis evidence boundary rejected the initial role "
+                        "context."
+                    ),
                 )
             logs.append(
                 {
@@ -755,6 +829,7 @@ class ReportSynthesisService:
                     "phase": "context",
                     "round": 0,
                     "request": tuple(initial_evidence_ids),
+                    "batches": batches,
                     "resolved_evidence_ids": resolved.evidence_ids,
                     "response": {"status": "resolved"},
                 }
@@ -778,13 +853,17 @@ class ReportSynthesisService:
                 raise
             except Exception as error:
                 operational, category = _error_category(error)
+                response_payload: dict[str, object] = {"status": "error"}
+                provider_details = _provider_failure_details(error)
+                if provider_details:
+                    response_payload["provider"] = provider_details
                 logs.append(
                     {
                         "role": role.value,
                         "phase": phase,
                         "round": round_number,
                         "request": (),
-                        "response": {"status": "error"},
+                        "response": response_payload,
                         "error": category,
                     }
                 )
@@ -794,7 +873,7 @@ class ReportSynthesisService:
                     unavailable=operational,
                     invalid=not operational,
                     limitation=(
-                        "Synthesis model transport or configuration failed."
+                        _operational_limitation(error, category)
                         if operational
                         else "A synthesis role returned invalid structured output."
                     ),
@@ -813,25 +892,32 @@ class ReportSynthesisService:
                 return _RoleRun(response, tuple(logs))
 
             try:
-                resolved = self.resolver.resolve(
+                resolved, batches = self._resolve_evidence_batches(
                     corpus,
                     response.evidence_requests,
-                    max_entries=self.max_retrieval_entries,
-                    max_attachment_bytes=self.max_attachment_bytes,
+                    role=role,
+                    phase=phase,
+                    round_number=round_number,
                 )
             except (OSError, RuntimeError, ValueError, TypeError) as error:
+                cause = getattr(error, "cause", error)
                 log["response"] = {
-                    "status": "unavailable",
-                    "reason": self._safe_validation_reason(error),
+                    "status": "rejected",
+                    "reason": self._safe_validation_reason(cause),
                 }
+                log["batches"] = getattr(error, "batch_logs", ())
                 logs.append(log)
                 return _RoleRun(
                     response=None,
                     retrieval_log=tuple(logs),
                     invalid=True,
-                    limitation="A synthesis retrieval request could not be resolved through the evidence boundary.",
+                    limitation=(
+                        "The synthesis evidence boundary rejected a retrieval "
+                        "request."
+                    ),
                 )
             log["resolved_evidence_ids"] = resolved.evidence_ids
+            log["batches"] = batches
             logs.append(log)
             if round_number >= rounds:
                 return _RoleRun(
@@ -848,6 +934,76 @@ class ReportSynthesisService:
             unavailable=True,
             limitation="A synthesis role exceeded its bounded retrieval budget without usable output.",
         )
+
+    def _resolve_evidence_batches(
+        self,
+        corpus: EvidenceCorpus,
+        evidence_ids: Sequence[str],
+        *,
+        role: ModelRole,
+        phase: str,
+        round_number: int,
+    ) -> tuple[ResolvedEvidence, tuple[Mapping[str, object], ...]]:
+        """Resolve one logical request through resolver-sized, audited batches."""
+
+        requested = tuple(dict.fromkeys(evidence_ids))
+        if not requested:
+            raise ValueError("evidence request must not be empty")
+        batch_count = (
+            len(requested) + self.max_retrieval_entries - 1
+        ) // self.max_retrieval_entries
+        entries: list[object] = []
+        attachment_bytes = 0
+        batch_logs: list[dict[str, object]] = []
+        try:
+            for batch_index in range(batch_count):
+                start = batch_index * self.max_retrieval_entries
+                batch = requested[start : start + self.max_retrieval_entries]
+                batch_log: dict[str, object] = {
+                    "batch_index": batch_index,
+                    "batch_count": batch_count,
+                    "request": batch,
+                    "response": {"status": "resolving"},
+                }
+                batch_logs.append(batch_log)
+                remaining_attachment_bytes = max(
+                    1, self.max_attachment_bytes - attachment_bytes
+                )
+                resolved_batch = self.resolver.resolve(
+                    corpus,
+                    batch,
+                    max_entries=self.max_retrieval_entries,
+                    max_attachment_bytes=remaining_attachment_bytes,
+                )
+                entries.extend(resolved_batch.entries)
+                attachment_bytes += resolved_batch.attachment_bytes
+                if attachment_bytes > self.max_attachment_bytes:
+                    raise ValueError("cumulative attachment byte limit exceeded")
+                batch_log["resolved_evidence_ids"] = resolved_batch.evidence_ids
+                batch_log["attachment_bytes"] = resolved_batch.attachment_bytes
+                batch_log["cumulative_attachment_bytes"] = attachment_bytes
+                batch_log["response"] = {"status": "resolved"}
+            resolved = ResolvedEvidence.from_entries(
+                corpus,
+                entries,
+                max_entries=len(requested),
+                max_attachment_bytes=self.max_attachment_bytes,
+            )
+        except (OSError, RuntimeError, ValueError, TypeError) as error:
+            batch_logs[-1]["response"] = {
+                "status": "rejected",
+                "reason": self._safe_validation_reason(error),
+            }
+            raise _EvidenceBatchResolutionError(error, batch_logs) from error
+        for batch_log in batch_logs:
+            batch_log.update(
+                {
+                    "role": role.value,
+                    "phase": phase,
+                    "round": round_number,
+                }
+            )
+        return resolved, tuple(batch_logs)
 
     async def _invoke_role(
         self,

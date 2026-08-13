@@ -223,11 +223,18 @@ class _ScriptedRole:
 class _RecordingResolver(EvidenceResolver):
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
+        self.limits: list[dict[str, int]] = []
 
     def resolve(
         self, corpus: EvidenceCorpus, evidence_ids: Sequence[str], **kwargs: Any
     ):
         self.calls.append(tuple(evidence_ids))
+        self.limits.append(
+            {
+                "max_entries": kwargs["max_entries"],
+                "max_attachment_bytes": kwargs["max_attachment_bytes"],
+            }
+        )
         return super().resolve(corpus, evidence_ids, **kwargs)
 
 
@@ -342,6 +349,55 @@ async def test_retrieval_stops_after_complete_and_uses_resolver(tmp_path: Path) 
     assert len(analyst_logs) == 2
     assert analyst_logs[0]["request"] == (EVIDENCE_ID,)
     assert analyst_logs[1]["request"] == ()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_chunks_large_requests_before_resolver_boundary(
+    tmp_path: Path,
+) -> None:
+    evidence_ids = [f"event:run-a:{index}" for index in range(1, 61)]
+    extra_entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(evidence_id, "event", "run-a", replay_sequence=index),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"Recorded event {index}.",
+            payload={"sequence": index},
+        )
+        for index, evidence_id in enumerate(evidence_ids[1:], start=2)
+    )
+    resolver = _RecordingResolver()
+    service, _ = _scripted_service(
+        analyst=[
+            AnalystResponse(complete=False, evidence_requests=evidence_ids),
+            AnalystResponse(complete=True),
+        ],
+        resolver=resolver,
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=extra_entries)
+    )
+
+    assert attempt.status is SynthesisStatus.NO_ISSUES
+    assert resolver.calls == [tuple(evidence_ids[:32]), tuple(evidence_ids[32:])]
+    assert resolver.limits == [
+        {"max_entries": 32, "max_attachment_bytes": 16 * 1024 * 1024},
+        {"max_entries": 32, "max_attachment_bytes": 16 * 1024 * 1024},
+    ]
+    retrieval_log = next(
+        entry
+        for entry in attempt.retrieval_log
+        if entry["request"] == tuple(evidence_ids)
+    )
+    batch_logs = retrieval_log["batches"]
+    assert [(entry["batch_index"], entry["batch_count"]) for entry in batch_logs] == [
+        (0, 2),
+        (1, 2),
+    ]
+    assert batch_logs[0]["request"] == tuple(evidence_ids[:32])
+    assert batch_logs[1]["request"] == tuple(evidence_ids[32:])
+    assert batch_logs[0]["resolved_evidence_ids"] == tuple(evidence_ids[:32])
+    assert batch_logs[1]["resolved_evidence_ids"] == tuple(evidence_ids[32:])
 
 
 @pytest.mark.asyncio

@@ -87,12 +87,39 @@ _REPORT_ROLES = frozenset(
 _MAX_MODEL_ATTACHMENT_BYTES = 16 * 1024 * 1024
 
 
+def _safe_provider_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > 256:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9._:/-]+", value) is None:
+        return None
+    return value
+
+
 class ModelConfigurationError(ValueError):
     """Raised when model environment/configuration is incomplete or unsafe."""
 
 
 class ModelFailureError(RuntimeError):
     """Terminal model failure after classification and bounded retries."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        status_code: int | None = None,
+        error_code: str | None = None,
+        error_type: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.status_code = status_code if type(status_code) is int else None
+        self.error_code = _safe_provider_text(error_code)
+        self.error_type = _safe_provider_text(error_type)
+        self.request_id = _safe_provider_text(request_id)
 
 
 def load_environment_file(
@@ -652,6 +679,55 @@ def _response_body(response: httpx.Response) -> object:
         return {"text": response.text}
 
 
+def _provider_error_metadata(
+    response: httpx.Response, body: object
+) -> dict[str, object]:
+    metadata: dict[str, object] = {"status_code": response.status_code}
+    for header_name in ("x-request-id", "request-id"):
+        request_id = _safe_provider_text(response.headers.get(header_name))
+        if request_id is not None:
+            metadata["request_id"] = request_id
+            break
+    if not isinstance(body, Mapping):
+        return metadata
+    body_mapping = cast(Mapping[object, object], body)
+    error_value = body_mapping.get("error")
+    if not isinstance(error_value, Mapping):
+        return metadata
+    error = cast(Mapping[object, object], error_value)
+    for source_name, target_name in (("code", "error_code"), ("type", "error_type")):
+        value = _safe_provider_text(error.get(source_name))
+        if value is not None:
+            metadata[target_name] = value
+    return metadata
+
+
+def _provider_error_code(body: object) -> str | None:
+    if not isinstance(body, Mapping):
+        return None
+    body_mapping = cast(Mapping[object, object], body)
+    error_value = body_mapping.get("error")
+    if not isinstance(error_value, Mapping):
+        return None
+    return _safe_provider_text(cast(Mapping[object, object], error_value).get("code"))
+
+
+def _provider_failure_reason(status_code: int, body: object) -> str:
+    error_code = _provider_error_code(body)
+    normalized_code = error_code.upper() if error_code is not None else ""
+    if normalized_code in {
+        "MODEL_UNAVAILABLE",
+        "MODEL_NOT_AVAILABLE",
+        "MODEL_NOT_FOUND",
+    }:
+        return "model unavailable"
+    if status_code == 429:
+        return "rate limit"
+    if 500 <= status_code <= 599:
+        return "server error"
+    return "request rejected"
+
+
 def _body_text(body: object) -> str:
     if isinstance(body, str):
         return body
@@ -733,6 +809,36 @@ def _structured_content(body: object) -> object:
     return cast(dict[str, object], parsed)
 
 
+def _normalize_report_output(role: ModelRole, parsed: object) -> object:
+    """Normalize the provider's generic findings key before local validation."""
+
+    if role not in _REPORT_ROLES or not isinstance(parsed, Mapping):
+        return parsed
+    parsed_mapping = cast(Mapping[object, object], parsed)
+    target_field = {
+        ModelRole.REPORT_ANALYST: "candidate_findings",
+        ModelRole.REPORT_ADJUDICATOR: "final_findings",
+    }.get(role)
+    if target_field is None or "findings" not in parsed_mapping:
+        return parsed_mapping
+    if target_field in parsed_mapping:
+        raise ValueError("report response contains conflicting findings fields")
+    normalized = dict(parsed_mapping)
+    normalized[target_field] = normalized.pop("findings")
+    return normalized
+
+
+def _response_mode(role: ModelRole) -> str:
+    role_value = ModelRole(role)
+    # This provider rejects response_format on the report route. Keep JSON
+    # parsing and Pydantic validation local after receiving plain content.
+    if role_value in _REPORT_ROLES:
+        return "plain"
+    if role_value is ModelRole.COGNITIVE:
+        return "json-object"
+    return "strict"
+
+
 class _StructuredCallSupport:
     """Shared safe records, manifests, retry events, and delay mechanics."""
 
@@ -782,10 +888,10 @@ class _StructuredCallSupport:
             ModelRole.COARSE_SCENT: "scent-coarse-v1",
             ModelRole.FULL_SCENT: "scent-full-v1",
             ModelRole.COGNITIVE: "cognitive-v1",
-            ModelRole.REPORT_ANALYST: "report-analyst-v1",
-            ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v1",
-            ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v1",
-            ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v1",
+            ModelRole.REPORT_ANALYST: "report-analyst-v2",
+            ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v2",
+            ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v2",
+            ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v2",
         }[role_value]
         return ModelManifest(
             provider_id=self._provider_id,
@@ -911,11 +1017,11 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         attempts = 0
         started = time.perf_counter()
         response_payload: object = {}
-        # This endpoint hangs on cognitive discriminated schemas instead of
-        # returning a useful unsupported-schema response. Keep local validation
-        # while using its compatible JSON-object mode for that role.
-        mode = "json-object" if role_value is ModelRole.COGNITIVE else "strict"
+        # Keep local validation while using the provider-compatible object mode
+        # for report and cognitive roles.
+        mode = _response_mode(role_value)
         last_reason = "model call failed"
+        last_provider_metadata: dict[str, object] = {}
 
         while attempts < retry_policy.max_attempts:
             attempts += 1
@@ -937,8 +1043,14 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                         content=request_body,
                     )
                 response_payload = _response_body(response)
+                last_provider_metadata = (
+                    _provider_error_metadata(response, response_payload)
+                    if not 200 <= response.status_code < 300
+                    else {}
+                )
             except httpx.TransportError as error:
                 last_reason = _transport_error_category(error)
+                last_provider_metadata = {}
                 if attempts >= retry_policy.max_attempts:
                     break
                 retries.append(
@@ -986,7 +1098,9 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                     continue
                 break
             if 500 <= response.status_code <= 599:
-                last_reason = "server error"
+                last_reason = _provider_failure_reason(
+                    response.status_code, response_payload
+                )
                 if attempts < retry_policy.max_attempts:
                     retries.append(
                         self._retry(
@@ -1003,11 +1117,14 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                     continue
                 break
             if not 200 <= response.status_code < 300:
-                last_reason = "request rejected"
+                last_reason = _provider_failure_reason(
+                    response.status_code, response_payload
+                )
                 break
 
             try:
                 parsed = _structured_content(response_payload)
+                parsed = _normalize_report_output(role_value, parsed)
                 result = schema.model_validate(parsed)
             except (ValueError, TypeError, ValidationError):
                 last_reason = "invalid structured output"
@@ -1061,6 +1178,9 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             mode,
             include_attachment_bytes=False,
         )
+        response_metadata: dict[str, object] = {"failure": last_reason}
+        if last_provider_metadata:
+            response_metadata["provider"] = last_provider_metadata
         self._record(
             role_value,
             model,
@@ -1069,11 +1189,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             attempts,
             started,
             request_payload,
-            (
-                cast(Mapping[str, object], response_payload)
-                if isinstance(response_payload, Mapping)
-                else {"error": response_payload}
-            ),
+            response_metadata,
             (
                 _usage(cast(Mapping[str, object], response_payload))
                 if isinstance(response_payload, Mapping)
@@ -1081,7 +1197,17 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             ),
             retries,
         )
-        raise ModelFailureError(last_reason)
+        status_code = last_provider_metadata.get("status_code")
+        error_code = last_provider_metadata.get("error_code")
+        error_type = last_provider_metadata.get("error_type")
+        request_id = last_provider_metadata.get("request_id")
+        raise ModelFailureError(
+            last_reason,
+            status_code=status_code if type(status_code) is int else None,
+            error_code=error_code if isinstance(error_code, str) else None,
+            error_type=error_type if isinstance(error_type, str) else None,
+            request_id=request_id if isinstance(request_id, str) else None,
+        )
 
     def _request_payload(
         self,
@@ -1131,7 +1257,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         role: ModelRole,
     ) -> int:
         role_value = ModelRole(role)
-        mode = "json-object" if role_value is ModelRole.COGNITIVE else "strict"
+        mode = _response_mode(role_value)
         return len(
             serialize_transport_json(
                 self._request_payload(schema, messages, model, role_value, mode)
