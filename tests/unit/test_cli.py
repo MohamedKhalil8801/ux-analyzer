@@ -191,53 +191,124 @@ def test_atomic_experiment_json_is_bounded_and_preserves_existing_file(
     assert not tuple(tmp_path.glob(".experiment.*.tmp"))
 
 
-def test_atomic_experiment_json_stops_streaming_before_temp_creation(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "\x00" * 11,
+        "\x01\x02\x03\x04" * 3,
+        '"' * 32,
+        "\\" * 32,
+        "\N{GRINNING FACE}" * 6,
+    ],
+    ids=["nul", "control", "quote", "backslash", "unicode"],
+)
+def test_atomic_experiment_json_bounds_escaped_strings_without_encoder_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    def forbidden_iterencode(*args: object, **kwargs: object):
+        del args, kwargs
+        raise AssertionError("JSONEncoder materialized an escaped string token")
+
+    monkeypatch.setattr(cli, "_MAX_EXPERIMENT_JSON_BYTES", 64)
+    monkeypatch.setattr(json.JSONEncoder, "iterencode", forbidden_iterencode)
+
+    with pytest.raises(ValueError, match="experiment summary.*exceeds"):
+        cli._atomic_write_experiment_json(
+            tmp_path / "experiment.json", {"payload": payload}
+        )
+
+    assert not tuple(tmp_path.glob(".experiment.*.tmp"))
+
+
+def test_atomic_experiment_json_rejects_projected_eight_mib_nul_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    consumed = 0
+    payload = "\x00" * (cli._MAX_EXPERIMENT_JSON_BYTES // 6 + 1)
 
-    def oversized_chunks(*args: object, **kwargs: object):
+    def forbidden_iterencode(*args: object, **kwargs: object):
         del args, kwargs
-        nonlocal consumed
-        for _ in range(100):
-            consumed += 1
-            if consumed > 3:
-                raise AssertionError("encoder consumed past configured bound")
-            yield "12345678"
+        raise AssertionError("JSONEncoder materialized an escaped string token")
 
-    monkeypatch.setattr(cli, "_MAX_EXPERIMENT_JSON_BYTES", 16)
-    monkeypatch.setattr(json.JSONEncoder, "iterencode", oversized_chunks)
+    monkeypatch.setattr(json.JSONEncoder, "iterencode", forbidden_iterencode)
 
     with pytest.raises(ValueError, match="experiment summary.*exceeds"):
-        cli._atomic_write_experiment_json(tmp_path / "experiment.json", {})
+        cli._atomic_write_experiment_json(
+            tmp_path / "experiment.json", {"payload": payload}
+        )
 
-    assert consumed == 2
     assert not tuple(tmp_path.glob(".experiment.*.tmp"))
+
+
+def test_atomic_experiment_json_matches_canonical_json_at_exact_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    value = {
+        "z": (
+            "\x00\b\f\n\r\t\"\\\x7f\ud800"
+            "\N{GRINNING FACE}\N{LATIN SMALL LETTER E WITH ACUTE}"
+        ),
+        "scalars": [
+            None,
+            True,
+            False,
+            0,
+            -17,
+            1.25,
+            -0.0,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+        ],
+        "nested": {"b": ["plain", "\x1f"], "\x00a": {}},
+    }
+    expected = (
+        json.dumps(
+            cli._json_data(value),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("ascii")
+    summary = tmp_path / "experiment.json"
+    monkeypatch.setattr(cli, "_MAX_EXPERIMENT_JSON_BYTES", len(expected))
+
+    cli._atomic_write_experiment_json(summary, value)
+
+    assert summary.read_bytes() == expected
+
+    monkeypatch.setattr(cli, "_MAX_EXPERIMENT_JSON_BYTES", len(expected) - 1)
+    with pytest.raises(ValueError, match="experiment summary.*exceeds"):
+        cli._atomic_write_experiment_json(summary, value)
+    assert summary.read_bytes() == expected
 
 
 def test_atomic_experiment_json_accounts_streaming_under_publication_lock(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    original_iterencode = json.JSONEncoder.iterencode
+    canonical_chunks = cli._canonical_experiment_json_chunks
     accounting_lock = threading.Lock()
     active = 0
     maximum_active = 0
 
-    def tracked_iterencode(self: json.JSONEncoder, *args: object, **kwargs: object):
+    def tracked_chunks(value: object, *, max_bytes: int) -> tuple[bytes, ...]:
         nonlocal active, maximum_active
         with accounting_lock:
             active += 1
             maximum_active = max(maximum_active, active)
         try:
             time.sleep(0.02)
-            yield from original_iterencode(self, *args, **kwargs)
+            return canonical_chunks(value, max_bytes=max_bytes)
         finally:
             with accounting_lock:
                 active -= 1
 
-    monkeypatch.setattr(json.JSONEncoder, "iterencode", tracked_iterencode)
+    monkeypatch.setattr(cli, "_canonical_experiment_json_chunks", tracked_chunks)
     summaries = tuple(tmp_path / f"experiment-{index}.json" for index in range(6))
 
     with ThreadPoolExecutor(max_workers=len(summaries)) as executor:

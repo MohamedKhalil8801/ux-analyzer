@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -1531,38 +1532,140 @@ def _write_experiment_summary(
     return summary_path
 
 
+class _BoundedCanonicalJson:
+    def __init__(self, max_bytes: int) -> None:
+        if max_bytes < 1:
+            raise ValueError(f"experiment summary exceeds {max_bytes} bytes")
+        self._max_bytes = max_bytes
+        self._content_limit = max_bytes - 1
+        self._size = 0
+        self._chunks: list[bytes] = []
+        self._pending = bytearray()
+
+    def encode(self, value: object) -> tuple[bytes, ...]:
+        self._emit_value(value)
+        self._pending.extend(b"\n")
+        if self._pending:
+            self._chunks.append(bytes(self._pending))
+            self._pending.clear()
+        return tuple(self._chunks)
+
+    def _reserve(self, length: int) -> None:
+        if self._size + length > self._content_limit:
+            raise ValueError(
+                f"experiment summary exceeds {self._max_bytes} bytes"
+            )
+        self._size += length
+
+    def _emit_ascii(self, value: str) -> None:
+        self._emit_ascii_range(value, 0, len(value))
+
+    def _emit_ascii_range(self, value: str, start: int, end: int) -> None:
+        self._reserve(end - start)
+        while start < end:
+            available = _EXPERIMENT_JSON_CHUNK_BYTES - len(self._pending)
+            chunk_end = min(start + available, end)
+            self._pending.extend(value[start:chunk_end].encode("ascii"))
+            start = chunk_end
+            if len(self._pending) == _EXPERIMENT_JSON_CHUNK_BYTES:
+                self._chunks.append(bytes(self._pending))
+                self._pending.clear()
+
+    def _emit_string(self, value: str) -> None:
+        self._emit_ascii('"')
+        run_start = 0
+        for index, character in enumerate(value):
+            codepoint = ord(character)
+            escaped: str | None = None
+            if character == '"':
+                escaped = '\\"'
+            elif character == "\\":
+                escaped = "\\\\"
+            elif character == "\b":
+                escaped = "\\b"
+            elif character == "\f":
+                escaped = "\\f"
+            elif character == "\n":
+                escaped = "\\n"
+            elif character == "\r":
+                escaped = "\\r"
+            elif character == "\t":
+                escaped = "\\t"
+            elif codepoint < 0x20:
+                escaped = f"\\u{codepoint:04x}"
+            elif codepoint > 0x7E:
+                if codepoint <= 0xFFFF:
+                    escaped = f"\\u{codepoint:04x}"
+                else:
+                    scalar = codepoint - 0x10000
+                    high = 0xD800 | (scalar >> 10)
+                    low = 0xDC00 | (scalar & 0x3FF)
+                    escaped = f"\\u{high:04x}\\u{low:04x}"
+            if escaped is None:
+                continue
+            if run_start < index:
+                self._emit_ascii_range(value, run_start, index)
+            self._emit_ascii(escaped)
+            run_start = index + 1
+        if run_start < len(value):
+            self._emit_ascii_range(value, run_start, len(value))
+        self._emit_ascii('"')
+
+    def _emit_value(self, value: object) -> None:
+        if value is None:
+            self._emit_ascii("null")
+        elif value is True:
+            self._emit_ascii("true")
+        elif value is False:
+            self._emit_ascii("false")
+        elif isinstance(value, str):
+            self._emit_string(value)
+        elif isinstance(value, int):
+            self._emit_ascii(int.__repr__(value))
+        elif isinstance(value, float):
+            if math.isnan(value):
+                self._emit_ascii("NaN")
+            elif math.isinf(value):
+                self._emit_ascii("Infinity" if value > 0 else "-Infinity")
+            else:
+                self._emit_ascii(float.__repr__(value))
+        elif isinstance(value, list):
+            sequence = cast(list[object], value)
+            self._emit_ascii("[")
+            for index, item in enumerate(sequence):
+                if index:
+                    self._emit_ascii(",")
+                self._emit_value(item)
+            self._emit_ascii("]")
+        elif isinstance(value, dict):
+            mapping = cast(dict[str, object], value)
+            keys = sorted(mapping)
+            self._emit_ascii("{")
+            for index, key in enumerate(keys):
+                if index:
+                    self._emit_ascii(",")
+                self._emit_string(key)
+                self._emit_ascii(":")
+                self._emit_value(mapping[key])
+            self._emit_ascii("}")
+        else:
+            raise TypeError(f"cannot serialize canonical JSON value {type(value)!r}")
+
+
+def _canonical_experiment_json_chunks(
+    value: object, *, max_bytes: int
+) -> tuple[bytes, ...]:
+    return _BoundedCanonicalJson(max_bytes).encode(_json_data(value))
+
+
 def _atomic_write_experiment_json(path: Path, value: object) -> None:
     with _EXPERIMENT_JSON_WRITE_LOCK:
         with secure_open_directory(
             path.parent, "experiment summary directory", create=True
         ) as parent:
-            chunks: list[bytes] = []
-            pending = bytearray()
-            encoded_size = 0
-            encoder = json.JSONEncoder(
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
+            chunks = _canonical_experiment_json_chunks(
+                value, max_bytes=_MAX_EXPERIMENT_JSON_BYTES
             )
-            for text in encoder.iterencode(_json_data(value)):
-                if encoded_size + len(text) + 1 > _MAX_EXPERIMENT_JSON_BYTES:
-                    raise ValueError(
-                        "experiment summary exceeds "
-                        f"{_MAX_EXPERIMENT_JSON_BYTES} bytes"
-                    )
-                encoded_size += len(text)
-                start = 0
-                while start < len(text):
-                    available = _EXPERIMENT_JSON_CHUNK_BYTES - len(pending)
-                    end = min(start + available, len(text))
-                    pending.extend(text[start:end].encode("ascii"))
-                    start = end
-                    if len(pending) == _EXPERIMENT_JSON_CHUNK_BYTES:
-                        chunks.append(bytes(pending))
-                        pending.clear()
-            pending.extend(b"\n")
-            if pending:
-                chunks.append(bytes(pending))
 
             temporary_name = f".{path.stem}.{uuid4().hex}.tmp"
             with secure_create_exclusive_file(
