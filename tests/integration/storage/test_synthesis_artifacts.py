@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -822,9 +824,8 @@ def test_source_swap_after_prevalidation_cannot_publish_invalid_attempt(
         source: Path,
         destination: Path,
         label: str,
-        *,
-        replace_existing: bool = False,
-    ) -> None:
+        **kwargs: object,
+    ) -> object:
         nonlocal swapped
         if label == "synthesis attempt publication":
             source.rename(validated_source)
@@ -836,8 +837,9 @@ def test_source_swap_after_prevalidation_cannot_publish_invalid_attempt(
             source,
             destination,
             label,
-            replace_existing=replace_existing,
+            **kwargs,
         )
+        return None
 
     monkeypatch.setattr(synthesis_artifacts, "secure_replace", swap_before_rename)
 
@@ -858,6 +860,144 @@ def test_source_swap_after_prevalidation_cannot_publish_invalid_attempt(
     assert (validated_source / "corpus-manifest.json").read_bytes() == (
         corpus.to_json().encode("ascii")
     )
+
+
+@pytest.mark.parametrize("failure", ("os-error", "oversized", "corrupted"))
+def test_post_publish_verification_failure_leaves_no_unvalidated_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1)
+    store = SynthesisArtifactStore(tmp_path)
+    secure_read = synthesis_artifacts.secure_read_bytes
+    failed = False
+
+    def fail_published_read(
+        path: Path,
+        label: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        nonlocal failed
+        if not failed and label.startswith("published synthesis attempt"):
+            failed = True
+            if failure == "os-error":
+                raise OSError("simulated published read failure")
+            if failure == "oversized":
+                path.write_bytes(b"x" * (synthesis_artifacts.MAX_SYNTHESIS_JSON_BYTES + 1))
+            else:
+                path.write_bytes(b"{}\n")
+        return secure_read(path, label, max_bytes=max_bytes)
+
+    monkeypatch.setattr(synthesis_artifacts, "secure_read_bytes", fail_published_read)
+
+    with pytest.raises(SynthesisArtifactError, match="published|verify"):
+        store.write_attempt(attempt, corpus)
+
+    assert failed
+    assert not (store.attempts_root / attempt.attempt_id).exists()
+    assert not store.index_path.exists()
+
+
+def test_quarantine_never_removes_replacement_at_rejected_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1)
+    store = SynthesisArtifactStore(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    validated_source = outside / "validated-source"
+    rejected_source = outside / "rejected-source"
+    real_secure_replace = synthesis_artifacts.secure_replace
+    secure_read = synthesis_artifacts.secure_read_bytes
+    corrupted = False
+
+    def race_replace(
+        source: Path,
+        destination: Path,
+        label: str,
+        **kwargs: object,
+    ) -> object:
+        if label == "synthesis attempt publication":
+            identity = real_secure_replace(source, destination, label, **kwargs)
+            shutil.copytree(destination, validated_source)
+            return identity
+        elif label == "invalid synthesis attempt quarantine":
+            source.rename(rejected_source)
+            validated_source.rename(source)
+        return real_secure_replace(source, destination, label, **kwargs)
+
+    def corrupt_published_read(
+        path: Path,
+        label: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        nonlocal corrupted
+        if not corrupted and label.startswith("published synthesis attempt"):
+            path.write_bytes(b"{}\n")
+            corrupted = True
+        return secure_read(path, label, max_bytes=max_bytes)
+
+    monkeypatch.setattr(synthesis_artifacts, "secure_replace", race_replace)
+    monkeypatch.setattr(synthesis_artifacts, "secure_read_bytes", corrupt_published_read)
+
+    with pytest.raises(SynthesisArtifactError):
+        store.write_attempt(attempt, corpus)
+
+    destination = store.attempts_root / attempt.attempt_id
+    assert destination.is_dir()
+    assert corrupted
+    assert json.loads((destination / "synthesis.json").read_text(encoding="ascii"))[
+        "attempt_id"
+    ] == attempt.attempt_id
+    assert rejected_source.is_dir()
+
+
+def test_publication_lock_rejects_parent_swap_during_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1)
+    store = SynthesisArtifactStore(tmp_path)
+    store._ensure_layout()
+    synthesis_root = store.synthesis_root
+    real_root = tmp_path / "synthesis-real"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_open = synthesis_artifacts.os.open
+    swapped = False
+
+    def race_open(
+        path: str | os.PathLike[str], flags: int, mode: int = 0o777
+    ) -> int:
+        nonlocal swapped
+        if not swapped and Path(path) == synthesis_root / ".publication.lock":
+            synthesis_root.rename(real_root)
+            try:
+                synthesis_root.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                real_root.rename(synthesis_root)
+                pytest.skip(f"symlink race fixture unavailable: {error}")
+            descriptor = original_open(path, flags, mode)
+            synthesis_root.unlink()
+            real_root.rename(synthesis_root)
+            swapped = True
+            return descriptor
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(synthesis_artifacts.os, "open", race_open)
+
+    with pytest.raises(SynthesisArtifactError, match="lock|containment|path"):
+        store.write_attempt(attempt, corpus)
+
+    assert swapped
+    assert not (store.attempts_root / attempt.attempt_id).exists()
 
 
 def test_replace_index_windows_uses_secure_handle_relative_replacement(

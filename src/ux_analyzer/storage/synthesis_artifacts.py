@@ -29,10 +29,13 @@ from ux_analyzer.domain.synthesis import (
 )
 from ux_analyzer.ports.report_synthesis import SynthesisCorpusPort
 from ux_analyzer.storage.run_bundle import (
+    SecurePathIdentity,
     secure_assert_ancestors,
     secure_ensure_directory,
     secure_is_link_or_reparse,
     secure_make_temporary_directory,
+    secure_open_file_descriptor,
+    secure_path_identity,
     secure_read_bytes,
     secure_remove_tree,
     secure_replace,
@@ -185,12 +188,12 @@ def _publication_lock(synthesis_root: Path) -> Generator[None, None, None]:
 
     with _publication_thread_lock(synthesis_root):
         lock_path = synthesis_root / ".publication.lock"
-        secure_assert_ancestors(lock_path, "synthesis publication lock")
         flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(lock_path, flags, 0o600)
-        try:
-            secure_assert_ancestors(lock_path, "synthesis publication lock")
+        with secure_open_file_descriptor(
+            lock_path, flags, "synthesis publication lock"
+        ) as opened:
+            descriptor, lock_identity = opened
             if secure_is_link_or_reparse(lock_path):
                 raise SynthesisArtifactError(
                     "synthesis publication lock must not be a link"
@@ -208,6 +211,13 @@ def _publication_lock(synthesis_root: Path) -> Generator[None, None, None]:
 
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
             try:
+                if (
+                    secure_path_identity(lock_path, "synthesis publication lock")
+                    != lock_identity
+                ):
+                    raise SynthesisArtifactError(
+                        "synthesis publication lock identity changed"
+                    )
                 yield
             finally:
                 if os.name == "nt":
@@ -219,19 +229,17 @@ def _publication_lock(synthesis_root: Path) -> Generator[None, None, None]:
                     import fcntl
 
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(descriptor)
 
 
 @contextmanager
 def _existing_publication_read_lock(lock_path: Path) -> Generator[None, None, None]:
     """Share an existing publication lock without mutating its file."""
 
-    secure_assert_ancestors(lock_path, "synthesis publication lock")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(lock_path, flags)
-    try:
-        secure_assert_ancestors(lock_path, "synthesis publication lock")
+    with secure_open_file_descriptor(
+        lock_path, flags, "synthesis publication lock"
+    ) as opened:
+        descriptor, lock_identity = opened
         if secure_is_link_or_reparse(lock_path):
             raise SynthesisArtifactError(
                 "synthesis publication lock must not be a link"
@@ -246,6 +254,13 @@ def _existing_publication_read_lock(lock_path: Path) -> Generator[None, None, No
 
             fcntl.flock(descriptor, fcntl.LOCK_SH)
         try:
+            if (
+                secure_path_identity(lock_path, "synthesis publication lock")
+                != lock_identity
+            ):
+                raise SynthesisArtifactError(
+                    "synthesis publication lock identity changed"
+                )
             yield
         finally:
             if os.name == "nt":
@@ -257,8 +272,6 @@ def _existing_publication_read_lock(lock_path: Path) -> Generator[None, None, No
                 import fcntl
 
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)
 
 
 def _json_object_without_duplicates(
@@ -804,8 +817,17 @@ class SynthesisArtifactStore:
 
         validate_publishable_synthesis_attempt(attempt)
         self._ensure_layout()
-        with _publication_lock(self.synthesis_root):
-            return self._write_attempt_locked(attempt, corpus)
+        lock_acquired = False
+        try:
+            with _publication_lock(self.synthesis_root):
+                lock_acquired = True
+                return self._write_attempt_locked(attempt, corpus)
+        except SynthesisArtifactError:
+            raise
+        except (OSError, RuntimeError, ValueError) as error:
+            if lock_acquired:
+                raise
+            raise SynthesisArtifactError(str(error)) from error
 
     def _write_attempt_locked(
         self, attempt: SynthesisAttempt, corpus: SynthesisCorpusPort
@@ -869,6 +891,7 @@ class SynthesisArtifactStore:
         synthesis_bytes = _canonical_bytes(_attempt_to_dict(attempt))
         _validate_json_size(synthesis_bytes, "synthesis artifact")
         staging = self._temporary_attempt_directory(attempt.attempt_id)
+        staging_identity = secure_path_identity(staging, "synthesis attempt staging")
         try:
             secure_write_bytes(staging / "synthesis.json", synthesis_bytes)
             secure_write_bytes(staging / "corpus-manifest.json", corpus_bytes)
@@ -885,9 +908,12 @@ class SynthesisArtifactStore:
                 synthesis_bytes,
                 corpus_bytes,
             )
-            self._publish_attempt(staging, destination)
+            published_identity = self._publish_attempt(
+                staging, destination, validated_identity[0]
+            )
             self._verify_published_attempt(
                 destination,
+                published_identity,
                 validated_identity,
                 synthesis_bytes,
                 corpus_bytes,
@@ -897,7 +923,7 @@ class SynthesisArtifactStore:
             )
             self._write_index(selected)
         except BaseException:
-            self._remove_temporary_directory(staging)
+            self._remove_temporary_directory(staging, staging_identity)
             raise
         return destination
 
@@ -1292,7 +1318,7 @@ class SynthesisArtifactStore:
 
     def _attempt_bundle_identity(
         self, directory: Path
-    ) -> tuple[os.stat_result, os.stat_result, os.stat_result]:
+    ) -> tuple[SecurePathIdentity, SecurePathIdentity, SecurePathIdentity]:
         """Snapshot allowlisted directory/file identities around publication."""
 
         if secure_is_link_or_reparse(directory) or not directory.is_dir():
@@ -1310,18 +1336,19 @@ class SynthesisArtifactStore:
                 "synthesis attempt files must be real regular files"
             )
         return (
-            os.stat(directory, follow_symlinks=False),
-            os.stat(paths[0], follow_symlinks=False),
-            os.stat(paths[1], follow_symlinks=False),
+            secure_path_identity(directory, "synthesis attempt directory"),
+            secure_path_identity(paths[0], "synthesis artifact"),
+            secure_path_identity(paths[1], "synthesis corpus manifest"),
         )
 
     def _verify_published_attempt(
         self,
         destination: Path,
+        published_root_identity: SecurePathIdentity,
         validated_identity: tuple[
-            os.stat_result,
-            os.stat_result,
-            os.stat_result,
+            SecurePathIdentity,
+            SecurePathIdentity,
+            SecurePathIdentity,
         ],
         synthesis_bytes: bytes,
         corpus_bytes: bytes,
@@ -1331,19 +1358,21 @@ class SynthesisArtifactStore:
         try:
             published_identity = self._attempt_bundle_identity(destination)
         except SynthesisArtifactError:
-            self._quarantine_invalid_published_attempt(destination)
+            self._quarantine_invalid_published_attempt(
+                destination, published_root_identity
+            )
             raise
-        except OSError as error:
+        except (OSError, RuntimeError, ValueError) as error:
+            self._quarantine_invalid_published_attempt(
+                destination, published_root_identity
+            )
             raise SynthesisArtifactError(
                 "cannot verify published synthesis attempt identity"
             ) from error
-        if not all(
-            os.path.samestat(validated, published)
-            for validated, published in zip(
-                validated_identity, published_identity, strict=True
+        if validated_identity != published_identity:
+            self._quarantine_invalid_published_attempt(
+                destination, published_root_identity
             )
-        ):
-            self._quarantine_invalid_published_attempt(destination)
             raise SynthesisArtifactError(
                 "published synthesis attempt differs from validated staging identity"
             )
@@ -1359,28 +1388,15 @@ class SynthesisArtifactStore:
             )
             identity_after_read = self._attempt_bundle_identity(destination)
         except (OSError, RuntimeError, ValueError) as error:
-            try:
-                identity_after_error = self._attempt_bundle_identity(destination)
-            except (OSError, RuntimeError, ValueError):
-                identity_after_error = None
-            if identity_after_error is not None and any(
-                not os.path.samestat(before, after)
-                for before, after in zip(
-                    published_identity, identity_after_error, strict=True
-                )
-            ):
-                self._quarantine_invalid_published_attempt(destination)
+            self._quarantine_invalid_published_attempt(
+                destination, published_root_identity
+            )
             raise SynthesisArtifactError(
                 "cannot verify published synthesis attempt bytes"
             ) from error
 
         expected_bytes = (synthesis_bytes, corpus_bytes)
-        identities_match = all(
-            os.path.samestat(before, after)
-            for before, after in zip(
-                published_identity, identity_after_read, strict=True
-            )
-        )
+        identities_match = published_identity == identity_after_read
         digests_match = all(
             hmac.compare_digest(
                 hashlib.sha256(actual).digest(), hashlib.sha256(expected).digest()
@@ -1390,7 +1406,7 @@ class SynthesisArtifactStore:
         )
         if identities_match and digests_match:
             return
-        self._quarantine_invalid_published_attempt(destination)
+        self._quarantine_invalid_published_attempt(destination, published_root_identity)
         raise SynthesisArtifactError(
             "published synthesis attempt differs from validated staged bytes"
         )
@@ -1454,49 +1470,66 @@ class SynthesisArtifactStore:
         except (OSError, RuntimeError, ValueError) as error:
             raise SynthesisArtifactError(str(error)) from error
 
-    def _publish_attempt(self, staging: Path, destination: Path) -> None:
+    def _publish_attempt(
+        self,
+        staging: Path,
+        destination: Path,
+        validated_identity: SecurePathIdentity,
+    ) -> SecurePathIdentity:
         if os.path.lexists(destination) or secure_is_link_or_reparse(destination):
             raise SynthesisArtifactError("attempt already exists; overwrite refused")
         try:
-            secure_replace(
+            return secure_replace(
                 staging,
                 destination,
                 "synthesis attempt publication",
                 replace_existing=False,
+                expected_source_identity=validated_identity,
             )
         except SynthesisArtifactError:
             raise
         except (OSError, RuntimeError, ValueError) as error:
             raise SynthesisArtifactError(str(error)) from error
 
-    def _quarantine_invalid_published_attempt(self, destination: Path) -> None:
+    def _quarantine_invalid_published_attempt(
+        self,
+        destination: Path,
+        rejected_identity: SecurePathIdentity,
+    ) -> None:
         """Remove a proven mismatch from the immutable attempt namespace."""
 
         if not os.path.lexists(destination):
             return
         try:
             if secure_is_link_or_reparse(destination):
-                secure_unlink(destination, "invalid synthesis attempt publication")
+                secure_unlink(
+                    destination,
+                    "invalid synthesis attempt publication",
+                    expected_identity=rejected_identity,
+                )
                 return
             quarantine = destination.with_name(
                 f".invalid-{destination.name}-{uuid4().hex}"
             )
-            secure_replace(
+            quarantine_identity = secure_replace(
                 destination,
                 quarantine,
                 "invalid synthesis attempt quarantine",
                 replace_existing=False,
+                expected_source_identity=rejected_identity,
             )
             try:
                 if quarantine.is_dir():
                     secure_remove_tree(
                         quarantine,
                         "invalid synthesis attempt quarantine cleanup",
+                        expected_identity=quarantine_identity,
                     )
                 else:
                     secure_unlink(
                         quarantine,
                         "invalid synthesis attempt quarantine cleanup",
+                        expected_identity=quarantine_identity,
                     )
             except (OSError, RuntimeError, ValueError):
                 pass
@@ -1543,24 +1576,37 @@ class SynthesisArtifactStore:
             "attempts": records,
         }
         temporary = self.synthesis_root / f".index.{uuid4().hex}.tmp"
+        temporary_identity: SecurePathIdentity | None = None
         try:
             index_bytes = _canonical_bytes(index_value)
             _validate_json_size(index_bytes, "synthesis index")
             secure_write_bytes(temporary, index_bytes)
+            temporary_identity = secure_path_identity(
+                temporary, "synthesis index temporary file"
+            )
             _replace_index(temporary, self.index_path)
         except BaseException:
             try:
-                secure_unlink(
-                    temporary, "synthesis index temporary file", missing_ok=True
-                )
+                if temporary_identity is not None:
+                    secure_unlink(
+                        temporary,
+                        "synthesis index temporary file",
+                        missing_ok=True,
+                        expected_identity=temporary_identity,
+                    )
             except (OSError, RuntimeError, ValueError):
                 pass
             raise
 
-    def _remove_temporary_directory(self, path: Path) -> None:
+    def _remove_temporary_directory(
+        self, path: Path, expected_identity: SecurePathIdentity
+    ) -> None:
         try:
             secure_remove_tree(
-                path, "synthesis attempt staging cleanup", missing_ok=True
+                path,
+                "synthesis attempt staging cleanup",
+                missing_ok=True,
+                expected_identity=expected_identity,
             )
         except (OSError, RuntimeError, ValueError):
             pass

@@ -11,7 +11,8 @@ import struct
 import tempfile
 import zipfile
 import zlib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -61,6 +62,7 @@ _PRIVATE_PERSISTENCE_KEYS = frozenset(
         "token",
     }
 )
+type SecurePathIdentity = tuple[int, int]
 
 
 def _is_private_persistence_key(value: object) -> bool:
@@ -160,6 +162,78 @@ def _windows_final_path(handle: int, label: str) -> Path:
     return _absolute_lexical(Path(value))
 
 
+def _windows_handle_identity(handle: int, label: str) -> SecurePathIdentity:
+    import ctypes
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = (
+            ("file_attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        )
+
+    get_information = ctypes.WinDLL(
+        "kernel32", use_last_error=True
+    ).GetFileInformationByHandle
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    )
+    get_information.restype = wintypes.BOOL
+    information = ByHandleFileInformation()
+    if not get_information(handle, ctypes.byref(information)):
+        raise BundleStateError(f"cannot identify opened {label}")
+    file_index = (information.file_index_high << 32) | information.file_index_low
+    return 0, file_index
+
+
+def _open_windows_directory_handle(path: Path, label: str) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        os.fspath(path),
+        0x00000080,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00200000 | 0x02000000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise BundleStateError(f"cannot securely open {label} parent")
+    return cast(int, handle)
+
+
+def _close_windows_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    close_handle(handle)
+
+
 def _descriptor_final_path(descriptor: int, label: str) -> Path:
     """Return kernel-resolved path for one open descriptor, or fail closed."""
 
@@ -189,10 +263,110 @@ def _assert_resolved_path_matches(actual: Path, path: Path, label: str) -> None:
         raise BundleStateError(f"opened {label} path violates resolved containment")
 
 
+def _assert_actual_path_matches(actual: Path, expected: Path, label: str) -> None:
+    if os.path.normcase(os.fspath(actual)) != os.path.normcase(os.fspath(expected)):
+        raise BundleStateError(f"opened {label} path violates resolved containment")
+
+
+def _path_identity_from_stat(value: os.stat_result) -> SecurePathIdentity:
+    return (0 if os.name == "nt" else value.st_dev), value.st_ino
+
+
+def _path_identity(path: Path, label: str) -> SecurePathIdentity:
+    path = _absolute_lexical(path)
+    _assert_secure_ancestors(path, label)
+    if _is_link_or_reparse(path):
+        raise BundleStateError(f"{label} must not be a symlink or reparse point")
+    try:
+        return _path_identity_from_stat(os.stat(path, follow_symlinks=False))
+    except OSError as error:
+        raise BundleStateError(f"cannot identify {label}") from error
+
+
+def _assert_expected_identity(
+    actual: SecurePathIdentity,
+    expected: SecurePathIdentity | None,
+    label: str,
+) -> None:
+    if expected is not None and actual != expected:
+        raise BundleStateError(f"{label} identity changed")
+
+
+@contextmanager
+def _secure_open_file_descriptor(
+    path: Path,
+    flags: int,
+    label: str,
+    mode: int = 0o600,
+) -> Generator[tuple[int, SecurePathIdentity], None, None]:
+    """Open one file while retaining its verified parent descriptor/handle."""
+
+    path = _absolute_lexical(path)
+    _assert_secure_ancestors(path.parent, label)
+    expected_parent = _absolute_lexical(path.parent.resolve(strict=True))
+    _assert_secure_ancestors(path.parent, label)
+    created = bool(flags & os.O_CREAT) and bool(flags & os.O_EXCL)
+    descriptor: int | None = None
+    parent_descriptor: int | None = None
+    parent_handle: int | None = None
+    opened_path: Path | None = None
+    opened_identity: SecurePathIdentity | None = None
+    failed = False
+    try:
+        if os.name == "nt":
+            parent_handle = _open_windows_directory_handle(path.parent, label)
+            _assert_actual_path_matches(
+                _windows_final_path(parent_handle, label), expected_parent, label
+            )
+            descriptor = os.open(path, flags, mode)
+        else:
+            parent_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            parent_descriptor = os.open(path.parent, parent_flags)
+            _assert_actual_path_matches(
+                _descriptor_final_path(parent_descriptor, label), expected_parent, label
+            )
+            descriptor = os.open(path.name, flags, mode, dir_fd=parent_descriptor)
+        opened_identity = _path_identity_from_stat(os.fstat(descriptor))
+        opened_path = _descriptor_final_path(descriptor, label)
+        _assert_actual_path_matches(opened_path, expected_parent / path.name, label)
+        current = _path_identity_from_stat(os.stat(path, follow_symlinks=False))
+        _assert_expected_identity(current, opened_identity, label)
+        yield descriptor, opened_identity
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+        if parent_handle is not None:
+            _close_windows_handle(parent_handle)
+        if failed and created and opened_path is not None and opened_identity is not None:
+            try:
+                _secure_unlink(
+                    opened_path,
+                    f"{label} failed-open cleanup",
+                    missing_ok=True,
+                    expected_identity=opened_identity,
+                )
+            except (OSError, RuntimeError, ValueError):
+                pass
+
+
 def _remove_exclusive_file(path: Path, opened_stat: os.stat_result) -> None:
     try:
         if os.path.samestat(opened_stat, os.stat(path, follow_symlinks=False)):
-            _secure_unlink(path, "exclusive file cleanup", missing_ok=True)
+            _secure_unlink(
+                path,
+                "exclusive file cleanup",
+                missing_ok=True,
+                expected_identity=_path_identity_from_stat(opened_stat),
+            )
     except OSError:
         pass
 
@@ -271,34 +445,65 @@ def _secure_replace(
     label: str,
     *,
     replace_existing: bool = False,
-) -> None:
+    expected_source_identity: SecurePathIdentity | None = None,
+) -> SecurePathIdentity:
     """Rename only after adjacent no-link checks and verify destination ancestry."""
 
+    source = _absolute_lexical(source)
+    destination = _absolute_lexical(destination)
+    _assert_secure_ancestors(source, label)
+    _assert_secure_ancestors(destination, label)
+    expected_source_parent = _absolute_lexical(source.parent.resolve(strict=True))
+    expected_destination_parent = _absolute_lexical(
+        destination.parent.resolve(strict=True)
+    )
     _assert_secure_ancestors(source, label)
     _assert_secure_ancestors(destination, label)
     if _is_link_or_reparse(source) or _is_link_or_reparse(destination):
         raise BundleStateError(f"{label} must not contain symlinks or reparse points")
     if os.name == "nt":
         if replace_existing:
-            _replace_windows_handle_relative(
+            published_identity = _replace_windows_handle_relative(
                 source,
                 destination,
                 label,
                 replace_existing=True,
+                expected_source_identity=expected_source_identity,
+                expected_source_parent=expected_source_parent,
+                expected_destination_parent=expected_destination_parent,
             )
         else:
-            _replace_windows_handle_relative(source, destination, label)
+            published_identity = _replace_windows_handle_relative(
+                source,
+                destination,
+                label,
+                expected_source_identity=expected_source_identity,
+                expected_source_parent=expected_source_parent,
+                expected_destination_parent=expected_destination_parent,
+            )
     else:
         source_parent_flags = (
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         )
         source_parent = os.open(source.parent, source_parent_flags)
         try:
-            _assert_open_descriptor_path(source_parent, source.parent, label)
+            _assert_actual_path_matches(
+                _descriptor_final_path(source_parent, label),
+                expected_source_parent,
+                label,
+            )
             destination_parent = os.open(destination.parent, source_parent_flags)
             try:
-                _assert_open_descriptor_path(
-                    destination_parent, destination.parent, label
+                _assert_actual_path_matches(
+                    _descriptor_final_path(destination_parent, label),
+                    expected_destination_parent,
+                    label,
+                )
+                source_identity = _path_identity_from_stat(
+                    os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
+                )
+                _assert_expected_identity(
+                    source_identity, expected_source_identity, label
                 )
                 if replace_existing:
                     os.replace(
@@ -316,6 +521,7 @@ def _secure_replace(
                         label,
                     )
                 os.fsync(destination_parent)
+                published_identity = source_identity
             finally:
                 os.close(destination_parent)
         finally:
@@ -323,6 +529,9 @@ def _secure_replace(
     _assert_secure_ancestors(destination, label)
     if _is_link_or_reparse(destination):
         raise BundleStateError(f"{label} must not contain symlinks or reparse points")
+    destination_identity = _path_identity(destination, label)
+    _assert_expected_identity(destination_identity, published_identity, label)
+    return published_identity
 
 
 def _rename_posix_without_replacement(
@@ -332,7 +541,7 @@ def _rename_posix_without_replacement(
     destination_parent: int,
     label: str,
 ) -> None:
-    """Use the native no-replace rename when available, with lock-safe fallback."""
+    """Use native no-replace rename or an atomic regular-file link fallback."""
 
     import ctypes
     import errno
@@ -361,14 +570,20 @@ def _rename_posix_without_replacement(
         if error_number not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
             raise OSError(error_number, f"atomic {label} rename failed")
 
-    if os.path.lexists(destination):
-        raise FileExistsError(errno.EEXIST, f"{label} destination already exists")
-    os.rename(
+    source_stat = os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
+    if not stat.S_ISREG(source_stat.st_mode):
+        raise BundleStateError(
+            f"atomic no-replace {label} is unsupported for this source type"
+        )
+    os.link(
         source.name,
         destination.name,
         src_dir_fd=source_parent,
         dst_dir_fd=destination_parent,
+        follow_symlinks=False,
     )
+    os.unlink(source.name, dir_fd=source_parent)
+    os.fsync(source_parent)
 
 
 def _replace_windows_handle_relative(
@@ -377,7 +592,10 @@ def _replace_windows_handle_relative(
     label: str,
     *,
     replace_existing: bool = False,
-) -> None:
+    expected_source_identity: SecurePathIdentity | None = None,
+    expected_source_parent: Path | None = None,
+    expected_destination_parent: Path | None = None,
+) -> SecurePathIdentity:
     import ctypes
     from ctypes import wintypes
 
@@ -431,14 +649,25 @@ def _replace_windows_handle_relative(
     source_handle = open_path(source, 0x00010000 | 0x00000080)
     try:
         source_actual = _windows_final_path(source_handle, label)
-        _assert_resolved_path_matches(source_actual, source, label)
+        _assert_actual_path_matches(
+            source_actual,
+            (expected_source_parent or source.parent.resolve(strict=True)) / source.name,
+            label,
+        )
+        source_identity = _windows_handle_identity(source_handle, label)
+        _assert_expected_identity(source_identity, expected_source_identity, label)
         _assert_secure_ancestors(source, label)
         destination_parent_handle = open_path(
             destination.parent, 0x00000020 | 0x00000080
         )
         try:
             parent_actual = _windows_final_path(destination_parent_handle, label)
-            _assert_resolved_path_matches(parent_actual, destination.parent, label)
+            _assert_actual_path_matches(
+                parent_actual,
+                expected_destination_parent
+                or _absolute_lexical(destination.parent.resolve(strict=True)),
+                label,
+            )
             _assert_secure_ancestors(destination.parent, label)
             if _is_link_or_reparse(destination.parent):
                 raise BundleStateError(
@@ -480,16 +709,25 @@ def _replace_windows_handle_relative(
                 raise BundleStateError(
                     f"atomic {label} replace failed with NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
                 )
+            return source_identity
         finally:
             close_handle(destination_parent_handle)
     finally:
         close_handle(source_handle)
 
 
-def _secure_unlink(path: Path, label: str, *, missing_ok: bool = False) -> None:
+def _secure_unlink(
+    path: Path,
+    label: str,
+    *,
+    missing_ok: bool = False,
+    expected_identity: SecurePathIdentity | None = None,
+) -> None:
     """Delete one file through verified parent/target handles without following links."""
 
     path = _absolute_lexical(path)
+    _assert_secure_ancestors(path.parent, label)
+    expected_parent_path = _absolute_lexical(path.parent.resolve(strict=True))
     _assert_secure_ancestors(path.parent, label)
     if not os.path.lexists(path):
         if missing_ok:
@@ -497,41 +735,95 @@ def _secure_unlink(path: Path, label: str, *, missing_ok: bool = False) -> None:
         raise FileNotFoundError(path)
     is_link = _is_link_or_reparse(path)
     if os.name == "nt":
-        _delete_windows_handle(path, label, follow_target=not is_link)
+        try:
+            _delete_windows_handle(
+                path,
+                label,
+                follow_target=not is_link,
+                expected_parent_path=expected_parent_path,
+                expected_identity=expected_identity,
+            )
+        except BundleStateError as error:
+            if missing_ok and not os.path.lexists(path):
+                return
+            if (
+                missing_ok
+                and expected_identity is None
+                and str(error).startswith("cannot securely open ")
+            ):
+                return
+            raise
         return
     directory_flags = (
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     )
     parent = os.open(path.parent, directory_flags)
     try:
-        _assert_open_descriptor_path(parent, path.parent, label)
-        os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        _assert_actual_path_matches(
+            _descriptor_final_path(parent, label), expected_parent_path, label
+        )
+        if is_link:
+            current_identity = _path_identity_from_stat(
+                os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            )
+        else:
+            target_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            target = os.open(path.name, target_flags, dir_fd=parent)
+            try:
+                current_identity = _path_identity_from_stat(os.fstat(target))
+                named_identity = _path_identity_from_stat(
+                    os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                )
+                _assert_expected_identity(named_identity, current_identity, label)
+            finally:
+                os.close(target)
+        _assert_expected_identity(current_identity, expected_identity, label)
         os.unlink(path.name, dir_fd=parent)
         os.fsync(parent)
     finally:
         os.close(parent)
 
 
-def _secure_rmdir(path: Path, label: str, *, missing_ok: bool = False) -> None:
+def _secure_rmdir(
+    path: Path,
+    label: str,
+    *,
+    missing_ok: bool = False,
+    expected_identity: SecurePathIdentity | None = None,
+) -> None:
     """Remove one empty directory through verified parent handle."""
 
     path = _absolute_lexical(path)
     _assert_secure_ancestors(path, label)
+    expected_parent_path = _absolute_lexical(path.parent.resolve(strict=True))
     if not os.path.lexists(path):
         if missing_ok:
             return
         raise FileNotFoundError(path)
     if _is_link_or_reparse(path) or not path.is_dir():
         raise BundleStateError(f"{label} must be a real directory")
+    current_identity = _path_identity(path, label)
+    _assert_expected_identity(current_identity, expected_identity, label)
     if os.name == "nt":
-        _delete_windows_handle(path, label)
+        _delete_windows_handle(
+            path,
+            label,
+            expected_parent_path=expected_parent_path,
+            expected_identity=current_identity,
+        )
         return
     directory_flags = (
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     )
     parent = os.open(path.parent, directory_flags)
     try:
-        _assert_open_descriptor_path(parent, path.parent, label)
+        _assert_actual_path_matches(
+            _descriptor_final_path(parent, label), expected_parent_path, label
+        )
+        named_identity = _path_identity_from_stat(
+            os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        )
+        _assert_expected_identity(named_identity, current_identity, label)
         os.rmdir(path.name, dir_fd=parent)
         os.fsync(parent)
     finally:
@@ -539,7 +831,12 @@ def _secure_rmdir(path: Path, label: str, *, missing_ok: bool = False) -> None:
 
 
 def _delete_windows_handle(
-    path: Path, label: str, *, follow_target: bool = True
+    path: Path,
+    label: str,
+    *,
+    follow_target: bool = True,
+    expected_parent_path: Path,
+    expected_identity: SecurePathIdentity | None = None,
 ) -> None:
     import ctypes
     from ctypes import wintypes
@@ -577,52 +874,72 @@ def _delete_windows_handle(
     open_reparse_point = 0x00200000
     backup_semantics = 0x02000000
     invalid_handle = wintypes.HANDLE(-1).value
-    handle = create_file(
-        os.fspath(path),
-        delete_access,
-        share_all,
-        None,
-        open_existing,
-        open_reparse_point | backup_semantics,
-        None,
-    )
-    if handle == invalid_handle:
-        raise BundleStateError(f"cannot securely open {label} for deletion")
+    parent_handle = _open_windows_directory_handle(path.parent, label)
     try:
-        actual = _windows_final_path(cast(int, handle), label)
-        if follow_target:
-            _assert_resolved_path_matches(actual, path, label)
-        elif os.path.normcase(os.fspath(actual)) != os.path.normcase(os.fspath(path)):
-            raise BundleStateError(f"opened {label} path violates lexical containment")
-
-        class FileDispositionInfo(ctypes.Structure):
-            _fields_ = (("delete_file", ctypes.c_ubyte),)
-
-        class IoStatusBlock(ctypes.Structure):
-            _fields_ = (
-                ("status", ctypes.c_void_p),
-                ("information", ctypes.c_size_t),
-            )
-
-        disposition = FileDispositionInfo(1)
-        io_status = IoStatusBlock()
-        status = nt_set_information(
-            handle,
-            ctypes.byref(io_status),
-            ctypes.byref(disposition),
-            ctypes.sizeof(disposition),
-            13,
+        _assert_actual_path_matches(
+            _windows_final_path(parent_handle, label), expected_parent_path, label
         )
-        if status < 0:
-            raise BundleStateError(
-                f"secure {label} deletion failed with "
-                f"NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
+        handle = create_file(
+            os.fspath(path),
+            delete_access,
+            share_all,
+            None,
+            open_existing,
+            open_reparse_point | backup_semantics,
+            None,
+        )
+        if handle == invalid_handle:
+            raise BundleStateError(f"cannot securely open {label} for deletion")
+        try:
+            actual = _windows_final_path(cast(int, handle), label)
+            expected_actual = expected_parent_path / path.name
+            if follow_target:
+                _assert_actual_path_matches(actual, expected_actual, label)
+            elif os.path.normcase(os.fspath(actual)) != os.path.normcase(
+                os.fspath(expected_actual)
+            ):
+                raise BundleStateError(
+                    f"opened {label} path violates lexical containment"
+                )
+            opened_identity = _windows_handle_identity(cast(int, handle), label)
+            _assert_expected_identity(opened_identity, expected_identity, label)
+
+            class FileDispositionInfo(ctypes.Structure):
+                _fields_ = (("delete_file", ctypes.c_ubyte),)
+
+            class IoStatusBlock(ctypes.Structure):
+                _fields_ = (
+                    ("status", ctypes.c_void_p),
+                    ("information", ctypes.c_size_t),
+                )
+
+            disposition = FileDispositionInfo(1)
+            io_status = IoStatusBlock()
+            status = nt_set_information(
+                handle,
+                ctypes.byref(io_status),
+                ctypes.byref(disposition),
+                ctypes.sizeof(disposition),
+                13,
             )
+            if status < 0:
+                raise BundleStateError(
+                    f"secure {label} deletion failed with "
+                    f"NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
+                )
+        finally:
+            close_handle(handle)
     finally:
-        close_handle(handle)
+        _close_windows_handle(parent_handle)
 
 
-def _secure_remove_tree(path: Path, label: str, *, missing_ok: bool = False) -> None:
+def _secure_remove_tree(
+    path: Path,
+    label: str,
+    *,
+    missing_ok: bool = False,
+    expected_identity: SecurePathIdentity | None = None,
+) -> None:
     """Recursively remove one verified real directory without traversing links."""
 
     path = _absolute_lexical(path)
@@ -633,15 +950,21 @@ def _secure_remove_tree(path: Path, label: str, *, missing_ok: bool = False) -> 
         raise FileNotFoundError(path)
     if _is_link_or_reparse(path) or not path.is_dir():
         raise BundleStateError(f"{label} must be a real directory")
+    root_identity = _path_identity(path, label)
+    _assert_expected_identity(root_identity, expected_identity, label)
     for entry in tuple(os.scandir(path)):
+        _assert_expected_identity(_path_identity(path, label), root_identity, label)
         child = path / entry.name
+        child_identity = _path_identity_from_stat(
+            os.stat(child, follow_symlinks=False)
+        )
         if entry.is_symlink() or _is_link_or_reparse(child):
-            _secure_unlink(child, label)
+            _secure_unlink(child, label, expected_identity=child_identity)
         elif entry.is_dir(follow_symlinks=False):
-            _secure_remove_tree(child, label)
+            _secure_remove_tree(child, label, expected_identity=child_identity)
         else:
-            _secure_unlink(child, label)
-    _secure_rmdir(path, label)
+            _secure_unlink(child, label, expected_identity=child_identity)
+    _secure_rmdir(path, label, expected_identity=root_identity)
 
 
 def _secure_make_temporary_directory(parent: Path, prefix: str, label: str) -> Path:
@@ -899,8 +1222,10 @@ def _safe_component(value: str, label: str) -> str:
 
 # Shared filesystem boundary. Cache and registry use same no-link operations.
 secure_assert_ancestors = _assert_secure_ancestors
+secure_open_file_descriptor = _secure_open_file_descriptor
 secure_ensure_directory = _ensure_directory
 secure_is_link_or_reparse = _is_link_or_reparse
+secure_path_identity = _path_identity
 secure_read_bytes = _read_bytes
 secure_make_temporary_directory = _secure_make_temporary_directory
 secure_replace = _secure_replace

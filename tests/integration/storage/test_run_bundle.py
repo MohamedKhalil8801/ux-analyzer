@@ -35,6 +35,7 @@ from ux_analyzer.ports.artifacts import (
     canonicalize_saliency_artifact_content,
     sanitize_artifact_content,
 )
+from ux_analyzer.storage import run_bundle as run_bundle_module
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 
 
@@ -1529,7 +1530,9 @@ def test_finalize_windows_rejects_restored_destination_parent_swap(
     real_replace = run_bundle_module._replace_windows_handle_relative
     swapped = False
 
-    def swap_before_replace(source: Path, destination: Path, label: str) -> None:
+    def swap_before_replace(
+        source: Path, destination: Path, label: str, **kwargs: object
+    ) -> object:
         nonlocal swapped
         if not swapped and destination == writer.final_path:
             runs_root.rename(backup_root)
@@ -1540,12 +1543,12 @@ def test_finalize_windows_rejects_restored_destination_parent_swap(
                 pytest.skip(f"symlink race fixture unavailable: {error}")
             swapped = True
             try:
-                real_replace(source, destination, label)
+                return real_replace(source, destination, label, **kwargs)
             finally:
                 runs_root.unlink()
                 backup_root.rename(runs_root)
             return
-        real_replace(source, destination, label)
+        return real_replace(source, destination, label, **kwargs)
 
     monkeypatch.setattr(
         run_bundle_module,
@@ -1557,3 +1560,173 @@ def test_finalize_windows_rejects_restored_destination_parent_swap(
         writer.finalize({"status": "complete"})
 
     assert not (outside / writer.run_id).exists()
+
+
+def test_secure_unlink_binds_windows_delete_to_prechecked_parent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("target", encoding="ascii")
+    expected_parent = tmp_path.resolve(strict=True)
+    received_parent: Path | None = None
+
+    def delete_bound_target(
+        path: Path,
+        label: str,
+        *,
+        follow_target: bool = True,
+        expected_parent_path: Path,
+        expected_identity: object = None,
+    ) -> None:
+        nonlocal received_parent
+        del label, follow_target, expected_identity
+        received_parent = expected_parent_path
+        path.unlink()
+
+    monkeypatch.setattr(run_bundle_module.os, "name", "nt")
+    monkeypatch.setattr(
+        run_bundle_module, "_delete_windows_handle", delete_bound_target
+    )
+
+    run_bundle_module._secure_unlink(target, "test target")
+
+    assert received_parent == expected_parent
+    assert not target.exists()
+
+
+def test_posix_no_replace_fallback_fails_closed_for_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    destination = tmp_path / "destination"
+    source_parent = 42
+    source_stat = source.stat()
+    real_stat = run_bundle_module.os.stat
+
+    class LibcWithoutRenameat2:
+        pass
+
+    rename_called = False
+
+    def unsafe_rename(*args: object, **kwargs: object) -> None:
+        nonlocal rename_called
+        del args, kwargs
+        rename_called = True
+
+    monkeypatch.setattr("ctypes.CDLL", lambda *args, **kwargs: LibcWithoutRenameat2())
+    monkeypatch.setattr(
+        run_bundle_module.os,
+        "stat",
+        lambda path, **kwargs: (
+            source_stat if path == source.name else real_stat(path, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(run_bundle_module.os, "rename", unsafe_rename)
+    with pytest.raises(BundleStateError, match="atomic|no-replace|unsupported"):
+        run_bundle_module._rename_posix_without_replacement(
+            source,
+            destination,
+            source_parent,
+            source_parent,
+            "test directory",
+        )
+
+    assert not rename_called
+    assert source.is_dir()
+    assert not destination.exists()
+
+
+def test_posix_no_replace_file_fallback_preserves_concurrent_destination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="ascii")
+    destination = tmp_path / "destination.txt"
+    source_parent = 42
+    source_stat = source.stat()
+    real_stat = run_bundle_module.os.stat
+
+    class LibcWithoutRenameat2:
+        pass
+
+    def concurrent_link(
+        source_name: str,
+        destination_name: str,
+        **kwargs: object,
+    ) -> None:
+        del source_name, kwargs
+        destination.joinpath().write_text("concurrent", encoding="ascii")
+        raise FileExistsError(destination_name)
+
+    monkeypatch.setattr("ctypes.CDLL", lambda *args, **kwargs: LibcWithoutRenameat2())
+    monkeypatch.setattr(
+        run_bundle_module.os,
+        "stat",
+        lambda path, **kwargs: (
+            source_stat if path == source.name else real_stat(path, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(run_bundle_module.os, "link", concurrent_link)
+    monkeypatch.setattr(
+        run_bundle_module.os,
+        "rename",
+        lambda *args, **kwargs: pytest.fail("plain rename must not be used"),
+    )
+    with pytest.raises(FileExistsError):
+        run_bundle_module._rename_posix_without_replacement(
+            source,
+            destination,
+            source_parent,
+            source_parent,
+            "test file",
+        )
+
+    assert source.read_text(encoding="ascii") == "source"
+    assert destination.read_text(encoding="ascii") == "concurrent"
+
+
+def test_secure_remove_tree_never_deletes_swapped_child(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "rejected"
+    root.mkdir()
+    child = root / "artifact.json"
+    child.write_text("rejected", encoding="ascii")
+    displaced = tmp_path / "displaced.json"
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text("replacement", encoding="ascii")
+    secure_unlink = run_bundle_module._secure_unlink
+    raced = False
+
+    def swap_before_unlink(
+        path: Path,
+        label: str,
+        *,
+        missing_ok: bool = False,
+        expected_identity: run_bundle_module.SecurePathIdentity,
+    ) -> None:
+        nonlocal raced
+        if not raced and path == child:
+            child.rename(displaced)
+            replacement.rename(child)
+            raced = True
+        secure_unlink(
+            path,
+            label,
+            missing_ok=missing_ok,
+            expected_identity=expected_identity,
+        )
+
+    monkeypatch.setattr(run_bundle_module, "_secure_unlink", swap_before_unlink)
+
+    with pytest.raises(BundleStateError, match="identity changed"):
+        run_bundle_module._secure_remove_tree(root, "rejected tree")
+
+    assert raced
+    assert child.read_text(encoding="ascii") == "replacement"
+    assert displaced.read_text(encoding="ascii") == "rejected"
