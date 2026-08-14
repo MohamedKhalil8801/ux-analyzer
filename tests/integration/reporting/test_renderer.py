@@ -1113,6 +1113,7 @@ def test_renderer_rejects_legacy_selected_synthesis_without_run_identities(
         "forged-resolved-blocker",
         "changed-core-claim",
         "missing-candidate-evidence",
+        "boolean-replay-sequence",
     ),
 )
 def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
@@ -1120,7 +1121,10 @@ def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
     invalid_state: str,
 ) -> None:
     _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
-    references = (_synthesis_ref("event"), _synthesis_ref("replay"))
+    references = (
+        _synthesis_ref("event", sequence=1, viewport_id=None),
+        _synthesis_ref("replay"),
+    )
     _write_synthesis(
         tmp_path,
         status=SynthesisStatus.ACCEPTED,
@@ -1214,6 +1218,8 @@ def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
             value["final_findings"][0]["issue"] = (
                 "A corrupted artifact replaced the reviewed claim."
             )
+        elif invalid_state == "boolean-replay-sequence":
+            value["final_findings"][0]["evidence_refs"][0]["replay_sequence"] = True
         else:
             value["final_findings"][0]["evidence_refs"] = value["final_findings"][0][
                 "evidence_refs"

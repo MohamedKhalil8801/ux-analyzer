@@ -136,8 +136,12 @@ class EvidenceRef:
         if self.artifact_path is not None:
             object.__setattr__(self, "artifact_path", str(self.artifact_path))
             _require_non_empty(self.artifact_path, "artifact_path")
-        if self.replay_sequence is not None and self.replay_sequence < 0:
-            raise ValueError("replay_sequence must not be negative")
+        replay_sequence: object = self.replay_sequence
+        if replay_sequence is not None:
+            if type(replay_sequence) is not int:
+                raise TypeError("replay_sequence must be an exact integer")
+            if replay_sequence < 0:
+                raise ValueError("replay_sequence must not be negative")
 
 
 @dataclass(frozen=True, slots=True)

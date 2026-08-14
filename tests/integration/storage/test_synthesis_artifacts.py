@@ -288,7 +288,7 @@ def test_resolved_blocking_objection_round_trips_with_adjudicator_provenance(
 
 
 @pytest.mark.parametrize("reference_field", ("reviewer", "resolution"))
-@pytest.mark.parametrize("invalid_kind", ("nonexistent", "mismatched"))
+@pytest.mark.parametrize("invalid_kind", ("nonexistent", "mismatched", "boolean"))
 def test_write_attempt_rejects_objection_reference_outside_exact_corpus(
     tmp_path: Path,
     reference_field: str,
@@ -298,24 +298,31 @@ def test_write_attempt_rejects_objection_reference_outside_exact_corpus(
     finding = _finding()
     objection = _resolved_blocking_objection(finding.finding_id)
     valid_ref = objection.evidence_refs[0]
-    invalid_ref = (
-        replace(valid_ref, evidence_id="event:run-a:999", replay_sequence=999)
-        if invalid_kind == "nonexistent"
-        else replace(valid_ref, replay_sequence=2)
-    )
-    objection = (
-        replace(objection, evidence_refs=(invalid_ref,))
-        if reference_field == "reviewer"
-        else replace(objection, resolution_evidence_refs=(invalid_ref,))
-    )
-    attempt = _attempt(
-        corpus,
-        sequence=1,
-        findings=(finding,),
-        objections=(objection,),
-    )
-
-    with pytest.raises(SynthesisArtifactError, match="objection|evidence|corpus"):
+    with pytest.raises(
+        (SynthesisArtifactError, TypeError),
+        match="objection|evidence|corpus|replay_sequence",
+    ):
+        if invalid_kind == "nonexistent":
+            invalid_ref = replace(
+                valid_ref,
+                evidence_id="event:run-a:999",
+                replay_sequence=999,
+            )
+        elif invalid_kind == "boolean":
+            invalid_ref = replace(valid_ref, replay_sequence=True)
+        else:
+            invalid_ref = replace(valid_ref, replay_sequence=2)
+        objection = (
+            replace(objection, evidence_refs=(invalid_ref,))
+            if reference_field == "reviewer"
+            else replace(objection, resolution_evidence_refs=(invalid_ref,))
+        )
+        attempt = _attempt(
+            corpus,
+            sequence=1,
+            findings=(finding,),
+            objections=(objection,),
+        )
         SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
 
 
@@ -810,7 +817,7 @@ def test_reader_rejects_corrupted_final_core_claim(tmp_path: Path) -> None:
     "reference_field",
     ("evidence_refs", "resolution_evidence_refs"),
 )
-@pytest.mark.parametrize("invalid_kind", ("nonexistent", "mismatched"))
+@pytest.mark.parametrize("invalid_kind", ("nonexistent", "mismatched", "boolean"))
 def test_reader_and_selection_reject_objection_reference_outside_exact_corpus(
     tmp_path: Path,
     read_boundary: str,
@@ -835,6 +842,8 @@ def test_reader_and_selection_reject_objection_reference_outside_exact_corpus(
     if invalid_kind == "nonexistent":
         hostile_ref["evidence_id"] = "event:run-a:999"
         hostile_ref["replay_sequence"] = 999
+    elif invalid_kind == "boolean":
+        hostile_ref["replay_sequence"] = True
     else:
         hostile_ref["replay_sequence"] = 2
     _rewrite_synthesis_and_index(tmp_path, value)

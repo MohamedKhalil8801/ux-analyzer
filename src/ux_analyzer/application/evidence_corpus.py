@@ -1165,12 +1165,16 @@ def _validate_ref_against_entry(ref: EvidenceRef, entry: EvidenceEntry) -> None:
     if ref.kind != expected.kind or ref.run_id != expected.run_id:
         raise ValueError("evidence reference does not match corpus entry")
     _validate_ref_namespace(ref)
+    if ref.replay_sequence is not None and (
+        type(ref.replay_sequence) is not type(expected.replay_sequence)
+        or ref.replay_sequence != expected.replay_sequence
+    ):
+        raise ValueError("evidence reference does not match corpus entry")
     for name in (
         "viewport_id",
         "element_id",
         "event_id",
         "metric_id",
-        "replay_sequence",
         "artifact_path",
         "sha256",
     ):
@@ -1426,10 +1430,7 @@ class EvidenceCorpusBuilder:
                 "schema_version": "evidence-corpus-v1",
                 "experiment_run_ids": tuple(specs_by_id),
                 "experiment_run_identities": tuple(
-                    {
-                        name: identity[name]
-                        for name in _EXPERIMENT_RUN_IDENTITY_FIELDS
-                    }
+                    {name: identity[name] for name in _EXPERIMENT_RUN_IDENTITY_FIELDS}
                     for spec in specs
                     for identity in (_identity(spec),)
                 ),

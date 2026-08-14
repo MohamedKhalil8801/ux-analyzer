@@ -80,6 +80,24 @@ def test_evidence_ref_preserves_all_optional_resolution_metadata() -> None:
     assert reference.sha256 == "a" * 64
 
 
+@pytest.mark.parametrize("replay_sequence", (True, 1.0))
+def test_evidence_ref_rejects_non_integer_replay_sequence(
+    replay_sequence: object,
+) -> None:
+    with pytest.raises(TypeError, match="replay_sequence.*integer"):
+        EvidenceRef(
+            "event:run-a:18",
+            "event",
+            "run-a",
+            replay_sequence=replay_sequence,  # type: ignore[arg-type]
+        )
+
+
+def test_evidence_ref_rejects_negative_replay_sequence() -> None:
+    with pytest.raises(ValueError, match="negative"):
+        EvidenceRef("event:run-a:18", "event", "run-a", replay_sequence=-1)
+
+
 def test_synthesis_finding_normalizes_collections_and_existing_contracts() -> None:
     finding = _finding(
         fixes=["Fix the label."],

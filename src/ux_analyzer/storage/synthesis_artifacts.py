@@ -363,6 +363,11 @@ def _evidence_ref_to_dict(reference: EvidenceRef) -> dict[str, object]:
 
 def _evidence_ref_from_dict(value: object) -> EvidenceRef:
     mapping = _mapping(value, "evidence reference")
+    replay_sequence = mapping.get("replay_sequence")
+    if replay_sequence is not None and type(replay_sequence) is not int:
+        raise SynthesisArtifactError(
+            "evidence reference replay_sequence must be an exact integer"
+        )
     return EvidenceRef(
         evidence_id=_text(mapping.get("evidence_id"), "evidence ID"),
         kind=_text(mapping.get("kind"), "evidence kind"),
@@ -372,7 +377,7 @@ def _evidence_ref_from_dict(value: object) -> EvidenceRef:
         event_id=cast(str | None, mapping.get("event_id")),
         metric_id=cast(str | None, mapping.get("metric_id")),
         artifact_path=cast(str | None, mapping.get("artifact_path")),
-        replay_sequence=cast(int | None, mapping.get("replay_sequence")),
+        replay_sequence=replay_sequence,
         sha256=cast(str | None, mapping.get("sha256")),
     )
 
@@ -661,7 +666,11 @@ def _validate_objection_evidence_refs(
                 raise SynthesisArtifactError(
                     "objection evidence reference is absent from synthesis corpus"
                 )
-            if reference != corpus_reference:
+            if (
+                type(reference.replay_sequence)
+                is not type(corpus_reference.replay_sequence)
+                or reference != corpus_reference
+            ):
                 raise SynthesisArtifactError(
                     "objection evidence reference does not match synthesis corpus"
                 )
