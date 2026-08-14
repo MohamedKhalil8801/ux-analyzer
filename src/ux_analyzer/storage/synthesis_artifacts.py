@@ -41,7 +41,8 @@ from ux_analyzer.storage.run_bundle import (
 
 _INDEX_SCHEMA_VERSION = "synthesis-index-v1"
 _ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v1"
-_MAX_JSON_BYTES = 64 * 1024 * 1024
+MAX_SYNTHESIS_JSON_BYTES = 64 * 1024 * 1024
+_INDEX_SNAPSHOT_ATTEMPTS = 3
 _DIGEST_LENGTH = 64
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ATTEMPT_CREATED_PATTERN = re.compile(
@@ -54,6 +55,10 @@ _PUBLICATION_LOCKS_GUARD = threading.Lock()
 
 class SynthesisArtifactError(ValueError):
     """Raised when synthesis artifact state is invalid or cannot be trusted."""
+
+
+class _StaleAttemptSnapshot(SynthesisArtifactError):
+    """Raised when publication advances between directory and index reads."""
 
 
 def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
@@ -260,7 +265,7 @@ def _canonical_bytes(value: object, *, trailing_newline: bool = True) -> bytes:
 
 
 def _validate_json_size(content: bytes | str, label: str) -> None:
-    if len(content) > _MAX_JSON_BYTES:
+    if len(content) > MAX_SYNTHESIS_JSON_BYTES:
         raise SynthesisArtifactError(f"{label} exceeds size limit")
 
 
@@ -354,6 +359,23 @@ def _validate_attempt_id(attempt_id: object) -> tuple[str, str, int]:
 def _attempt_order_key(attempt_id: str) -> tuple[datetime, int, str]:
     created, digest_prefix, sequence = _validate_attempt_id(attempt_id)
     return _created_at_from_attempt_token(created), sequence, digest_prefix
+
+
+def _index_record_order_key(
+    record: Mapping[str, object],
+) -> tuple[datetime, int, str]:
+    attempt_id = _text(record.get("attempt_id"), "index attempt ID")
+    _, _, sequence = _validate_attempt_id(attempt_id)
+    created_at = _text(record.get("created_at"), "index created_at")
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise SynthesisArtifactError(
+            "index created_at must be a UTC timestamp"
+        ) from error
+    if parsed.tzinfo is None:
+        raise SynthesisArtifactError("index created_at must include a timezone")
+    return parsed.astimezone(UTC), sequence, attempt_id
 
 
 def _evidence_ref_to_dict(reference: EvidenceRef) -> dict[str, object]:
@@ -706,8 +728,7 @@ class SynthesisArtifactStore:
         """Return every complete published attempt, including rejected attempts."""
 
         self._validate_existing_roots()
-        attempt_ids = self._attempt_ids()
-        index = self._read_index(attempt_ids)
+        attempt_ids, index = self._read_consistent_index()
         records = self._index_records(index)
         attempts: list[SynthesisAttempt] = []
         for attempt_id in attempt_ids:
@@ -727,8 +748,7 @@ class SynthesisArtifactStore:
         """Return the attempt selected by the durable accepted pointer."""
 
         self._validate_existing_roots()
-        attempt_ids = self._attempt_ids()
-        index = self._read_index(attempt_ids)
+        _, index = self._read_consistent_index()
         if index is None or index.get("accepted_attempt_id") is None:
             return None
         attempt_id = _text(index.get("accepted_attempt_id"), "accepted_attempt_id")
@@ -750,13 +770,17 @@ class SynthesisArtifactStore:
         """Return only the trusted accepted or latest attempt needed by a report."""
 
         self._validate_existing_roots()
-        attempt_ids = self._attempt_ids()
-        index = self._read_index(attempt_ids)
+        _, index = self._read_consistent_index()
         if index is None:
             return None
         records = self._index_records(index)
         accepted_id = cast(str | None, index.get("accepted_attempt_id"))
-        attempt_id = accepted_id or max(records, key=_attempt_order_key, default=None)
+        latest_record = max(records.values(), key=_index_record_order_key, default=None)
+        attempt_id = accepted_id or (
+            _text(latest_record.get("attempt_id"), "index attempt ID")
+            if latest_record is not None
+            else None
+        )
         if attempt_id is None:
             return None
         attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(attempt_id)
@@ -971,8 +995,14 @@ class SynthesisArtifactStore:
             _digest(
                 record.get("corpus_manifest_digest"), "index corpus_manifest_digest"
             )
-            if attempt_id not in valid_attempt_ids:
+            _digest(record.get("corpus_digest"), "index corpus_digest")
+            created_at = _text(record.get("created_at"), "index created_at")
+            if not _created_at_matches_attempt_id(created_at, attempt_id):
                 raise SynthesisArtifactError(
+                    "synthesis index created_at does not match attempt ID"
+                )
+            if attempt_id not in valid_attempt_ids:
+                raise _StaleAttemptSnapshot(
                     "synthesis index references missing attempt"
                 )
 
@@ -993,6 +1023,20 @@ class SynthesisArtifactStore:
                     "accepted index points at a non-accepted attempt"
                 )
         return value
+
+    def _read_consistent_index(
+        self,
+    ) -> tuple[tuple[str, ...], Mapping[str, object] | None]:
+        stale_error: _StaleAttemptSnapshot | None = None
+        for _ in range(_INDEX_SNAPSHOT_ATTEMPTS):
+            attempt_ids = self._attempt_ids()
+            try:
+                return attempt_ids, self._read_index(attempt_ids)
+            except _StaleAttemptSnapshot as error:
+                stale_error = error
+        if stale_error is None:
+            raise SynthesisArtifactError("cannot read synthesis index snapshot")
+        raise stale_error
 
     def _index_records(
         self, index: Mapping[str, object] | None
@@ -1081,7 +1125,11 @@ class SynthesisArtifactStore:
         self, path: Path, label: str
     ) -> tuple[dict[str, object], bytes]:
         try:
-            raw = secure_read_bytes(path, label, max_bytes=_MAX_JSON_BYTES)
+            raw = secure_read_bytes(
+                path,
+                label,
+                max_bytes=MAX_SYNTHESIS_JSON_BYTES,
+            )
             value = json.loads(
                 raw.decode("ascii"),
                 object_pairs_hook=_json_object_without_duplicates,
@@ -1224,6 +1272,7 @@ def _replace_index(source: Path, destination: Path) -> None:
 
 
 __all__ = [
+    "MAX_SYNTHESIS_JSON_BYTES",
     "SynthesisArtifactError",
     "SynthesisArtifactStore",
     "validate_publishable_synthesis_attempt",

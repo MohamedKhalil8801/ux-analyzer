@@ -31,7 +31,10 @@ from ux_analyzer.ports.artifacts import (
 )
 from ux_analyzer.reporting.renderer import render_experiment_report
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
-from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
+from ux_analyzer.storage.synthesis_artifacts import (
+    MAX_SYNTHESIS_JSON_BYTES,
+    SynthesisArtifactStore,
+)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -118,6 +121,7 @@ def _write_synthesis(
     include_scope_identity: bool = True,
     scope_run_ids: tuple[str, ...] | None = None,
     corpus_marker: str | None = None,
+    created_at: str = "2026-08-10T12:00:00+00:00",
 ) -> None:
     finding_values = findings
     if finding_values is None:
@@ -186,7 +190,6 @@ def _write_synthesis(
         entries=entries,
         metadata=metadata,
     )
-    created_at = "2026-08-10T12:00:00+00:00"
     attempt = SynthesisAttempt(
         attempt_id=f"20260810T120000Z-{corpus.digest[:12]}-{sequence}",
         status=status,
@@ -1443,23 +1446,25 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     assert "the evidence review is unavailable" not in normalized_html
 
 
-def test_renderer_uses_utc_sequence_order_for_latest_unselected_attempt(
+def test_renderer_uses_subsecond_created_at_for_latest_unselected_attempt(
     tmp_path: Path,
 ) -> None:
     _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
     _write_synthesis(
         tmp_path,
         status=SynthesisStatus.UNAVAILABLE,
-        sequence=2,
+        sequence=1,
         corpus_marker="sequence-10",
+        created_at="2026-08-10T12:00:00.100000+00:00",
         include_scope_identity=False,
         limitations=("Older unavailable attempt.",),
     )
     _write_synthesis(
         tmp_path,
         status=SynthesisStatus.REJECTED,
-        sequence=10,
+        sequence=1,
         corpus_marker="sequence-2",
+        created_at="2026-08-10T12:00:00.900000+00:00",
         include_scope_identity=False,
         limitations=("Latest rejected attempt.",),
     )
@@ -1537,6 +1542,56 @@ def test_renderer_reads_only_latest_unselected_attempt_bundle(
     assert synthesis["synthesis_status"] == "unavailable"
     assert synthesis["limitations"] == ["Unavailable attempt 12."]
     assert calls == {"attempt_ids": 1, "bundles": 1}
+
+
+@pytest.mark.parametrize("oversized_artifact", ("index", "corpus"))
+def test_renderer_bounds_synthesis_json_reads_during_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    oversized_artifact: str,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path)
+    store = SynthesisArtifactStore(tmp_path)
+    attempt = store.accepted_attempt
+    assert attempt is not None
+    if oversized_artifact == "index":
+        hostile_path = store.index_path
+    else:
+        hostile_path = store.attempts_root / attempt.attempt_id / "corpus-manifest.json"
+        monkeypatch.setattr(
+            SynthesisArtifactStore,
+            "report_attempt",
+            property(lambda self: attempt),
+        )
+    max_bytes = MAX_SYNTHESIS_JSON_BYTES
+    with hostile_path.open("wb") as handle:
+        handle.truncate(max_bytes + 1)
+    secure_read = renderer.secure_read_bytes
+    observed_limits: list[int | None] = []
+
+    def assert_bounded_read(
+        path: Path,
+        label: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        if path == hostile_path:
+            observed_limits.append(max_bytes)
+            assert max_bytes == expected_max_bytes
+        return secure_read(path, label, max_bytes=max_bytes)
+
+    expected_max_bytes = max_bytes
+    monkeypatch.setattr(renderer, "secure_read_bytes", assert_bounded_read)
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert observed_limits
+    assert set(observed_limits) == {max_bytes}
 
 
 def test_renderer_labels_boundary_rejection_separately_from_unavailable(

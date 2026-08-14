@@ -609,6 +609,41 @@ def test_incomplete_staging_and_index_temporary_files_are_ignored(
     assert reopened.accepted_attempt == attempt
 
 
+@pytest.mark.parametrize("read_boundary", ("attempts", "accepted", "report"))
+def test_reader_retries_when_index_advances_after_attempt_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    read_boundary: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    first = _attempt(corpus, sequence=1)
+    second = _attempt(corpus, sequence=2)
+    writer = SynthesisArtifactStore(tmp_path)
+    writer.write_attempt(first, corpus)
+    reader = SynthesisArtifactStore(tmp_path)
+    original_attempt_ids = reader._attempt_ids
+    snapshots = 0
+
+    def snapshot_then_publish() -> tuple[str, ...]:
+        nonlocal snapshots
+        attempt_ids = original_attempt_ids()
+        snapshots += 1
+        if snapshots == 1:
+            writer.write_attempt(second, corpus)
+        return attempt_ids
+
+    monkeypatch.setattr(reader, "_attempt_ids", snapshot_then_publish)
+
+    if read_boundary == "attempts":
+        result = reader.attempts
+        assert result == (first, second)
+    elif read_boundary == "accepted":
+        assert reader.accepted_attempt == second
+    else:
+        assert reader.report_attempt == second
+    assert snapshots == 2
+
+
 def test_failed_index_replace_keeps_previous_accepted_pointer_and_attempt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -704,7 +739,11 @@ def test_writer_rejects_json_above_reader_size_limit_before_publication(
         synthesis_artifacts._attempt_to_dict(attempt)
     )
     target = synthesis_bytes if oversized_artifact == "synthesis" else corpus_bytes
-    monkeypatch.setattr(synthesis_artifacts, "_MAX_JSON_BYTES", len(target) - 1)
+    monkeypatch.setattr(
+        synthesis_artifacts,
+        "MAX_SYNTHESIS_JSON_BYTES",
+        len(target) - 1,
+    )
     publish_calls = 0
     original_publish = SynthesisArtifactStore._publish_attempt
 

@@ -50,6 +50,7 @@ from ux_analyzer.storage.saliency_replay import (
     saliency_artifact_data_uri as _trusted_saliency_artifact_data_uri,
 )
 from ux_analyzer.storage.synthesis_artifacts import (
+    MAX_SYNTHESIS_JSON_BYTES,
     SynthesisArtifactError,
     SynthesisArtifactStore,
     validate_publishable_synthesis_attempt,
@@ -798,7 +799,13 @@ def _synthesis_artifact_bytes(root: Path, attempt_id: str | None) -> int:
         if not path.is_file() or secure_is_link_or_reparse(path):
             continue
         try:
-            total += len(secure_read_bytes(path, "synthesis artifact"))
+            total += len(
+                secure_read_bytes(
+                    path,
+                    "synthesis artifact",
+                    max_bytes=MAX_SYNTHESIS_JSON_BYTES,
+                )
+            )
         except (OSError, RuntimeError, ValueError):
             continue
     return total
@@ -807,7 +814,11 @@ def _synthesis_artifact_bytes(root: Path, attempt_id: str | None) -> int:
 def _load_synthesis_corpus(root: Path, attempt: SynthesisAttempt) -> EvidenceCorpus:
     attempt_root = root / "synthesis" / "attempts" / attempt.attempt_id
     manifest_path = attempt_root / "corpus-manifest.json"
-    raw = secure_read_bytes(manifest_path, "synthesis corpus manifest")
+    raw = secure_read_bytes(
+        manifest_path,
+        "synthesis corpus manifest",
+        max_bytes=MAX_SYNTHESIS_JSON_BYTES,
+    )
     if hashlib.sha256(raw).hexdigest() != attempt.corpus_digest:
         raise SynthesisArtifactError("synthesis corpus digest mismatch")
     value = json.loads(
