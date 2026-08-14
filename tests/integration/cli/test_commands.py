@@ -1485,7 +1485,7 @@ def test_persist_synthesis_attempt_retries_sequence_collision(
 
 def test_storage_attempt_id_uses_global_same_second_sequence() -> None:
     first = SynthesisAttempt(
-        attempt_id="2026-08-10T120000Z-aaaaaaaaaaaa-1",
+        attempt_id="20260810T120000Z-aaaaaaaaaaaa-1",
         status=SynthesisStatus.NO_ISSUES,
     )
     second = SynthesisAttempt(

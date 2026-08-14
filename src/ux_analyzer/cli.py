@@ -141,6 +141,7 @@ from ux_analyzer.storage.saliency_cache import SaliencyCache
 from ux_analyzer.storage.synthesis_artifacts import (
     SynthesisArtifactError,
     SynthesisArtifactStore,
+    synthesis_attempt_position,
 )
 
 app = typer.Typer(add_completion=False)
@@ -1636,14 +1637,14 @@ def _storage_attempt_id(
     if created.tzinfo is None:
         created = created.replace(tzinfo=UTC)
     created_token = created.astimezone(UTC).strftime("%Y-%m-%dT%H%M%SZ")
+    creation_second = created.astimezone(UTC).replace(microsecond=0)
     existing_sequences = [
         sequence
         for item in store.attempts
-        for existing_created, _, sequence_text in (
-            item.attempt_id.rsplit("-", maxsplit=2),
+        for existing_creation_second, sequence in (
+            synthesis_attempt_position(item.attempt_id),
         )
-        if existing_created == created_token
-        for sequence in (int(sequence_text),)
+        if existing_creation_second == creation_second
     ]
     sequence = max(existing_sequences, default=0) + 1
     return f"{created_token}-{attempt.corpus_digest[:12]}-{sequence}"

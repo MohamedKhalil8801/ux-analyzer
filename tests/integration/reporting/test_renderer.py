@@ -1498,6 +1498,23 @@ def test_renderer_does_not_promote_accepted_attempt_without_index_pointer(
     assert synthesis["using_fallback"] is True
 
 
+def test_renderer_reads_lockless_external_synthesis_without_writing(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path)
+    lock_path = tmp_path / "synthesis" / ".publication.lock"
+    lock_path.unlink()
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "accepted"
+    assert synthesis["using_fallback"] is False
+    assert not lock_path.exists()
+
+
 def test_renderer_reads_only_latest_unselected_attempt_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -622,6 +622,103 @@ def test_read_only_missing_root_does_not_create_synthesis_layout(
 
 
 @pytest.mark.parametrize("read_boundary", ("attempts", "accepted", "report"))
+def test_lockless_reader_does_not_create_publication_lock(
+    tmp_path: Path,
+    read_boundary: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1)
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(attempt, corpus)
+    lock_path = store.synthesis_root / ".publication.lock"
+    lock_path.unlink()
+
+    if read_boundary == "attempts":
+        assert store.attempts == (attempt,)
+    elif read_boundary == "accepted":
+        assert store.accepted_attempt == attempt
+    else:
+        assert store.report_attempt == attempt
+
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("read_boundary", ("attempts", "accepted", "report"))
+def test_lockless_reader_retries_when_state_advances(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    read_boundary: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    first = _attempt(corpus, sequence=1)
+    second = _attempt(corpus, sequence=2)
+    writer = SynthesisArtifactStore(tmp_path)
+    writer.write_attempt(first, corpus)
+    lock_path = writer.synthesis_root / ".publication.lock"
+    lock_path.unlink()
+    reader = SynthesisArtifactStore(tmp_path)
+    original_read_index = reader._read_index
+    advanced = False
+
+    def advance_before_index(
+        attempt_ids: tuple[str, ...] | None = None,
+    ) -> object:
+        nonlocal advanced
+        if not advanced:
+            advanced = True
+            writer._write_attempt_locked(second, corpus)
+        return original_read_index(attempt_ids)
+
+    monkeypatch.setattr(reader, "_read_index", advance_before_index)
+
+    if read_boundary == "attempts":
+        assert reader.attempts == (first, second)
+    elif read_boundary == "accepted":
+        assert reader.accepted_attempt == second
+    else:
+        assert reader.report_attempt == second
+    assert advanced
+    assert not lock_path.exists()
+
+
+def test_lockless_reader_retries_transient_index_snapshot_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1)
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(attempt, corpus)
+    lock_path = store.synthesis_root / ".publication.lock"
+    lock_path.unlink()
+    secure_read = synthesis_artifacts.secure_read_bytes
+    snapshot_reads = 0
+
+    def transient_snapshot_error(
+        path: Path,
+        label: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        nonlocal snapshot_reads
+        if path == store.index_path and label == "synthesis index snapshot":
+            snapshot_reads += 1
+            if snapshot_reads == 1:
+                raise OSError("index replaced during snapshot")
+        return secure_read(path, label, max_bytes=max_bytes)
+
+    monkeypatch.setattr(
+        synthesis_artifacts,
+        "secure_read_bytes",
+        transient_snapshot_error,
+    )
+
+    assert store.report_attempt == attempt
+    assert snapshot_reads >= 2
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("read_boundary", ("attempts", "accepted", "report"))
 def test_reader_holds_publication_lock_through_bundle_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -844,6 +941,43 @@ def test_concurrent_different_digest_writers_enforce_global_sequence(
     assert len(collisions) == 1
     assert "sequence already exists" in str(collisions[0])
     assert len(SynthesisArtifactStore(tmp_path).attempts) == 1
+
+
+def test_mixed_creation_token_formats_share_global_sequence_namespace(
+    tmp_path: Path,
+) -> None:
+    first_corpus = _corpus(tmp_path)
+    second_corpus = replace(first_corpus, metadata={"variant": "second"})
+    compact = _attempt(first_corpus, sequence=1)
+    dashed = replace(
+        _attempt(second_corpus, sequence=1),
+        attempt_id=f"2026-08-10T120000Z-{second_corpus.digest[:12]}-1",
+    )
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(compact, first_corpus)
+
+    with pytest.raises(SynthesisArtifactError, match="sequence already exists"):
+        store.write_attempt(dashed, second_corpus)
+
+
+def test_latest_attempt_uses_full_created_at_before_global_sequence(
+    tmp_path: Path,
+) -> None:
+    first_corpus = _corpus(tmp_path)
+    second_corpus = replace(first_corpus, metadata={"variant": "second"})
+    earlier = replace(
+        _attempt(first_corpus, sequence=2, status=SynthesisStatus.UNAVAILABLE),
+        created_at="2026-08-10T12:00:00.100000+00:00",
+    )
+    later = replace(
+        _attempt(second_corpus, sequence=1, status=SynthesisStatus.REJECTED),
+        created_at="2026-08-10T12:00:00.900000+00:00",
+    )
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(earlier, first_corpus)
+    store.write_attempt(later, second_corpus)
+
+    assert store.report_attempt == later
 
 
 @pytest.mark.parametrize(
