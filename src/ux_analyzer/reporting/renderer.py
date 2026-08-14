@@ -1150,6 +1150,8 @@ def _synthesis_navigation_target(
         )
         target.update(
             {
+                "sequence": sequence,
+                "event_id": reference.event_id,
                 "viewport_id": target_viewport_id,
                 "element_id": reference.element_id,
             }
@@ -1195,9 +1197,10 @@ def _synthesis_navigation_target(
         )
     target.update(
         {
-            name: value
-            for name in ("viewport_id", "element_id", "metric_id")
-            if (value := getattr(reference, name)) is not None
+            "kind": "evidence-detail",
+            "evidence_kind": reference.kind,
+            "summary": entry.summary,
+            "detail": _safe_value(dict(entry.payload)),
         }
     )
     return target

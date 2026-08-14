@@ -22,6 +22,7 @@
 {% set synthesis_status = synthesis.synthesis_status | default("missing") %}
 {% set using_fallback = synthesis.using_fallback if synthesis.using_fallback is defined else true %}
 {% set tested_scope = synthesis.tested_scope if synthesis.tested_scope is defined else {} %}
+    <p id="evidence-context" class="evidence-context" role="status" hidden></p>
 
     {% macro status_label(status) -%}
       {%- if status == "accepted" -%}Evidence review complete
@@ -200,7 +201,7 @@
       </p>
       <div class="summary-grid">
         <div class="summary-item">
-          <strong>{{ "Recorded findings" if using_fallback else "Accepted findings" }}</strong>
+          <strong>{{ "Recorded signals" if using_fallback else "Accepted findings" }}</strong>
           <span>{{ synthesis.findings | length }}</span>
         </div>
         <div class="summary-item">
@@ -216,10 +217,23 @@
           <span>{{ "Recorded deterministic evidence only" if using_fallback else "Recorded evidence and reviewed findings" }}</span>
         </div>
       </div>
+      {% if synthesis_status == "no-issues" %}
+      <div class="tested-scope-detail" data-no-issues-scope="true">
+        <h3>Tested scope</h3>
+        <ul>
+        {% for run in runs %}
+          <li>
+            <a href="{{ run.run_page ~ '?' if run.run_page is defined and run.run_page else '?' }}run={{ run.run_id | urlencode }}#playback-workspace">{{ run.run_id }}</a>:
+            {{ run.scenario_label }} [{{ run.scenario_id }}] / {{ run.version_label }} [{{ run.version_id }}] / {{ run.persona_label }} [{{ run.persona_id }}]
+          </li>
+        {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
       {% if using_fallback %}
       <p class="fallback-notice">
         {% if synthesis_status == "rejected" %}
-        Model review was rejected. Candidate findings are not publishable; recorded deterministic evidence remains available.
+        Model review was rejected. Candidate findings are not publishable. Recorded deterministic evidence remains available.
         {% elif synthesis_status == "invalid" %}
         Model review could not be validated. Recorded deterministic evidence remains available, but principles, counterevidence, and reviewer status are unavailable.
         {% elif synthesis_status in ["missing", "unavailable"] %}
@@ -234,8 +248,8 @@
     <section id="priority-findings" class="report-section" aria-labelledby="priority-findings-title">
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">Conclusions</p>
-          <h2 id="priority-findings-title">Priority findings</h2>
+          <p class="eyebrow">{{ "Recorded evidence" if using_fallback else "Conclusions" }}</p>
+          <h2 id="priority-findings-title">{{ "Recorded signals requiring manual review" if using_fallback else "Priority findings" }}</h2>
         </div>
         <span class="finding-count">{{ synthesis.findings | length }} {{ "recorded" if using_fallback else "accepted" }}</span>
       </div>
@@ -246,13 +260,12 @@
           {% set fallback_element_ids = finding.get("element_ids", []) %}
           <article
             id="finding-{{ finding.finding_id }}"
-            class="finding finding-fallback finding-{{ finding.severity }}"
+            class="finding finding-fallback"
             data-finding-id="{{ finding.finding_id }}"
-            data-severity="{{ finding.severity }}"
           >
             <header class="finding-header">
               <div>
-                <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }} priority</span>
+                <span class="recorded-signal-label">Recorded signal</span>
                 <h3>{{ finding.get("fallback_title", finding.title) }}</h3>
               </div>
               <span class="confidence-label">Recorded deterministic evidence</span>
@@ -269,22 +282,16 @@
             </div>
             <div class="finding-grid">
               <div class="finding-field">
-                <h4>Issue</h4>
+                <h4>Recorded signal</h4>
                 <p>{{ finding.get("fallback_issue") }}</p>
               </div>
               <div class="finding-field">
-                <h4>Why it matters</h4>
+                <h4>Recorded context</h4>
                 <p>{{ finding.get("fallback_impact") }}</p>
               </div>
               <div class="finding-field">
-                <h4>Likely root cause</h4>
+                <h4>Recorded cause</h4>
                 <p>{{ finding.get("fallback_root_cause") }}</p>
-              </div>
-              <div class="finding-field">
-                <h4>What to fix</h4>
-                <ul class="finding-list">
-                  <li>{{ finding.get("fallback_fix") }}</li>
-                </ul>
               </div>
             </div>
             <div class="finding-meta">
@@ -387,6 +394,7 @@
       {% endif %}
     </section>
 
+    {% if not using_fallback %}
     <section id="fix-first" class="report-section" aria-labelledby="fix-first-title">
       <div class="report-section-heading">
         <div>
@@ -426,6 +434,7 @@
       </p>
       {% endif %}
     </section>
+    {% endif %}
 
     <section id="evidence-workspace" class="report-section evidence-navigation" aria-labelledby="evidence-workspace-title">
       <div class="report-section-heading">
@@ -438,8 +447,10 @@
       <p>Use recorded evidence to verify a finding, compare runs, inspect saliency, or replay an interaction.</p>
       <nav class="evidence-nav" aria-label="Evidence sections" data-report-navigation="true">
         <a href="#analysis-summary" aria-controls="analysis-summary">Analysis summary</a>
-        <a href="#priority-findings" aria-controls="priority-findings">Priority findings</a>
+        <a href="#priority-findings" aria-controls="priority-findings">{{ "Recorded signals" if using_fallback else "Priority findings" }}</a>
+        {% if not using_fallback %}
         <a href="#fix-first" aria-controls="fix-first">Fix first</a>
+        {% endif %}
         <a href="#evidence-workspace" aria-controls="evidence-workspace">Evidence workspace</a>
         <a href="#comparison-overview" aria-controls="comparison-overview">Comparison table</a>
         {% if focused_acceptance %}
@@ -451,6 +462,11 @@
         <a href="#playback-workspace" aria-controls="playback-workspace">Replay workspace</a>
         <a href="#report-limitations" aria-controls="report-limitations">Limitations</a>
       </nav>
+      <div id="evidence-detail" class="evidence-detail" tabindex="-1" hidden>
+        <h3>Evidence detail</h3>
+        <p id="evidence-detail-summary"></p>
+        <dl id="evidence-detail-fields" class="field-list"></dl>
+      </div>
     </section>
 
     <section id="comparison-overview" class="section evidence-panel overview-section" aria-labelledby="overview-title" aria-describedby="evidence-workspace-title">
@@ -495,8 +511,15 @@
           </thead>
           <tbody>
           {% for row in run_rows %}
-            <tr class="run-row {{ row.status_class }}" data-run-id="{{ row.run_id }}" tabindex="0" role="button" aria-label="Open run {{ row.run_id }}">
-              <td><strong>{{ row.run_id }}</strong><span class="subvalue">{{ row.terminal_state }}</span></td>
+            <tr class="run-row {{ row.status_class }}" data-run-id="{{ row.run_id }}">
+              <td>
+                <strong>{{ row.run_id }}</strong><span class="subvalue">{{ row.terminal_state }}</span>
+                {% set run_link = namespace(value="") %}
+                {% for run in runs if run.run_id == row.run_id %}
+                  {% if run.run_page is defined and run.run_page %}{% set run_link.value = run.run_page %}{% endif %}
+                {% endfor %}
+                <a class="open-run-link" data-open-run="{{ row.run_id }}" href="{{ run_link.value ~ '?' if run_link.value else '?' }}run={{ row.run_id | urlencode }}#playback-workspace">Open run {{ row.run_id }}</a>
+              </td>
               <td data-metric="model-trial">{{ row.model_trial }}</td>
               <td data-metric="prominence-provider">{{ row.prominence_provider_id }}</td>
               <td data-metric="reproducibility">{{ row.reproducibility_label }}</td>
@@ -598,7 +621,7 @@
       .comparison-cell-heading h3 { margin: 0; font-size: 1rem; }
       .comparison-cell-heading p { margin: 0; }
       .provider-comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-      .provider-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 5px; background: var(--panel); }
+      .provider-card { min-width: 0; padding: 14px 0; border-top: 3px solid var(--accent); background: transparent; }
       .provider-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
       .provider-card-heading h3 { margin: 0; font-size: 1rem; }
       .provider-status { padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: .68rem; font-weight: 800; }
@@ -691,7 +714,7 @@
                <span id="saliency-runtime-label">Unavailable</span>
              </div>
              <div id="saliency-tabs" class="saliency-tabs" role="tablist" aria-label="Saliency duration"></div>
-             <div id="saliency-detail"></div>
+             <div id="saliency-detail" role="tabpanel" tabindex="0"></div>
            </section>
          </aside>
       </div>
@@ -731,7 +754,8 @@
         if (target.event_id) hash.set("event", target.event_id);
         else if (target.sequence !== undefined) hash.set("event", "event-" + target.sequence);
         if (target.element_id) hash.set("element", target.element_id);
-        window.location.href = target.run_page + "#" + hash.toString();
+        if (control.dataset.evidenceId) hash.set("evidence", control.dataset.evidenceId);
+        window.location.href = target.run_page + "?" + hash.toString() + "#playback-workspace";
       });
     });
   }());

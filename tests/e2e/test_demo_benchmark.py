@@ -432,7 +432,10 @@ async def test_production_cli_report_is_interactive_and_causal(
         await page.goto(report_path.resolve().as_uri())
         assert await page.locator("#analysis-summary").is_visible()
         assert await page.locator("#priority-findings").is_visible()
-        assert await page.locator("#fix-first").is_visible()
+        assert await page.locator("#fix-first").count() == 0
+        assert "Recorded signals requiring manual review" in (
+            await page.locator("#priority-findings").text_content() or ""
+        )
         assert await page.locator("#evidence-workspace").is_visible()
         assert await page.locator("#analysis-summary").evaluate(
             "node => node.compareDocumentPosition(document.querySelector('#comparison-table')) & Node.DOCUMENT_POSITION_FOLLOWING"

@@ -41,6 +41,10 @@
   var comparisonSelect = document.getElementById("provider-comparison-select");
   var comparisonDurationSelect = document.getElementById("provider-comparison-duration");
   var comparisonOutput = document.getElementById("provider-comparison-output");
+  var evidenceContext = document.getElementById("evidence-context");
+  var evidenceDetail = document.getElementById("evidence-detail");
+  var evidenceDetailSummary = document.getElementById("evidence-detail-summary");
+  var evidenceDetailFields = document.getElementById("evidence-detail-fields");
   var providerComparisons = data.provider_comparisons || [];
 
   function element(tag, className, text) {
@@ -225,14 +229,22 @@
     return event.timestamp || event.recorded_at || event.time || "time unavailable";
   }
 
-  function updateHash(run, event) {
+  function updateUrl(run, event, sectionId, push) {
     if (!run) return;
-    var params = new URLSearchParams();
-    params.set("run", run.run_id);
-    if (event && event.event_id) params.set("event", event.event_id);
-    if (state.elementId) params.set("element", state.elementId);
-    if (state.evidenceId) params.set("evidence", state.evidenceId);
-    window.history.replaceState(null, "", "#" + params.toString());
+    var url = new URL(window.location.href);
+    url.searchParams.set("run", run.run_id);
+    if (event && event.event_id) url.searchParams.set("event", event.event_id);
+    else url.searchParams.delete("event");
+    if (state.elementId) url.searchParams.set("element", state.elementId);
+    else url.searchParams.delete("element");
+    if (state.evidenceId) url.searchParams.set("evidence", state.evidenceId);
+    else url.searchParams.delete("evidence");
+    if (sectionId) url.hash = sectionId;
+    window.history[push ? "pushState" : "replaceState"](
+      { reportState: true },
+      "",
+      url.href
+    );
   }
 
   function setEventIndex(index, keepPlaying) {
@@ -252,7 +264,7 @@
     var run = runs.find(function (item) { return item.run_id === runId; });
     if (!run) return;
     if (run.run_page && !(run.timeline || []).length) {
-      window.location.href = run.run_page + "#run=" + encodeURIComponent(run.run_id);
+      window.location.href = run.run_page + "?run=" + encodeURIComponent(run.run_id) + "#playback-workspace";
       return;
     }
     setPlaying(false);
@@ -262,6 +274,7 @@
     state.viewportId = "";
     state.elementId = "";
     state.evidenceId = "";
+    clearEvidenceDestination();
     renderRunOptions();
     renderWorkspace();
     if (scrollWorkspace) {
@@ -273,7 +286,7 @@
     var run = runs.find(function (item) { return item.run_id === runId; });
     if (!run) return;
     if (!(run.timeline || []).length) {
-      if (run.run_page) window.location.href = run.run_page + "#run=" + encodeURIComponent(run.run_id) + "&event=event-" + encodeURIComponent(sequence);
+      if (run.run_page) window.location.href = run.run_page + "?run=" + encodeURIComponent(run.run_id) + "&event=event-" + encodeURIComponent(sequence) + "#playback-workspace";
       return;
     }
     selectRun(runId, false);
@@ -289,7 +302,7 @@
   }
 
   function eventIndexForEvidence(run, target) {
-    if (!run) return 0;
+    if (!run) return null;
     var events = run.timeline || [];
     if (target.sequence !== undefined && target.sequence !== null) {
       var bySequence = events.findIndex(function (record) {
@@ -325,7 +338,7 @@
         }
       }
     }
-    return 0;
+    return null;
   }
 
   function evidenceControl(evidenceId) {
@@ -358,7 +371,7 @@
     };
   }
 
-  function evidenceHash(run, target, evidenceId) {
+  function evidenceLink(run, target, evidenceId) {
     var params = new URLSearchParams();
     if (run && run.run_id) params.set("run", run.run_id);
     if (target.event_id) params.set("event", target.event_id);
@@ -367,7 +380,7 @@
     }
     if (target.element_id) params.set("element", target.element_id);
     if (evidenceId) params.set("evidence", evidenceId);
-    return "#" + params.toString();
+    return "?" + params.toString() + "#playback-workspace";
   }
 
   function normalizeEvidenceTarget(run, target, evidenceId) {
@@ -389,7 +402,70 @@
     return normalized;
   }
 
-  function openEvidence(ref) {
+  function clearEvidenceDestination() {
+    document.querySelectorAll('[data-viewing-evidence="true"]').forEach(function (node) {
+      node.removeAttribute("data-viewing-evidence");
+    });
+    if (evidenceDetail) {
+      evidenceDetail.hidden = true;
+      delete evidenceDetail.dataset.evidenceId;
+    }
+    if (evidenceContext) {
+      evidenceContext.hidden = true;
+      evidenceContext.textContent = "";
+    }
+  }
+
+  function showEvidenceContext(evidenceId) {
+    if (!evidenceContext || !evidenceId) return;
+    evidenceContext.hidden = false;
+    evidenceContext.textContent = "Viewing evidence " + evidenceId;
+  }
+
+  function showEvidenceDetail(evidenceId, target) {
+    if (!evidenceDetail) return null;
+    evidenceDetail.hidden = false;
+    evidenceDetail.dataset.evidenceId = evidenceId;
+    evidenceDetailSummary.textContent = target.summary || "Recorded evidence detail.";
+    while (evidenceDetailFields.firstChild) evidenceDetailFields.removeChild(evidenceDetailFields.firstChild);
+    var values = target.detail && typeof target.detail === "object" ? target.detail : {};
+    Object.keys(values).sort().forEach(function (key) {
+      addField(evidenceDetailFields, titleCase(key), safeJson(values[key]));
+    });
+    return evidenceDetail;
+  }
+
+  function metricDestination(runId, metricId) {
+    return document.querySelector(
+      'tr[data-run-id="' + CSS.escape(runId) + '"] [data-metric="' + CSS.escape(metricId) + '"]'
+    );
+  }
+
+  function focusEvidenceDestination(target, evidenceId) {
+    var destination = null;
+    if (target.kind === "metric") destination = metricDestination(target.run_id, target.metric_id);
+    else if (target.kind === "evidence-detail") destination = showEvidenceDetail(evidenceId, target);
+    else if (target.kind === "event" || target.kind === "replay") destination = eventCard;
+    else if (target.kind === "viewport" || target.kind === "screenshot") destination = viewportStage;
+    else if (target.duration) destination = saliencyTabs.querySelector('[aria-selected="true"]');
+    else if (target.element_id) destination = elementPanel;
+    else destination = eventCard;
+    if (!destination) return;
+    destination.dataset.viewingEvidence = "true";
+    if (!destination.hasAttribute("tabindex")) destination.setAttribute("tabindex", "-1");
+    destination.scrollIntoView({ block: "center" });
+    destination.focus({ preventScroll: true });
+  }
+
+  function evidenceSection(target) {
+    if (target.kind === "metric") return "#comparison-overview";
+    if (target.kind === "evidence-detail") return "#evidence-detail";
+    return "#playback-workspace";
+  }
+
+  function openEvidence(ref, options) {
+    options = options || {};
+    var previousUrl = window.location.href;
     var resolved = resolveEvidence(ref);
     var evidenceId = resolved.evidenceId;
     var target = resolved.target || {};
@@ -402,7 +478,8 @@
     state.evidenceId = evidenceId;
     state.runId = run.run_id;
     state.scenarioId = run.scenario_id;
-    state.eventIndex = eventIndexForEvidence(run, target);
+    var targetEventIndex = eventIndexForEvidence(run, target);
+    if (targetEventIndex !== null) state.eventIndex = targetEventIndex;
     state.viewportId = "";
     state.elementId = "";
     if (target.namespace && target.duration) {
@@ -411,15 +488,17 @@
     renderRunOptions();
 
     if (run.run_page && !(run.timeline || []).length) {
-      window.location.href = run.run_page + evidenceHash(run, target, evidenceId);
+      window.location.href = run.run_page + evidenceLink(run, target, evidenceId);
       return true;
     }
 
+    clearEvidenceDestination();
+    showEvidenceContext(evidenceId);
     setEventIndex(state.eventIndex, false);
     var snapshot = snapshotAt(run, state.eventIndex);
     if (target.viewport_id && snapshot && snapshot.id !== target.viewport_id) {
       var viewportIndex = eventIndexForEvidence(run, { viewport_id: target.viewport_id });
-      setEventIndex(viewportIndex, false);
+      if (viewportIndex !== null) setEventIndex(viewportIndex, false);
       snapshot = snapshotAt(run, state.eventIndex);
     }
     if (target.element_id && snapshot && findElement(snapshot, target.element_id)) {
@@ -427,9 +506,12 @@
       state.elementId = target.element_id;
       renderWorkspace();
     }
-    var workspace = document.getElementById("playback-workspace");
-    if (workspace) workspace.scrollIntoView({ block: "start" });
-    updateHash(run, currentEvent(run));
+    var section = evidenceSection(target);
+    if (options.pushHistory !== false) {
+      window.history.replaceState({ reportState: true }, "", previousUrl);
+    }
+    updateUrl(run, currentEvent(run), section, options.pushHistory !== false);
+    focusEvidenceDestination(target, evidenceId);
     return true;
   }
 
@@ -677,7 +759,7 @@
     card.appendChild(heading);
     if (provider.run_page) {
       var runLink = document.createElement("a");
-      runLink.href = provider.run_page + "#run=" + encodeURIComponent(provider.run_id);
+      runLink.href = provider.run_page + "?run=" + encodeURIComponent(provider.run_id) + "#playback-workspace";
       runLink.textContent = "Open run workspace";
       card.appendChild(runLink);
     }
@@ -773,15 +855,22 @@
     ranked.forEach(function (item) {
       var itemRow = element("tr", "");
       itemRow.appendChild(element("td", "", item.rank));
-      itemRow.appendChild(element("td", "", item.label + " [" + item.element_id + "]"));
+      var elementCell = element("td", "");
+      var inspect = element("button", "ranked-element-button", item.label + " [" + item.element_id + "]");
+      inspect.type = "button";
+      inspect.setAttribute("aria-label", "Inspect ranked element " + item.label + " [" + item.element_id + "]");
+      var selectRankedElement = function () {
+        var snapshot = findSnapshot(run, group && group.viewport_id);
+        if (snapshot) selectElement(run, snapshot, currentEvent(run), item.element_id);
+      };
+      inspect.addEventListener("click", selectRankedElement);
+      inspect.addEventListener("mouseenter", selectRankedElement);
+      elementCell.appendChild(inspect);
+      itemRow.appendChild(elementCell);
       itemRow.appendChild(element("td", "", item.role));
       itemRow.appendChild(element("td", "", exact(item.adjusted_score)));
       var bounds = item.bounds || {};
       itemRow.appendChild(element("td", "", bounds.x === undefined ? "unavailable" : "x=" + bounds.x + ", y=" + bounds.y + ", w=" + bounds.width + ", h=" + bounds.height));
-      itemRow.addEventListener("mouseenter", function () {
-        var snapshot = findSnapshot(run, group && group.viewport_id);
-        if (snapshot) selectElement(run, snapshot, currentEvent(run), item.element_id);
-      });
       body.appendChild(itemRow);
     });
     table.appendChild(body);
@@ -831,16 +920,33 @@
       return;
     }
     if (!entries.some(function (item) { return item.key === state.saliencyKey; })) state.saliencyKey = entries[0].key;
-    entries.forEach(function (item) {
+    entries.forEach(function (item, index) {
       var tab = element("button", "saliency-tab", item.entry.duration);
       tab.type = "button";
+      tab.id = "saliency-tab-" + index;
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", item.key === state.saliencyKey ? "true" : "false");
+      tab.setAttribute("aria-controls", "saliency-detail");
+      tab.setAttribute("tabindex", item.key === state.saliencyKey ? "0" : "-1");
       tab.dataset.saliencyKey = item.key;
       tab.addEventListener("click", function () { state.saliencyKey = item.key; renderSaliency(currentRun()); });
+      tab.addEventListener("keydown", function (event) {
+        var nextIndex = null;
+        if (event.key === "ArrowRight") nextIndex = (index + 1) % entries.length;
+        else if (event.key === "ArrowLeft") nextIndex = (index - 1 + entries.length) % entries.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = entries.length - 1;
+        if (nextIndex === null) return;
+        event.preventDefault();
+        state.saliencyKey = entries[nextIndex].key;
+        renderSaliency(currentRun());
+        saliencyTabs.querySelectorAll('[role="tab"]')[nextIndex].focus();
+      });
       saliencyTabs.appendChild(tab);
     });
     var selected = entries.find(function (item) { return item.key === state.saliencyKey; }) || entries[0];
+    var selectedTab = saliencyTabs.querySelector('[aria-selected="true"]');
+    if (selectedTab) saliencyDetail.setAttribute("aria-labelledby", selectedTab.id);
     var group = selected.group;
     var entry = selected.entry;
     addFields(saliencyDetail, [
@@ -885,7 +991,7 @@
       overlay.setAttribute("aria-pressed", overlay.dataset.elementId === elementId ? "true" : "false");
     });
     renderElementDetail(run, snapshot, event);
-    updateHash(run, event);
+    updateUrl(run, event, null, false);
   }
 
   function fitFrame(frame, snapshot) {
@@ -1094,15 +1200,17 @@
     progress.disabled = !events.length;
     position.textContent = events.length ? "Event " + (state.eventIndex + 1) + " / " + events.length + " | " + recordedTime(record) : "Event 0 / 0 | time unavailable";
     runSelect.value = state.runId;
-    updateHash(run, record);
+    updateUrl(run, record, null, false);
   }
 
-  function applyHash() {
-    var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  function applyUrlState() {
+    var params = new URL(window.location.href).searchParams;
     var runId = params.get("run");
     var eventId = params.get("event");
     var elementId = params.get("element");
     var evidenceId = params.get("evidence");
+    state.eventIndex = 0;
+    state.elementId = "";
     if (runId && runs.some(function (run) { return run.run_id === runId; })) {
       state.runId = runId;
       var selectedRun = currentRun();
@@ -1114,18 +1222,29 @@
       if (index >= 0) state.eventIndex = index;
     }
     if (elementId) state.elementId = elementId;
-    if (evidenceId) state.evidenceId = evidenceId;
+    state.evidenceId = evidenceId || "";
+  }
+
+  function restoreUrlState() {
+    setPlaying(false);
+    applyUrlState();
+    renderRunOptions();
+    renderWorkspace();
+    if (state.evidenceId) openEvidence(state.evidenceId, { pushHistory: false });
+    else clearEvidenceDestination();
   }
 
   fillScenarioOptions();
   fillProviderComparisonOptions();
-  applyHash();
+  applyUrlState();
   renderRunOptions();
   renderWorkspace();
   window.openEvidence = openEvidence;
-  var initialEvidenceId = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("evidence");
+  var initialEvidenceId = new URL(window.location.href).searchParams.get("evidence");
   if (initialEvidenceId) {
-    window.setTimeout(function () { openEvidence(initialEvidenceId); }, 0);
+    window.setTimeout(function () {
+      openEvidence(initialEvidenceId, { pushHistory: false });
+    }, 0);
   }
 
   scenarioSelect.addEventListener("change", function () {
@@ -1152,27 +1271,22 @@
   document.getElementById("step-forward").addEventListener("click", function () { setEventIndex(state.eventIndex + 1, false); });
   document.getElementById("restart-playback").addEventListener("click", function () { setEventIndex(0, false); });
   progress.addEventListener("input", function () { setEventIndex(Number(progress.value), false); });
-  document.querySelectorAll(".run-row[data-run-id]").forEach(function (row) {
-    var open = function () { selectRun(row.dataset.runId, true); };
-    row.addEventListener("click", open);
-    row.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+  document.querySelectorAll("[data-open-run]").forEach(function (control) {
+    control.addEventListener("click", function (event) {
+      var run = runs.find(function (item) { return item.run_id === control.dataset.openRun; });
+      if (!run || (run.run_page && !(run.timeline || []).length)) return;
+      event.preventDefault();
+      var previousUrl = window.location.href;
+      selectRun(control.dataset.openRun, false);
+      window.history.replaceState({ reportState: true }, "", previousUrl);
+      updateUrl(currentRun(), currentEvent(currentRun()), "#playback-workspace", true);
+      document.getElementById("playback-workspace").scrollIntoView({ block: "start" });
     });
   });
   document.querySelectorAll(".evidence-ref").forEach(function (control) {
     control.addEventListener("click", function () { openEvidence(control.dataset.evidenceId); });
   });
-  window.addEventListener("hashchange", function () {
-    setPlaying(false);
-    var evidenceId = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("evidence");
-    if (evidenceId) {
-      openEvidence(evidenceId);
-      return;
-    }
-    applyHash();
-    renderRunOptions();
-    renderWorkspace();
-  });
+  window.addEventListener("popstate", restoreUrlState);
   window.addEventListener("resize", function () {
     var run = currentRun();
     renderViewport(run, snapshotAt(run, state.eventIndex), currentEvent(run));

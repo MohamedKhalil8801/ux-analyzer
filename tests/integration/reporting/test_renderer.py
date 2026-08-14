@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 import numpy as np
 import pytest
@@ -190,11 +192,22 @@ def _write_synthesis(
         entries=entries,
         metadata=metadata,
     )
+    expectation_payloads = [
+        dict(entry.payload) for entry in entries if entry.ref.kind == "expectation"
+    ]
+    expectation_digest = hashlib.sha256(
+        json.dumps(
+            expectation_payloads,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
     attempt = SynthesisAttempt(
         attempt_id=f"20260810T120000Z-{corpus.digest[:12]}-{sequence}",
         status=status,
         corpus_digest=corpus.digest,
-        expectation_digest=_synthesis_expectation_digest(),
+        expectation_digest=expectation_digest,
         principle_pack_digest=corpus.principle_pack_digest,
         prompt_version="report-synthesis-orchestrator-v1",
         schema_version="synthesis-v1",
@@ -1438,11 +1451,10 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
 
     assert 'data-synthesis-status="rejected"' in normalized_html
     assert "Model review rejected; recorded evidence available" in (normalized_html)
-    assert (
-        "No prioritized fix is available because all candidate findings were rejected."
-        in (normalized_html)
-    )
-    assert "Rejected findings are not publishable." in normalized_html
+    assert "Recorded signals requiring manual review" in normalized_html
+    assert "Priority findings" not in normalized_html
+    assert "Fix first" not in normalized_html
+    assert "Candidate findings are not publishable." in normalized_html
     assert "the evidence review is unavailable" not in normalized_html
 
 
@@ -1793,7 +1805,7 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert 'data-synthesis-status="missing"' in fallback_html
     priority_html = fallback_html[
         fallback_html.index('id="priority-findings"') : fallback_html.index(
-            'id="fix-first"'
+            'id="evidence-workspace"'
         )
     ]
     assert "Target wording gives weak goal cues" not in priority_html
@@ -1803,6 +1815,9 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert "run-1" in fallback_html
     assert "verified-success" in fallback_html
     assert "Model review unavailable; recorded evidence available" in fallback_html
+    assert "Recorded signals requiring manual review" in fallback_html
+    assert "Priority findings" not in fallback_html
+    assert "Fix first" not in fallback_html
     fallback_copy = " ".join(fallback_html.split()).lower()
     assert (
         "model review did not complete. recorded deterministic evidence remains available. "
@@ -1825,7 +1840,37 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert 'data-evidence-target="{&#34;kind&#34;: &#34;metric&#34;' in fallback_html
 
 
-def test_renderer_uses_unavailable_fix_first_copy_without_fallback_findings(
+@pytest.mark.parametrize("status", ("missing", "unavailable", "rejected", "invalid"))
+def test_renderer_fallback_statuses_remove_accepted_priority_hierarchy(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    if status == "unavailable":
+        _write_synthesis(tmp_path, status=SynthesisStatus.UNAVAILABLE)
+    elif status == "rejected":
+        _write_synthesis(tmp_path, status=SynthesisStatus.REJECTED)
+    elif status == "invalid":
+        _write_synthesis(tmp_path)
+
+        def invalidate_claim(value: dict[str, object]) -> None:
+            findings = cast(list[dict[str, object]], value["final_findings"])
+            findings[0]["issue"] = "Changed after review."
+
+        _rewrite_selected_synthesis(tmp_path, invalidate_claim)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert f'data-synthesis-status="{status}"' in html
+    assert "Recorded signals requiring manual review" in html
+    assert "Recorded signal" in html
+    assert "Priority findings" not in html
+    assert "Fix first" not in html
+
+
+def test_renderer_omits_prescriptive_hierarchy_without_reviewed_findings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1837,10 +1882,9 @@ def test_renderer_uses_unavailable_fix_first_copy_without_fallback_findings(
     )
     normalized_html = " ".join(html.split())
 
-    assert (
-        "No model-reviewed fix is available because model review is unavailable; inspect recorded evidence in the workspace."
-        in normalized_html
-    )
+    assert "Recorded signals requiring manual review" in normalized_html
+    assert "Fix first" not in normalized_html
+    assert "Priority findings" not in normalized_html
     assert (
         "No fix is prioritized because no supported issue was established"
         not in normalized_html
@@ -1895,6 +1939,13 @@ async def test_renderer_browser_fallback_navigation_context_and_evidence_on_mobi
         await page.locator("summary", has_text="Verify evidence").first.press("Enter")
         await page.locator('[data-evidence-id="run-1:discovery-cost"]').click()
         assert "evidence=run-1%3Adiscovery-cost" in page.url
+        metric = page.locator('tr[data-run-id="run-1"] [data-metric="discovery-cost"]')
+        assert await metric.get_attribute("data-viewing-evidence") == "true"
+        assert await metric.evaluate("node => document.activeElement === node")
+        assert await page.locator("#evidence-context").text_content() == (
+            "Viewing evidence run-1:discovery-cost"
+        )
+        assert page.url.endswith("#comparison-overview")
 
         await page.set_viewport_size({"width": 360, "height": 800})
         dimensions = await page.evaluate(
@@ -1905,6 +1956,208 @@ async def test_renderer_browser_fallback_navigation_context_and_evidence_on_mobi
             "node => node.getBoundingClientRect().right <= window.innerWidth"
         )
         await browser.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_browser_preserves_deep_link_state_on_reload_and_back(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path, finding_refs=(_synthesis_ref("event"),))
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri() + "#analysis-summary")
+        await page.locator("summary", has_text="Verify evidence").click()
+        await page.locator('[data-evidence-id="event:run-1:7"]').click()
+
+        assert page.url.endswith("#playback-workspace")
+        assert "evidence=event%3Arun-1%3A7" in page.url
+        assert "event=event-7" in page.url
+        assert await page.locator("#current-event-card").evaluate(
+            "node => document.activeElement === node"
+        )
+        await page.reload()
+        assert "Event 7 /" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+        assert await page.locator("#evidence-context").text_content() == (
+            "Viewing evidence event:run-1:7"
+        )
+        await page.go_back()
+        assert page.url.endswith("#analysis-summary")
+        assert "Event 1 /" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+        assert await page.locator("#evidence-context").is_hidden()
+        await page.go_forward()
+        assert page.url.endswith("#playback-workspace")
+        assert "Event 7 /" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+        assert await page.locator("#evidence-context").text_content() == (
+            "Viewing evidence event:run-1:7"
+        )
+        await browser.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_browser_routes_non_replay_evidence_to_exact_detail(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    references = (
+        EvidenceRef("verification:run-1", "verification", "run-1"),
+        EvidenceRef("expectation:run-1", "expectation", "run-1"),
+        EvidenceRef(
+            "model-estimate:run-1:prominence:3:target",
+            "model-estimate",
+            "run-1",
+            viewport_id="viewport-1",
+            element_id="target",
+            event_id="event-3",
+        ),
+    )
+    _write_synthesis(tmp_path, corpus_refs=references, finding_refs=references)
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri())
+        await page.locator("summary", has_text="Verify evidence").click()
+
+        for evidence_id in ("verification:run-1", "expectation:run-1"):
+            await page.locator(f'[data-evidence-id="{evidence_id}"]').click()
+            detail = page.locator("#evidence-detail")
+            assert await detail.get_attribute("data-evidence-id") == evidence_id
+            assert await detail.evaluate("node => document.activeElement === node")
+            assert page.url.endswith("#evidence-detail")
+
+        await page.locator(
+            '[data-evidence-id="model-estimate:run-1:prominence:3:target"]'
+        ).click()
+        assert "Event 3 /" in (
+            await page.locator("#playback-position").text_content() or ""
+        )
+        assert (
+            await page.locator("#selected-element-evidence").get_attribute(
+                "data-selected-element-id"
+            )
+            == "target"
+        )
+        await browser.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_browser_keyboard_tabs_rankings_and_table_semantics(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-1",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-1")
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri())
+
+        row = page.locator('tr[data-run-id="run-1"]')
+        assert await row.get_attribute("role") is None
+        assert await row.get_attribute("tabindex") is None
+        assert await row.get_by_role("link", name="Open run run-1").count() == 1
+
+        tabs = page.get_by_role("tab")
+        assert await tabs.count() == 3
+        assert await tabs.nth(0).get_attribute("tabindex") == "0"
+        assert await tabs.nth(1).get_attribute("tabindex") == "-1"
+        assert await tabs.nth(0).get_attribute("aria-controls") == "saliency-detail"
+        assert (
+            await page.locator("#saliency-detail").get_attribute("role") == "tabpanel"
+        )
+        await tabs.nth(0).focus()
+        await tabs.nth(0).press("ArrowRight")
+        assert await tabs.nth(1).get_attribute("aria-selected") == "true"
+        assert await tabs.nth(1).evaluate("node => document.activeElement === node")
+        await tabs.nth(1).press("End")
+        assert await tabs.nth(2).get_attribute("aria-selected") == "true"
+
+        ranked = page.get_by_role("button", name=re.compile(r"^Inspect ranked element"))
+        assert await ranked.count() >= 1
+        await ranked.first.focus()
+        await ranked.first.press("Space")
+        assert (
+            await page.locator("#selected-element-evidence").get_attribute(
+                "data-selected-element-id"
+            )
+            == "target"
+        )
+        await browser.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_browser_mobile_workspace_is_reachable_without_overflow(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    report_path = render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri())
+
+        for width in (320, 360, 390, 414):
+            await page.set_viewport_size({"width": width, "height": 720})
+            dimensions = await page.evaluate(
+                "({scrollWidth: document.documentElement.scrollWidth, "
+                "innerWidth: window.innerWidth})"
+            )
+            offenders = await page.evaluate(
+                "Array.from(document.querySelectorAll('*')).map(node => ({"
+                "tag: node.tagName, id: node.id, className: node.className, "
+                "right: node.getBoundingClientRect().right, width: node.scrollWidth"
+                "})).filter(item => item.right > window.innerWidth || "
+                "item.width > window.innerWidth).sort((left, right) => "
+                "right.right - left.right).slice(0, 12)"
+            )
+            assert dimensions["scrollWidth"] <= dimensions["innerWidth"], offenders
+            assert await page.locator("#selected-element-evidence").evaluate(
+                "node => getComputedStyle(node).overflowY === 'visible'"
+            )
+            await page.locator("#report-limitations").scroll_into_view_if_needed()
+            assert await page.locator("#report-limitations").is_visible()
+        await browser.close()
+
+
+def test_renderer_no_issues_lists_named_scope_with_run_links(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-1", version="improved", discovery_cost=3)
+    _write_synthesis(tmp_path, status=SynthesisStatus.NO_ISSUES)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    scope = html[
+        html.index('data-no-issues-scope="true"') : html.index('id="priority-findings"')
+    ]
+
+    assert "Invite [invite]" in scope
+    assert "Improved [improved]" in scope
+    assert "Workspace administrator [persona]" in scope
+    assert "run-1" in scope
+    assert 'href="?run=run-1#playback-workspace"' in scope
 
 
 @pytest.mark.e2e
@@ -1995,6 +2248,8 @@ async def test_renderer_split_index_evidence_button_opens_run_page(
         await page.locator('[data-evidence-id="event:run.active:7"]').click()
         assert "report-runs" in page.url
         assert "run.active" in page.url or "run.active-" in page.url
+        assert "evidence=event%3Arun.active%3A7" in page.url
+        assert page.url.endswith("#playback-workspace")
         await browser.close()
 
 
@@ -3067,11 +3322,9 @@ async def test_renderer_browser_replays_saliency_tabs_and_selected_viewport(
         )
         await tabs.nth(3).click()
         assert await page.locator("#saliency-detail .saliency-heatmap").is_visible()
-        await (
-            page.locator("#saliency-detail .saliency-table")
-            .first.locator("tbody tr")
-            .first.hover()
-        )
+        await page.get_by_role(
+            "button", name=re.compile(r"^Inspect ranked element")
+        ).first.click()
         assert "viewport-2" in (
             await page.locator("#element-detail").text_content() or ""
         )
@@ -3880,7 +4133,7 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
             await overview_row.locator('[data-metric="discovery-cost"]').text_content()
             == "4.0"
         )
-        await overview_row.click()
+        await overview_row.get_by_role("link", name="Open run run-evaluation").click()
         assert "run=run-evaluation" in page.url
         event_ids = await page.locator(".timeline-event").evaluate_all(
             "nodes => nodes.map(node => node.dataset.eventId)"
@@ -3939,7 +4192,11 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         assert "125" in model_text
         assert "2" in model_text
 
-        await page.locator('tr[data-run-id="run-timeout"]').click()
+        await (
+            page.locator('tr[data-run-id="run-timeout"]')
+            .get_by_role("link", name="Open run run-timeout")
+            .click()
+        )
         timeout_text = await page.locator("#run-status-banner").text_content() or ""
         assert "timed-out" in timeout_text
         assert "run timeout exceeded" in timeout_text
