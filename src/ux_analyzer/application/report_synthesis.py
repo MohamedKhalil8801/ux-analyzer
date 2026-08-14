@@ -89,9 +89,7 @@ _PRIMARY_OBSERVED_EVIDENCE_KINDS = frozenset(
         "heatmap",
     }
 )
-_UI_STATE_EVIDENCE_KINDS = frozenset(
-    {"viewport", "element", "screenshot", "heatmap"}
-)
+_UI_STATE_EVIDENCE_KINDS = frozenset({"viewport", "element", "screenshot", "heatmap"})
 _BEHAVIOR_OR_OUTCOME_EVIDENCE_KINDS = frozenset(
     {"event", "replay", "verification", "metric"}
 )
@@ -466,7 +464,17 @@ def _safe_structural_diagnostics(value: Mapping[object, object]) -> dict[str, ob
             if _safe_diagnostic_name(key)
             and isinstance(item, str)
             and item
-            in {"object", "list", "tuple", "bool", "str", "int", "float", "null", "other"}
+            in {
+                "object",
+                "list",
+                "tuple",
+                "bool",
+                "str",
+                "int",
+                "float",
+                "null",
+                "other",
+            }
         }
         if safe_types:
             result["top_level_value_types"] = safe_types
@@ -559,7 +567,10 @@ def _safe_validation_error(value: object) -> dict[str, object] | None:
             safe_path.append(component)
         else:
             return None
-    if not isinstance(error_type, str) or re.fullmatch(r"[a-z0-9_]{1,64}", error_type) is None:
+    if (
+        not isinstance(error_type, str)
+        or re.fullmatch(r"[a-z0-9_]{1,64}", error_type) is None
+    ):
         return None
     return {"path": safe_path, "type": error_type}
 
@@ -787,6 +798,7 @@ class ReportSynthesisService:
         candidate_limitations: list[str] = []
         duplicate_candidate_ids: set[str] = set()
         seen_candidate_ids: set[str] = set()
+        retained_candidate_ids: set[str] = set()
         for candidate in candidate_models:
             if candidate.finding_id in seen_candidate_ids:
                 duplicate_candidate_ids.add(candidate.finding_id)
@@ -807,14 +819,19 @@ class ReportSynthesisService:
                     f"Candidate {candidate.finding_id} failed deterministic publication validation: {self._safe_validation_reason(error)}."
                 )
             else:
-                candidate_findings.append(finding)
+                if finding.finding_id not in retained_candidate_ids:
+                    candidate_findings.append(finding)
+                    retained_candidate_ids.add(finding.finding_id)
         limitations.extend(candidate_limitations)
 
         candidate_ids = {finding.finding_id for finding in candidate_findings}
-        candidate_input = tuple(
-            candidate
-            for candidate in candidate_models
+        candidate_input_by_id = {
+            candidate.finding_id: candidate
+            for candidate in reversed(candidate_models)
             if candidate.finding_id in candidate_ids
+        }
+        candidate_input = tuple(
+            candidate_input_by_id[finding.finding_id] for finding in candidate_findings
         )
 
         candidate_evidence_ids = self._evidence_ids(candidate_findings)
@@ -1213,7 +1230,10 @@ class ReportSynthesisService:
 
             try:
                 requested_ids = tuple(dict.fromkeys(response.evidence_requests))
-                if len(cumulative_requested | set(requested_ids)) > MAX_ROLE_RETRIEVAL_ENTRIES:
+                if (
+                    len(cumulative_requested | set(requested_ids))
+                    > MAX_ROLE_RETRIEVAL_ENTRIES
+                ):
                     raise ValueError("cumulative evidence request limit exceeded")
                 cumulative_requested.update(requested_ids)
                 newly_resolved, batches = self._resolve_evidence_batches(
@@ -1447,7 +1467,10 @@ class ReportSynthesisService:
         counter_entries = tuple(
             corpus.require(ref.evidence_id) for ref in counterevidence_refs
         )
-        if any(entry.evidence_class is EvidenceClass.UNSUPPORTED_HUMAN_CLAIM for entry in (*entries, *counter_entries)):
+        if any(
+            entry.evidence_class is EvidenceClass.UNSUPPORTED_HUMAN_CLAIM
+            for entry in (*entries, *counter_entries)
+        ):
             raise ValueError("unsupported human claim cannot support a finding")
         if finding.evidence_class is EvidenceClass.DETERMINISTIC_FACT and any(
             entry.evidence_class is not EvidenceClass.DETERMINISTIC_FACT
@@ -1471,11 +1494,15 @@ class ReportSynthesisService:
                 if surface.casefold() not in supported_surfaces
             )
             if missing_surfaces:
-                raise ValueError("affected surfaces are not named by supporting evidence")
+                raise ValueError(
+                    "affected surfaces are not named by supporting evidence"
+                )
         self._validate_verifier_consistency(corpus, finding)
         if _CAUSAL_MARKERS.search(finding.root_cause) and not (
             {entry.ref.kind for entry in entries}.intersection(_UI_STATE_EVIDENCE_KINDS)
-            and {entry.ref.kind for entry in entries}.intersection(_BEHAVIOR_OR_OUTCOME_EVIDENCE_KINDS)
+            and {entry.ref.kind for entry in entries}.intersection(
+                _BEHAVIOR_OR_OUTCOME_EVIDENCE_KINDS
+            )
         ):
             raise ValueError("causal language is not supported by enough evidence")
 
@@ -1489,7 +1516,12 @@ class ReportSynthesisService:
     def _surface_tokens(payload: Mapping[str, object]) -> tuple[str, ...]:
         values: list[str] = []
         for key, raw in payload.items():
-            if str(key).casefold() not in {"surface", "surface_id", "surface_ids", "surfaces"}:
+            if str(key).casefold() not in {
+                "surface",
+                "surface_id",
+                "surface_ids",
+                "surfaces",
+            }:
                 continue
             if isinstance(raw, str) and raw.strip():
                 values.append(raw.strip())
@@ -1589,7 +1621,11 @@ class ReportSynthesisService:
             if normalized.objection_id in seen_ids:
                 raise ValueError("duplicate reviewer objection ID")
             seen_ids.add(normalized.objection_id)
-            domain = normalized.to_domain()
+            domain = replace(
+                normalized.to_domain(),
+                resolved=False,
+                resolution=None,
+            )
             if contains_forbidden_narrative(
                 " ".join(
                     item
@@ -1783,12 +1819,17 @@ class ReportSynthesisService:
                 )
             else:
                 accepted.append(finding)
-        if not final_models and candidate_findings:
-            rejected.extend(
-                self._not_established(
-                    candidate_findings, "adjudicator published no surviving finding"
-                )
+        disposed_ids = {finding.finding_id for finding in (*accepted, *rejected)}
+        rejected.extend(
+            self._not_established(
+                tuple(
+                    finding
+                    for finding in candidate_findings
+                    if finding.finding_id not in disposed_ids
+                ),
+                "adjudicator published no surviving finding",
             )
+        )
         accepted.sort(key=_finding_sort_key)
         return accepted, rejected, limitations
 
@@ -1804,9 +1845,7 @@ class ReportSynthesisService:
         )
         if any(final.strip() != original.strip() for final, original in core_claim):
             return False
-        reviewed_evidence_ids = {
-            ref.evidence_id for ref in reviewed.evidence_refs
-        }
+        reviewed_evidence_ids = {ref.evidence_id for ref in reviewed.evidence_refs}
         final_evidence_ids = {ref.evidence_id for ref in final_model.evidence_refs}
         return reviewed_evidence_ids <= final_evidence_ids
 

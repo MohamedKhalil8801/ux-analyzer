@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Callable
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 
@@ -119,6 +121,8 @@ def _write_synthesis(
     finding_values = findings
     if finding_values is None:
         finding_values = ()
+        if status is SynthesisStatus.ACCEPTED and not finding_refs:
+            finding_refs = (_synthesis_ref("event", run_id),)
         if finding_refs:
             finding_values = (
                 SynthesisFinding(
@@ -189,7 +193,15 @@ def _write_synthesis(
         prompt_version="report-synthesis-orchestrator-v1",
         schema_version="synthesis-v1",
         candidate_findings=finding_values,
-        findings=finding_values,
+        rejected_findings=(
+            tuple(
+                replace(finding, reviewer_state="not-established")
+                for finding in finding_values
+            )
+            if status is SynthesisStatus.REJECTED
+            else ()
+        ),
+        findings=(finding_values if status is SynthesisStatus.ACCEPTED else ()),
         limitations=(
             limitations
             if limitations is not None
@@ -198,6 +210,30 @@ def _write_synthesis(
         created_at=created_at,
     )
     SynthesisArtifactStore(root).write_attempt(attempt, corpus)
+
+
+def _rewrite_selected_synthesis(
+    root: Path,
+    mutate: Callable[[dict[str, object]], None],
+) -> None:
+    attempt_root = next((root / "synthesis" / "attempts").iterdir())
+    synthesis_path = attempt_root / "synthesis.json"
+    value = json.loads(synthesis_path.read_text(encoding="ascii"))
+    mutate(value)
+    content = (
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("ascii")
+    synthesis_path.write_bytes(content)
+    index_path = root / "synthesis" / "index.json"
+    index = json.loads(index_path.read_text(encoding="ascii"))
+    index["attempts"][0]["status"] = value["status"]
+    index["attempts"][0]["synthesis_digest"] = hashlib.sha256(content).hexdigest()
+    index_path.write_text(
+        json.dumps(index, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        + "\n",
+        encoding="ascii",
+    )
 
 
 def _write_checksums(run: Path) -> None:
@@ -1059,6 +1095,145 @@ def test_renderer_rejects_legacy_selected_synthesis_without_run_identities(
         "synthesis"
     ]
 
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+
+
+@pytest.mark.parametrize(
+    "invalid_state",
+    (
+        "accepted-empty",
+        "no-issues-candidates",
+        "no-issues-blocker",
+        "duplicate-final-ids",
+        "final-absent-from-candidates",
+    ),
+)
+def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
+    tmp_path: Path,
+    invalid_state: str,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    reference = _synthesis_ref("event")
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.ACCEPTED,
+        corpus_refs=(reference,),
+        finding_refs=(reference,),
+    )
+
+    def make_hostile(value: dict[str, object]) -> None:
+        if invalid_state == "accepted-empty":
+            value["final_findings"] = []
+        elif invalid_state == "no-issues-candidates":
+            value["status"] = "no-issues"
+            value["final_findings"] = []
+        elif invalid_state == "no-issues-blocker":
+            value["status"] = "no-issues"
+            value["candidates"] = []
+            value["final_findings"] = []
+            value["objections"] = [
+                {
+                    "objection_id": "blocking-objection",
+                    "finding_id": "synthesis-finding",
+                    "severity": "blocking",
+                    "message": "Recorded evidence contradicts publication.",
+                    "evidence_refs": [],
+                    "reviewer_role": "report-evidence-auditor",
+                    "resolved": False,
+                    "resolution": None,
+                }
+            ]
+        elif invalid_state == "duplicate-final-ids":
+            value["final_findings"].append(dict(value["final_findings"][0]))
+        else:
+            value["candidates"] = []
+
+    _rewrite_selected_synthesis(tmp_path, make_hostile)
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+
+
+@pytest.mark.parametrize(
+    ("kind", "relative_path", "viewport_id", "max_bytes"),
+    (
+        ("screenshot", "artifacts/screenshot.png", "viewport-1", 16 * 1024 * 1024),
+        (
+            "heatmap",
+            "saliency/inference-1/3s-heatmap.png",
+            "inference-1",
+            8 * 1024 * 1024,
+        ),
+        ("native-map", "saliency/inference-1/3s.npz", "inference-1", 64 * 1024 * 1024),
+    ),
+)
+def test_renderer_rejects_oversized_synthesis_visual_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    relative_path: str,
+    viewport_id: str,
+    max_bytes: int,
+) -> None:
+    provider = "heuristic" if kind == "screenshot" else "foveacast"
+    _write_run(
+        tmp_path,
+        "run-1",
+        version="defective",
+        discovery_cost=8,
+        prominence_provider_id=provider,
+    )
+    if kind != "screenshot":
+        _write_saliency_replay_evidence(tmp_path, "run-1")
+    digest = "0" * 64
+    evidence_id = (
+        f"screenshot:run-1:{digest}"
+        if kind == "screenshot"
+        else f"{kind}:run-1:{viewport_id}:3s"
+    )
+    reference = EvidenceRef(
+        evidence_id,
+        kind,
+        "run-1",
+        viewport_id=viewport_id,
+        artifact_path=f"runs/run-1/{relative_path}",
+        sha256=digest,
+    )
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(reference,),
+        finding_refs=(reference,),
+        finding_title="Oversized synthesis visual must not render",
+    )
+    loaded_run = renderer._load_run(tmp_path / "runs" / "run-1")
+    artifact_path = tmp_path / "runs" / "run-1" / relative_path
+    with artifact_path.open("wb") as handle:
+        handle.truncate(max_bytes + 1)
+    secure_read = renderer.secure_read_bytes
+    observed_limits: list[int | None] = []
+
+    def assert_bounded_read(
+        path: Path,
+        label: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        if path == artifact_path:
+            observed_limits.append(max_bytes)
+            assert max_bytes == expected_max_bytes
+        return secure_read(path, label, max_bytes=max_bytes)
+
+    expected_max_bytes = max_bytes
+    monkeypatch.setattr(renderer, "secure_read_bytes", assert_bounded_read)
+
+    synthesis, _ = renderer._load_synthesis(tmp_path, (loaded_run,))
+
+    assert observed_limits == [expected_max_bytes]
     assert synthesis["synthesis_status"] == "invalid"
     assert synthesis["using_fallback"] is True
 

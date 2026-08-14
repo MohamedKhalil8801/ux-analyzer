@@ -52,6 +52,7 @@ from ux_analyzer.storage.saliency_replay import (
 from ux_analyzer.storage.synthesis_artifacts import (
     SynthesisArtifactError,
     SynthesisArtifactStore,
+    validate_publishable_synthesis_attempt,
 )
 
 DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
@@ -354,6 +355,7 @@ def _load_synthesis(
             raise SynthesisArtifactError(
                 "selected synthesis attempt has an ineligible status"
             )
+        validate_publishable_synthesis_attempt(attempt)
         corpus = _load_synthesis_corpus(root, attempt)
         _validate_synthesis_run_scope(corpus, runs)
         findings = _synthesis_findings(attempt, corpus, runs, root)

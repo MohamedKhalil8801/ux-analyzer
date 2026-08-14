@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
+    ObjectionSeverity,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
@@ -51,6 +52,82 @@ _PUBLICATION_LOCKS_GUARD = threading.Lock()
 
 class SynthesisArtifactError(ValueError):
     """Raised when synthesis artifact state is invalid or cannot be trusted."""
+
+
+def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
+    """Reject contradictory status and final-finding publication state."""
+
+    candidates = attempt.candidate_findings
+    finals = attempt.findings
+    rejected = attempt.rejected_findings
+    candidate_ids = [finding.finding_id for finding in candidates]
+    final_ids = [finding.finding_id for finding in finals]
+    rejected_ids = [finding.finding_id for finding in rejected]
+
+    if attempt.status is SynthesisStatus.NO_ISSUES:
+        if candidates or rejected or attempt.objections or finals:
+            raise SynthesisArtifactError(
+                "no-issues synthesis must not contain review or finding state"
+            )
+        return
+
+    if attempt.status is SynthesisStatus.ACCEPTED:
+        if not finals:
+            raise SynthesisArtifactError(
+                "accepted synthesis requires at least one final finding"
+            )
+        if any(finding.reviewer_state != "accepted" for finding in finals):
+            raise SynthesisArtifactError(
+                "accepted synthesis findings require accepted reviewer state"
+            )
+        published_ids = set(final_ids)
+        if any(
+            objection.finding_id in published_ids
+            and objection.severity is ObjectionSeverity.BLOCKING
+            and not objection.resolved
+            for objection in attempt.objections
+        ):
+            raise SynthesisArtifactError(
+                "accepted synthesis finding has an unresolved blocking objection"
+            )
+    elif finals:
+        raise SynthesisArtifactError(
+            "rejected or unavailable synthesis must not publish final findings"
+        )
+
+    for label, finding_ids in (
+        ("candidate", candidate_ids),
+        ("final", final_ids),
+        ("rejected", rejected_ids),
+    ):
+        if len(finding_ids) != len(set(finding_ids)):
+            raise SynthesisArtifactError(
+                f"synthesis {label} finding IDs must be unique"
+            )
+
+    candidate_id_set = set(candidate_ids)
+    final_id_set = set(final_ids)
+    rejected_id_set = set(rejected_ids)
+    if not final_id_set <= candidate_id_set:
+        raise SynthesisArtifactError(
+            "final synthesis finding must derive from an analyst candidate"
+        )
+    if not rejected_id_set <= candidate_id_set:
+        raise SynthesisArtifactError(
+            "rejected synthesis finding must derive from an analyst candidate"
+        )
+    if final_id_set & rejected_id_set:
+        raise SynthesisArtifactError(
+            "candidate finding cannot have both final and rejected dispositions"
+        )
+    if final_id_set | rejected_id_set != candidate_id_set:
+        raise SynthesisArtifactError(
+            "every candidate finding requires exactly one final or rejected disposition"
+        )
+    if any(finding.reviewer_state != "not-established" for finding in rejected):
+        raise SynthesisArtifactError(
+            "rejected synthesis findings require not-established reviewer state"
+        )
 
 
 def _publication_thread_lock(synthesis_root: Path) -> threading.RLock:
@@ -545,6 +622,7 @@ class SynthesisArtifactStore:
     ) -> Path:
         """Publish one complete attempt and update the accepted pointer when eligible."""
 
+        validate_publishable_synthesis_attempt(attempt)
         self._ensure_layout()
         with _publication_lock(self.synthesis_root):
             return self._write_attempt_locked(attempt, corpus)
@@ -809,6 +887,7 @@ class SynthesisArtifactStore:
             raise SynthesisArtifactError(
                 "synthesis principle-pack digest field mismatch"
             )
+        validate_publishable_synthesis_attempt(attempt)
         return attempt, synthesis_bytes, corpus_bytes
 
     def _read_json_object(
@@ -960,4 +1039,8 @@ def _replace_index(source: Path, destination: Path) -> None:
         raise SynthesisArtifactError(str(error)) from error
 
 
-__all__ = ["SynthesisArtifactError", "SynthesisArtifactStore"]
+__all__ = [
+    "SynthesisArtifactError",
+    "SynthesisArtifactStore",
+    "validate_publishable_synthesis_attempt",
+]

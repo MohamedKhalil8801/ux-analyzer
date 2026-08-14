@@ -13,8 +13,10 @@ from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntr
 from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
+    ObjectionSeverity,
     SynthesisAttempt,
     SynthesisFinding,
+    SynthesisObjection,
     SynthesisStatus,
 )
 from ux_analyzer.storage import synthesis_artifacts
@@ -92,8 +94,22 @@ def _attempt(
     *,
     sequence: int,
     status: SynthesisStatus = SynthesisStatus.ACCEPTED,
-    findings: tuple[SynthesisFinding, ...] = (),
+    findings: tuple[SynthesisFinding, ...] | None = None,
+    candidate_findings: tuple[SynthesisFinding, ...] | None = None,
+    rejected_findings: tuple[SynthesisFinding, ...] | None = None,
+    objections: tuple[SynthesisObjection, ...] = (),
 ) -> SynthesisAttempt:
+    if findings is None:
+        findings = (_finding(),) if status is SynthesisStatus.ACCEPTED else ()
+    if candidate_findings is None:
+        candidate_findings = findings
+    if rejected_findings is None:
+        rejected_findings = ()
+        if status is SynthesisStatus.REJECTED and candidate_findings:
+            rejected_findings = tuple(
+                replace(finding, reviewer_state="not-established")
+                for finding in candidate_findings
+            )
     return SynthesisAttempt(
         attempt_id=f"20260810T120000Z-{corpus.digest[:12]}-{sequence}",
         status=status,
@@ -119,11 +135,23 @@ def _attempt(
             },
         ),
         usage={"role_calls": 1},
-        candidate_findings=findings,
+        candidate_findings=candidate_findings,
+        objections=objections,
+        rejected_findings=rejected_findings,
         findings=findings,
         limitations=("Fixture evidence only.",),
         fallback_available=True,
         created_at="2026-08-10T12:00:00+00:00",
+    )
+
+
+def _blocking_objection(finding_id: str) -> SynthesisObjection:
+    return SynthesisObjection(
+        objection_id="blocking-objection",
+        finding_id=finding_id,
+        severity=ObjectionSeverity.BLOCKING,
+        message="The published claim remains contradicted by recorded evidence.",
+        resolved=False,
     )
 
 
@@ -172,6 +200,188 @@ def test_write_attempt_publishes_canonical_layout_and_round_trips(
 
     assert store.attempts == (attempt,)
     assert store.accepted_attempt == attempt
+
+
+def test_write_attempt_rejects_accepted_unreviewed_finding(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    pending = replace(_finding(), reviewer_state="pending")
+    attempt = _attempt(corpus, sequence=1, findings=(pending,))
+    store = SynthesisArtifactStore(tmp_path)
+
+    with pytest.raises(SynthesisArtifactError, match="reviewer|publish"):
+        store.write_attempt(attempt, corpus)
+
+    assert store.accepted_attempt is None
+
+
+def test_write_attempt_rejects_accepted_without_final_findings(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(),
+        candidate_findings=(),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="accepted|final"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_write_attempt_rejects_accepted_finding_with_unresolved_blocker(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding,),
+        objections=(_blocking_objection(finding.finding_id),),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="blocking|publish"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+@pytest.mark.parametrize(
+    "status",
+    (SynthesisStatus.NO_ISSUES, SynthesisStatus.REJECTED, SynthesisStatus.UNAVAILABLE),
+)
+def test_write_attempt_rejects_status_with_promoted_final_finding(
+    tmp_path: Path,
+    status: SynthesisStatus,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1, status=status, findings=(_finding(),))
+
+    with pytest.raises(SynthesisArtifactError, match="finding|publish"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+@pytest.mark.parametrize("invalid_field", ("candidates", "rejected", "objections"))
+def test_write_attempt_rejects_no_issues_with_review_state(
+    tmp_path: Path,
+    invalid_field: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    values: dict[str, object] = {
+        "candidate_findings": (),
+        "rejected_findings": (),
+        "objections": (),
+    }
+    if invalid_field == "candidates":
+        values["candidate_findings"] = (finding,)
+    elif invalid_field == "rejected":
+        values["rejected_findings"] = (
+            replace(finding, reviewer_state="not-established"),
+        )
+    else:
+        values["objections"] = (_blocking_objection(finding.finding_id),)
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        status=SynthesisStatus.NO_ISSUES,
+        **values,
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="no-issues"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_write_attempt_rejects_duplicate_final_finding_ids(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding, finding),
+        candidate_findings=(finding,),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="duplicate|unique"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_write_attempt_rejects_final_finding_absent_from_candidates(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(_finding(),),
+        candidate_findings=(),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="candidate"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_write_attempt_rejects_undisposed_candidate(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    published = _finding()
+    omitted = replace(published, finding_id="omitted-candidate")
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(published,),
+        candidate_findings=(published, omitted),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="disposed|disposition"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        SynthesisStatus.ACCEPTED,
+        SynthesisStatus.NO_ISSUES,
+        SynthesisStatus.REJECTED,
+        SynthesisStatus.UNAVAILABLE,
+    ),
+)
+def test_valid_publication_states_round_trip(
+    tmp_path: Path,
+    status: SynthesisStatus,
+) -> None:
+    corpus = _corpus(tmp_path)
+    candidate = replace(_finding(), reviewer_state="candidate")
+    findings: tuple[SynthesisFinding, ...] = ()
+    candidates: tuple[SynthesisFinding, ...] = ()
+    rejected: tuple[SynthesisFinding, ...] = ()
+    if status is SynthesisStatus.ACCEPTED:
+        candidates = (candidate,)
+        findings = (
+            replace(
+                candidate,
+                title="Invite action is difficult to locate",
+                fixes=("Expose an Invite teammate action in the team area.",),
+                reviewer_state="accepted",
+            ),
+        )
+    elif status is SynthesisStatus.REJECTED:
+        candidates = (candidate,)
+        rejected = (replace(candidate, reviewer_state="not-established"),)
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        status=status,
+        findings=findings,
+        candidate_findings=candidates,
+        rejected_findings=rejected,
+    )
+    store = SynthesisArtifactStore(tmp_path)
+
+    store.write_attempt(attempt, corpus)
+
+    assert store.attempts == (attempt,)
+    assert store.accepted_attempt == (
+        attempt
+        if status in {SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES}
+        else None
+    )
 
 
 def test_attempts_are_retained_and_rejected_attempts_remain_readable(
@@ -305,14 +515,7 @@ def test_write_attempt_rejects_malformed_or_mismatched_ids(
 def test_write_attempt_rejects_digest_mismatch_and_overwrite(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path)
     attempt = _attempt(corpus, sequence=1)
-    mismatched = SynthesisAttempt(
-        attempt_id=attempt.attempt_id,
-        status=attempt.status,
-        corpus_digest="a" * 64,
-        expectation_digest=attempt.expectation_digest,
-        principle_pack_digest=attempt.principle_pack_digest,
-        created_at=attempt.created_at,
-    )
+    mismatched = replace(attempt, corpus_digest="a" * 64)
     store = SynthesisArtifactStore(tmp_path)
 
     with pytest.raises(SynthesisArtifactError, match="corpus digest"):
@@ -367,9 +570,28 @@ def _rewrite_synthesis_and_index(tmp_path: Path, value: dict[str, object]) -> No
     record["attempt_id"] = value["attempt_id"]
     record["created_at"] = value["created_at"]
     record["corpus_digest"] = value["corpus_digest"]
+    record["status"] = value["status"]
     record["synthesis_digest"] = hashlib.sha256(synthesis_bytes).hexdigest()
     index["accepted_attempt_id"] = value["attempt_id"]
     index_path.write_bytes(_canonical_bytes(index))
+
+
+def test_reader_rejects_selected_artifact_with_unreviewed_final_finding(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1, findings=(_finding(),))
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(attempt, corpus)
+    synthesis_path = next((tmp_path / "synthesis" / "attempts").iterdir()) / (
+        "synthesis.json"
+    )
+    value = json.loads(synthesis_path.read_text(encoding="ascii"))
+    value["final_findings"][0]["reviewer_state"] = "pending"
+    _rewrite_synthesis_and_index(tmp_path, value)
+
+    with pytest.raises(SynthesisArtifactError, match="reviewer|publish"):
+        _ = store.accepted_attempt
 
 
 def test_storage_module_does_not_import_application_corpus() -> None:

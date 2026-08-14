@@ -164,7 +164,8 @@ async def test_integration_unresolved_blocking_review_is_rejected(
     client = _StructuredClient(
         {
             ModelRole.REPORT_ANALYST: [
-                {"complete": True, "candidate_findings": [candidate]}
+                {"complete": False, "evidence_requests": [EVIDENCE_ID]},
+                {"complete": True, "candidate_findings": [candidate]},
             ],
             ModelRole.REPORT_EVIDENCE_AUDITOR: [
                 {"complete": True, "objections": [objection]}
@@ -183,9 +184,54 @@ async def test_integration_unresolved_blocking_review_is_rejected(
     assert not attempt.findings
     assert attempt.rejected_findings[0].reviewer_state == "not-established"
     assert (
+        len([call for call in client.calls if call[2] is ModelRole.REPORT_ANALYST]) == 2
+    )
+    assert (
         len([call for call in client.calls if call[2] is ModelRole.REPORT_ADJUDICATOR])
         == 2
     )
+
+
+@pytest.mark.asyncio
+async def test_integration_reviewer_cannot_pre_resolve_its_blocking_objection(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate_payload()
+    evidence_ref = cast(list[dict[str, object]], candidate["evidence_refs"])
+    objection = {
+        "objection_id": "objection-1",
+        "finding_id": "invite-control",
+        "objection_type": "factual-support",
+        "severity": "blocking",
+        "message": "The cited event does not establish the stated cause.",
+        "evidence_refs": [evidence_ref[0]],
+        "reviewer_role": "report-evidence-auditor",
+        "resolved": True,
+        "resolution": "The auditor considers its own objection resolved.",
+    }
+    client = _StructuredClient(
+        {
+            ModelRole.REPORT_ANALYST: [
+                {"complete": False, "evidence_requests": [EVIDENCE_ID]},
+                {"complete": True, "candidate_findings": [candidate]},
+            ],
+            ModelRole.REPORT_EVIDENCE_AUDITOR: [
+                {"complete": True, "objections": [objection]}
+            ],
+            ModelRole.REPORT_PATTERN_REVIEWER: [{"complete": True, "objections": []}],
+            ModelRole.REPORT_ADJUDICATOR: [
+                {"complete": True, "final_findings": [candidate]},
+                {"complete": True, "final_findings": [candidate]},
+            ],
+        }
+    )
+
+    attempt = await _providers(client).synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert not attempt.objections[0].resolved
+    assert attempt.objections[0].resolution is None
 
 
 @pytest.mark.asyncio
