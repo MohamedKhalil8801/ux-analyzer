@@ -5,9 +5,11 @@ import io
 import json
 import struct
 import zlib
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -25,7 +27,15 @@ from ux_analyzer.application.experiment import ExperimentFailure, ExperimentResu
 from ux_analyzer.domain.expectations import ExpectationKey, FrozenExpectation
 from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.synthesis import EvidenceRef
-from ux_analyzer.providers.ux_principles import UX_PRINCIPLE_PACK_VERSION
+from ux_analyzer.ports.models import ModelRole
+from ux_analyzer.providers.report_synthesis import (
+    ReportAnalyst,
+    _initial_manifest_payload,
+)
+from ux_analyzer.providers.ux_principles import (
+    UX_PRINCIPLE_PACK_VERSION,
+    ux_principles,
+)
 
 
 def _png_bytes() -> bytes:
@@ -252,9 +262,18 @@ def _experiment(tmp_path: Path, run_id: str = "run-a") -> tuple[ExperimentResult
                     "cause": "existing finding prose",
                 }
             ],
-            "limitations": ["limitation sentinel"],
+            "limitations": [
+                "The invite control is too difficult to discover and should be "
+                "moved into the main navigation."
+            ],
             "counterevidence": [
-                {"kind": "alternate-path", "summary": "alternate path recorded"}
+                {
+                    "kind": "alternate-path",
+                    "summary": (
+                        "Users miss invitations because the current navigation hides "
+                        "this important workflow."
+                    ),
+                }
             ],
         },
     )
@@ -331,7 +350,8 @@ def test_corpus_accepts_cli_relative_output_and_bundle_reference(
     assert corpus.require("verification:run-a").payload["verified"] is True
 
 
-def test_corpus_redacts_prior_narrative_and_includes_allowlisted_evidence(
+@pytest.mark.asyncio
+async def test_corpus_redacts_prior_narrative_and_includes_allowlisted_evidence(
     tmp_path: Path,
 ) -> None:
     experiment, _ = _experiment(tmp_path)
@@ -350,8 +370,61 @@ def test_corpus_redacts_prior_narrative_and_includes_allowlisted_evidence(
     assert "metric raw response sentinel" not in serialized
     assert "metric decision rationale sentinel" not in serialized
     assert "unlisted metric prose sentinel" not in serialized
-    assert "limitation sentinel" in serialized
-    assert "alternate path recorded" in serialized
+    prior_limitation = (
+        "The invite control is too difficult to discover and should be moved into "
+        "the main navigation."
+    )
+    prior_counterevidence = (
+        "Users miss invitations because the current navigation hides this important "
+        "workflow."
+    )
+    manifest = json.dumps(_initial_manifest_payload(corpus), ensure_ascii=True)
+    resolved = ResolvedEvidence.from_entries(
+        corpus,
+        tuple(
+            entry
+            for entry in corpus.entries
+            if entry.ref.kind in {"limitation", "counterevidence"}
+        ),
+        max_entries=10,
+        max_attachment_bytes=1_000_000,
+    )
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.messages: tuple[Any, ...] = ()
+
+        async def complete(
+            self,
+            schema: type[Any],
+            messages: Sequence[Any],
+            model: str,
+            role: ModelRole,
+        ) -> object:
+            del model, role
+            self.messages = tuple(messages)
+            return schema.model_validate(
+                {
+                    "complete": True,
+                    "evidence_requests": [],
+                    "candidate_findings": [],
+                }
+            )
+
+    client = RecordingClient()
+    await ReportAnalyst(client, model="report-model").analyze(
+        corpus,
+        ux_principles(),
+        resolved_evidence=resolved,
+    )
+    role_request = client.messages[1].content
+
+    for prior_prose in (prior_limitation, prior_counterevidence):
+        assert prior_prose not in serialized
+        assert prior_prose not in manifest
+        assert prior_prose not in role_request
+    assert "limitation:run-a:0" not in evidence_ids
+    assert not any(entry.ref.kind == "counterevidence" for entry in corpus.entries)
     assert {
         "scenario:run-a",
         "persona:run-a",
@@ -620,14 +693,16 @@ def test_failed_run_keeps_scope_and_expectation_entries(tmp_path: Path) -> None:
     assert "private failure message sentinel" not in corpus.to_json()
 
 
-def test_finalized_invalid_run_reasons_are_published_as_sanitized_limitations(
+def test_finalized_invalid_state_is_published_without_freeform_reason_prose(
     tmp_path: Path,
 ) -> None:
     experiment, run = _experiment(tmp_path)
     result_path = run / "result.json"
     result = json.loads(result_path.read_text())
-    result["ux_sample_invalid_reason"] = "saliency-fallback: invalid sample"
-    result["evaluation_failure_reason"] = "evaluation-failure: verifier rejected run"
+    result["outcome"] = {"kind": "model-failure", "reason": "Invite flow is broken"}
+    result["ux_sample_valid"] = False
+    result["ux_sample_invalid_reason"] = "The invite flow is broken for new users"
+    result["evaluation_failure_reason"] = "Evaluator found a severe navigation flaw"
     _write_json(result_path, result)
     _write_checksums(run)
 
@@ -635,12 +710,66 @@ def test_finalized_invalid_run_reasons_are_published_as_sanitized_limitations(
 
     assert corpus.require("limitation:run-a:ux-sample-invalid").payload == {
         "kind": "ux-sample-invalid",
-        "reason": "saliency-fallback: invalid sample",
+        "reason_code": "evaluation-failure",
+        "source": {
+            "artifact": "result.json",
+            "field": "evaluation_failure_reason",
+        },
     }
     assert corpus.require("limitation:run-a:evaluation-failure").payload == {
         "kind": "evaluation-failure",
-        "reason": "evaluation-failure: verifier rejected run",
+        "reason_code": "result-evaluation-failed",
+        "source": {
+            "artifact": "result.json",
+            "field": "evaluation_failure_reason",
+        },
     }
+    assert "The invite flow is broken" not in corpus.to_json()
+    assert "Evaluator found a severe navigation flaw" not in corpus.to_json()
+
+
+def test_saliency_fallback_limitation_uses_timeline_event_provenance(
+    tmp_path: Path,
+) -> None:
+    experiment, run = _experiment(tmp_path)
+    timeline_path = run / "timeline.jsonl"
+    events = [json.loads(line) for line in timeline_path.read_text().splitlines()]
+    events[-1]["sequence"] = 9
+    events.insert(
+        -1,
+        {
+            "sequence": 8,
+            "kind": "saliency-fallback-recorded",
+            "viewport_id": "viewport-1",
+            "provider_id": "foveacast",
+            "fallback_provider_id": "heuristic",
+            "search_stage": "initial",
+            "reason": "The navigation design caused the model to miss the invite flow",
+        },
+    )
+    timeline_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    result_path = run / "result.json"
+    result = json.loads(result_path.read_text())
+    result["ux_sample_valid"] = False
+    result["ux_sample_invalid_reason"] = "Prior finding says navigation is confusing"
+    _write_json(result_path, result)
+    _write_checksums(run)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    assert corpus.require("limitation:run-a:ux-sample-invalid").payload == {
+        "kind": "ux-sample-invalid",
+        "reason_code": "saliency-fallback",
+        "source": {
+            "artifact": "timeline.jsonl",
+            "event_id": "event-8",
+            "event_kind": "saliency-fallback-recorded",
+        },
+    }
+    assert "navigation design caused" not in corpus.to_json()
+    assert "Prior finding says" not in corpus.to_json()
 
 
 def test_finalized_invalid_run_does_not_require_a_summary_metric_row(
@@ -668,7 +797,8 @@ def test_finalized_invalid_run_does_not_require_a_summary_metric_row(
     assert corpus.require("metric:run-a:outcome").payload["value"] == "model-failure"
     assert corpus.require("limitation:run-a:ux-sample-invalid").payload == {
         "kind": "ux-sample-invalid",
-        "reason": "model-failure: request rejected",
+        "reason_code": "model-failure",
+        "source": {"artifact": "result.json", "field": "outcome.kind"},
     }
 
 

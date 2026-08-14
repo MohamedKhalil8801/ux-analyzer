@@ -1866,7 +1866,7 @@ class EvidenceCorpusBuilder:
             )
         for event in events:
             self._add_score_estimates(collector, run_id, event, metrics, manifest)
-        self._add_limitations(collector, run_id, raw_result)
+        self._add_limitations(collector, run_id, raw_result, events)
         self._add_saliency(
             collector,
             root,
@@ -2023,64 +2023,73 @@ class EvidenceCorpusBuilder:
         collector: _EntryCollector,
         run_id: str,
         raw_result: Mapping[str, object],
+        events: Sequence[Mapping[str, object]],
     ) -> None:
-        for suffix, field_name in (
-            ("ux-sample-invalid", "ux_sample_invalid_reason"),
-            ("evaluation-failure", "evaluation_failure_reason"),
-        ):
-            reason = _optional_text(raw_result.get(field_name))
-            if reason is None:
-                continue
-            collector.add(
-                EvidenceRef(f"limitation:{run_id}:{suffix}", "limitation", run_id),
-                EvidenceClass.DETERMINISTIC_FACT,
-                f"Recorded {suffix} limitation for run {run_id}.",
-                {"kind": suffix, "reason": reason},
-            )
-        for index, value in enumerate(_sequence_values(raw_result.get("limitations"))):
-            text = _optional_text(value)
-            if text is None:
-                continue
-            collector.add(
-                EvidenceRef(f"limitation:{run_id}:{index}", "limitation", run_id),
-                EvidenceClass.DETERMINISTIC_FACT,
-                f"Recorded limitation for run {run_id}.",
-                {"text": text},
-            )
-        values = raw_result.get("counterevidence")
-        for index, value in enumerate(_sequence_values(values)):
-            raw = _mapping(value)
-            payload: dict[str, object] = {}
-            if raw:
-                for name in ("kind", "summary", "description", "evidence_ids"):
-                    if name == "evidence_ids":
-                        ids = raw.get(name)
-                        if _sequence_values(ids):
-                            payload[name] = tuple(
-                                _text(item)
-                                for item in _sequence_values(ids)
-                                if _optional_text(item) is not None
-                            )
-                    else:
-                        text = _optional_text(raw.get(name))
-                        if text is not None:
-                            payload[name] = text
-            else:
-                text = _optional_text(value)
-                if text is not None:
-                    payload["summary"] = text
-            if not payload:
-                continue
+        # Generic result limitations/counterevidence have no typed producer.
+        evaluation_failed = (
+            _optional_text(raw_result.get("evaluation_failure_reason")) is not None
+        )
+        result_source = {
+            "artifact": "result.json",
+            "field": "evaluation_failure_reason",
+        }
+        if evaluation_failed:
             collector.add(
                 EvidenceRef(
-                    f"counterevidence:{run_id}:{index}",
-                    "counterevidence",
+                    f"limitation:{run_id}:evaluation-failure",
+                    "limitation",
                     run_id,
                 ),
                 EvidenceClass.DETERMINISTIC_FACT,
-                f"Recorded counterevidence for run {run_id}.",
-                payload,
+                f"Recorded evaluation-failure limitation for run {run_id}.",
+                {
+                    "kind": "evaluation-failure",
+                    "reason_code": "result-evaluation-failed",
+                    "source": result_source,
+                },
             )
+        if raw_result.get("ux_sample_valid") is not False:
+            return
+
+        fallback = next(
+            (
+                event
+                for event in reversed(events)
+                if _text(event.get("kind")) == "saliency-fallback-recorded"
+                and _sequence(event) > 0
+            ),
+            None,
+        )
+        if fallback is not None:
+            reason_code = "saliency-fallback"
+            source: Mapping[str, object] = {
+                "artifact": "timeline.jsonl",
+                "event_id": f"event-{_sequence(fallback)}",
+                "event_kind": "saliency-fallback-recorded",
+            }
+        elif evaluation_failed:
+            reason_code = "evaluation-failure"
+            source = result_source
+        else:
+            outcome_kind = _text(_mapping(raw_result.get("outcome")).get("kind"))
+            if outcome_kind in _SAFE_OUTCOMES:
+                reason_code = outcome_kind
+                source = {"artifact": "result.json", "field": "outcome.kind"}
+            else:
+                reason_code = "invalid-sample"
+                source = {"artifact": "result.json", "field": "ux_sample_valid"}
+        collector.add(
+            EvidenceRef(
+                f"limitation:{run_id}:ux-sample-invalid", "limitation", run_id
+            ),
+            EvidenceClass.DETERMINISTIC_FACT,
+            f"Recorded ux-sample-invalid limitation for run {run_id}.",
+            {
+                "kind": "ux-sample-invalid",
+                "reason_code": reason_code,
+                "source": source,
+            },
+        )
 
     @staticmethod
     def _add_saliency(
