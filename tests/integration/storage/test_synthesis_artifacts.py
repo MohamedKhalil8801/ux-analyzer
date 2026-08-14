@@ -622,12 +622,109 @@ def test_failed_index_replace_keeps_previous_accepted_pointer_and_attempt(
     def fail_index_replace(source: Path, destination: Path) -> None:
         raise OSError("simulated interruption")
 
-    monkeypatch.setattr(synthesis_artifacts, "_replace_index", fail_index_replace)
-    with pytest.raises(OSError, match="simulated interruption"):
-        store.write_attempt(second, corpus)
+    with monkeypatch.context() as patch:
+        patch.setattr(synthesis_artifacts, "_replace_index", fail_index_replace)
+        with pytest.raises(OSError, match="simulated interruption"):
+            store.write_attempt(second, corpus)
 
     assert store.accepted_attempt == first
-    assert not (tmp_path / "synthesis" / "attempts" / second.attempt_id).exists()
+    assert (tmp_path / "synthesis" / "attempts" / second.attempt_id).is_dir()
+
+    third = _attempt(corpus, sequence=3, status=SynthesisStatus.REJECTED)
+    store.write_attempt(third, corpus)
+    assert {attempt.attempt_id for attempt in store.attempts} == {
+        first.attempt_id,
+        second.attempt_id,
+        third.attempt_id,
+    }
+    assert store.accepted_attempt == first
+    index = json.loads(store.index_path.read_text(encoding="ascii"))
+    assert {record["attempt_id"] for record in index["attempts"]} == {
+        first.attempt_id,
+        second.attempt_id,
+        third.attempt_id,
+    }
+
+
+def test_replace_index_windows_uses_secure_handle_relative_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / ".index.tmp"
+    destination = tmp_path / "index.json"
+    source.write_text("new", encoding="ascii")
+    destination.write_text("old", encoding="ascii")
+    calls: list[tuple[Path, Path, str, bool]] = []
+
+    def fail_path_replace(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("path-based replacement must not be used on Windows")
+
+    def reject_raced_parent(
+        actual_source: Path,
+        actual_destination: Path,
+        label: str,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        calls.append((actual_source, actual_destination, label, replace_existing))
+        raise SynthesisArtifactError("destination parent changed during replacement")
+
+    monkeypatch.setattr(synthesis_artifacts.os, "name", "nt")
+    monkeypatch.setattr(synthesis_artifacts.os, "replace", fail_path_replace)
+    monkeypatch.setattr(
+        synthesis_artifacts, "secure_assert_ancestors", lambda path, label: None
+    )
+    monkeypatch.setattr(
+        synthesis_artifacts, "secure_is_link_or_reparse", lambda path: False
+    )
+    monkeypatch.setattr(synthesis_artifacts, "secure_replace", reject_raced_parent)
+
+    with pytest.raises(SynthesisArtifactError, match="parent changed"):
+        synthesis_artifacts._replace_index(source, destination)
+
+    assert calls == [
+        (source, destination, "synthesis index publication", True),
+    ]
+
+
+@pytest.mark.parametrize("oversized_artifact", ("synthesis", "corpus"))
+def test_writer_rejects_json_above_reader_size_limit_before_publication(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    oversized_artifact: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = replace(
+        _attempt(corpus, sequence=1),
+        limitations=("x" * 4096,),
+    )
+    corpus_bytes = corpus.to_json().encode("ascii")
+    synthesis_bytes = synthesis_artifacts._canonical_bytes(
+        synthesis_artifacts._attempt_to_dict(attempt)
+    )
+    target = synthesis_bytes if oversized_artifact == "synthesis" else corpus_bytes
+    monkeypatch.setattr(synthesis_artifacts, "_MAX_JSON_BYTES", len(target) - 1)
+    publish_calls = 0
+    original_publish = SynthesisArtifactStore._publish_attempt
+
+    def counted_publish(
+        store: SynthesisArtifactStore,
+        staging: Path,
+        destination: Path,
+    ) -> None:
+        nonlocal publish_calls
+        publish_calls += 1
+        original_publish(store, staging, destination)
+
+    monkeypatch.setattr(SynthesisArtifactStore, "_publish_attempt", counted_publish)
+
+    with pytest.raises(SynthesisArtifactError, match="exceeds size limit"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+    assert publish_calls == 0
+    attempts_root = tmp_path / "synthesis" / "attempts"
+    assert not attempts_root.exists() or not tuple(attempts_root.iterdir())
 
 
 def test_concurrent_writers_keep_each_attempt_and_index_record(

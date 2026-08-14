@@ -117,6 +117,7 @@ def _write_synthesis(
     limitations: tuple[str, ...] | None = None,
     include_scope_identity: bool = True,
     scope_run_ids: tuple[str, ...] | None = None,
+    corpus_marker: str | None = None,
 ) -> None:
     finding_values = findings
     if finding_values is None:
@@ -155,6 +156,8 @@ def _write_synthesis(
     )
     scoped_run_ids = scope_run_ids or (run_id,)
     metadata: dict[str, object] = {"experiment_run_ids": scoped_run_ids}
+    if corpus_marker is not None:
+        metadata["marker"] = corpus_marker
     if include_scope_identity:
         metadata["experiment_run_identities"] = tuple(
             {
@@ -1438,6 +1441,102 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     )
     assert "Rejected findings are not publishable." in normalized_html
     assert "the evidence review is unavailable" not in normalized_html
+
+
+def test_renderer_uses_utc_sequence_order_for_latest_unselected_attempt(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.UNAVAILABLE,
+        sequence=2,
+        corpus_marker="sequence-10",
+        include_scope_identity=False,
+        limitations=("Older unavailable attempt.",),
+    )
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.REJECTED,
+        sequence=10,
+        corpus_marker="sequence-2",
+        include_scope_identity=False,
+        limitations=("Latest rejected attempt.",),
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "rejected"
+    assert synthesis["limitations"] == ["Latest rejected attempt."]
+
+
+def test_renderer_does_not_promote_accepted_attempt_without_index_pointer(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path)
+    index_path = tmp_path / "synthesis" / "index.json"
+    index = json.loads(index_path.read_text(encoding="ascii"))
+    index["accepted_attempt_id"] = None
+    index_path.write_bytes(
+        (
+            json.dumps(index, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("ascii")
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "unavailable"
+    assert synthesis["using_fallback"] is True
+
+
+def test_renderer_reads_only_latest_unselected_attempt_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    for sequence in range(1, 13):
+        _write_synthesis(
+            tmp_path,
+            status=SynthesisStatus.UNAVAILABLE,
+            sequence=sequence,
+            limitations=(f"Unavailable attempt {sequence}.",),
+        )
+
+    calls = {"attempt_ids": 0, "bundles": 0}
+    original_attempt_ids = SynthesisArtifactStore._attempt_ids
+    original_read_bundle = SynthesisArtifactStore._read_attempt_bundle
+
+    def counted_attempt_ids(store: SynthesisArtifactStore) -> tuple[str, ...]:
+        calls["attempt_ids"] += 1
+        return original_attempt_ids(store)
+
+    def counted_read_bundle(
+        store: SynthesisArtifactStore,
+        attempt_id: str,
+    ) -> tuple[SynthesisAttempt, bytes, bytes]:
+        calls["bundles"] += 1
+        return original_read_bundle(store, attempt_id)
+
+    monkeypatch.setattr(SynthesisArtifactStore, "_attempt_ids", counted_attempt_ids)
+    monkeypatch.setattr(
+        SynthesisArtifactStore,
+        "_read_attempt_bundle",
+        counted_read_bundle,
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "unavailable"
+    assert synthesis["limitations"] == ["Unavailable attempt 12."]
+    assert calls == {"attempt_ids": 1, "bundles": 1}
 
 
 def test_renderer_labels_boundary_rejection_separately_from_unavailable(

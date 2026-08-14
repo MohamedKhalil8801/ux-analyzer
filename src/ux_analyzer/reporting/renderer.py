@@ -327,24 +327,32 @@ def _load_synthesis(
 
     try:
         store = SynthesisArtifactStore(root)
-        attempts = store.attempts
-        attempt = store.accepted_attempt
-        selected_id = attempt.attempt_id if attempt is not None else None
+        attempt = store.report_attempt
+        selected_id = (
+            attempt.attempt_id
+            if attempt is not None and attempt.status in _SYNTHESIS_SELECTED_STATUSES
+            else None
+        )
         artifact_bytes = _synthesis_artifact_bytes(root, selected_id)
         if attempt is None:
-            status = (
-                _synthesis_enum_text(attempts[-1].status) if attempts else "missing"
+            return (
+                _fallback_synthesis(
+                    "unavailable",
+                    runs,
+                    fallback_findings,
+                    "Only rejected or unavailable synthesis attempts were published.",
+                ),
+                artifact_bytes,
             )
-            if status not in {"rejected", "unavailable"}:
-                status = "unavailable"
+        if attempt.status in {SynthesisStatus.REJECTED, SynthesisStatus.UNAVAILABLE}:
             limitation = (
-                attempts[-1].limitations[-1]
-                if attempts and attempts[-1].limitations
+                attempt.limitations[-1]
+                if attempt.limitations
                 else "Only rejected or unavailable synthesis attempts were published."
             )
             return (
                 _fallback_synthesis(
-                    status,
+                    _synthesis_enum_text(attempt.status),
                     runs,
                     fallback_findings,
                     limitation,
