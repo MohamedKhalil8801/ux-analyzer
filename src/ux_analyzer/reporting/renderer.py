@@ -357,6 +357,8 @@ def _load_synthesis(
             )
         validate_publishable_synthesis_attempt(attempt)
         corpus = _load_synthesis_corpus(root, attempt)
+        for objection in attempt.objections:
+            validate_evidence_refs(corpus, objection.resolution_evidence_refs)
         _validate_synthesis_run_scope(corpus, runs)
         findings = _synthesis_findings(attempt, corpus, runs, root)
         status = _synthesis_enum_text(attempt.status)

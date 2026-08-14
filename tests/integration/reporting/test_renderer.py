@@ -229,10 +229,11 @@ def _rewrite_selected_synthesis(
     index = json.loads(index_path.read_text(encoding="ascii"))
     index["attempts"][0]["status"] = value["status"]
     index["attempts"][0]["synthesis_digest"] = hashlib.sha256(content).hexdigest()
-    index_path.write_text(
-        json.dumps(index, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        + "\n",
-        encoding="ascii",
+    index_path.write_bytes(
+        (
+            json.dumps(index, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("ascii")
     )
 
 
@@ -1107,6 +1108,11 @@ def test_renderer_rejects_legacy_selected_synthesis_without_run_identities(
         "no-issues-blocker",
         "duplicate-final-ids",
         "final-absent-from-candidates",
+        "duplicate-objection-ids",
+        "orphan-objection",
+        "forged-resolved-blocker",
+        "changed-core-claim",
+        "missing-candidate-evidence",
     ),
 )
 def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
@@ -1114,13 +1120,17 @@ def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
     invalid_state: str,
 ) -> None:
     _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
-    reference = _synthesis_ref("event")
+    references = (_synthesis_ref("event"), _synthesis_ref("replay"))
     _write_synthesis(
         tmp_path,
         status=SynthesisStatus.ACCEPTED,
-        corpus_refs=(reference,),
-        finding_refs=(reference,),
+        corpus_refs=references,
+        finding_refs=references,
     )
+    baseline = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+    assert baseline["synthesis_status"] == "accepted"
 
     def make_hostile(value: dict[str, object]) -> None:
         if invalid_state == "accepted-empty":
@@ -1142,14 +1152,76 @@ def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
                     "reviewer_role": "report-evidence-auditor",
                     "resolved": False,
                     "resolution": None,
+                    "resolved_by_role": None,
+                    "resolution_evidence_refs": [],
                 }
             ]
         elif invalid_state == "duplicate-final-ids":
             value["final_findings"].append(dict(value["final_findings"][0]))
-        else:
+        elif invalid_state == "final-absent-from-candidates":
             value["candidates"] = []
+        elif invalid_state in {"duplicate-objection-ids", "orphan-objection"}:
+            objection = {
+                "objection_id": "material-objection",
+                "finding_id": (
+                    "unknown-finding"
+                    if invalid_state == "orphan-objection"
+                    else "synthesis-finding"
+                ),
+                "severity": "material",
+                "message": "The severity needs review.",
+                "evidence_refs": [],
+                "reviewer_role": "report-evidence-auditor",
+                "resolved": False,
+                "resolution": None,
+                "resolved_by_role": None,
+                "resolution_evidence_refs": [],
+            }
+            value["objections"] = (
+                [objection, dict(objection)]
+                if invalid_state == "duplicate-objection-ids"
+                else [objection]
+            )
+        elif invalid_state == "forged-resolved-blocker":
+            value["objections"] = [
+                {
+                    "objection_id": "blocking-objection",
+                    "finding_id": "synthesis-finding",
+                    "severity": "blocking",
+                    "message": "Recorded evidence contradicts publication.",
+                    "evidence_refs": [],
+                    "reviewer_role": "report-evidence-auditor",
+                    "resolved": True,
+                    "resolution": "The adjudicator resolved the objection.",
+                    "resolved_by_role": "report-adjudicator",
+                    "resolution_evidence_refs": [
+                        {
+                            "evidence_id": "event:run-1:999",
+                            "kind": "event",
+                            "run_id": "run-1",
+                            "viewport_id": None,
+                            "element_id": None,
+                            "event_id": "event-999",
+                            "metric_id": None,
+                            "artifact_path": None,
+                            "replay_sequence": 999,
+                            "sha256": None,
+                        }
+                    ],
+                }
+            ]
+        elif invalid_state == "changed-core-claim":
+            value["final_findings"][0]["issue"] = (
+                "A corrupted artifact replaced the reviewed claim."
+            )
+        else:
+            value["final_findings"][0]["evidence_refs"] = value["final_findings"][0][
+                "evidence_refs"
+            ][:1]
 
     _rewrite_selected_synthesis(tmp_path, make_hostile)
+    if invalid_state == "forged-resolved-blocker":
+        assert SynthesisArtifactStore(tmp_path).accepted_attempt is not None
 
     synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
         "synthesis"

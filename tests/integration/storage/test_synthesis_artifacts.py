@@ -151,7 +151,18 @@ def _blocking_objection(finding_id: str) -> SynthesisObjection:
         finding_id=finding_id,
         severity=ObjectionSeverity.BLOCKING,
         message="The published claim remains contradicted by recorded evidence.",
+        evidence_refs=(EvidenceRef("event:run-a:1", "event", "run-a"),),
         resolved=False,
+    )
+
+
+def _resolved_blocking_objection(finding_id: str) -> SynthesisObjection:
+    return replace(
+        _blocking_objection(finding_id),
+        resolved=True,
+        resolution="The adjudicator resolved the contradiction from recorded evidence.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=(EvidenceRef("event:run-a:1", "event", "run-a"),),
     )
 
 
@@ -240,6 +251,113 @@ def test_write_attempt_rejects_accepted_finding_with_unresolved_blocker(
     )
 
     with pytest.raises(SynthesisArtifactError, match="blocking|publish"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_resolved_blocking_objection_round_trips_with_adjudicator_provenance(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    objection = _resolved_blocking_objection(finding.finding_id)
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding,),
+        objections=(objection,),
+    )
+    store = SynthesisArtifactStore(tmp_path)
+
+    store.write_attempt(attempt, corpus)
+
+    assert store.accepted_attempt == attempt
+    persisted = json.loads(
+        next((tmp_path / "synthesis" / "attempts").iterdir())
+        .joinpath("synthesis.json")
+        .read_text(encoding="ascii")
+    )["objections"][0]
+    assert persisted["resolved_by_role"] == "report-adjudicator"
+    assert persisted["resolution_evidence_refs"]
+
+
+@pytest.mark.parametrize("invalid_kind", ("missing-role", "wrong-role", "no-evidence"))
+def test_write_attempt_rejects_forged_blocking_resolution(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    objection = _resolved_blocking_objection(finding.finding_id)
+    if invalid_kind == "missing-role":
+        objection = replace(objection, resolved_by_role=None)
+    elif invalid_kind == "wrong-role":
+        objection = replace(objection, resolved_by_role="report-evidence-auditor")
+    else:
+        objection = replace(objection, resolution_evidence_refs=())
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding,),
+        objections=(objection,),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="adjudicator|resolution evidence"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+@pytest.mark.parametrize("invalid_kind", ("duplicate", "orphan"))
+def test_write_attempt_rejects_invalid_objection_identity(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    objection = replace(
+        _blocking_objection(finding.finding_id),
+        severity=ObjectionSeverity.MATERIAL,
+    )
+    objections = (
+        (objection, objection)
+        if invalid_kind == "duplicate"
+        else (replace(objection, finding_id="unknown-finding"),)
+    )
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding,),
+        objections=objections,
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="objection|candidate"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+@pytest.mark.parametrize("invalid_kind", ("changed-claim", "dropped-evidence"))
+def test_write_attempt_rejects_final_that_does_not_preserve_candidate(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    event_ref = EvidenceRef("event:run-a:1", "event", "run-a")
+    expectation_ref = EvidenceRef("expectation:run-a", "expectation", "run-a")
+    candidate = replace(
+        _finding(),
+        reviewer_state="candidate",
+        evidence_refs=(event_ref, expectation_ref),
+    )
+    final = replace(candidate, reviewer_state="accepted")
+    if invalid_kind == "changed-claim":
+        final = replace(final, issue="A different issue replaced the reviewed claim.")
+    else:
+        final = replace(final, evidence_refs=(event_ref,))
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(final,),
+        candidate_findings=(candidate,),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="reviewed|candidate|evidence"):
         SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
 
 
@@ -591,6 +709,60 @@ def test_reader_rejects_selected_artifact_with_unreviewed_final_finding(
     _rewrite_synthesis_and_index(tmp_path, value)
 
     with pytest.raises(SynthesisArtifactError, match="reviewer|publish"):
+        _ = store.accepted_attempt
+
+
+@pytest.mark.parametrize("invalid_kind", ("duplicate", "orphan"))
+def test_reader_rejects_invalid_objection_identity(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1)
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(attempt, corpus)
+    synthesis_path = next((tmp_path / "synthesis" / "attempts").iterdir()) / (
+        "synthesis.json"
+    )
+    value = json.loads(synthesis_path.read_text(encoding="ascii"))
+    objection = {
+        "objection_id": "material-objection",
+        "finding_id": (
+            "unknown-finding" if invalid_kind == "orphan" else "invite-control"
+        ),
+        "severity": "material",
+        "message": "The severity needs review.",
+        "evidence_refs": [],
+        "reviewer_role": "report-evidence-auditor",
+        "resolved": False,
+        "resolution": None,
+        "resolved_by_role": None,
+        "resolution_evidence_refs": [],
+    }
+    value["objections"] = (
+        [objection, dict(objection)] if invalid_kind == "duplicate" else [objection]
+    )
+    _rewrite_synthesis_and_index(tmp_path, value)
+
+    with pytest.raises(SynthesisArtifactError, match="objection|candidate"):
+        _ = store.accepted_attempt
+
+
+def test_reader_rejects_corrupted_final_core_claim(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1)
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(attempt, corpus)
+    synthesis_path = next((tmp_path / "synthesis" / "attempts").iterdir()) / (
+        "synthesis.json"
+    )
+    value = json.loads(synthesis_path.read_text(encoding="ascii"))
+    value["final_findings"][0]["issue"] = (
+        "A corrupted artifact replaced the reviewed claim."
+    )
+    _rewrite_synthesis_and_index(tmp_path, value)
+
+    with pytest.raises(SynthesisArtifactError, match="reviewed|candidate"):
         _ = store.accepted_attempt
 
 

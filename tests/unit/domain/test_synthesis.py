@@ -3,6 +3,7 @@ from types import MappingProxyType
 
 import pytest
 
+from ux_analyzer.domain import synthesis
 from ux_analyzer.domain.findings import (
     EvidenceClass,
     FindingSeverity,
@@ -150,6 +151,45 @@ def test_synthesis_objection_normalizes_severity_and_reviewer_state() -> None:
     assert objection.evidence_refs == (EvidenceRef("event:run-a:19", "event", "run-a"),)
     assert objection.reviewer_role == "evidence-auditor"
     assert objection.resolved is False
+
+
+def test_synthesis_objection_preserves_adjudicator_resolution_provenance() -> None:
+    resolution_ref = EvidenceRef("event:run-a:20", "event", "run-a")
+
+    objection = SynthesisObjection(
+        objection_id="objection-1",
+        finding_id="finding-1",
+        severity="blocking",
+        message="The verifier outcome contradicts the proposed claim.",
+        resolved=True,
+        resolution="The later event resolves the contradiction.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=[resolution_ref],
+    )
+
+    assert objection.resolved_by_role == "report-adjudicator"
+    assert objection.resolution_evidence_refs == (resolution_ref,)
+
+
+def test_final_finding_preserves_reviewed_core_claim_and_evidence() -> None:
+    second_ref = EvidenceRef("metric:run-a:task-time", "metric", "run-a")
+    candidate = _finding(evidence_refs=(*_finding().evidence_refs, second_ref))
+    edited = _finding(
+        title="Settings navigation obscures user goals",
+        fixes=("Expose a task-oriented settings entry point.",),
+        evidence_refs=candidate.evidence_refs,
+        reviewer_state="accepted",
+    )
+
+    assert synthesis.final_finding_preserves_candidate(edited, candidate)
+    assert not synthesis.final_finding_preserves_candidate(
+        _finding(issue="A different issue replaced the reviewed claim."),
+        candidate,
+    )
+    assert not synthesis.final_finding_preserves_candidate(
+        _finding(evidence_refs=(candidate.evidence_refs[0],)),
+        candidate,
+    )
 
 
 def test_synthesis_attempt_supports_all_immutable_statuses_and_artifact_metadata() -> (

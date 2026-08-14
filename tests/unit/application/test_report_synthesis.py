@@ -1117,9 +1117,7 @@ async def test_counterevidence_cannot_supply_primary_support(tmp_path: Path) -> 
     candidate = CandidateFinding.model_validate(payload)
     service, _ = _scripted_service(
         analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
-        adjudicator=[
-            AdjudicationResponse(complete=True, final_findings=[candidate])
-        ],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
     )
 
     attempt = await service.synthesize(
@@ -1134,9 +1132,9 @@ async def test_counterevidence_cannot_supply_primary_support(tmp_path: Path) -> 
 async def test_counterevidence_cannot_supply_causal_ui_state_support(
     tmp_path: Path,
 ) -> None:
-    payload = _candidate(root_cause="The layout causes the extra navigation.").model_dump(
-        mode="python"
-    )
+    payload = _candidate(
+        root_cause="The layout causes the extra navigation."
+    ).model_dump(mode="python")
     payload["counterevidence"] = [
         {
             "evidence_id": HEATMAP_ID,
@@ -1149,9 +1147,7 @@ async def test_counterevidence_cannot_supply_causal_ui_state_support(
     candidate = CandidateFinding.model_validate(payload)
     service, _ = _scripted_service(
         analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
-        adjudicator=[
-            AdjudicationResponse(complete=True, final_findings=[candidate])
-        ],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
     )
 
     attempt = await service.synthesize(
@@ -1179,9 +1175,7 @@ async def test_affected_surfaces_must_be_named_by_supporting_evidence(
                 candidate_findings=[unsupported, supported],
             )
         ],
-        adjudicator=[
-            AdjudicationResponse(complete=True, final_findings=[supported])
-        ],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[supported])],
     )
 
     attempt = await service.synthesize(
@@ -1248,9 +1242,7 @@ async def test_adjudicator_cannot_replace_reviewed_core_claim(tmp_path: Path) ->
     )
     service, _ = _scripted_service(
         analyst=[AnalystResponse(complete=True, candidate_findings=[reviewed])],
-        adjudicator=[
-            AdjudicationResponse(complete=True, final_findings=[replacement])
-        ],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[replacement])],
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
@@ -1337,12 +1329,18 @@ async def test_one_adjudication_revision_can_resolve_blocking_objection(
 ) -> None:
     candidate = _candidate()
     objection = _blocking_objection(candidate.finding_id)
+    resolution_ref = EvidenceReference(
+        evidence_id=SECOND_EVIDENCE_ID,
+        kind="event",
+        run_id="run-a",
+        replay_sequence=2,
+    )
     resolution = ObjectionResolution(
         objection_id=objection.objection_id,
         finding_id=candidate.finding_id,
         resolved=True,
         resolution="The event plus the reviewed result supports the final claim.",
-        evidence_refs=objection.evidence_refs,
+        evidence_refs=[resolution_ref],
     )
     service, roles = _scripted_service(
         analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
@@ -1357,7 +1355,9 @@ async def test_one_adjudication_revision_can_resolve_blocking_objection(
         ],
     )
 
-    attempt = await service.synthesize(_corpus(tmp_path))
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_second_event_entry(),))
+    )
 
     assert attempt.status is SynthesisStatus.ACCEPTED
     assert not [
@@ -1365,6 +1365,13 @@ async def test_one_adjudication_revision_can_resolve_blocking_objection(
         for item in attempt.objections
         if item.severity is ObjectionSeverity.BLOCKING and not item.resolved
     ]
+    assert attempt.objections[0].evidence_refs == tuple(
+        ref.to_domain() for ref in objection.evidence_refs
+    )
+    assert attempt.objections[0].resolved_by_role == "report-adjudicator"
+    assert attempt.objections[0].resolution_evidence_refs == (
+        resolution_ref.to_domain(),
+    )
     assert len(roles[3].calls) == 2
 
 

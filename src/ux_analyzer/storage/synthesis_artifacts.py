@@ -17,12 +17,14 @@ from typing import cast
 from uuid import uuid4
 
 from ux_analyzer.domain.synthesis import (
+    REPORT_ADJUDICATOR_ROLE,
     EvidenceRef,
     ObjectionSeverity,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
     SynthesisStatus,
+    final_finding_preserves_candidate,
 )
 from ux_analyzer.ports.report_synthesis import SynthesisCorpusPort
 from ux_analyzer.storage.run_bundle import (
@@ -63,6 +65,8 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
     candidate_ids = [finding.finding_id for finding in candidates]
     final_ids = [finding.finding_id for finding in finals]
     rejected_ids = [finding.finding_id for finding in rejected]
+    objection_ids = [objection.objection_id for objection in attempt.objections]
+    candidate_id_set = set(candidate_ids)
 
     if attempt.status is SynthesisStatus.NO_ISSUES:
         if candidates or rejected or attempt.objections or finals:
@@ -70,6 +74,29 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
                 "no-issues synthesis must not contain review or finding state"
             )
         return
+
+    if len(objection_ids) != len(set(objection_ids)):
+        raise SynthesisArtifactError("synthesis objection IDs must be unique")
+    if any(
+        objection.finding_id not in candidate_id_set for objection in attempt.objections
+    ):
+        raise SynthesisArtifactError(
+            "synthesis objection must reference an analyst candidate"
+        )
+    for objection in attempt.objections:
+        if (
+            objection.severity is not ObjectionSeverity.BLOCKING
+            or not objection.resolved
+        ):
+            continue
+        if objection.resolved_by_role != REPORT_ADJUDICATOR_ROLE:
+            raise SynthesisArtifactError(
+                "resolved blocking objection requires report-adjudicator provenance"
+            )
+        if not objection.resolution_evidence_refs:
+            raise SynthesisArtifactError(
+                "resolved blocking objection requires resolution evidence"
+            )
 
     if attempt.status is SynthesisStatus.ACCEPTED:
         if not finals:
@@ -105,12 +132,20 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
                 f"synthesis {label} finding IDs must be unique"
             )
 
-    candidate_id_set = set(candidate_ids)
     final_id_set = set(final_ids)
     rejected_id_set = set(rejected_ids)
     if not final_id_set <= candidate_id_set:
         raise SynthesisArtifactError(
             "final synthesis finding must derive from an analyst candidate"
+        )
+    candidates_by_id = {finding.finding_id: finding for finding in candidates}
+    if any(
+        not final_finding_preserves_candidate(final, candidates_by_id[final.finding_id])
+        for final in finals
+        if final.finding_id in candidates_by_id
+    ):
+        raise SynthesisArtifactError(
+            "final synthesis finding must preserve reviewed candidate claim and evidence"
         )
     if not rejected_id_set <= candidate_id_set:
         raise SynthesisArtifactError(
@@ -431,6 +466,11 @@ def _objection_to_dict(objection: SynthesisObjection) -> dict[str, object]:
         "reviewer_role": objection.reviewer_role,
         "resolved": objection.resolved,
         "resolution": objection.resolution,
+        "resolved_by_role": objection.resolved_by_role,
+        "resolution_evidence_refs": [
+            _evidence_ref_to_dict(reference)
+            for reference in objection.resolution_evidence_refs
+        ],
     }
 
 
@@ -439,6 +479,16 @@ def _objection_from_dict(value: object) -> SynthesisObjection:
     resolved = mapping.get("resolved", False)
     if not isinstance(resolved, bool):
         raise SynthesisArtifactError("objection resolved must be boolean")
+    if "resolved_by_role" not in mapping:
+        raise SynthesisArtifactError("objection resolved_by_role is required")
+    resolved_by_role_value = mapping.get("resolved_by_role")
+    resolved_by_role = (
+        None
+        if resolved_by_role_value is None
+        else _text(resolved_by_role_value, "objection resolved_by_role")
+    )
+    if "resolution_evidence_refs" not in mapping:
+        raise SynthesisArtifactError("objection resolution_evidence_refs is required")
     return SynthesisObjection(
         objection_id=_text(mapping.get("objection_id"), "objection ID"),
         finding_id=_text(mapping.get("finding_id"), "objection finding ID"),
@@ -453,6 +503,14 @@ def _objection_from_dict(value: object) -> SynthesisObjection:
         reviewer_role=cast(str, mapping.get("reviewer_role", "")),
         resolved=resolved,
         resolution=cast(str | None, mapping.get("resolution")),
+        resolved_by_role=resolved_by_role,
+        resolution_evidence_refs=tuple(
+            _evidence_ref_from_dict(item)
+            for item in _list(
+                mapping.get("resolution_evidence_refs"),
+                "objection resolution_evidence_refs",
+            )
+        ),
     )
 
 

@@ -25,12 +25,14 @@ from ux_analyzer.application.evidence_corpus import (
 )
 from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.synthesis import (
+    REPORT_ADJUDICATOR_ROLE,
     EvidenceRef,
     ObjectionSeverity,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
     SynthesisStatus,
+    final_finding_preserves_candidate,
 )
 from ux_analyzer.ports.model_transport import TransportBudgetError
 from ux_analyzer.ports.models import (
@@ -1625,6 +1627,8 @@ class ReportSynthesisService:
                 normalized.to_domain(),
                 resolved=False,
                 resolution=None,
+                resolved_by_role=None,
+                resolution_evidence_refs=(),
             )
             if contains_forbidden_narrative(
                 " ".join(
@@ -1736,7 +1740,10 @@ class ReportSynthesisService:
                     resolution=resolution.resolution
                     if resolution.resolved or resolution.resolution
                     else None,
-                    evidence_refs=refs or objection.evidence_refs,
+                    resolved_by_role=(
+                        REPORT_ADJUDICATOR_ROLE if resolution.resolved else None
+                    ),
+                    resolution_evidence_refs=refs if resolution.resolved else (),
                 )
             )
         return tuple(result)
@@ -1779,19 +1786,6 @@ class ReportSynthesisService:
                 )
                 continue
             reviewed = candidates_by_id[model.finding_id]
-            if not self._preserves_reviewed_claim(model, reviewed):
-                limitations.append(
-                    f"Final finding {model.finding_id} failed publication validation because it changed the reviewed core claim."
-                )
-                rejected.append(
-                    replace(
-                        reviewed,
-                        reviewer_state="not-established",
-                        reviewer_notes=tuple(reviewed.reviewer_notes)
-                        + ("The adjudicator changed the reviewed core claim.",),
-                    )
-                )
-                continue
             try:
                 finding = self._validated_finding(
                     corpus,
@@ -1806,6 +1800,19 @@ class ReportSynthesisService:
             except (TypeError, ValueError) as error:
                 limitations.append(
                     f"Final finding {model.finding_id} failed deterministic publication validation: {self._safe_validation_reason(error)}."
+                )
+                continue
+            if not final_finding_preserves_candidate(finding, reviewed):
+                limitations.append(
+                    f"Final finding {model.finding_id} failed publication validation because it changed the reviewed core claim."
+                )
+                rejected.append(
+                    replace(
+                        reviewed,
+                        reviewer_state="not-established",
+                        reviewer_notes=tuple(reviewed.reviewer_notes)
+                        + ("The adjudicator changed the reviewed core claim.",),
+                    )
                 )
                 continue
             if self._blocking_for(finding.finding_id, objections):
@@ -1832,22 +1839,6 @@ class ReportSynthesisService:
         )
         accepted.sort(key=_finding_sort_key)
         return accepted, rejected, limitations
-
-    @staticmethod
-    def _preserves_reviewed_claim(
-        final_model: CandidateFinding,
-        reviewed: SynthesisFinding,
-    ) -> bool:
-        core_claim = (
-            (final_model.issue, reviewed.issue),
-            (final_model.impact, reviewed.impact),
-            (final_model.root_cause, reviewed.root_cause),
-        )
-        if any(final.strip() != original.strip() for final, original in core_claim):
-            return False
-        reviewed_evidence_ids = {ref.evidence_id for ref in reviewed.evidence_refs}
-        final_evidence_ids = {ref.evidence_id for ref in final_model.evidence_refs}
-        return reviewed_evidence_ids <= final_evidence_ids
 
     def _final_verification(
         self,

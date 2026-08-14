@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from math import isfinite
 from types import MappingProxyType
+from typing import cast
 
 from ux_analyzer.domain.findings import (
     EvidenceClass,
@@ -16,71 +17,75 @@ from ux_analyzer.domain.findings import (
 )
 
 
-def _require_non_empty(value: str, field_name: str) -> str:
+def _require_non_empty(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must not be empty")
     return value
 
 
-def _tuple_of_strings(values: Iterable[str], field_name: str) -> tuple[str, ...]:
+def _tuple_of_strings(values: object, field_name: str) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{field_name} must be a collection of strings")
-    normalized = tuple(values)
-    for value in normalized:
-        _require_non_empty(value, field_name)
-    return normalized
+    normalized = tuple(cast(Iterable[object], values))
+    return tuple(_require_non_empty(value, field_name) for value in normalized)
 
 
 def _freeze_value(value: object) -> object:
     if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
         return MappingProxyType(
-            {str(key): _freeze_value(item) for key, item in value.items()}
+            {str(key): _freeze_value(item) for key, item in mapping.items()}
         )
     if isinstance(value, (list, tuple)):
-        return tuple(_freeze_value(item) for item in value)
+        return tuple(_freeze_value(item) for item in cast(Iterable[object], value))
     if isinstance(value, (set, frozenset)):
-        return tuple(_freeze_value(item) for item in value)
+        return tuple(_freeze_value(item) for item in cast(Iterable[object], value))
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError(f"unsupported metadata value: {type(value).__name__}")
 
 
-def _mapping_proxy(values: Mapping[str, object]) -> Mapping[str, object]:
+def _mapping_proxy(values: object) -> Mapping[str, object]:
     if not isinstance(values, Mapping):
         raise TypeError("value must be a mapping")
+    mapping = cast(Mapping[object, object], values)
     return MappingProxyType(
-        {str(key): _freeze_value(value) for key, value in values.items()}
+        {str(key): _freeze_value(value) for key, value in mapping.items()}
     )
 
 
-def _float_mapping(values: Mapping[str, float]) -> Mapping[str, float]:
+def _float_mapping(values: object) -> Mapping[str, float]:
     if not isinstance(values, Mapping):
         raise TypeError("usage must be a mapping")
-    return MappingProxyType({str(key): float(value) for key, value in values.items()})
+    mapping = cast(Mapping[object, object], values)
+    normalized: dict[str, float] = {}
+    for key, value in mapping.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError("usage values must be numeric")
+        normalized[str(key)] = float(value)
+    return MappingProxyType(normalized)
 
 
-def _tuple_of_refs(
-    values: Iterable[EvidenceRef], field_name: str
-) -> tuple[EvidenceRef, ...]:
+def _tuple_of_refs(values: object, field_name: str) -> tuple[EvidenceRef, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{field_name} must be a collection of EvidenceRef values")
-    normalized = tuple(values)
+    normalized = tuple(cast(Iterable[object], values))
     if any(not isinstance(value, EvidenceRef) for value in normalized):
         raise TypeError(f"{field_name} must contain EvidenceRef values")
-    return normalized
+    return cast(tuple[EvidenceRef, ...], normalized)
 
 
 def _tuple_of_text_or_refs(
-    values: Iterable[str | EvidenceRef], field_name: str
+    values: object, field_name: str
 ) -> tuple[str | EvidenceRef, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{field_name} must be a collection")
-    normalized = tuple(values)
+    normalized = tuple(cast(Iterable[object], values))
     for value in normalized:
         if isinstance(value, EvidenceRef):
             continue
         _require_non_empty(value, field_name)
-    return normalized
+    return cast(tuple[str | EvidenceRef, ...], normalized)
 
 
 class SynthesisStatus(StrEnum):
@@ -88,6 +93,9 @@ class SynthesisStatus(StrEnum):
     REJECTED = "rejected"
     UNAVAILABLE = "unavailable"
     NO_ISSUES = "no-issues"
+
+
+REPORT_ADJUDICATOR_ROLE = "report-adjudicator"
 
 
 class ObjectionSeverity(StrEnum):
@@ -235,6 +243,8 @@ class SynthesisObjection:
     reviewer_role: str = ""
     resolved: bool = False
     resolution: str | None = None
+    resolved_by_role: str | None = None
+    resolution_evidence_refs: tuple[EvidenceRef, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.objection_id, "objection ID")
@@ -246,34 +256,64 @@ class SynthesisObjection:
             raise ValueError("resolution must not be empty")
         if self.resolution is not None:
             _require_non_empty(self.resolution, "resolution")
+        if self.resolved_by_role is not None:
+            _require_non_empty(self.resolved_by_role, "resolved_by_role")
         object.__setattr__(self, "severity", ObjectionSeverity(self.severity))
         object.__setattr__(
             self, "evidence_refs", _tuple_of_refs(self.evidence_refs, "evidence_refs")
         )
+        resolution_refs = _tuple_of_refs(
+            self.resolution_evidence_refs,
+            "resolution_evidence_refs",
+        )
+        resolution_evidence_ids = tuple(ref.evidence_id for ref in resolution_refs)
+        if len(resolution_evidence_ids) != len(set(resolution_evidence_ids)):
+            raise ValueError("resolution contains duplicate evidence ID")
+        object.__setattr__(self, "resolution_evidence_refs", resolution_refs)
 
 
-def _tuple_of_findings(
-    values: Iterable[SynthesisFinding], field_name: str
-) -> tuple[SynthesisFinding, ...]:
+def final_finding_preserves_candidate(
+    final: SynthesisFinding,
+    candidate: SynthesisFinding,
+) -> bool:
+    """Return whether a final preserves reviewed claim and supporting evidence."""
+
+    if final.finding_id != candidate.finding_id:
+        return False
+    if any(
+        final_value.strip() != candidate_value.strip()
+        for final_value, candidate_value in (
+            (final.issue, candidate.issue),
+            (final.impact, candidate.impact),
+            (final.root_cause, candidate.root_cause),
+        )
+    ):
+        return False
+    candidate_evidence_ids = {ref.evidence_id for ref in candidate.evidence_refs}
+    final_evidence_ids = {ref.evidence_id for ref in final.evidence_refs}
+    return candidate_evidence_ids <= final_evidence_ids
+
+
+def _tuple_of_findings(values: object, field_name: str) -> tuple[SynthesisFinding, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{field_name} must be a collection of SynthesisFinding values")
-    normalized = tuple(values)
+    normalized = tuple(cast(Iterable[object], values))
     if any(not isinstance(value, SynthesisFinding) for value in normalized):
         raise TypeError(f"{field_name} must contain SynthesisFinding values")
-    return normalized
+    return cast(tuple[SynthesisFinding, ...], normalized)
 
 
 def _tuple_of_objections(
-    values: Iterable[SynthesisObjection], field_name: str
+    values: object, field_name: str
 ) -> tuple[SynthesisObjection, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(
             f"{field_name} must be a collection of SynthesisObjection values"
         )
-    normalized = tuple(values)
+    normalized = tuple(cast(Iterable[object], values))
     if any(not isinstance(value, SynthesisObjection) for value in normalized):
         raise TypeError(f"{field_name} must contain SynthesisObjection values")
-    return normalized
+    return cast(tuple[SynthesisObjection, ...], normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,12 +325,16 @@ class SynthesisAttempt:
     corpus_digest: str = ""
     expectation_digest: str = ""
     principle_pack_digest: str = ""
-    model_manifest: Mapping[str, object] = field(default_factory=dict)
-    role_manifest: Mapping[str, object] = field(default_factory=dict)
+    model_manifest: Mapping[str, object] = field(
+        default_factory=lambda: dict[str, object]()
+    )
+    role_manifest: Mapping[str, object] = field(
+        default_factory=lambda: dict[str, object]()
+    )
     prompt_version: str = ""
     schema_version: str = "synthesis-v1"
     retrieval_log: tuple[Mapping[str, object], ...] = ()
-    usage: Mapping[str, float] = field(default_factory=dict)
+    usage: Mapping[str, float] = field(default_factory=lambda: dict[str, float]())
     candidate_findings: tuple[SynthesisFinding, ...] = ()
     objections: tuple[SynthesisObjection, ...] = ()
     rejected_findings: tuple[SynthesisFinding, ...] = ()
@@ -364,8 +408,10 @@ class SynthesisAttempt:
 __all__ = [
     "EvidenceRef",
     "ObjectionSeverity",
+    "REPORT_ADJUDICATOR_ROLE",
     "SynthesisAttempt",
     "SynthesisFinding",
     "SynthesisObjection",
     "SynthesisStatus",
+    "final_finding_preserves_candidate",
 ]
