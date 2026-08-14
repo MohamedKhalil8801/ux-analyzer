@@ -638,6 +638,35 @@ def _expectation_digest_from_manifest(value: Mapping[str, object]) -> str:
     return _sha256(_canonical_bytes(payloads, trailing_newline=False))
 
 
+def _validate_objection_evidence_refs(
+    attempt: SynthesisAttempt,
+    corpus_manifest: Mapping[str, object],
+) -> None:
+    corpus_refs: dict[str, EvidenceRef] = {}
+    for item in _list(corpus_manifest.get("entries"), "corpus entries"):
+        reference = _evidence_ref_from_dict(_mapping(item, "corpus entry"))
+        if reference.evidence_id in corpus_refs:
+            raise SynthesisArtifactError(
+                "synthesis corpus contains duplicate evidence ID"
+            )
+        corpus_refs[reference.evidence_id] = reference
+
+    for objection in attempt.objections:
+        for reference in (
+            *objection.evidence_refs,
+            *objection.resolution_evidence_refs,
+        ):
+            corpus_reference = corpus_refs.get(reference.evidence_id)
+            if corpus_reference is None:
+                raise SynthesisArtifactError(
+                    "objection evidence reference is absent from synthesis corpus"
+                )
+            if reference != corpus_reference:
+                raise SynthesisArtifactError(
+                    "objection evidence reference does not match synthesis corpus"
+                )
+
+
 class SynthesisArtifactStore:
     """Persist and select immutable experiment-level synthesis attempts."""
 
@@ -690,6 +719,8 @@ class SynthesisArtifactStore:
     ) -> Path:
         self._read_index()
         _, digest_prefix, _ = _validate_attempt_id(attempt.attempt_id)
+        corpus_json = corpus.to_json()
+        corpus_value = _mapping(json.loads(corpus_json), "synthesis corpus manifest")
         corpus_digest = corpus.digest
         if not _DIGEST_PATTERN.fullmatch(attempt.corpus_digest):
             raise SynthesisArtifactError(
@@ -703,11 +734,12 @@ class SynthesisArtifactStore:
         if digest_prefix != corpus_digest[:12]:
             raise SynthesisArtifactError("attempt ID corpus digest prefix mismatch")
         if attempt.expectation_digest != _expectation_digest_from_manifest(
-            cast(Mapping[str, object], json.loads(corpus.to_json()))
+            corpus_value
         ):
             raise SynthesisArtifactError("expectation digest mismatch")
         if attempt.principle_pack_digest != corpus.principle_pack_digest:
             raise SynthesisArtifactError("principle-pack digest mismatch")
+        _validate_objection_evidence_refs(attempt, corpus_value)
         if attempt.created_at is None:
             raise SynthesisArtifactError(
                 "created_at is required for persisted attempts"
@@ -725,7 +757,7 @@ class SynthesisArtifactStore:
         published = False
         try:
             synthesis_bytes = _canonical_bytes(_attempt_to_dict(attempt))
-            corpus_bytes = corpus.to_json().encode("ascii")
+            corpus_bytes = corpus_json.encode("ascii")
             secure_write_bytes(staging / "synthesis.json", synthesis_bytes)
             secure_write_bytes(staging / "corpus-manifest.json", corpus_bytes)
             self._publish_attempt(staging, destination)
@@ -903,7 +935,7 @@ class SynthesisArtifactStore:
         synthesis_value, synthesis_bytes = self._read_json_object(
             directory / "synthesis.json", "synthesis artifact"
         )
-        _, corpus_bytes = self._read_json_object(
+        corpus_value, corpus_bytes = self._read_json_object(
             directory / "corpus-manifest.json", "synthesis corpus manifest"
         )
         try:
@@ -920,10 +952,6 @@ class SynthesisArtifactStore:
             )
         if attempt.corpus_digest != _sha256(corpus_bytes):
             raise SynthesisArtifactError("synthesis corpus digest mismatch")
-        corpus_value = cast(
-            Mapping[str, object],
-            json.loads(corpus_bytes.decode("ascii")),
-        )
         if attempt.expectation_digest != _expectation_digest_from_manifest(
             corpus_value
         ):
@@ -946,6 +974,7 @@ class SynthesisArtifactStore:
                 "synthesis principle-pack digest field mismatch"
             )
         validate_publishable_synthesis_attempt(attempt)
+        _validate_objection_evidence_refs(attempt, corpus_value)
         return attempt, synthesis_bytes, corpus_bytes
 
     def _read_json_object(

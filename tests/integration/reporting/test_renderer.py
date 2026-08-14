@@ -1220,8 +1220,6 @@ def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
             ][:1]
 
     _rewrite_selected_synthesis(tmp_path, make_hostile)
-    if invalid_state == "forged-resolved-blocker":
-        assert SynthesisArtifactStore(tmp_path).accepted_attempt is not None
 
     synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
         "synthesis"

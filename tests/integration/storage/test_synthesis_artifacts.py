@@ -146,23 +146,30 @@ def _attempt(
 
 
 def _blocking_objection(finding_id: str) -> SynthesisObjection:
+    evidence_ref = EvidenceRef(
+        "event:run-a:1",
+        "event",
+        "run-a",
+        replay_sequence=1,
+    )
     return SynthesisObjection(
         objection_id="blocking-objection",
         finding_id=finding_id,
         severity=ObjectionSeverity.BLOCKING,
         message="The published claim remains contradicted by recorded evidence.",
-        evidence_refs=(EvidenceRef("event:run-a:1", "event", "run-a"),),
+        evidence_refs=(evidence_ref,),
         resolved=False,
     )
 
 
 def _resolved_blocking_objection(finding_id: str) -> SynthesisObjection:
+    objection = _blocking_objection(finding_id)
     return replace(
-        _blocking_objection(finding_id),
+        objection,
         resolved=True,
         resolution="The adjudicator resolved the contradiction from recorded evidence.",
         resolved_by_role="report-adjudicator",
-        resolution_evidence_refs=(EvidenceRef("event:run-a:1", "event", "run-a"),),
+        resolution_evidence_refs=objection.evidence_refs,
     )
 
 
@@ -278,6 +285,38 @@ def test_resolved_blocking_objection_round_trips_with_adjudicator_provenance(
     )["objections"][0]
     assert persisted["resolved_by_role"] == "report-adjudicator"
     assert persisted["resolution_evidence_refs"]
+
+
+@pytest.mark.parametrize("reference_field", ("reviewer", "resolution"))
+@pytest.mark.parametrize("invalid_kind", ("nonexistent", "mismatched"))
+def test_write_attempt_rejects_objection_reference_outside_exact_corpus(
+    tmp_path: Path,
+    reference_field: str,
+    invalid_kind: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    objection = _resolved_blocking_objection(finding.finding_id)
+    valid_ref = objection.evidence_refs[0]
+    invalid_ref = (
+        replace(valid_ref, evidence_id="event:run-a:999", replay_sequence=999)
+        if invalid_kind == "nonexistent"
+        else replace(valid_ref, replay_sequence=2)
+    )
+    objection = (
+        replace(objection, evidence_refs=(invalid_ref,))
+        if reference_field == "reviewer"
+        else replace(objection, resolution_evidence_refs=(invalid_ref,))
+    )
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding,),
+        objections=(objection,),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="objection|evidence|corpus"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
 
 
 @pytest.mark.parametrize("invalid_kind", ("missing-role", "wrong-role", "no-evidence"))
@@ -764,6 +803,47 @@ def test_reader_rejects_corrupted_final_core_claim(tmp_path: Path) -> None:
 
     with pytest.raises(SynthesisArtifactError, match="reviewed|candidate"):
         _ = store.accepted_attempt
+
+
+@pytest.mark.parametrize("read_boundary", ("attempts", "accepted_attempt"))
+@pytest.mark.parametrize(
+    "reference_field",
+    ("evidence_refs", "resolution_evidence_refs"),
+)
+@pytest.mark.parametrize("invalid_kind", ("nonexistent", "mismatched"))
+def test_reader_and_selection_reject_objection_reference_outside_exact_corpus(
+    tmp_path: Path,
+    read_boundary: str,
+    reference_field: str,
+    invalid_kind: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding,),
+        objections=(_resolved_blocking_objection(finding.finding_id),),
+    )
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(attempt, corpus)
+    synthesis_path = next((tmp_path / "synthesis" / "attempts").iterdir()) / (
+        "synthesis.json"
+    )
+    value = json.loads(synthesis_path.read_text(encoding="ascii"))
+    hostile_ref = value["objections"][0][reference_field][0]
+    if invalid_kind == "nonexistent":
+        hostile_ref["evidence_id"] = "event:run-a:999"
+        hostile_ref["replay_sequence"] = 999
+    else:
+        hostile_ref["replay_sequence"] = 2
+    _rewrite_synthesis_and_index(tmp_path, value)
+
+    with pytest.raises(SynthesisArtifactError, match="objection|evidence|corpus"):
+        if read_boundary == "attempts":
+            _ = store.attempts
+        else:
+            _ = store.accepted_attempt
 
 
 def test_storage_module_does_not_import_application_corpus() -> None:
