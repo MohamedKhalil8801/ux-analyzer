@@ -84,7 +84,17 @@ _REPORT_ROLES = frozenset(
         ModelRole.REPORT_ADJUDICATOR,
     }
 )
+_SAFE_FINISH_REASONS = frozenset(
+    {"stop", "length", "tool_calls", "function_call", "content_filter"}
+)
+_SAFE_TEXT_PART_TYPES = frozenset({"text", "output_text"})
 _MAX_MODEL_ATTACHMENT_BYTES = 16 * 1024 * 1024
+_MAX_MODEL_RESPONSE_BYTES = 1_000_000
+_MAX_DIAGNOSTIC_CONTENT_LENGTH = 1_000_000
+_SAFE_STRUCTURAL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_REPORT_JSON_SCALAR = re.compile(
+    r'(?<![A-Za-z0-9_-])(?:true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|"(?:\\.|[^"\\])*")(?![A-Za-z0-9_-])'
+)
 
 
 def _safe_provider_text(value: object) -> str | None:
@@ -113,6 +123,7 @@ class ModelFailureError(RuntimeError):
         error_code: str | None = None,
         error_type: str | None = None,
         request_id: str | None = None,
+        diagnostics: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(reason)
         self.reason = reason
@@ -120,6 +131,11 @@ class ModelFailureError(RuntimeError):
         self.error_code = _safe_provider_text(error_code)
         self.error_type = _safe_provider_text(error_type)
         self.request_id = _safe_provider_text(request_id)
+        self.diagnostics = dict(diagnostics or {})
+
+
+class _ModelResponseTooLarge(RuntimeError):
+    """Raised before an oversized provider response is materialized or parsed."""
 
 
 def load_environment_file(
@@ -672,7 +688,43 @@ def _usage(payload: Mapping[str, object]) -> TokenUsage:
     )
 
 
+async def _bounded_http_response(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: Mapping[str, str],
+    content: bytes,
+) -> httpx.Response:
+    request = client.build_request("POST", url, headers=headers, content=content)
+    response = await client.send(request, stream=True)
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        if response.is_stream_consumed:
+            total = len(response.content)
+            if total > _MAX_MODEL_RESPONSE_BYTES:
+                raise _ModelResponseTooLarge("response-too-large")
+            chunks.append(response.content)
+        else:
+            async for chunk in response.aiter_raw():
+                total += len(chunk)
+                if total > _MAX_MODEL_RESPONSE_BYTES:
+                    raise _ModelResponseTooLarge("response-too-large")
+                chunks.append(chunk)
+    finally:
+        await response.aclose()
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        content=b"".join(chunks),
+        request=request,
+        extensions=response.extensions,
+    )
+
+
 def _response_body(response: httpx.Response) -> object:
+    if len(response.content) > _MAX_MODEL_RESPONSE_BYTES:
+        raise _ModelResponseTooLarge("response-too-large")
     try:
         return response.json()
     except ValueError:
@@ -781,7 +833,10 @@ def _transport_error_category(error: httpx.TransportError) -> str:
     return "transport-error"
 
 
-def _structured_content(body: object) -> object:
+_MISSING_RESPONSE_CONTENT = object()
+
+
+def _response_message_content(body: object) -> object:
     if not isinstance(body, Mapping):
         raise ValueError("response body is not an object")
     response_mapping = cast(Mapping[object, object], body)
@@ -798,15 +853,394 @@ def _structured_content(body: object) -> object:
     if not isinstance(message, Mapping):
         raise ValueError("response choice has no message")
     message_mapping = cast(Mapping[object, object], message)
-    content = message_mapping.get("content")
+    return message_mapping.get("content", _MISSING_RESPONSE_CONTENT)
+
+
+def _text_content_stream(content: object) -> str | None:
+    if isinstance(content, str):
+        if len(content) > _MAX_MODEL_RESPONSE_BYTES:
+            raise _ModelResponseTooLarge("response-too-large")
+        return content
     if isinstance(content, Mapping):
-        return cast(dict[str, object], content)
-    if not isinstance(content, str):
+        content_mapping = cast(Mapping[object, object], content)
+        if "type" not in content_mapping:
+            return None
+        part_type = content_mapping.get("type")
+        text = content_mapping.get("text")
+        if part_type not in _SAFE_TEXT_PART_TYPES or not isinstance(text, str):
+            raise ValueError("response message has no unambiguous text content")
+        if len(text) > _MAX_MODEL_RESPONSE_BYTES:
+            raise _ModelResponseTooLarge("response-too-large")
+        return text
+    if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
         raise ValueError("response message has no JSON content")
-    parsed = json.loads(content)
-    if not isinstance(parsed, Mapping):
+    parts: list[str] = []
+    total_length = 0
+    for part in cast(Sequence[object], content):
+        if not isinstance(part, Mapping):
+            raise ValueError("response message has ambiguous content parts")
+        part_mapping = cast(Mapping[object, object], part)
+        part_type = part_mapping.get("type")
+        text = part_mapping.get("text")
+        if part_type not in _SAFE_TEXT_PART_TYPES or not isinstance(text, str):
+            raise ValueError("response message has ambiguous content parts")
+        parts.append(text)
+        total_length += len(text)
+        if total_length > _MAX_MODEL_RESPONSE_BYTES:
+            raise _ModelResponseTooLarge("response-too-large")
+    if not parts:
+        raise ValueError("response message has no JSON content")
+    return "".join(parts)
+
+
+def _json_decoder() -> json.JSONDecoder:
+    def reject_json_constant(value: str) -> None:
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    return json.JSONDecoder(parse_constant=reject_json_constant)
+
+
+def _strict_json_object(content_text: str) -> dict[str, object]:
+    stripped = content_text.strip()
+    if not stripped:
+        raise ValueError("response message has no JSON content")
+    parsed, end = _json_decoder().raw_decode(stripped)
+    if end != len(stripped) or not isinstance(parsed, Mapping):
         raise ValueError("structured response must be one JSON object")
-    return cast(dict[str, object], parsed)
+    return dict(cast(Mapping[str, object], parsed))
+
+
+def _json_container_spans(content_text: str) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    stack: list[str] = []
+    start: int | None = None
+    in_string = False
+    escaped = False
+    for index, character in enumerate(content_text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"' and stack:
+            in_string = True
+            continue
+        if character in "[{":
+            if not stack:
+                start = index
+            stack.append(character)
+            continue
+        if character not in "]}" or not stack:
+            continue
+        expected = "[" if character == "]" else "{"
+        if stack[-1] != expected:
+            stack.clear()
+            start = None
+            continue
+        stack.pop()
+        if not stack and start is not None:
+            spans.append((start, index + 1))
+            start = None
+    return tuple(spans)
+
+
+def _report_json_object(content_text: str) -> dict[str, object]:
+    try:
+        return _strict_json_object(content_text)
+    except (TypeError, ValueError):
+        pass
+
+    decoder = _json_decoder()
+    valid_values: list[tuple[int, int, object]] = []
+    for start, end in _json_container_spans(content_text):
+        try:
+            parsed, parsed_end = decoder.raw_decode(content_text[start:end])
+        except (TypeError, ValueError):
+            continue
+        if parsed_end == end - start:
+            valid_values.append((start, end, parsed))
+    object_values = [
+        value for value in valid_values if isinstance(value[2], Mapping)
+    ]
+    if len(object_values) == 1 and len(valid_values) > 1:
+        raise ValueError("structured response contains multiple JSON values")
+    if len(object_values) != 1 or len(valid_values) != 1:
+        raise ValueError("structured response must contain exactly one JSON object")
+
+    start, end, parsed = object_values[0]
+    envelope = content_text[:start] + (" " * (end - start)) + content_text[end:]
+    if "[" in envelope or "]" in envelope or _REPORT_JSON_SCALAR.search(envelope):
+        raise ValueError("structured response contains multiple JSON values")
+    return dict(cast(Mapping[str, object], parsed))
+
+
+def _structured_content(
+    body: object,
+    *,
+    role: ModelRole | None = None,
+) -> object:
+    content = _response_message_content(body)
+    if isinstance(content, Mapping):
+        content_mapping = cast(Mapping[object, object], content)
+        if _text_content_stream(content_mapping) is None:
+            return cast(dict[str, object], content_mapping)
+    content_text = _text_content_stream(cast(object, content))
+    if content_text is None:
+        raise ValueError("response message has no JSON content")
+    if role in _REPORT_ROLES:
+        return _report_json_object(content_text)
+    return _strict_json_object(content_text)
+
+
+def _safe_finish_reason(body: object) -> str | None:
+    if not isinstance(body, Mapping):
+        return None
+    body_mapping = cast(Mapping[object, object], body)
+    choices_value = body_mapping.get("choices")
+    if not isinstance(choices_value, Sequence) or isinstance(
+        choices_value, (str, bytes)
+    ):
+        return None
+    choices = cast(Sequence[object], choices_value)
+    if not choices or not isinstance(choices[0], Mapping):
+        return None
+    choice = cast(Mapping[object, object], choices[0])
+    finish_reason = choice.get("finish_reason")
+    if isinstance(finish_reason, str) and finish_reason in _SAFE_FINISH_REASONS:
+        return finish_reason
+    return None
+
+
+def _structural_value_type(value: object) -> str:
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, tuple):
+        return "tuple"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if value is None:
+        return "null"
+    return "other"
+
+
+def _response_content_length(content: object) -> int:
+    if isinstance(content, str):
+        return min(len(content), _MAX_DIAGNOSTIC_CONTENT_LENGTH)
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        total = 0
+        for item in cast(Sequence[object], content):
+            if isinstance(item, Mapping):
+                text = cast(Mapping[object, object], item).get("text")
+                if isinstance(text, str):
+                    total += len(text)
+        return min(total, _MAX_DIAGNOSTIC_CONTENT_LENGTH)
+    if isinstance(content, Mapping):
+        text = cast(Mapping[object, object], content).get("text")
+        if isinstance(text, str):
+            return min(len(text), _MAX_DIAGNOSTIC_CONTENT_LENGTH)
+    return 0
+
+
+def _response_content_markers(content: object) -> list[str]:
+    if content is _MISSING_RESPONSE_CONTENT:
+        return ["missing"]
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        parts = cast(Sequence[object], content)
+        text_parts = 0
+        non_text_parts = 0
+        for item in parts:
+            if not isinstance(item, Mapping):
+                non_text_parts += 1
+                continue
+            part = cast(Mapping[object, object], item)
+            part_type = part.get("type")
+            if isinstance(part.get("text"), str) and (
+                part_type is None
+                or (isinstance(part_type, str) and part_type in _SAFE_TEXT_PART_TYPES)
+            ):
+                text_parts += 1
+            else:
+                non_text_parts += 1
+        markers = ["content_parts"]
+        if text_parts:
+            markers.append("text_only_parts" if not non_text_parts else "mixed_parts")
+        if len(parts) > 1:
+            markers.append("multiple_parts")
+        if not parts:
+            markers.append("empty")
+        return markers
+    if isinstance(content, Mapping):
+        content_mapping = cast(Mapping[object, object], content)
+        if isinstance(content_mapping.get("text"), str):
+            return ["text_part"]
+        return ["structured_object"]
+    if not isinstance(content, str):
+        return [_structural_value_type(content)]
+    stripped = content.strip()
+    if not stripped:
+        return ["empty"]
+    markers: list[str] = []
+    if "```" in content:
+        markers.append("markdown_fence")
+    first_object = content.find("{")
+    if first_object >= 0:
+        markers.append("object_candidate")
+        if content[:first_object].strip():
+            markers.append("prose_prefix")
+        if content[first_object:].lstrip().startswith("{") and stripped.startswith("{"):
+            markers.append("raw_object_prefix")
+    if stripped.startswith("["):
+        markers.append("array_prefix")
+    if stripped[0] in '-0123456789tfn"':
+        markers.append("scalar_prefix")
+    last_object = content.rfind("}")
+    if last_object >= 0 and content[last_object + 1 :].strip():
+        markers.append("prose_suffix")
+    return markers or ["prose"]
+
+
+def _response_content_diagnostics(body: object) -> dict[str, object]:
+    try:
+        content = _response_message_content(body)
+    except (TypeError, ValueError):
+        content = _MISSING_RESPONSE_CONTENT
+    diagnostics: dict[str, object] = {
+        "response_content_type": (
+            "missing"
+            if content is _MISSING_RESPONSE_CONTENT
+            else _structural_value_type(content)
+        ),
+        "response_content_length": _response_content_length(content),
+        "response_content_markers": _response_content_markers(content),
+    }
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        diagnostics["response_content_part_count"] = len(
+            cast(Sequence[object], content)
+        )
+    return diagnostics
+
+
+def _schema_field_names(schema: type[BaseModel]) -> frozenset[str]:
+    names: set[str] = set()
+    pending: list[object] = [schema.model_json_schema()]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, Mapping):
+            mapping = cast(Mapping[object, object], value)
+            properties = mapping.get("properties")
+            if isinstance(properties, Mapping):
+                names.update(
+                    name
+                    for name in cast(Mapping[object, object], properties)
+                    if isinstance(name, str) and _SAFE_STRUCTURAL_NAME.fullmatch(name)
+                )
+            pending.extend(mapping.values())
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            pending.extend(cast(Sequence[object], value))
+    return frozenset(names)
+
+
+def _safe_structural_name(
+    value: object,
+    *,
+    allowed_names: frozenset[str],
+) -> str:
+    if isinstance(value, str) and value in allowed_names:
+        return value
+    if isinstance(value, str):
+        digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+        return f"unknown-{digest[:12]}"
+    return "[redacted]"
+
+
+def _safe_validation_path(
+    value: object,
+    *,
+    allowed_names: frozenset[str],
+) -> list[object]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ["[redacted]"]
+    path: list[object] = []
+    for item in cast(Sequence[object], value):
+        if type(item) is int and item >= 0:
+            path.append(item)
+        else:
+            path.append(_safe_structural_name(item, allowed_names=allowed_names))
+    return path
+
+
+def _structured_output_diagnostics(
+    *,
+    role: ModelRole,
+    mode: str,
+    attempts: int,
+    schema: type[BaseModel],
+    parsed: object,
+    stage: str,
+    finish_reason: str | None = None,
+    error: BaseException | None = None,
+    body: object = _MISSING_RESPONSE_CONTENT,
+) -> dict[str, object]:
+    allowed_names = _schema_field_names(schema)
+    diagnostics: dict[str, object] = {
+        "role": role.value,
+        "response_mode": mode,
+        "attempt_count": attempts,
+        "stage": stage,
+        "top_level_keys": [],
+        "top_level_value_types": {},
+    }
+    if body is not _MISSING_RESPONSE_CONTENT:
+        diagnostics.update(_response_content_diagnostics(body))
+    if finish_reason is not None:
+        diagnostics["finish_reason"] = finish_reason
+    if isinstance(parsed, Mapping):
+        parsed_mapping = cast(Mapping[object, object], parsed)
+        safe_items = sorted(
+            (
+                _safe_structural_name(key, allowed_names=allowed_names),
+                _structural_value_type(value),
+            )
+            for key, value in parsed_mapping.items()
+        )
+        diagnostics["top_level_keys"] = [key for key, _ in safe_items[:64]]
+        diagnostics["top_level_value_types"] = {
+            key: value for key, value in safe_items[:64]
+        }
+    else:
+        diagnostics["parsed_type"] = _structural_value_type(parsed)
+    if isinstance(error, ValidationError):
+        errors: list[dict[str, object]] = []
+        for item in error.errors()[:16]:
+            errors.append(
+                {
+                    "path": _safe_validation_path(
+                        item.get("loc"), allowed_names=allowed_names
+                    ),
+                    "type": (
+                        item_type
+                        if _SAFE_STRUCTURAL_NAME.fullmatch(
+                            item_type := item.get("type")
+                        )
+                        else "[redacted]"
+                    ),
+                }
+            )
+        diagnostics["validation_errors"] = errors
+    elif error is not None:
+        diagnostics["error_type"] = type(error).__name__
+    return diagnostics
 
 
 def _normalize_report_output(role: ModelRole, parsed: object) -> object:
@@ -888,10 +1322,10 @@ class _StructuredCallSupport:
             ModelRole.COARSE_SCENT: "scent-coarse-v1",
             ModelRole.FULL_SCENT: "scent-full-v1",
             ModelRole.COGNITIVE: "cognitive-v1",
-            ModelRole.REPORT_ANALYST: "report-analyst-v2",
-            ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v2",
-            ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v2",
-            ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v2",
+            ModelRole.REPORT_ANALYST: "report-analyst-v3",
+            ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v3",
+            ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v3",
+            ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v3",
         }[role_value]
         return ModelManifest(
             provider_id=self._provider_id,
@@ -1022,6 +1456,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         mode = _response_mode(role_value)
         last_reason = "model call failed"
         last_provider_metadata: dict[str, object] = {}
+        last_structural_diagnostics: dict[str, object] = {}
 
         while attempts < retry_policy.max_attempts:
             attempts += 1
@@ -1033,7 +1468,8 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 enforce_transport_size(request_body)
             try:
                 async with _model_call_slot(self._call_limiter):
-                    response = await self._http_client.post(
+                    response = await _bounded_http_response(
+                        self._http_client,
                         f"{self.settings.base_url}/chat/completions",
                         headers={
                             "accept": "application/json",
@@ -1048,6 +1484,10 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                     if not 200 <= response.status_code < 300
                     else {}
                 )
+            except _ModelResponseTooLarge:
+                last_reason = "response-too-large"
+                last_provider_metadata = {}
+                break
             except httpx.TransportError as error:
                 last_reason = _transport_error_category(error)
                 last_provider_metadata = {}
@@ -1122,11 +1562,70 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 )
                 break
 
+            parsed: object = {}
+            diagnostic_stage = "content_parsing"
+            finish_reason = _safe_finish_reason(response_payload)
             try:
-                parsed = _structured_content(response_payload)
+                if finish_reason == "length":
+                    raise ValueError("response content truncated by provider")
+                parsed = _structured_content(response_payload, role=role_value)
+                diagnostic_stage = "normalization"
                 parsed = _normalize_report_output(role_value, parsed)
+                diagnostic_stage = "schema_validation"
                 result = schema.model_validate(parsed)
-            except (ValueError, TypeError, ValidationError):
+            except _ModelResponseTooLarge:
+                last_structural_diagnostics = _structured_output_diagnostics(
+                    role=role_value,
+                    mode=mode,
+                    attempts=attempts,
+                    schema=schema,
+                    parsed=parsed,
+                    stage=diagnostic_stage,
+                    finish_reason=finish_reason,
+                    body=response_payload,
+                )
+                last_reason = "response-too-large"
+                break
+            except ValidationError as error:
+                last_structural_diagnostics = _structured_output_diagnostics(
+                    role=role_value,
+                    mode=mode,
+                    attempts=attempts,
+                    schema=schema,
+                    parsed=parsed,
+                    stage=diagnostic_stage,
+                    finish_reason=finish_reason,
+                    error=error,
+                    body=response_payload,
+                )
+                last_reason = "invalid structured output"
+                if attempts < retry_policy.max_attempts:
+                    retries.append(
+                        self._retry(
+                            role_value,
+                            model,
+                            attempts,
+                            "invalid-structured-output",
+                            response.status_code,
+                            retry_policy,
+                            len(retries) + 1,
+                        )
+                    )
+                    await self._sleep(retries[-1].delay_seconds)
+                    continue
+                break
+            except (ValueError, TypeError) as error:
+                last_structural_diagnostics = _structured_output_diagnostics(
+                    role=role_value,
+                    mode=mode,
+                    attempts=attempts,
+                    schema=schema,
+                    parsed=parsed,
+                    stage=diagnostic_stage,
+                    finish_reason=finish_reason,
+                    error=error,
+                    body=response_payload,
+                )
                 last_reason = "invalid structured output"
                 if attempts < retry_policy.max_attempts:
                     retries.append(
@@ -1181,6 +1680,8 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         response_metadata: dict[str, object] = {"failure": last_reason}
         if last_provider_metadata:
             response_metadata["provider"] = last_provider_metadata
+        if last_structural_diagnostics:
+            response_metadata["diagnostics"] = last_structural_diagnostics
         self._record(
             role_value,
             model,
@@ -1207,6 +1708,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             error_code=error_code if isinstance(error_code, str) else None,
             error_type=error_type if isinstance(error_type, str) else None,
             request_id=request_id if isinstance(request_id, str) else None,
+            diagnostics=last_structural_diagnostics,
         )
 
     def _request_payload(
@@ -1275,6 +1777,12 @@ class _CodexAttemptError(RuntimeError):
 
 _CODEX_CLEANUP_TIMEOUT_SECONDS = 0.25
 _CODEX_TERMINATION_GRACE_SECONDS = 0.05
+_CODEX_PERMISSION_PROFILE = "uxa-evidence-only"
+_CODEX_PERMISSION_CONFIG = (
+    f"permissions.{_CODEX_PERMISSION_PROFILE}="
+    '{filesystem={":root"="deny",":minimal"="read",'
+    '":workspace_roots"={"."="write"}},network={enabled=false}}'
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1664,23 +2172,88 @@ def _codex_process_failure_reason(stdout: bytes, stderr: bytes) -> str:
     return "process-exit"
 
 
-def _serialize_codex_messages(messages: Sequence[ChatMessage]) -> bytes:
-    serialized_messages = [message.model_dump() for message in messages]
-    attachments = [
-        attachment for message in messages for attachment in message.attachments
-    ]
-    if not attachments:
-        return serialize_transport_json(serialized_messages)
+async def _read_codex_stream_bounded(stream: asyncio.StreamReader) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await stream.read(min(64 * 1024, _MAX_MODEL_RESPONSE_BYTES + 1))
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > _MAX_MODEL_RESPONSE_BYTES:
+            raise _CodexAttemptError("response-too-large")
+        chunks.append(chunk)
 
+
+async def _communicate_codex_bounded(
+    process: asyncio.subprocess.Process,
+    prompt: bytes,
+) -> tuple[bytes, bytes]:
+    stdin = getattr(process, "stdin", None)
+    stdout = getattr(process, "stdout", None)
+    stderr = getattr(process, "stderr", None)
+    if stdin is None or stdout is None or stderr is None:
+        stdout_data, stderr_data = await process.communicate(input=prompt)
+        if (
+            len(stdout_data) > _MAX_MODEL_RESPONSE_BYTES
+            or len(stderr_data) > _MAX_MODEL_RESPONSE_BYTES
+        ):
+            raise _CodexAttemptError("response-too-large")
+        return stdout_data, stderr_data
+
+    stdin.write(prompt)
+    await stdin.drain()
+    stdin.close()
+    read_tasks = (
+        asyncio.create_task(_read_codex_stream_bounded(stdout)),
+        asyncio.create_task(_read_codex_stream_bounded(stderr)),
+    )
+    try:
+        stdout_data, stderr_data = await asyncio.gather(*read_tasks)
+        await process.wait()
+        return stdout_data, stderr_data
+    finally:
+        for task in read_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*read_tasks, return_exceptions=True)
+
+
+def _serialize_codex_messages(
+    messages: Sequence[ChatMessage],
+    *,
+    working_root: Path | None = None,
+) -> bytes:
+    serialized_messages: list[dict[str, object]] = []
     manifest: list[dict[str, object]] = []
-    for attachment in attachments:
-        _validated_attachment_bytes(attachment)
-        manifest.append(
-            {
-                **_attachment_audit_metadata(attachment),
-                "path": str(_absolute_attachment_path(attachment)),
-            }
-        )
+    attachment_index = 0
+    for message in messages:
+        serialized_message = message.model_dump()
+        if message.attachments:
+            serialized_attachments: list[dict[str, object]] = []
+            for attachment in message.attachments:
+                content = _validated_attachment_bytes(attachment)
+                suffix = ".png" if attachment.media_type == "image/png" else ".jpg"
+                relative_path = PurePosixPath(
+                    "evidence",
+                    f"{attachment_index:04d}{suffix}",
+                )
+                attachment_index += 1
+                if working_root is not None:
+                    isolated_path = working_root.joinpath(*relative_path.parts)
+                    isolated_path.parent.mkdir(parents=True, exist_ok=True)
+                    isolated_path.write_bytes(content)
+                serialized_attachment: dict[str, object] = {
+                    **_attachment_audit_metadata(attachment),
+                    "path": relative_path.as_posix(),
+                }
+                serialized_attachments.append(serialized_attachment)
+                manifest.append(serialized_attachment)
+            serialized_message["attachments"] = serialized_attachments
+        serialized_messages.append(serialized_message)
+
+    if not manifest:
+        return serialize_transport_json(serialized_messages)
     return serialize_transport_json(
         {
             "messages": serialized_messages,
@@ -1886,28 +2459,42 @@ class CodexStructuredClient(_StructuredCallSupport):
         model: str,
         role: ModelRole,
     ) -> object:
-        prompt = _serialize_codex_messages(messages)
         schema_bytes = serialize_transport_json(
             _codex_transport_schema(schema),
             sort_keys=False,
         )
-        if role in _REPORT_ROLES:
-            enforce_transport_size(prompt, schema_bytes)
         output = ""
         loop = asyncio.get_running_loop()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
-                schema_path = Path(temp_dir) / "schema.json"
-                response_path = Path(temp_dir) / "response.json"
+                working_root = Path(temp_dir)
+                prompt = _serialize_codex_messages(
+                    messages,
+                    working_root=working_root,
+                )
+                if role in _REPORT_ROLES:
+                    enforce_transport_size(prompt, schema_bytes)
+                schema_path = working_root / "schema.json"
+                response_path = working_root / "response.json"
                 schema_path.write_bytes(schema_bytes)
-                command = ["codex", "exec", "--ephemeral"]
+                command = [
+                    "codex",
+                    "exec",
+                    "--ephemeral",
+                    "--skip-git-repo-check",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--strict-config",
+                    "-c",
+                    f'default_permissions="{_CODEX_PERMISSION_PROFILE}"',
+                    "-c",
+                    _CODEX_PERMISSION_CONFIG,
+                ]
                 reasoning_effort = _reasoning_effort(self.settings, role)
                 if reasoning_effort is not None:
                     command.extend(["-c", f"model_reasoning_effort={reasoning_effort}"])
                 command.extend(
                     [
-                        "--sandbox",
-                        "read-only",
                         "--model",
                         model,
                         "--output-schema",
@@ -1924,7 +2511,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                             stdin=asyncio.subprocess.PIPE,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
-                            cwd=temp_dir,
+                            cwd=working_root,
                             **_codex_process_options(),
                         )
                     )
@@ -1951,10 +2538,11 @@ class CodexStructuredClient(_StructuredCallSupport):
                     if role in _REPORT_ROLES:
                         enforce_transport_size(prompt, schema_bytes)
                     communication_task = asyncio.create_task(
-                        process.communicate(input=prompt)
+                        _communicate_codex_bounded(process, prompt)
                     )
                     stdout_data = b""
                     stderr_data = b""
+                    cleanup_attempted = False
                     try:
                         if self.settings.timeout_seconds is None:
                             communication_result = await asyncio.shield(
@@ -1974,17 +2562,13 @@ class CodexStructuredClient(_StructuredCallSupport):
                                         loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS
                                     ),
                                 )
+                                cleanup_attempted = True
                                 if not cleanup.success:
                                     raise _CodexAttemptError("process-error")
                                 raise _CodexAttemptError("timeout")
                         if isinstance(communication_result, asyncio.CancelledError):
-                            cleanup = await _shielded_codex_cleanup(
-                                process,
-                                process_group_id=process_group_id,
-                                communication_task=communication_task,
-                                deadline=(loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS),
-                            )
-                            del cleanup
+                            raise communication_result
+                        if isinstance(communication_result, _CodexAttemptError):
                             raise communication_result
                         if isinstance(communication_result, BaseException):
                             raise _CodexAttemptError("process-error")
@@ -2002,21 +2586,31 @@ class CodexStructuredClient(_StructuredCallSupport):
                         stdout_data, stderr_data = cast(
                             tuple[bytes, bytes], communication_values
                         )
-                    except asyncio.CancelledError:
-                        cleanup = await _shielded_codex_cleanup(
-                            process,
-                            process_group_id=process_group_id,
-                            communication_task=communication_task,
-                            deadline=(loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS),
-                        )
-                        del cleanup
+                    except BaseException:
+                        if not cleanup_attempted:
+                            await _shielded_codex_cleanup(
+                                process,
+                                process_group_id=process_group_id,
+                                communication_task=communication_task,
+                                deadline=(loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS),
+                            )
                         raise
                     if process.returncode != 0:
                         raise _CodexAttemptError(
                             _codex_process_failure_reason(stdout_data, stderr_data)
                         )
                 try:
-                    output = response_path.read_text(encoding="utf-8")
+                    if response_path.stat().st_size > _MAX_MODEL_RESPONSE_BYTES:
+                        raise _CodexAttemptError("response-too-large")
+                    output = secure_read_bytes(
+                        response_path,
+                        "Codex structured response",
+                        max_bytes=_MAX_MODEL_RESPONSE_BYTES,
+                    ).decode("utf-8")
+                except UnicodeError:
+                    raise ValueError("structured response is not valid UTF-8") from None
+                except ValueError:
+                    raise _CodexAttemptError("response-too-large") from None
                 except OSError:
                     raise _CodexAttemptError("process-error") from None
         except _CodexAttemptError:

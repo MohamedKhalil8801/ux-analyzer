@@ -6,8 +6,10 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -63,14 +65,20 @@ def _attachment(tmp_path: Path, content: bytes | None = None) -> ModelAttachment
 
 class _FakeCodexProcess:
     def __init__(
-        self, returncode: int, stderr: bytes = b"codex stderr must not be recorded"
+        self,
+        returncode: int,
+        stderr: bytes = b"codex stderr must not be recorded",
+        on_input: Callable[[bytes], None] | None = None,
     ) -> None:
         self.returncode = returncode
         self.stderr = stderr
         self.input: bytes | None = None
+        self._on_input = on_input
 
     async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
         self.input = input
+        if input is not None and self._on_input is not None:
+            self._on_input(input)
         return (
             b"codex stdout must not be recorded",
             self.stderr,
@@ -121,6 +129,44 @@ class _NeverReapingCodexProcess(_NeverCompletingCodexProcess):
         return self.returncode or -9
 
 
+class _FakeCodexStdin:
+    def write(self, data: bytes) -> None:
+        del data
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class _OversizedCodexStream:
+    def __init__(self, *, oversized: bool, release: asyncio.Event) -> None:
+        self._oversized = oversized
+        self._release = release
+
+    async def read(self, limit: int) -> bytes:
+        if self._oversized:
+            self._oversized = False
+            return b"x" * (openai_adapter._MAX_MODEL_RESPONSE_BYTES + 1)
+        await self._release.wait()
+        return b""
+
+
+class _NeverExitingOversizedCodexProcess(_NeverCompletingCodexProcess):
+    def __init__(self, stream_name: str) -> None:
+        super().__init__()
+        self.stdin = _FakeCodexStdin()
+        self.stdout = _OversizedCodexStream(
+            oversized=stream_name == "stdout",
+            release=self.never_complete,
+        )
+        self.stderr = _OversizedCodexStream(
+            oversized=stream_name == "stderr",
+            release=self.never_complete,
+        )
+
+
 class _FakeTaskkillProcess:
     pid = 5252
 
@@ -145,6 +191,7 @@ def _patch_codex_process(
     output: str | None,
     returncode: int,
     stderr: bytes = b"codex stderr must not be recorded",
+    on_input: Callable[[bytes], None] | None = None,
 ) -> None:
     async def create_subprocess_exec(
         *args: object, **kwargs: object
@@ -155,7 +202,7 @@ def _patch_codex_process(
         output_path = Path(args[args.index("--output-last-message") + 1])
         if output is not None:
             output_path.write_text(output, encoding="utf-8")
-        process = _FakeCodexProcess(returncode, stderr)
+        process = _FakeCodexProcess(returncode, stderr, on_input)
         processes.append(process)
         return process
 
@@ -196,7 +243,7 @@ def _patch_tree_cleanup(
 
 
 @pytest.mark.asyncio
-async def test_codex_structured_client_runs_read_only_command_and_validates_output(
+async def test_codex_structured_client_runs_isolated_command_and_validates_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
@@ -227,16 +274,28 @@ async def test_codex_structured_client_runs_read_only_command_and_validates_outp
     assert result.scores[0].element_id == "target"
     assert result.scores[0].score == pytest.approx(0.7)
     args, kwargs = calls[0]
-    assert args[0:8] == (
+    assert args[0:6] == (
         "codex",
         "exec",
         "--ephemeral",
-        "--sandbox",
-        "read-only",
-        "--model",
-        "gpt-scent",
-        "--output-schema",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--ignore-rules",
     )
+    assert "--strict-config" in args
+    assert "--sandbox" not in args
+    assert 'default_permissions="uxa-evidence-only"' in args
+    permission_config = next(
+        str(arg)
+        for arg in args
+        if str(arg).startswith("permissions.uxa-evidence-only=")
+    )
+    assert '":root"="deny"' in permission_config
+    assert '":minimal"="read"' in permission_config
+    assert '":workspace_roots"={"."="write"}' in permission_config
+    assert "network={enabled=false}" in permission_config
+    assert args[args.index("--model") + 1] == "gpt-scent"
+    assert "--output-schema" in args
     assert args[-1] == "-"
     assert "--output-last-message" in args
     response_path = Path(args[args.index("--output-last-message") + 1])
@@ -687,8 +746,12 @@ async def test_codex_forwards_role_reasoning_effort_to_cli(
     )
 
     args = calls[0][0]
-    config_index = args.index("-c")
-    assert args[config_index + 1] == f"model_reasoning_effort={expected_effort}"
+    config_values = [
+        args[index + 1]
+        for index, arg in enumerate(args[:-1])
+        if arg == "-c"
+    ]
+    assert f"model_reasoning_effort={expected_effort}" in config_values
     assert client.records[0].request["reasoning_effort"] == expected_effort
 
 
@@ -1039,6 +1102,427 @@ async def test_report_role_uses_plain_json_transport_and_validates_locally() -> 
     await http_client.aclose()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"complete":false,"evidence_requests":["e0"],"findings":[]}',
+        '```json\n{"complete":false,"evidence_requests":["e0"],"findings":[]}\n```',
+        'Model response: {"complete":false,"evidence_requests":["e0"],"findings":[]} done.',
+        'A placeholder {not JSON} precedes {"complete":false,"evidence_requests":["e0"],"findings":[]} done.',
+    ],
+)
+async def test_report_role_accepts_one_json_object_in_plain_model_text(
+    content: str,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.evidence_requests == ["e0"]
+    await http_client.aclose()
+
+
+def test_direct_structured_mapping_with_text_field_is_not_treated_as_text_part() -> None:
+    content = {"text": "ordinary schema field", "ok": True}
+    body = {"choices": [{"message": {"content": content}}]}
+
+    assert openai_adapter._structured_content(body) == content
+
+
+@pytest.mark.asyncio
+async def test_non_report_role_rejects_prose_wrapped_json() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "Model response: "
+                                '{"scores":[{"element_id":"target","score":0.7}]}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    with pytest.raises(ModelFailureError, match="invalid structured output"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="Find invite"),),
+            model="scent-model",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_response_body_is_rejected_before_oversized_content_parsing() -> None:
+    oversized = "x" * (openai_adapter._MAX_MODEL_RESPONSE_BYTES + 1)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": oversized}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 1, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    with pytest.raises(ModelFailureError, match="response-too-large"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="Find invite"),),
+            model="scent-model",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_codex_response_file_is_rejected_before_oversized_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    processes: list[_FakeCodexProcess] = []
+    schemas: list[object] = []
+    _patch_codex_process(
+        monkeypatch,
+        calls,
+        processes,
+        schemas,
+        output="x" * (openai_adapter._MAX_MODEL_RESPONSE_BYTES + 1),
+        returncode=0,
+    )
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
+        )
+    )
+
+    with pytest.raises(ModelFailureError, match="response-too-large"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="Find invite"),),
+            model="gpt-scent",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    assert calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_name", ("stdout", "stderr"))
+async def test_codex_oversized_stream_cleans_and_reaps_never_exiting_process(
+    monkeypatch: pytest.MonkeyPatch,
+    stream_name: str,
+) -> None:
+    process = _NeverExitingOversizedCodexProcess(stream_name)
+    _patch_never_completing_process(monkeypatch, process)
+    tree_cleanup_calls: list[tuple[bool, float]] = []
+    _patch_tree_cleanup(monkeypatch, tree_cleanup_calls)
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
+        )
+    )
+
+    with pytest.raises(ModelFailureError, match="response-too-large"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="Find invite"),),
+            model="gpt-scent",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    expected_forces = [True] if os.name == "nt" else [False, True]
+    assert [force for force, _deadline in tree_cleanup_calls] == expected_forces
+    assert process.kill_calls >= 1
+    assert process.wait_calls >= 1
+    assert process.returncode is not None
+    assert client.records[0].response == {"failure": "response-too-large"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        [
+            {
+                "type": "text",
+                "text": '{"complete":false,"evidence_requests":["e0"],',
+            },
+            {"type": "text", "text": '"findings":[]}'},
+        ],
+        [
+            {
+                "type": "output_text",
+                "text": '```json\n{"complete":false,"evidence_requests":["e0"],"findings":[]}\n```',
+            }
+        ],
+    ],
+)
+async def test_report_role_accepts_unambiguous_text_content_parts(
+    content: list[dict[str, str]],
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.evidence_requests == ["e0"]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        [
+            {"type": "text", "text": '{"complete":false,"evidence_requests":[]}'},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,redacted"},
+            },
+        ],
+        [
+            {"type": "text", "text": '{"complete":false,"evidence_requests":[]}'},
+            {"type": "text", "text": '{"complete":false,"evidence_requests":[]}'},
+        ],
+    ],
+)
+async def test_report_role_rejects_ambiguous_content_parts(
+    content: list[dict[str, object]],
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    with pytest.raises(ModelFailureError, match="invalid structured output"):
+        await client.complete(
+            AnalystResponse,
+            (ChatMessage(role="user", content="{}"),),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+
+    diagnostics = client.records[0].response["diagnostics"]
+    assert diagnostics["response_content_type"] == "list"
+    assert diagnostics["response_content_markers"]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"complete":true} {"complete":true}',
+        '{"complete":true} {"complete":}',
+        '[{"complete":true,"evidence_requests":[],"candidate_findings":[]}]',
+        '{"complete":true} []',
+        '{"complete":true} null',
+        '{"complete":true} 42',
+        '{"complete":true} "extra"',
+        '{"complete":true} prose null',
+        '{"complete":true} [}',
+        '{"complete":}',
+        '{"complete":true',
+    ],
+)
+async def test_report_role_rejects_ambiguous_or_incomplete_json(content: str) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    with pytest.raises(ModelFailureError, match="invalid structured output"):
+        await client.complete(
+            AnalystResponse,
+            (ChatMessage(role="user", content="{}"),),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+
+    assert client.records[0].response["diagnostics"]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_report_role_rejects_length_finish_reason_without_salvage() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": '{"complete":true'},
+                    }
+                ]
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    with pytest.raises(ModelFailureError, match="invalid structured output"):
+        await client.complete(
+            AnalystResponse,
+            (ChatMessage(role="user", content="{}"),),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+
+    diagnostics = client.records[0].response["diagnostics"]
+    assert diagnostics["finish_reason"] == "length"
+    assert diagnostics["error_type"] == "ValueError"
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_report_output_records_safe_structural_diagnostics() -> None:
+    invalid_marker = "private-provider-content-must-not-be-recorded"
+    unknown_field = "privateProviderField"
+    content = json.dumps(
+        {
+            "complete": True,
+            "evidence_requests": [],
+            "candidate_findings": invalid_marker,
+            unknown_field: "must not survive diagnostics",
+        }
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": content}}],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(_settings(), http_client=http_client)
+
+    with pytest.raises(ModelFailureError, match="invalid structured output") as failure:
+        await client.complete(
+            AnalystResponse,
+            (ChatMessage(role="user", content="{}"),),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+
+    response = client.records[0].response
+    assert response["failure"] == "invalid structured output"
+    assert failure.value.diagnostics == {
+        "role": "report-analyst",
+        "response_mode": "plain",
+        "attempt_count": 3,
+        "stage": "schema_validation",
+        "response_content_type": "str",
+        "response_content_length": len(content),
+        "response_content_markers": ["object_candidate", "raw_object_prefix"],
+        "top_level_keys": [
+            "candidate_findings",
+            "complete",
+            "evidence_requests",
+            "unknown-cf6c18725300",
+        ],
+        "top_level_value_types": {
+            "candidate_findings": "str",
+            "complete": "bool",
+            "evidence_requests": "list",
+            "unknown-cf6c18725300": "str",
+        },
+        "validation_errors": [
+            {"path": ["candidate_findings"], "type": "list_type"},
+            {"path": ["unknown-cf6c18725300"], "type": "extra_forbidden"},
+        ],
+    }
+    diagnostics = response["diagnostics"]
+    assert diagnostics == {
+        "role": "report-analyst",
+        "response_mode": "plain",
+        "attempt_count": 3,
+        "stage": "schema_validation",
+        "response_content_type": "str",
+        "response_content_length": len(content),
+        "response_content_markers": ["object_candidate", "raw_object_prefix"],
+        "top_level_keys": [
+            "candidate_findings",
+            "complete",
+            "evidence_requests",
+            "unknown-cf6c18725300",
+        ],
+        "top_level_value_types": {
+            "candidate_findings": "str",
+            "complete": "bool",
+            "evidence_requests": "list",
+            "unknown-cf6c18725300": "str",
+        },
+        "validation_errors": [
+            {"path": ["candidate_findings"], "type": "list_type"},
+            {"path": ["unknown-cf6c18725300"], "type": "extra_forbidden"},
+        ],
+    }
+    assert invalid_marker not in json.dumps(response)
+    assert unknown_field not in json.dumps(response)
+    assert re.fullmatch(r"unknown-[0-9a-f]{12}", diagnostics["top_level_keys"][-1])
+    await http_client.aclose()
+
+
 def test_report_output_alias_does_not_override_canonical_findings_field() -> None:
     with pytest.raises(ValueError, match="conflicting findings fields"):
         openai_adapter._normalize_report_output(
@@ -1055,6 +1539,24 @@ def test_report_output_alias_is_not_applied_to_reviewer_roles() -> None:
         )
         == parsed
     )
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        '[] {"complete":true}',
+        'true {"complete":true}',
+        '42 {"complete":true}',
+        '"extra" {"complete":true}',
+    ),
+)
+def test_structured_content_rejects_json_values_before_selected_object(
+    content: str,
+) -> None:
+    body = {"choices": [{"message": {"content": content}}]}
+
+    with pytest.raises(ValueError, match="multiple JSON values"):
+        openai_adapter._structured_content(body, role=ModelRole.REPORT_ANALYST)
 
 
 @pytest.mark.asyncio
@@ -1551,6 +2053,20 @@ async def test_codex_attachment_manifest_lists_only_validated_evidence_paths(
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     processes: list[_FakeCodexProcess] = []
     schemas: list[object] = []
+    observed: dict[str, object] = {}
+    sibling_sentinel = tmp_path / "sibling-secret.txt"
+    sibling_sentinel.write_text("must-not-be-readable", encoding="utf-8")
+
+    def inspect_prompt(prompt: bytes) -> None:
+        prompt_payload = json.loads(prompt)
+        isolated_root = Path(str(calls[0][1]["cwd"]))
+        isolated_relative_path = Path(
+            prompt_payload["evidence_manifest"][0]["path"]
+        )
+        observed["root"] = isolated_root
+        observed["relative_path"] = isolated_relative_path
+        observed["content"] = (isolated_root / isolated_relative_path).read_bytes()
+
     _patch_codex_process(
         monkeypatch,
         calls,
@@ -1558,6 +2074,7 @@ async def test_codex_attachment_manifest_lists_only_validated_evidence_paths(
         schemas,
         output=json.dumps({"ok": True}),
         returncode=0,
+        on_input=inspect_prompt,
     )
     content = _png_bytes()
     attachment = _attachment(tmp_path, content)
@@ -1580,12 +2097,36 @@ async def test_codex_attachment_manifest_lists_only_validated_evidence_paths(
     )
 
     assert result.ok
-    prompt = processes[0].input.decode("utf-8")
+    process_input = processes[0].input
+    assert process_input is not None
+    prompt = process_input.decode("utf-8")
     assert attachment.evidence_id in prompt
     prompt_payload = json.loads(prompt)
-    assert prompt_payload["evidence_manifest"][0]["path"] == str(
-        attachment.path.absolute()
+    isolated_root = observed["root"]
+    assert isinstance(isolated_root, Path)
+    isolated_relative_path = observed["relative_path"]
+    assert isinstance(isolated_relative_path, Path)
+    assert not isolated_relative_path.is_absolute()
+    assert isolated_relative_path.parts[0] == "evidence"
+    assert observed["content"] == content
+    assert not sibling_sentinel.is_relative_to(isolated_root)
+    assert (
+        prompt_payload["messages"][0]["attachments"][0]["path"]
+        == isolated_relative_path.as_posix()
     )
+    assert str(attachment.path.absolute()) not in prompt
+    assert str(sibling_sentinel.absolute()) not in prompt
+    assert not isolated_root.exists()
+    args = calls[0][0]
+    assert "--sandbox" not in args
+    assert "--add-dir" not in args
+    permission_config = next(
+        str(arg)
+        for arg in args
+        if str(arg).startswith("permissions.uxa-evidence-only=")
+    )
+    assert '":root"="deny"' in permission_config
+    assert '":workspace_roots"={"."="write"}' in permission_config
     assert "Only read evidence files listed in evidence_manifest" in prompt
     assert "Do not inspect the repository or conversation history" in prompt
     assert base64.b64encode(content).decode("ascii") not in prompt
