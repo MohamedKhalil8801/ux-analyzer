@@ -140,12 +140,9 @@ from ux_analyzer.saliency.model_registry import (
 )
 from ux_analyzer.storage.run_bundle import (
     FilesystemRunBundleWriter,
-    SecurePathIdentity,
-    secure_ensure_directory,
-    secure_open_file_descriptor,
-    secure_path_identity,
-    secure_replace,
-    secure_unlink,
+    secure_create_exclusive_file,
+    secure_open_directory,
+    secure_replace_exclusive_file,
 )
 from ux_analyzer.storage.saliency_cache import SaliencyCache
 from ux_analyzer.storage.synthesis_artifacts import (
@@ -161,6 +158,7 @@ app.add_typer(fixture_app, name="fixture")
 app.add_typer(models_app, name="models")
 
 _MAX_EXPERIMENT_JSON_BYTES = 8 * 1024 * 1024
+_EXPERIMENT_JSON_CHUNK_BYTES = 64 * 1024
 _EXPERIMENT_JSON_WRITE_LOCK = Lock()
 _MODEL_CALLS_BY_POLICY = {
     ExperimentPolicy.FULL_LIST.value: 1,
@@ -1534,68 +1532,60 @@ def _write_experiment_summary(
 
 
 def _atomic_write_experiment_json(path: Path, value: object) -> None:
-    content = (
-        json.dumps(
-            _json_data(value),
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode("utf-8")
-    if len(content) > _MAX_EXPERIMENT_JSON_BYTES:
-        raise ValueError(
-            f"experiment summary exceeds {_MAX_EXPERIMENT_JSON_BYTES} bytes"
-        )
-
     with _EXPERIMENT_JSON_WRITE_LOCK:
-        parent = secure_ensure_directory(path.parent, "experiment summary directory")
-        parent_identity = secure_path_identity(parent, "experiment summary directory")
-        destination = parent / path.name
-        temporary = parent / f".{path.stem}.{uuid4().hex}.tmp"
-        temporary_identity: SecurePathIdentity | None = None
-        flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_BINARY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        try:
-            with secure_open_file_descriptor(
-                temporary,
-                flags,
-                "experiment summary temporary file",
-                expected_parent_identity=parent_identity,
-            ) as (descriptor, temporary_identity):
-                offset = 0
-                while offset < len(content):
-                    written = os.write(descriptor, content[offset:])
-                    if written <= 0:
-                        raise OSError("failed to write experiment summary")
-                    offset += written
-                os.fsync(descriptor)
-            secure_replace(
-                temporary,
-                destination,
-                "experiment summary publication",
-                replace_existing=True,
-                expected_source_identity=temporary_identity,
-                expected_source_parent_identity=parent_identity,
-                expected_destination_parent_identity=parent_identity,
+        with secure_open_directory(
+            path.parent, "experiment summary directory", create=True
+        ) as parent:
+            chunks: list[bytes] = []
+            pending = bytearray()
+            encoded_size = 0
+            encoder = json.JSONEncoder(
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
             )
-        except BaseException:
-            if temporary_identity is not None:
-                try:
-                    secure_unlink(
-                        temporary,
-                        "experiment summary temporary file",
-                        missing_ok=True,
-                        expected_identity=temporary_identity,
+            for text in encoder.iterencode(_json_data(value)):
+                if encoded_size + len(text) + 1 > _MAX_EXPERIMENT_JSON_BYTES:
+                    raise ValueError(
+                        "experiment summary exceeds "
+                        f"{_MAX_EXPERIMENT_JSON_BYTES} bytes"
                     )
-                except (OSError, RuntimeError, ValueError):
-                    pass
-            raise
+                encoded_size += len(text)
+                start = 0
+                while start < len(text):
+                    available = _EXPERIMENT_JSON_CHUNK_BYTES - len(pending)
+                    end = min(start + available, len(text))
+                    pending.extend(text[start:end].encode("ascii"))
+                    start = end
+                    if len(pending) == _EXPERIMENT_JSON_CHUNK_BYTES:
+                        chunks.append(bytes(pending))
+                        pending.clear()
+            pending.extend(b"\n")
+            if pending:
+                chunks.append(bytes(pending))
+
+            temporary_name = f".{path.stem}.{uuid4().hex}.tmp"
+            with secure_create_exclusive_file(
+                parent, temporary_name, "experiment summary temporary file"
+            ) as temporary:
+                offset = 0
+                for chunk in chunks:
+                    while offset < len(chunk):
+                        written = os.write(
+                            temporary.descriptor, chunk[offset:]
+                        )
+                        if written <= 0:
+                            raise OSError("failed to write experiment summary")
+                        offset += written
+                    offset = 0
+                os.fsync(temporary.descriptor)
+                secure_replace_exclusive_file(
+                    parent,
+                    temporary,
+                    path.name,
+                    "experiment summary publication",
+                    replace_existing=True,
+                )
 
 
 def _render_completed_report(*, output: Path) -> Path:

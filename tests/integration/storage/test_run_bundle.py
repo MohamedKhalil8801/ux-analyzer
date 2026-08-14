@@ -1730,3 +1730,130 @@ def test_secure_remove_tree_never_deletes_swapped_child(
     assert raced
     assert child.read_text(encoding="ascii") == "replacement"
     assert displaced.read_text(encoding="ascii") == "rejected"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative creation")
+def test_secure_create_exclusive_file_is_relative_to_bound_parent(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    original = tmp_path / "output-original"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with run_bundle_module.secure_open_directory(
+        output, "test output", create=False
+    ) as parent:
+        output.rename(original)
+        outside.rename(output)
+        try:
+            with pytest.raises(BundleStateError, match="identity changed"):
+                with run_bundle_module.secure_create_exclusive_file(
+                    parent, "summary.tmp", "test summary"
+                ):
+                    pytest.fail("swapped parent must fail before child creation")
+        finally:
+            output.rename(outside)
+            original.rename(output)
+
+    assert not (output / "summary.tmp").exists()
+    assert not (outside / "summary.tmp").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative creation")
+def test_secure_create_exclusive_file_survives_postcheck_parent_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    original = tmp_path / "output-original"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    open_relative = run_bundle_module._open_windows_relative
+    swapped = False
+
+    def swap_before_native_create(*args: object, **kwargs: object) -> int:
+        nonlocal swapped
+        if kwargs.get("create") is True and kwargs.get("directory") is False:
+            output.rename(original)
+            outside.rename(output)
+            swapped = True
+        return open_relative(*args, **kwargs)
+
+    monkeypatch.setattr(
+        run_bundle_module, "_open_windows_relative", swap_before_native_create
+    )
+
+    try:
+        with run_bundle_module.secure_open_directory(
+            output, "test output", create=False
+        ) as parent:
+            with run_bundle_module.secure_create_exclusive_file(
+                parent, "summary.tmp", "test summary"
+            ) as temporary:
+                os.write(temporary.descriptor, b"inside")
+                os.fsync(temporary.descriptor)
+        assert swapped
+        assert not (output / "summary.tmp").exists()
+    finally:
+        if swapped:
+            output.rename(outside)
+            original.rename(output)
+
+    assert (output / "summary.tmp").read_bytes() == b"inside"
+    assert not (outside / "summary.tmp").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative creation")
+def test_secure_bound_parent_controls_exclusive_file_replace(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    destination = output / "experiment.json"
+    destination.write_text("previous", encoding="ascii")
+
+    with run_bundle_module.secure_open_directory(
+        output, "test output", create=False
+    ) as parent:
+        with run_bundle_module.secure_create_exclusive_file(
+            parent, "summary.tmp", "test summary"
+        ) as temporary:
+            os.write(temporary.descriptor, b"inside")
+            os.fsync(temporary.descriptor)
+            run_bundle_module.secure_replace_exclusive_file(
+                parent,
+                temporary,
+                "experiment.json",
+                "test summary",
+                replace_existing=True,
+            )
+
+    assert destination.read_bytes() == b"inside"
+    assert not (output / "summary.tmp").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative creation")
+def test_secure_missing_parent_is_bound_before_child_creation(tmp_path: Path) -> None:
+    output = tmp_path / "missing" / "output"
+    moved = tmp_path / "output-original"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with run_bundle_module.secure_open_directory(
+        output, "test output", create=True
+    ) as parent:
+        output.rename(moved)
+        outside.rename(output)
+        try:
+            with pytest.raises(BundleStateError, match="identity changed"):
+                with run_bundle_module.secure_create_exclusive_file(
+                    parent, "summary.tmp", "test summary"
+                ):
+                    pytest.fail("swapped parent must fail before child creation")
+        finally:
+            output.rename(outside)
+            moved.rename(output)
+
+    assert not (output / "summary.tmp").exists()
+    assert not (outside / "summary.tmp").exists()

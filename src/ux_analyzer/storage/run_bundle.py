@@ -13,11 +13,12 @@ import zipfile
 import zlib
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
+from uuid import uuid4
 
 import numpy as np
 from PIL import Image
@@ -63,6 +64,23 @@ _PRIVATE_PERSISTENCE_KEYS = frozenset(
     }
 )
 type SecurePathIdentity = tuple[int, int]
+
+
+@dataclass(slots=True)
+class SecureDirectoryHandle:
+    path: Path
+    identity: SecurePathIdentity
+    descriptor: int | None = None
+    windows_handle: int | None = None
+
+
+@dataclass(slots=True)
+class SecureExclusiveFile:
+    parent: SecureDirectoryHandle
+    name: str
+    descriptor: int
+    identity: SecurePathIdentity
+    published: bool = False
 
 
 def _is_private_persistence_key(value: object) -> bool:
@@ -212,7 +230,7 @@ def _open_windows_directory_handle(path: Path, label: str) -> int:
     create_file.restype = wintypes.HANDLE
     handle = create_file(
         os.fspath(path),
-        0x00000080,
+        0x001000A0,
         0x00000001 | 0x00000002 | 0x00000004,
         None,
         3,
@@ -232,6 +250,188 @@ def _close_windows_handle(handle: int) -> None:
     close_handle.argtypes = (wintypes.HANDLE,)
     close_handle.restype = wintypes.BOOL
     close_handle(handle)
+
+
+def _windows_handle_is_reparse(handle: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = (
+            ("file_attributes", wintypes.DWORD),
+            ("reparse_tag", wintypes.DWORD),
+        )
+
+    get_information = ctypes.WinDLL(
+        "kernel32", use_last_error=True
+    ).GetFileInformationByHandleEx
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    get_information.restype = wintypes.BOOL
+    information = FileAttributeTagInfo()
+    if not get_information(
+        handle, 9, ctypes.byref(information), ctypes.sizeof(information)
+    ):
+        raise BundleStateError("cannot inspect opened filesystem object")
+    return bool(information.file_attributes & 0x400)
+
+
+def _open_windows_relative(
+    parent_handle: int,
+    name: str,
+    label: str,
+    *,
+    create: bool,
+    directory: bool,
+    writable: bool = False,
+) -> int:
+    """Open one child relative to a retained directory handle without reparsing."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = (
+            ("length", wintypes.USHORT),
+            ("maximum_length", wintypes.USHORT),
+            ("buffer", wintypes.LPWSTR),
+        )
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = (
+            ("length", wintypes.ULONG),
+            ("root_directory", wintypes.HANDLE),
+            ("object_name", ctypes.POINTER(UnicodeString)),
+            ("attributes", wintypes.ULONG),
+            ("security_descriptor", wintypes.LPVOID),
+            ("security_quality_of_service", wintypes.LPVOID),
+        )
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = (
+            ("status", ctypes.c_void_p),
+            ("information", ctypes.c_size_t),
+        )
+
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    rtl_init_unicode = ntdll.RtlInitUnicodeString
+    rtl_init_unicode.argtypes = (ctypes.POINTER(UnicodeString), wintypes.LPCWSTR)
+    rtl_init_unicode.restype = None
+    nt_create_file = ntdll.NtCreateFile
+    nt_create_file.argtypes = (
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        ctypes.POINTER(ObjectAttributes),
+        ctypes.POINTER(IoStatusBlock),
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    nt_create_file.restype = ctypes.c_long
+
+    _safe_component(name, label)
+    object_name = UnicodeString()
+    name_buffer = ctypes.create_unicode_buffer(name)
+    rtl_init_unicode(ctypes.byref(object_name), name_buffer)
+    attributes = ObjectAttributes(
+        ctypes.sizeof(ObjectAttributes),
+        parent_handle,
+        ctypes.pointer(object_name),
+        0x40,
+        None,
+        None,
+    )
+    io_status = IoStatusBlock()
+    handle = wintypes.HANDLE()
+    desired_access = (
+        0x00130196
+        if writable
+        else (0x00100080 | (0x20 if directory else 0))
+    )
+    create_options = (
+        0x20 | (0 if create else 0x00200000) | (0x1 if directory else 0x40)
+    )
+    status = nt_create_file(
+        ctypes.byref(handle),
+        desired_access,
+        ctypes.byref(attributes),
+        ctypes.byref(io_status),
+        None,
+        0x10 if directory else 0x80,
+        0x1 | 0x2 | 0x4,
+        2 if create else 1,
+        create_options,
+        None,
+        0,
+    )
+    if status < 0:
+        unsigned_status = status & 0xFFFFFFFF
+        if unsigned_status == 0xC0000035:
+            raise FileExistsError(name)
+        if unsigned_status in {0xC0000034, 0xC000003A}:
+            raise FileNotFoundError(name)
+        raise BundleStateError(
+            f"cannot securely {'create' if create else 'open'} {label}: "
+            f"NTSTATUS 0x{unsigned_status:08x}"
+        )
+    opened = cast(int, handle.value)
+    try:
+        is_reparse = _windows_handle_is_reparse(opened)
+    except BaseException:
+        _close_windows_handle(opened)
+        raise
+    if is_reparse:
+        _close_windows_handle(opened)
+        raise BundleStateError(f"{label} must not be a reparse point")
+    return opened
+
+
+def _delete_open_windows_file(descriptor: int, label: str) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileDispositionInfo(ctypes.Structure):
+        _fields_ = (("delete_file", ctypes.c_ubyte),)
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = (
+            ("status", ctypes.c_void_p),
+            ("information", ctypes.c_size_t),
+        )
+
+    nt_set_information = ctypes.WinDLL(
+        "ntdll", use_last_error=True
+    ).NtSetInformationFile
+    nt_set_information.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.c_int,
+    )
+    nt_set_information.restype = ctypes.c_long
+    disposition = FileDispositionInfo(1)
+    io_status = IoStatusBlock()
+    status = nt_set_information(
+        msvcrt.get_osfhandle(descriptor),
+        ctypes.byref(io_status),
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+        13,
+    )
+    if status < 0:
+        raise BundleStateError(
+            f"secure {label} cleanup failed with NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
+        )
 
 
 def _descriptor_final_path(descriptor: int, label: str) -> Path:
@@ -290,6 +490,365 @@ def _assert_expected_identity(
 ) -> None:
     if expected is not None and actual != expected:
         raise BundleStateError(f"{label} identity changed")
+
+
+def _rename_posix_directory_no_replace(
+    parent_descriptor: int,
+    source_name: str,
+    destination_name: str,
+    label: str,
+) -> None:
+    import ctypes
+    import errno
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise BundleStateError(f"secure {label} directory creation is unsupported")
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        parent_descriptor,
+        os.fsencode(source_name),
+        parent_descriptor,
+        os.fsencode(destination_name),
+        1,
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise FileExistsError(destination_name)
+    raise OSError(error_number, f"secure {label} directory creation failed")
+
+
+def _open_bound_windows_directory(
+    path: Path, label: str, *, create: bool
+) -> SecureDirectoryHandle:
+    missing: list[str] = []
+    ancestor = path
+    while not os.path.lexists(ancestor):
+        if not create or ancestor.parent == ancestor:
+            raise FileNotFoundError(path)
+        missing.append(ancestor.name)
+        ancestor = ancestor.parent
+    _assert_secure_ancestors(ancestor, label)
+    expected_ancestor = _absolute_lexical(ancestor.resolve(strict=True))
+    handle = _open_windows_directory_handle(ancestor, label)
+    try:
+        _assert_actual_path_matches(
+            _windows_final_path(handle, label), expected_ancestor, label
+        )
+        if _windows_handle_is_reparse(handle):
+            raise BundleStateError(f"{label} must not be a reparse point")
+        for component in reversed(missing):
+            try:
+                child = _open_windows_relative(
+                    handle, component, label, create=True, directory=True
+                )
+            except FileExistsError:
+                child = _open_windows_relative(
+                    handle, component, label, create=False, directory=True
+                )
+            _close_windows_handle(handle)
+            handle = child
+        return SecureDirectoryHandle(
+            path=path,
+            identity=_windows_handle_identity(handle, label),
+            windows_handle=handle,
+        )
+    except BaseException:
+        _close_windows_handle(handle)
+        raise
+
+
+def _open_bound_posix_directory(
+    path: Path, label: str, *, create: bool
+) -> SecureDirectoryHandle:
+    missing: list[str] = []
+    ancestor = path
+    while not os.path.lexists(ancestor):
+        if not create or ancestor.parent == ancestor:
+            raise FileNotFoundError(path)
+        missing.append(ancestor.name)
+        ancestor = ancestor.parent
+    _assert_secure_ancestors(ancestor, label)
+    expected_ancestor = _absolute_lexical(ancestor.resolve(strict=True))
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(ancestor, flags)
+    try:
+        _assert_actual_path_matches(
+            _descriptor_final_path(descriptor, label), expected_ancestor, label
+        )
+        for component in reversed(missing):
+            temporary_name = f".{component}.{uuid4().hex}.tmp"
+            os.mkdir(temporary_name, mode=0o700, dir_fd=descriptor)
+            child = os.open(temporary_name, flags, dir_fd=descriptor)
+            try:
+                child_identity = _path_identity_from_stat(os.fstat(child))
+                try:
+                    _rename_posix_directory_no_replace(
+                        descriptor, temporary_name, component, label
+                    )
+                except FileExistsError:
+                    os.close(child)
+                    child = -1
+                    os.rmdir(temporary_name, dir_fd=descriptor)
+                    child = os.open(component, flags, dir_fd=descriptor)
+                    child_identity = _path_identity_from_stat(os.fstat(child))
+                named_identity = _path_identity_from_stat(
+                    os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+                )
+                _assert_expected_identity(named_identity, child_identity, label)
+                os.fsync(descriptor)
+            except BaseException:
+                if child >= 0:
+                    os.close(child)
+                try:
+                    os.rmdir(temporary_name, dir_fd=descriptor)
+                except OSError:
+                    pass
+                raise
+            os.close(descriptor)
+            descriptor = child
+        return SecureDirectoryHandle(
+            path=path,
+            identity=_path_identity_from_stat(os.fstat(descriptor)),
+            descriptor=descriptor,
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def _secure_open_directory(
+    path: Path, label: str, *, create: bool
+) -> Generator[SecureDirectoryHandle, None, None]:
+    """Retain one verified directory identity for all child mutations."""
+
+    path = _absolute_lexical(path)
+    bound = (
+        _open_bound_windows_directory(path, label, create=create)
+        if os.name == "nt"
+        else _open_bound_posix_directory(path, label, create=create)
+    )
+    try:
+        yield bound
+    finally:
+        if bound.descriptor is not None:
+            os.close(bound.descriptor)
+        if bound.windows_handle is not None:
+            _close_windows_handle(bound.windows_handle)
+
+
+def _assert_bound_directory(parent: SecureDirectoryHandle, label: str) -> None:
+    if os.name == "nt":
+        if parent.windows_handle is None:
+            raise BundleStateError(f"{label} has no Windows parent handle")
+        opened_identity = _windows_handle_identity(parent.windows_handle, label)
+    else:
+        if parent.descriptor is None:
+            raise BundleStateError(f"{label} has no POSIX parent descriptor")
+        opened_identity = _path_identity_from_stat(os.fstat(parent.descriptor))
+    _assert_expected_identity(opened_identity, parent.identity, label)
+    _assert_expected_identity(_path_identity(parent.path, label), parent.identity, label)
+
+
+@contextmanager
+def _secure_create_exclusive_file(
+    parent: SecureDirectoryHandle,
+    name: str,
+    label: str,
+) -> Generator[SecureExclusiveFile, None, None]:
+    """Create one child relative to a retained parent and keep its handle open."""
+
+    name = _safe_component(name, label)
+    _assert_bound_directory(parent, f"{label} parent")
+    if os.name == "nt":
+        if parent.windows_handle is None:
+            raise BundleStateError(f"{label} has no Windows parent handle")
+        import msvcrt
+
+        handle = _open_windows_relative(
+            parent.windows_handle,
+            name,
+            label,
+            create=True,
+            directory=False,
+            writable=True,
+        )
+        try:
+            descriptor = msvcrt.open_osfhandle(
+                handle, os.O_WRONLY | getattr(os, "O_BINARY", 0)
+            )
+        except BaseException:
+            _close_windows_handle(handle)
+            raise
+    else:
+        if parent.descriptor is None:
+            raise BundleStateError(f"{label} has no POSIX parent descriptor")
+        descriptor = os.open(
+            name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent.descriptor,
+        )
+    temporary = SecureExclusiveFile(
+        parent=parent,
+        name=name,
+        descriptor=descriptor,
+        identity=_path_identity_from_stat(os.fstat(descriptor)),
+    )
+    failed = False
+    try:
+        yield temporary
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        if failed and not temporary.published:
+            try:
+                if os.name == "nt":
+                    _delete_open_windows_file(descriptor, label)
+                elif parent.descriptor is not None:
+                    named_identity = _path_identity_from_stat(
+                        os.stat(
+                            name,
+                            dir_fd=parent.descriptor,
+                            follow_symlinks=False,
+                        )
+                    )
+                    _assert_expected_identity(named_identity, temporary.identity, label)
+                    os.unlink(name, dir_fd=parent.descriptor)
+                    os.fsync(parent.descriptor)
+            except (OSError, RuntimeError, ValueError):
+                pass
+        os.close(descriptor)
+
+
+def _secure_replace_exclusive_file(
+    parent: SecureDirectoryHandle,
+    source: SecureExclusiveFile,
+    destination_name: str,
+    label: str,
+    *,
+    replace_existing: bool,
+) -> None:
+    """Publish an open exclusive file relative to its retained parent."""
+
+    destination_name = _safe_component(destination_name, label)
+    if source.parent is not parent:
+        raise BundleStateError(f"{label} source parent changed")
+    _assert_bound_directory(parent, f"{label} parent")
+    _assert_expected_identity(
+        _path_identity_from_stat(os.fstat(source.descriptor)), source.identity, label
+    )
+    if os.name == "nt":
+        if parent.windows_handle is None:
+            raise BundleStateError(f"{label} has no Windows parent handle")
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        try:
+            destination_handle = _open_windows_relative(
+                parent.windows_handle,
+                destination_name,
+                label,
+                create=False,
+                directory=False,
+            )
+        except FileNotFoundError:
+            destination_handle = None
+        if destination_handle is not None:
+            _close_windows_handle(destination_handle)
+
+        filename = destination_name
+
+        class FileRenameInfo(ctypes.Structure):
+            _fields_ = (
+                ("replace_if_exists", ctypes.c_ubyte),
+                ("root_directory", wintypes.HANDLE),
+                ("filename_length", wintypes.DWORD),
+                ("filename", ctypes.c_wchar * (len(filename) + 1)),
+            )
+
+        class IoStatusBlock(ctypes.Structure):
+            _fields_ = (
+                ("status", ctypes.c_void_p),
+                ("information", ctypes.c_size_t),
+            )
+
+        rename_info = FileRenameInfo()
+        rename_info.replace_if_exists = 1 if replace_existing else 0
+        rename_info.root_directory = parent.windows_handle
+        rename_info.filename_length = len(filename.encode("utf-16-le"))
+        rename_info.filename = filename
+        io_status = IoStatusBlock()
+        nt_set_information = ctypes.WinDLL(
+            "ntdll", use_last_error=True
+        ).NtSetInformationFile
+        nt_set_information.argtypes = (
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.c_int,
+        )
+        nt_set_information.restype = ctypes.c_long
+        status = nt_set_information(
+            msvcrt.get_osfhandle(source.descriptor),
+            ctypes.byref(io_status),
+            ctypes.byref(rename_info),
+            FileRenameInfo.filename.offset + rename_info.filename_length,
+            10,
+        )
+        if status < 0:
+            raise BundleStateError(
+                f"atomic {label} replace failed with "
+                f"NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
+            )
+    else:
+        if parent.descriptor is None:
+            raise BundleStateError(f"{label} has no POSIX parent descriptor")
+        destination_stat: os.stat_result | None
+        try:
+            destination_stat = os.stat(
+                destination_name,
+                dir_fd=parent.descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            destination_stat = None
+        if destination_stat is not None and stat.S_ISLNK(destination_stat.st_mode):
+            raise BundleStateError(f"{label} destination must not be a symlink")
+        if replace_existing:
+            os.replace(
+                source.name,
+                destination_name,
+                src_dir_fd=parent.descriptor,
+                dst_dir_fd=parent.descriptor,
+            )
+        else:
+            _rename_posix_without_replacement(
+                parent.path / source.name,
+                parent.path / destination_name,
+                parent.descriptor,
+                parent.descriptor,
+                label,
+            )
+        os.fsync(parent.descriptor)
+    source.published = True
 
 
 @contextmanager
@@ -1279,13 +1838,16 @@ def _safe_component(value: str, label: str) -> str:
 
 # Shared filesystem boundary. Cache and registry use same no-link operations.
 secure_assert_ancestors = _assert_secure_ancestors
+secure_create_exclusive_file = _secure_create_exclusive_file
 secure_open_file_descriptor = _secure_open_file_descriptor
+secure_open_directory = _secure_open_directory
 secure_ensure_directory = _ensure_directory
 secure_is_link_or_reparse = _is_link_or_reparse
 secure_path_identity = _path_identity
 secure_read_bytes = _read_bytes
 secure_make_temporary_directory = _secure_make_temporary_directory
 secure_replace = _secure_replace
+secure_replace_exclusive_file = _secure_replace_exclusive_file
 secure_remove_tree = _secure_remove_tree
 secure_rmdir = _secure_rmdir
 secure_unlink = _secure_unlink

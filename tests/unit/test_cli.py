@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -61,20 +63,30 @@ def test_atomic_experiment_json_rejects_destination_swap(
     displaced = tmp_path / "experiment.previous.json"
     victim = tmp_path / "victim.txt"
     victim.write_text("outside", encoding="ascii")
-    secure_replace = cli.secure_replace
+    secure_replace = cli.secure_replace_exclusive_file
 
-    def swap_destination(source: Path, destination: Path, *args: object, **kwargs: object):
+    def swap_destination(
+        parent: object,
+        source: object,
+        destination_name: str,
+        *args: object,
+        **kwargs: object,
+    ):
+        destination = tmp_path / destination_name
         destination.rename(displaced)
         _symlink_or_skip(destination, victim)
-        return secure_replace(source, destination, *args, **kwargs)
+        return secure_replace(
+            parent, source, destination_name, *args, **kwargs
+        )
 
-    monkeypatch.setattr(cli, "secure_replace", swap_destination)
+    monkeypatch.setattr(cli, "secure_replace_exclusive_file", swap_destination)
 
     with pytest.raises(BundleStateError, match="symlink|reparse|link"):
         cli._atomic_write_experiment_json(summary, {"status": "complete"})
 
     assert victim.read_text(encoding="ascii") == "outside"
     assert displaced.read_text(encoding="ascii") == "previous\n"
+    assert not tuple(tmp_path.glob(".experiment.*.tmp"))
 
 
 def test_atomic_experiment_json_rejects_parent_swap(
@@ -88,18 +100,20 @@ def test_atomic_experiment_json_rejects_parent_swap(
     victim = outside / "experiment.json"
     victim.write_text("outside", encoding="ascii")
     backup = tmp_path / "output-original"
-    secure_replace = cli.secure_replace
+    secure_create = cli.secure_create_exclusive_file
 
-    def swap_parent(source: Path, destination: Path, *args: object, **kwargs: object):
+    @contextmanager
+    def swap_parent(parent: object, *args: object, **kwargs: object):
         output.rename(backup)
         _symlink_or_skip(output, outside, directory=True)
         try:
-            return secure_replace(source, destination, *args, **kwargs)
+            with secure_create(parent, *args, **kwargs) as temporary:
+                yield temporary
         finally:
             output.unlink()
             backup.rename(output)
 
-    monkeypatch.setattr(cli, "secure_replace", swap_parent)
+    monkeypatch.setattr(cli, "secure_create_exclusive_file", swap_parent)
 
     with pytest.raises(BundleStateError, match="symlink|reparse|path|containment"):
         cli._atomic_write_experiment_json(
@@ -121,25 +135,25 @@ def test_atomic_experiment_json_rejects_real_parent_swap_before_open(
     victim = outside / "experiment.json"
     victim.write_text("outside", encoding="ascii")
     backup = tmp_path / "output-original"
-    secure_open = cli.secure_open_file_descriptor
+    secure_open = cli.secure_open_directory
 
     @contextmanager
     def swap_parent(path: Path, *args: object, **kwargs: object):
-        output.rename(backup)
-        outside.rename(output)
         with secure_open(path, *args, **kwargs) as opened:
-            yield opened
+            output.rename(backup)
+            outside.rename(output)
+            try:
+                yield opened
+            finally:
+                output.rename(outside)
+                backup.rename(output)
 
-    monkeypatch.setattr(cli, "secure_open_file_descriptor", swap_parent)
+    monkeypatch.setattr(cli, "secure_open_directory", swap_parent)
 
-    try:
-        with pytest.raises(BundleStateError, match="identity changed"):
-            cli._atomic_write_experiment_json(
-                output / "experiment.json", {"status": "complete"}
-            )
-    finally:
-        output.rename(outside)
-        backup.rename(output)
+    with pytest.raises(BundleStateError, match="identity changed"):
+        cli._atomic_write_experiment_json(
+            output / "experiment.json", {"status": "complete"}
+        )
 
     assert victim.read_text(encoding="ascii") == "outside"
 
@@ -175,6 +189,68 @@ def test_atomic_experiment_json_is_bounded_and_preserves_existing_file(
 
     assert summary.read_text(encoding="ascii") == "previous\n"
     assert not tuple(tmp_path.glob(".experiment.*.tmp"))
+
+
+def test_atomic_experiment_json_stops_streaming_before_temp_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    consumed = 0
+
+    def oversized_chunks(*args: object, **kwargs: object):
+        del args, kwargs
+        nonlocal consumed
+        for _ in range(100):
+            consumed += 1
+            if consumed > 3:
+                raise AssertionError("encoder consumed past configured bound")
+            yield "12345678"
+
+    monkeypatch.setattr(cli, "_MAX_EXPERIMENT_JSON_BYTES", 16)
+    monkeypatch.setattr(json.JSONEncoder, "iterencode", oversized_chunks)
+
+    with pytest.raises(ValueError, match="experiment summary.*exceeds"):
+        cli._atomic_write_experiment_json(tmp_path / "experiment.json", {})
+
+    assert consumed == 2
+    assert not tuple(tmp_path.glob(".experiment.*.tmp"))
+
+
+def test_atomic_experiment_json_accounts_streaming_under_publication_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    original_iterencode = json.JSONEncoder.iterencode
+    accounting_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def tracked_iterencode(self: json.JSONEncoder, *args: object, **kwargs: object):
+        nonlocal active, maximum_active
+        with accounting_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            time.sleep(0.02)
+            yield from original_iterencode(self, *args, **kwargs)
+        finally:
+            with accounting_lock:
+                active -= 1
+
+    monkeypatch.setattr(json.JSONEncoder, "iterencode", tracked_iterencode)
+    summaries = tuple(tmp_path / f"experiment-{index}.json" for index in range(6))
+
+    with ThreadPoolExecutor(max_workers=len(summaries)) as executor:
+        futures = [
+            executor.submit(
+                cli._atomic_write_experiment_json, path, {"writer": index}
+            )
+            for index, path in enumerate(summaries)
+        ]
+        for future in futures:
+            future.result()
+
+    assert maximum_active == 1
 
 
 def test_atomic_experiment_json_canonically_replaces_regular_file(
