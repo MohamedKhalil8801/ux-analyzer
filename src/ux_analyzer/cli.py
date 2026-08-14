@@ -11,8 +11,10 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+from threading import Lock
 from typing import Any, Literal, NoReturn, cast
 from urllib.parse import quote, urlsplit
+from uuid import uuid4
 
 import httpx
 import typer
@@ -136,7 +138,15 @@ from ux_analyzer.saliency.model_registry import (
     ModelRegistryError,
     load_manifest,
 )
-from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
+from ux_analyzer.storage.run_bundle import (
+    FilesystemRunBundleWriter,
+    SecurePathIdentity,
+    secure_ensure_directory,
+    secure_open_file_descriptor,
+    secure_path_identity,
+    secure_replace,
+    secure_unlink,
+)
 from ux_analyzer.storage.saliency_cache import SaliencyCache
 from ux_analyzer.storage.synthesis_artifacts import (
     SynthesisArtifactError,
@@ -150,6 +160,8 @@ models_app = typer.Typer(add_completion=False)
 app.add_typer(fixture_app, name="fixture")
 app.add_typer(models_app, name="models")
 
+_MAX_EXPERIMENT_JSON_BYTES = 8 * 1024 * 1024
+_EXPERIMENT_JSON_WRITE_LOCK = Lock()
 _MODEL_CALLS_BY_POLICY = {
     ExperimentPolicy.FULL_LIST.value: 1,
     ExperimentPolicy.PROMINENCE_RANKED_LIST.value: 1,
@@ -1516,21 +1528,74 @@ def _write_experiment_summary(
         "failures": failures,
         "invalid_runs": invalid_runs,
     }
-    output.mkdir(parents=True, exist_ok=True)
     summary_path = output / "experiment.json"
-    temporary = output / ".experiment.json.tmp"
-    temporary.write_text(
+    _atomic_write_experiment_json(summary_path, summary)
+    return summary_path
+
+
+def _atomic_write_experiment_json(path: Path, value: object) -> None:
+    content = (
         json.dumps(
-            _json_data(summary),
+            _json_data(value),
             ensure_ascii=True,
             sort_keys=True,
             separators=(",", ":"),
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(summary_path)
-    return summary_path
+        + "\n"
+    ).encode("utf-8")
+    if len(content) > _MAX_EXPERIMENT_JSON_BYTES:
+        raise ValueError(
+            f"experiment summary exceeds {_MAX_EXPERIMENT_JSON_BYTES} bytes"
+        )
+
+    with _EXPERIMENT_JSON_WRITE_LOCK:
+        parent = secure_ensure_directory(path.parent, "experiment summary directory")
+        parent_identity = secure_path_identity(parent, "experiment summary directory")
+        destination = parent / path.name
+        temporary = parent / f".{path.stem}.{uuid4().hex}.tmp"
+        temporary_identity: SecurePathIdentity | None = None
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            with secure_open_file_descriptor(
+                temporary,
+                flags,
+                "experiment summary temporary file",
+                expected_parent_identity=parent_identity,
+            ) as (descriptor, temporary_identity):
+                offset = 0
+                while offset < len(content):
+                    written = os.write(descriptor, content[offset:])
+                    if written <= 0:
+                        raise OSError("failed to write experiment summary")
+                    offset += written
+                os.fsync(descriptor)
+            secure_replace(
+                temporary,
+                destination,
+                "experiment summary publication",
+                replace_existing=True,
+                expected_source_identity=temporary_identity,
+                expected_source_parent_identity=parent_identity,
+                expected_destination_parent_identity=parent_identity,
+            )
+        except BaseException:
+            if temporary_identity is not None:
+                try:
+                    secure_unlink(
+                        temporary,
+                        "experiment summary temporary file",
+                        missing_ok=True,
+                        expected_identity=temporary_identity,
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    pass
+            raise
 
 
 def _render_completed_report(*, output: Path) -> Path:

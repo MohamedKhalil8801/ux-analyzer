@@ -298,6 +298,8 @@ def _secure_open_file_descriptor(
     flags: int,
     label: str,
     mode: int = 0o600,
+    *,
+    expected_parent_identity: SecurePathIdentity | None = None,
 ) -> Generator[tuple[int, SecurePathIdentity], None, None]:
     """Open one file while retaining its verified parent descriptor/handle."""
 
@@ -318,6 +320,11 @@ def _secure_open_file_descriptor(
             _assert_actual_path_matches(
                 _windows_final_path(parent_handle, label), expected_parent, label
             )
+            _assert_expected_identity(
+                _windows_handle_identity(parent_handle, f"{label} parent"),
+                expected_parent_identity,
+                f"{label} parent",
+            )
             descriptor = os.open(path, flags, mode)
         else:
             parent_flags = (
@@ -328,6 +335,11 @@ def _secure_open_file_descriptor(
             parent_descriptor = os.open(path.parent, parent_flags)
             _assert_actual_path_matches(
                 _descriptor_final_path(parent_descriptor, label), expected_parent, label
+            )
+            _assert_expected_identity(
+                _path_identity_from_stat(os.fstat(parent_descriptor)),
+                expected_parent_identity,
+                f"{label} parent",
             )
             descriptor = os.open(path.name, flags, mode, dir_fd=parent_descriptor)
         opened_identity = _path_identity_from_stat(os.fstat(descriptor))
@@ -446,6 +458,8 @@ def _secure_replace(
     *,
     replace_existing: bool = False,
     expected_source_identity: SecurePathIdentity | None = None,
+    expected_source_parent_identity: SecurePathIdentity | None = None,
+    expected_destination_parent_identity: SecurePathIdentity | None = None,
 ) -> SecurePathIdentity:
     """Rename only after adjacent no-link checks and verify destination ancestry."""
 
@@ -471,6 +485,10 @@ def _secure_replace(
                 expected_source_identity=expected_source_identity,
                 expected_source_parent=expected_source_parent,
                 expected_destination_parent=expected_destination_parent,
+                expected_source_parent_identity=expected_source_parent_identity,
+                expected_destination_parent_identity=(
+                    expected_destination_parent_identity
+                ),
             )
         else:
             published_identity = _replace_windows_handle_relative(
@@ -480,6 +498,10 @@ def _secure_replace(
                 expected_source_identity=expected_source_identity,
                 expected_source_parent=expected_source_parent,
                 expected_destination_parent=expected_destination_parent,
+                expected_source_parent_identity=expected_source_parent_identity,
+                expected_destination_parent_identity=(
+                    expected_destination_parent_identity
+                ),
             )
     else:
         source_parent_flags = (
@@ -492,12 +514,22 @@ def _secure_replace(
                 expected_source_parent,
                 label,
             )
+            _assert_expected_identity(
+                _path_identity_from_stat(os.fstat(source_parent)),
+                expected_source_parent_identity,
+                f"{label} source parent",
+            )
             destination_parent = os.open(destination.parent, source_parent_flags)
             try:
                 _assert_actual_path_matches(
                     _descriptor_final_path(destination_parent, label),
                     expected_destination_parent,
                     label,
+                )
+                _assert_expected_identity(
+                    _path_identity_from_stat(os.fstat(destination_parent)),
+                    expected_destination_parent_identity,
+                    f"{label} destination parent",
                 )
                 source_identity = _path_identity_from_stat(
                     os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
@@ -595,6 +627,8 @@ def _replace_windows_handle_relative(
     expected_source_identity: SecurePathIdentity | None = None,
     expected_source_parent: Path | None = None,
     expected_destination_parent: Path | None = None,
+    expected_source_parent_identity: SecurePathIdentity | None = None,
+    expected_destination_parent_identity: SecurePathIdentity | None = None,
 ) -> SecurePathIdentity:
     import ctypes
     from ctypes import wintypes
@@ -646,74 +680,97 @@ def _replace_windows_handle_relative(
             raise BundleStateError(f"cannot securely open {label} for atomic replace")
         return cast(int, handle)
 
-    source_handle = open_path(source, 0x00010000 | 0x00000080)
+    source_parent_handle = _open_windows_directory_handle(source.parent, label)
     try:
-        source_actual = _windows_final_path(source_handle, label)
         _assert_actual_path_matches(
-            source_actual,
-            (expected_source_parent or source.parent.resolve(strict=True)) / source.name,
+            _windows_final_path(source_parent_handle, label),
+            expected_source_parent or source.parent.resolve(strict=True),
             label,
         )
-        source_identity = _windows_handle_identity(source_handle, label)
-        _assert_expected_identity(source_identity, expected_source_identity, label)
-        _assert_secure_ancestors(source, label)
-        destination_parent_handle = open_path(
-            destination.parent, 0x00000020 | 0x00000080
+        _assert_expected_identity(
+            _windows_handle_identity(source_parent_handle, f"{label} source parent"),
+            expected_source_parent_identity,
+            f"{label} source parent",
         )
+        source_handle = open_path(source, 0x00010000 | 0x00000080)
         try:
-            parent_actual = _windows_final_path(destination_parent_handle, label)
+            source_actual = _windows_final_path(source_handle, label)
             _assert_actual_path_matches(
-                parent_actual,
-                expected_destination_parent
-                or _absolute_lexical(destination.parent.resolve(strict=True)),
+                source_actual,
+                (expected_source_parent or source.parent.resolve(strict=True))
+                / source.name,
                 label,
             )
-            _assert_secure_ancestors(destination.parent, label)
-            if _is_link_or_reparse(destination.parent):
-                raise BundleStateError(
-                    f"{label} destination parent must not be a reparse point"
-                )
-            filename = destination.name
-
-            class FileRenameInfo(ctypes.Structure):
-                _fields_ = (
-                    ("replace_if_exists", ctypes.c_ubyte),
-                    ("root_directory", wintypes.HANDLE),
-                    ("filename_length", wintypes.DWORD),
-                    ("filename", ctypes.c_wchar * (len(filename) + 1)),
-                )
-
-            class IoStatusBlock(ctypes.Structure):
-                _fields_ = (
-                    ("status", ctypes.c_void_p),
-                    ("information", ctypes.c_size_t),
-                )
-
-            rename_info = FileRenameInfo()
-            rename_info.replace_if_exists = 1 if replace_existing else 0
-            rename_info.root_directory = destination_parent_handle
-            rename_info.filename_length = len(filename.encode("utf-16-le"))
-            rename_info.filename = filename
-            rename_info_size = (
-                FileRenameInfo.filename.offset + rename_info.filename_length
+            source_identity = _windows_handle_identity(source_handle, label)
+            _assert_expected_identity(source_identity, expected_source_identity, label)
+            _assert_secure_ancestors(source, label)
+            destination_parent_handle = open_path(
+                destination.parent, 0x00000020 | 0x00000080
             )
-            io_status = IoStatusBlock()
-            status = nt_set_information(
-                source_handle,
-                ctypes.byref(io_status),
-                ctypes.byref(rename_info),
-                rename_info_size,
-                10,
-            )
-            if status < 0:
-                raise BundleStateError(
-                    f"atomic {label} replace failed with NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
+            try:
+                parent_actual = _windows_final_path(destination_parent_handle, label)
+                _assert_actual_path_matches(
+                    parent_actual,
+                    expected_destination_parent
+                    or _absolute_lexical(destination.parent.resolve(strict=True)),
+                    label,
                 )
-            return source_identity
+                _assert_expected_identity(
+                    _windows_handle_identity(
+                        destination_parent_handle, f"{label} destination parent"
+                    ),
+                    expected_destination_parent_identity,
+                    f"{label} destination parent",
+                )
+                _assert_secure_ancestors(destination.parent, label)
+                if _is_link_or_reparse(destination.parent):
+                    raise BundleStateError(
+                        f"{label} destination parent must not be a reparse point"
+                    )
+                filename = destination.name
+
+                class FileRenameInfo(ctypes.Structure):
+                    _fields_ = (
+                        ("replace_if_exists", ctypes.c_ubyte),
+                        ("root_directory", wintypes.HANDLE),
+                        ("filename_length", wintypes.DWORD),
+                        ("filename", ctypes.c_wchar * (len(filename) + 1)),
+                    )
+
+                class IoStatusBlock(ctypes.Structure):
+                    _fields_ = (
+                        ("status", ctypes.c_void_p),
+                        ("information", ctypes.c_size_t),
+                    )
+
+                rename_info = FileRenameInfo()
+                rename_info.replace_if_exists = 1 if replace_existing else 0
+                rename_info.root_directory = destination_parent_handle
+                rename_info.filename_length = len(filename.encode("utf-16-le"))
+                rename_info.filename = filename
+                rename_info_size = (
+                    FileRenameInfo.filename.offset + rename_info.filename_length
+                )
+                io_status = IoStatusBlock()
+                status = nt_set_information(
+                    source_handle,
+                    ctypes.byref(io_status),
+                    ctypes.byref(rename_info),
+                    rename_info_size,
+                    10,
+                )
+                if status < 0:
+                    raise BundleStateError(
+                        f"atomic {label} replace failed with "
+                        f"NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
+                    )
+                return source_identity
+            finally:
+                close_handle(destination_parent_handle)
         finally:
-            close_handle(destination_parent_handle)
+            close_handle(source_handle)
     finally:
-        close_handle(source_handle)
+        _close_windows_handle(source_parent_handle)
 
 
 def _secure_unlink(
