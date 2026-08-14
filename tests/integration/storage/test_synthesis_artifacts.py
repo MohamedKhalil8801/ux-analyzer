@@ -981,6 +981,33 @@ def test_latest_attempt_uses_full_created_at_before_global_sequence(
 
 
 @pytest.mark.parametrize(
+    ("created_at", "creation_token"),
+    [
+        ("not-a-timestamp", "20260810T120000Z"),
+        ("2026-08-11T12:00:00+00:00", "20260810T120000Z"),
+        ("2026-08-10T13:00:01+01:00", "2026-08-10T120000Z"),
+    ],
+)
+def test_write_attempt_rejects_invalid_created_at_before_publication(
+    tmp_path: Path,
+    created_at: str,
+    creation_token: str,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = replace(
+        _attempt(corpus, sequence=1),
+        attempt_id=f"{creation_token}-{corpus.digest[:12]}-1",
+        created_at=created_at,
+    )
+    destination = tmp_path / "synthesis" / "attempts" / attempt.attempt_id
+
+    with pytest.raises(SynthesisArtifactError, match="timestamp|created_at"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
     "attempt_id",
     [
         "attempt-1",

@@ -870,9 +870,23 @@ class SynthesisArtifactStore:
         try:
             secure_write_bytes(staging / "synthesis.json", synthesis_bytes)
             secure_write_bytes(staging / "corpus-manifest.json", corpus_bytes)
+            persisted, synthesis_bytes, corpus_bytes = (
+                self._read_attempt_bundle_from_directory(
+                    staging,
+                    attempt.attempt_id,
+                )
+            )
+            self._validate_index_record(
+                self._index_record(persisted, synthesis_bytes, corpus_bytes),
+                persisted,
+                synthesis_bytes,
+                corpus_bytes,
+            )
             self._publish_attempt(staging, destination)
             selected = (
-                attempt.attempt_id if attempt.status in _ACCEPTED_STATUSES else None
+                persisted.attempt_id
+                if persisted.status in _ACCEPTED_STATUSES
+                else None
             )
             self._write_index(selected)
         except BaseException:
@@ -1193,6 +1207,8 @@ class SynthesisArtifactStore:
         synthesis_bytes: bytes,
         corpus_bytes: bytes,
     ) -> None:
+        if record.get("attempt_id") != attempt.attempt_id:
+            raise SynthesisArtifactError("synthesis index attempt ID mismatch")
         if record.get("status") != _enum_text(attempt.status, "status"):
             raise SynthesisArtifactError("synthesis index status mismatch")
         if record.get("created_at") != attempt.created_at:
@@ -1209,8 +1225,17 @@ class SynthesisArtifactStore:
     def _read_attempt_bundle(
         self, attempt_id: str
     ) -> tuple[SynthesisAttempt, bytes, bytes]:
+        return self._read_attempt_bundle_from_directory(
+            self.attempts_root / attempt_id,
+            attempt_id,
+        )
+
+    def _read_attempt_bundle_from_directory(
+        self,
+        directory: Path,
+        attempt_id: str,
+    ) -> tuple[SynthesisAttempt, bytes, bytes]:
         _, digest_prefix, _ = _validate_attempt_id(attempt_id)
-        directory = self.attempts_root / attempt_id
         if secure_is_link_or_reparse(directory) or not directory.is_dir():
             raise SynthesisArtifactError("synthesis attempt is not a real directory")
         synthesis_value, synthesis_bytes = self._read_json_object(
@@ -1257,6 +1282,21 @@ class SynthesisArtifactStore:
         validate_publishable_synthesis_attempt(attempt)
         _validate_objection_evidence_refs(attempt, corpus_value)
         return attempt, synthesis_bytes, corpus_bytes
+
+    def _index_record(
+        self,
+        attempt: SynthesisAttempt,
+        synthesis_bytes: bytes,
+        corpus_bytes: bytes,
+    ) -> dict[str, object]:
+        return {
+            "attempt_id": attempt.attempt_id,
+            "created_at": attempt.created_at,
+            "status": _enum_text(attempt.status, "status"),
+            "corpus_digest": attempt.corpus_digest,
+            "synthesis_digest": _sha256(synthesis_bytes),
+            "corpus_manifest_digest": _sha256(corpus_bytes),
+        }
 
     def _read_json_object(
         self, path: Path, label: str
@@ -1339,16 +1379,7 @@ class SynthesisArtifactStore:
                     previous_record, attempt, synthesis_bytes, corpus_bytes
                 )
             attempts[attempt_id] = attempt
-            records.append(
-                {
-                    "attempt_id": attempt_id,
-                    "created_at": attempt.created_at,
-                    "status": _enum_text(attempt.status, "status"),
-                    "corpus_digest": attempt.corpus_digest,
-                    "synthesis_digest": _sha256(synthesis_bytes),
-                    "corpus_manifest_digest": _sha256(corpus_bytes),
-                }
-            )
+            records.append(self._index_record(attempt, synthesis_bytes, corpus_bytes))
         if selected is not None:
             if selected not in attempts:
                 raise SynthesisArtifactError("accepted index points at missing attempt")
