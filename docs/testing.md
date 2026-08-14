@@ -78,11 +78,14 @@ directory for each Codex comparison:
 
 ```powershell
 $env:UXA_LLM_MODE = "codex"
+$env:UXA_SCENT_MODEL = "<scent-model-id>"
+$env:UXA_COGNITIVE_MODEL = "<cognitive-model-id>"
+$env:UXA_REPORT_MODEL = "<report-model-id>"
 $env:UXA_LLM_COGNITIVE_REASONING_EFFORT = "low"
 $env:UXA_LLM_TIMEOUT_SECONDS = "180"
 $env:UXA_LLM_MAX_CONCURRENT_CALLS = "1"
-uv run uxa validate benchmarks/portfolio/project.yaml
-uv run uxa run benchmarks/portfolio/project.yaml --experiment portfolio-foveacast-vs-heuristic --workers 1 --output reports/portfolio-foveacast-vs-heuristic-final3
+uv run uxa validate benchmarks/portfolio/project.yaml --check-env
+uv run uxa run benchmarks/portfolio/project.yaml --experiment portfolio-foveacast-vs-heuristic --workers 1 --check-env --output reports/portfolio-foveacast-vs-heuristic-final3
 ```
 
 This is a focused one-trial provider comparison and smoke benchmark: three live

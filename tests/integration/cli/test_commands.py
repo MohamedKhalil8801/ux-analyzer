@@ -28,7 +28,7 @@ from ux_analyzer.config.loader import load_project
 from ux_analyzer.domain.attention import AttentionState
 from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy, FixtureInputs
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
-from ux_analyzer.domain.synthesis import SynthesisStatus
+from ux_analyzer.domain.synthesis import SynthesisAttempt, SynthesisStatus
 from ux_analyzer.ports.observation import (
     ObservationCapture,
     SessionHandle,
@@ -327,6 +327,76 @@ def test_env_check_reports_codex_mode_without_api_key_claim(
     assert "mode: codex" in result.stdout
     assert "scent and cognitive models configured" in result.stdout
     assert "API key present" not in result.stdout
+
+
+def test_validate_check_env_requires_report_model_for_configured_synthesis(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {"enabled": True}
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    monkeypatch.delenv("UXA_REPORT_MODEL", raising=False)
+
+    result = runner.invoke(app, ["validate", str(project_path), "--check-env"])
+
+    assert result.exit_code == 1
+    assert "UXA_REPORT_MODEL" in result.stdout
+    assert "super-secret-api-key" not in result.stdout
+
+
+def test_run_check_env_requires_report_model_unless_synthesis_is_disabled(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project = yaml.safe_load(DEMO_PROJECT.read_text(encoding="utf-8"))
+    assert isinstance(project, dict)
+    project.setdefault("evaluation", {})["report_synthesis"] = {"enabled": True}
+    project_path = tmp_path / "configured-project.yaml"
+    project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
+    monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
+    monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
+    monkeypatch.delenv("UXA_REPORT_MODEL", raising=False)
+
+    checked = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "core-pair",
+            "--dry-run",
+            "--check-env",
+        ],
+    )
+    disabled = runner.invoke(
+        app,
+        [
+            "run",
+            str(project_path),
+            "--experiment",
+            "core-pair",
+            "--dry-run",
+            "--check-env",
+            "--no-synthesis",
+        ],
+    )
+
+    assert checked.exit_code == 1
+    assert "UXA_REPORT_MODEL" in checked.stdout
+    assert disabled.exit_code == 0, disabled.stdout
 
 
 def test_run_dry_run_prints_matrix_model_calls_and_serial_default(
@@ -1374,6 +1444,45 @@ def test_completion_exposes_summary_and_report_render_phases(
     assert summary.is_file()
 
 
+def test_persist_synthesis_attempt_retries_sequence_collision(
+    monkeypatch, tmp_path: Path
+) -> None:
+    attempt = SynthesisAttempt(
+        attempt_id="placeholder",
+        status=SynthesisStatus.NO_ISSUES,
+    )
+    corpus = object()
+    ids = iter(("attempt-1", "attempt-2"))
+    writes: list[str] = []
+
+    class FakeStore:
+        def __init__(self, output: Path) -> None:
+            assert output == tmp_path
+
+        def write_attempt(self, value: SynthesisAttempt, received: object) -> Path:
+            assert received is corpus
+            writes.append(value.attempt_id)
+            if len(writes) == 1:
+                raise cli.SynthesisArtifactError(
+                    "attempt already exists; overwrite refused"
+                )
+            return tmp_path / value.attempt_id
+
+    monkeypatch.setattr(cli, "SynthesisArtifactStore", FakeStore)
+    monkeypatch.setattr(cli, "_synthesis_corpus", lambda **kwargs: corpus)
+    monkeypatch.setattr(cli, "_storage_attempt_id", lambda attempt, store: next(ids))
+
+    result = cli._persist_synthesis_attempt(
+        attempt,
+        result=ExperimentResult(specs=(), results=(), failures=()),
+        output=tmp_path,
+        loaded=SimpleNamespace(),
+    )
+
+    assert result == tmp_path / "attempt-2"
+    assert writes == ["attempt-1", "attempt-2"]
+
+
 def test_configured_run_synthesizes_after_summary_before_render(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1687,6 +1796,7 @@ def test_synthesis_missing_report_model_keeps_completed_run_successful(
     project_path = tmp_path / "configured-project.yaml"
     project_path.write_text(yaml.safe_dump(project, sort_keys=False), encoding="utf-8")
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
     monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
     monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")

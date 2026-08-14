@@ -138,7 +138,10 @@ from ux_analyzer.saliency.model_registry import (
 )
 from ux_analyzer.storage.run_bundle import FilesystemRunBundleWriter
 from ux_analyzer.storage.saliency_cache import SaliencyCache
-from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
+from ux_analyzer.storage.synthesis_artifacts import (
+    SynthesisArtifactError,
+    SynthesisArtifactStore,
+)
 
 app = typer.Typer(add_completion=False)
 fixture_app = typer.Typer(add_completion=False)
@@ -266,7 +269,9 @@ def validate(
     )
     typer.echo(f"config digest: {loaded.config_digest}")
     if check_env:
-        _model_settings_or_exit()
+        _model_settings_or_exit(
+            report_synthesis_enabled=loaded.runtime.report_synthesis.enabled
+        )
 
 
 @fixture_app.command("serve")
@@ -536,7 +541,13 @@ def _run_experiment_command(
     if check_env or not dry_run:
         # Report synthesis is best-effort. Keep missing report-role settings
         # from preventing deterministic experiment execution and fallback rendering.
-        settings = _model_settings_or_exit()
+        settings = _model_settings_or_exit(
+            report_synthesis_enabled=(
+                check_env
+                and matrix.loaded.runtime.report_synthesis.enabled
+                and not no_synthesis
+            )
+        )
     _print_matrix(
         matrix,
         workers=workers,
@@ -1643,11 +1654,23 @@ def _persist_synthesis_attempt(
 ) -> Path:
     corpus = _synthesis_corpus(result=result, output=output, loaded=loaded)
     store = SynthesisArtifactStore(output)
-    persisted_attempt = replace(
-        attempt,
-        attempt_id=_storage_attempt_id(attempt, store),
-    )
-    return store.write_attempt(persisted_attempt, corpus)
+    collision: SynthesisArtifactError | None = None
+    # ID selection happens before the store's publication lock; retry if another
+    # synthesis writer publishes the same sequence first.
+    for _ in range(16):
+        persisted_attempt = replace(
+            attempt,
+            attempt_id=_storage_attempt_id(attempt, store),
+        )
+        try:
+            return store.write_attempt(persisted_attempt, corpus)
+        except SynthesisArtifactError as error:
+            if str(error) != "attempt already exists; overwrite refused":
+                raise
+            collision = error
+    if collision is not None:
+        raise collision
+    raise AssertionError("synthesis attempt publication retry loop was empty")
 
 
 def _persist_unavailable_synthesis(
