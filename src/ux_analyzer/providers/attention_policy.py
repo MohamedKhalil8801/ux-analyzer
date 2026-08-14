@@ -156,6 +156,10 @@ class ProgressiveAttentionPolicy:
             element.id
             for element in snapshot.elements
             if element.visibility_fraction > 0
+            and (
+                element.rendered_text is None
+                or bool(element.rendered_text.strip())
+            )
         }
         candidates = tuple(
             _candidate(

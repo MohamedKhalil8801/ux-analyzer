@@ -469,6 +469,18 @@ def test_sparse_snapshot_falls_back_to_element_sampling() -> None:
     assert selection.observation.region_context is None
 
 
+def test_blank_rendered_text_is_not_selected_as_persona_visible() -> None:
+    blank = replace(_element("blank"), rendered_text="   ")
+    snapshot = ViewportSnapshot(id="viewport-1", elements=(blank,))
+
+    with pytest.raises(ValueError, match="no unobserved visible elements remain"):
+        ProgressiveAttentionPolicy(
+            AttentionPolicyConfig(batch_size=1)
+        ).next_observation(
+            _state(), snapshot, _scores("blank"), (), random.Random(1)
+        )
+
+
 @pytest.mark.parametrize("batch_size", [1, 2, 3])
 def test_batch_size_is_limited_to_one_through_three(batch_size: int) -> None:
     elements = tuple(_element(f"item-{index}", x=index * 100) for index in range(4))
