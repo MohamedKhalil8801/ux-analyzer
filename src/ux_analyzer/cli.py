@@ -2147,26 +2147,59 @@ def _safe_failure_reason(message: str, spec: RunSpec) -> str:
     return safe
 
 
-def _json_data(value: object) -> object:
+def _json_data(value: object, *, _active: set[int] | None = None) -> object:
+    active: set[int] = set() if _active is None else _active
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, Enum):
-        return value.value
+        return _json_data(value.value, _active=active)
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        return {str(key): _json_data(item) for key, item in mapping.items()}
+        identity = id(mapping)
+        if identity in active:
+            raise ValueError("circular reference in experiment value")
+        active.add(identity)
+        try:
+            return {
+                str(key): _json_data(item, _active=active)
+                for key, item in mapping.items()
+            }
+        finally:
+            active.remove(identity)
     if isinstance(value, (list, tuple, set, frozenset)):
         sequence = cast(Sequence[object], value)
-        return [_json_data(item) for item in sequence]
+        identity = id(sequence)
+        if identity in active:
+            raise ValueError("circular reference in experiment value")
+        active.add(identity)
+        try:
+            return [_json_data(item, _active=active) for item in sequence]
+        finally:
+            active.remove(identity)
     if is_dataclass(value):
-        return {
-            item.name: _json_data(getattr(value, item.name)) for item in fields(value)
-        }
+        identity = id(value)
+        if identity in active:
+            raise ValueError("circular reference in experiment value")
+        active.add(identity)
+        try:
+            return {
+                item.name: _json_data(getattr(value, item.name), _active=active)
+                for item in fields(value)
+            }
+        finally:
+            active.remove(identity)
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
-        return _json_data(model_dump(mode="json"))
+        identity = id(value)
+        if identity in active:
+            raise ValueError("circular reference in experiment value")
+        active.add(identity)
+        try:
+            return _json_data(model_dump(mode="json"), _active=active)
+        finally:
+            active.remove(identity)
     raise TypeError(f"cannot serialize experiment value {type(value)!r}")
 
 

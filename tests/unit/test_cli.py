@@ -4,6 +4,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -285,6 +286,46 @@ def test_atomic_experiment_json_matches_canonical_json_at_exact_bound(
     with pytest.raises(ValueError, match="experiment summary.*exceeds"):
         cli._atomic_write_experiment_json(summary, value)
     assert summary.read_bytes() == expected
+
+
+def test_json_data_recursively_normalizes_tuple_and_string_enum_values() -> None:
+    class TupleValue(Enum):
+        VALUE = ("ready", 3)
+
+    class StringValue(Enum):
+        VALUE = "ordinary"
+
+    assert cli._json_data(
+        {"tuple": TupleValue.VALUE, "string": StringValue.VALUE}
+    ) == {"tuple": ["ready", 3], "string": "ordinary"}
+
+
+def test_json_data_recursively_normalizes_mapping_enum_values() -> None:
+    class MappingValue(Enum):
+        VALUE = {2: ("second",), 1: {3: "third"}}
+
+    assert cli._json_data(MappingValue.VALUE) == {
+        "2": ["second"],
+        "1": {"3": "third"},
+    }
+
+
+def test_atomic_experiment_json_rejects_cyclic_enum_container(
+    tmp_path: Path,
+) -> None:
+    cycle: list[object] = []
+
+    class CyclicValue(Enum):
+        VALUE = cycle
+
+    cycle.append(CyclicValue.VALUE)
+
+    with pytest.raises(ValueError, match="circular reference"):
+        cli._atomic_write_experiment_json(
+            tmp_path / "experiment.json", CyclicValue.VALUE
+        )
+
+    assert not tuple(tmp_path.glob(".experiment.*.tmp"))
 
 
 def test_atomic_experiment_json_accounts_streaming_under_publication_lock(
