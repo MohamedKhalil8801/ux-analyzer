@@ -6,6 +6,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -609,8 +610,19 @@ def test_incomplete_staging_and_index_temporary_files_are_ignored(
     assert reopened.accepted_attempt == attempt
 
 
+def test_read_only_missing_root_does_not_create_synthesis_layout(
+    tmp_path: Path,
+) -> None:
+    store = SynthesisArtifactStore(tmp_path)
+
+    assert store.attempts == ()
+    assert store.accepted_attempt is None
+    assert store.report_attempt is None
+    assert not store.synthesis_root.exists()
+
+
 @pytest.mark.parametrize("read_boundary", ("attempts", "accepted", "report"))
-def test_reader_retries_when_index_advances_after_attempt_snapshot(
+def test_reader_holds_publication_lock_through_bundle_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     read_boundary: str,
@@ -621,27 +633,39 @@ def test_reader_retries_when_index_advances_after_attempt_snapshot(
     writer = SynthesisArtifactStore(tmp_path)
     writer.write_attempt(first, corpus)
     reader = SynthesisArtifactStore(tmp_path)
-    original_attempt_ids = reader._attempt_ids
-    snapshots = 0
+    original_read_index = reader._read_index
+    reader_entered = Event()
+    writer_started = Event()
+    writer_finished = Event()
 
-    def snapshot_then_publish() -> tuple[str, ...]:
-        nonlocal snapshots
-        attempt_ids = original_attempt_ids()
-        snapshots += 1
-        if snapshots == 1:
-            writer.write_attempt(second, corpus)
-        return attempt_ids
+    def paused_read_index(
+        attempt_ids: tuple[str, ...] | None = None,
+    ) -> object:
+        reader_entered.set()
+        assert writer_started.wait(timeout=1)
+        assert not writer_finished.wait(timeout=0.1)
+        return original_read_index(attempt_ids)
 
-    monkeypatch.setattr(reader, "_attempt_ids", snapshot_then_publish)
+    def publish() -> None:
+        assert reader_entered.wait(timeout=1)
+        writer_started.set()
+        writer.write_attempt(second, corpus)
+        writer_finished.set()
 
-    if read_boundary == "attempts":
-        result = reader.attempts
-        assert result == (first, second)
-    elif read_boundary == "accepted":
-        assert reader.accepted_attempt == second
-    else:
-        assert reader.report_attempt == second
-    assert snapshots == 2
+    monkeypatch.setattr(reader, "_read_index", paused_read_index)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        publication = executor.submit(publish)
+        if read_boundary == "attempts":
+            assert reader.attempts == (first,)
+        elif read_boundary == "accepted":
+            assert reader.accepted_attempt == first
+        else:
+            assert reader.report_attempt == first
+        publication.result(timeout=2)
+
+    assert writer_finished.is_set()
+    assert SynthesisArtifactStore(tmp_path).accepted_attempt == second
 
 
 def test_failed_index_replace_keeps_previous_accepted_pointer_and_attempt(
@@ -789,6 +813,37 @@ def test_concurrent_writers_keep_each_attempt_and_index_record(
     assert {record["attempt_id"] for record in index["attempts"]} == {
         attempt.attempt_id for attempt in attempts
     }
+
+
+def test_concurrent_different_digest_writers_enforce_global_sequence(
+    tmp_path: Path,
+) -> None:
+    first_corpus = _corpus(tmp_path)
+    second_corpus = replace(first_corpus, metadata={"variant": "second"})
+    attempts = (
+        (_attempt(first_corpus, sequence=1), first_corpus),
+        (_attempt(second_corpus, sequence=1), second_corpus),
+    )
+
+    def write(
+        item: tuple[SynthesisAttempt, EvidenceCorpus],
+    ) -> Path | SynthesisArtifactError:
+        attempt, corpus = item
+        try:
+            return SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+        except SynthesisArtifactError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(write, attempts))
+
+    assert sum(isinstance(result, Path) for result in results) == 1
+    collisions = [
+        result for result in results if isinstance(result, SynthesisArtifactError)
+    ]
+    assert len(collisions) == 1
+    assert "sequence already exists" in str(collisions[0])
+    assert len(SynthesisArtifactStore(tmp_path).attempts) == 1
 
 
 @pytest.mark.parametrize(

@@ -42,7 +42,6 @@ from ux_analyzer.storage.run_bundle import (
 _INDEX_SCHEMA_VERSION = "synthesis-index-v1"
 _ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v1"
 MAX_SYNTHESIS_JSON_BYTES = 64 * 1024 * 1024
-_INDEX_SNAPSHOT_ATTEMPTS = 3
 _DIGEST_LENGTH = 64
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ATTEMPT_CREATED_PATTERN = re.compile(
@@ -55,10 +54,6 @@ _PUBLICATION_LOCKS_GUARD = threading.Lock()
 
 class SynthesisArtifactError(ValueError):
     """Raised when synthesis artifact state is invalid or cannot be trusted."""
-
-
-class _StaleAttemptSnapshot(SynthesisArtifactError):
-    """Raised when publication advances between directory and index reads."""
 
 
 def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
@@ -359,23 +354,6 @@ def _validate_attempt_id(attempt_id: object) -> tuple[str, str, int]:
 def _attempt_order_key(attempt_id: str) -> tuple[datetime, int, str]:
     created, digest_prefix, sequence = _validate_attempt_id(attempt_id)
     return _created_at_from_attempt_token(created), sequence, digest_prefix
-
-
-def _index_record_order_key(
-    record: Mapping[str, object],
-) -> tuple[datetime, int, str]:
-    attempt_id = _text(record.get("attempt_id"), "index attempt ID")
-    _, _, sequence = _validate_attempt_id(attempt_id)
-    created_at = _text(record.get("created_at"), "index created_at")
-    try:
-        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise SynthesisArtifactError(
-            "index created_at must be a UTC timestamp"
-        ) from error
-    if parsed.tzinfo is None:
-        raise SynthesisArtifactError("index created_at must include a timezone")
-    return parsed.astimezone(UTC), sequence, attempt_id
 
 
 def _evidence_ref_to_dict(reference: EvidenceRef) -> dict[str, object]:
@@ -728,72 +706,88 @@ class SynthesisArtifactStore:
         """Return every complete published attempt, including rejected attempts."""
 
         self._validate_existing_roots()
-        attempt_ids, index = self._read_consistent_index()
-        records = self._index_records(index)
-        attempts: list[SynthesisAttempt] = []
-        for attempt_id in attempt_ids:
-            attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(
-                attempt_id
-            )
-            record = records.get(attempt_id)
-            if record is not None:
-                self._validate_index_record(
-                    record, attempt, synthesis_bytes, corpus_bytes
+        if not os.path.lexists(self.synthesis_root):
+            return ()
+        with _publication_lock(self.synthesis_root):
+            self._validate_existing_roots()
+            attempt_ids = self._attempt_ids()
+            index = self._read_index(attempt_ids)
+            records = self._index_records(index)
+            attempts: list[SynthesisAttempt] = []
+            for attempt_id in attempt_ids:
+                attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(
+                    attempt_id
                 )
-            attempts.append(attempt)
-        return tuple(attempts)
+                record = records.get(attempt_id)
+                if record is not None:
+                    self._validate_index_record(
+                        record, attempt, synthesis_bytes, corpus_bytes
+                    )
+                attempts.append(attempt)
+            return tuple(attempts)
 
     @property
     def accepted_attempt(self) -> SynthesisAttempt | None:
         """Return the attempt selected by the durable accepted pointer."""
 
         self._validate_existing_roots()
-        _, index = self._read_consistent_index()
-        if index is None or index.get("accepted_attempt_id") is None:
+        if not os.path.lexists(self.synthesis_root):
             return None
-        attempt_id = _text(index.get("accepted_attempt_id"), "accepted_attempt_id")
-        attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(attempt_id)
-        self._validate_index_record(
-            self._index_records(index)[attempt_id],
-            attempt,
-            synthesis_bytes,
-            corpus_bytes,
-        )
-        if attempt.status not in _ACCEPTED_STATUSES:
-            raise SynthesisArtifactError(
-                "accepted index points at a non-accepted attempt"
+        with _publication_lock(self.synthesis_root):
+            self._validate_existing_roots()
+            attempt_ids = self._attempt_ids()
+            index = self._read_index(attempt_ids)
+            if index is None or index.get("accepted_attempt_id") is None:
+                return None
+            attempt_id = _text(index.get("accepted_attempt_id"), "accepted_attempt_id")
+            attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(
+                attempt_id
             )
-        return attempt
+            self._validate_index_record(
+                self._index_records(index)[attempt_id],
+                attempt,
+                synthesis_bytes,
+                corpus_bytes,
+            )
+            if attempt.status not in _ACCEPTED_STATUSES:
+                raise SynthesisArtifactError(
+                    "accepted index points at a non-accepted attempt"
+                )
+            return attempt
 
     @property
     def report_attempt(self) -> SynthesisAttempt | None:
         """Return only the trusted accepted or latest attempt needed by a report."""
 
         self._validate_existing_roots()
-        _, index = self._read_consistent_index()
-        if index is None:
+        if not os.path.lexists(self.synthesis_root):
             return None
-        records = self._index_records(index)
-        accepted_id = cast(str | None, index.get("accepted_attempt_id"))
-        latest_record = max(records.values(), key=_index_record_order_key, default=None)
-        attempt_id = accepted_id or (
-            _text(latest_record.get("attempt_id"), "index attempt ID")
-            if latest_record is not None
-            else None
-        )
-        if attempt_id is None:
-            return None
-        attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(attempt_id)
-        self._validate_index_record(
-            records[attempt_id], attempt, synthesis_bytes, corpus_bytes
-        )
-        if accepted_id is None and attempt.status in _ACCEPTED_STATUSES:
-            return None
-        if accepted_id is not None and attempt.status not in _ACCEPTED_STATUSES:
-            raise SynthesisArtifactError(
-                "accepted index points at a non-accepted attempt"
+        with _publication_lock(self.synthesis_root):
+            self._validate_existing_roots()
+            attempt_ids = self._attempt_ids()
+            index = self._read_index(attempt_ids)
+            if index is None:
+                return None
+            records = self._index_records(index)
+            accepted_id = cast(str | None, index.get("accepted_attempt_id"))
+            attempt_id = accepted_id or max(
+                records, key=_attempt_order_key, default=None
             )
-        return attempt
+            if attempt_id is None:
+                return None
+            attempt, synthesis_bytes, corpus_bytes = self._read_attempt_bundle(
+                attempt_id
+            )
+            self._validate_index_record(
+                records[attempt_id], attempt, synthesis_bytes, corpus_bytes
+            )
+            if accepted_id is None and attempt.status in _ACCEPTED_STATUSES:
+                return None
+            if accepted_id is not None and attempt.status not in _ACCEPTED_STATUSES:
+                raise SynthesisArtifactError(
+                    "accepted index points at a non-accepted attempt"
+                )
+            return attempt
 
     def write_attempt(
         self, attempt: SynthesisAttempt, corpus: SynthesisCorpusPort
@@ -808,8 +802,11 @@ class SynthesisArtifactStore:
     def _write_attempt_locked(
         self, attempt: SynthesisAttempt, corpus: SynthesisCorpusPort
     ) -> Path:
-        self._read_index(self._attempt_ids())
-        _, digest_prefix, _ = _validate_attempt_id(attempt.attempt_id)
+        attempt_ids = self._attempt_ids()
+        self._read_index(attempt_ids)
+        created_token, digest_prefix, sequence = _validate_attempt_id(
+            attempt.attempt_id
+        )
         corpus_json = corpus.to_json()
         _validate_json_size(corpus_json, "synthesis corpus manifest")
         try:
@@ -850,6 +847,16 @@ class SynthesisArtifactStore:
             )
         if os.path.lexists(destination):
             raise SynthesisArtifactError("attempt already exists; overwrite refused")
+        if any(
+            existing_created == created_token and existing_sequence == sequence
+            for existing_id in attempt_ids
+            for existing_created, _, existing_sequence in (
+                _validate_attempt_id(existing_id),
+            )
+        ):
+            raise SynthesisArtifactError(
+                "attempt sequence already exists for creation token"
+            )
 
         synthesis_bytes = _canonical_bytes(_attempt_to_dict(attempt))
         _validate_json_size(synthesis_bytes, "synthesis artifact")
@@ -1002,7 +1009,7 @@ class SynthesisArtifactStore:
                     "synthesis index created_at does not match attempt ID"
                 )
             if attempt_id not in valid_attempt_ids:
-                raise _StaleAttemptSnapshot(
+                raise SynthesisArtifactError(
                     "synthesis index references missing attempt"
                 )
 
@@ -1023,20 +1030,6 @@ class SynthesisArtifactStore:
                     "accepted index points at a non-accepted attempt"
                 )
         return value
-
-    def _read_consistent_index(
-        self,
-    ) -> tuple[tuple[str, ...], Mapping[str, object] | None]:
-        stale_error: _StaleAttemptSnapshot | None = None
-        for _ in range(_INDEX_SNAPSHOT_ATTEMPTS):
-            attempt_ids = self._attempt_ids()
-            try:
-                return attempt_ids, self._read_index(attempt_ids)
-            except _StaleAttemptSnapshot as error:
-                stale_error = error
-        if stale_error is None:
-            raise SynthesisArtifactError("cannot read synthesis index snapshot")
-        raise stale_error
 
     def _index_records(
         self, index: Mapping[str, object] | None

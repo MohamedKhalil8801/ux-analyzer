@@ -1636,13 +1636,17 @@ def _storage_attempt_id(
     if created.tzinfo is None:
         created = created.replace(tzinfo=UTC)
     created_token = created.astimezone(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    existing = {item.attempt_id for item in store.attempts}
-    sequence = 1
-    while True:
-        candidate = f"{created_token}-{attempt.corpus_digest[:12]}-{sequence}"
-        if candidate not in existing:
-            return candidate
-        sequence += 1
+    existing_sequences = [
+        sequence
+        for item in store.attempts
+        for existing_created, _, sequence_text in (
+            item.attempt_id.rsplit("-", maxsplit=2),
+        )
+        if existing_created == created_token
+        for sequence in (int(sequence_text),)
+    ]
+    sequence = max(existing_sequences, default=0) + 1
+    return f"{created_token}-{attempt.corpus_digest[:12]}-{sequence}"
 
 
 def _persist_synthesis_attempt(
@@ -1665,7 +1669,10 @@ def _persist_synthesis_attempt(
         try:
             return store.write_attempt(persisted_attempt, corpus)
         except SynthesisArtifactError as error:
-            if str(error) != "attempt already exists; overwrite refused":
+            if str(error) not in {
+                "attempt already exists; overwrite refused",
+                "attempt sequence already exists for creation token",
+            }:
                 raise
             collision = error
     if collision is not None:

@@ -1446,7 +1446,7 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     assert "the evidence review is unavailable" not in normalized_html
 
 
-def test_renderer_uses_subsecond_created_at_for_latest_unselected_attempt(
+def test_renderer_uses_global_sequence_for_latest_unselected_attempt(
     tmp_path: Path,
 ) -> None:
     _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
@@ -1455,16 +1455,14 @@ def test_renderer_uses_subsecond_created_at_for_latest_unselected_attempt(
         status=SynthesisStatus.UNAVAILABLE,
         sequence=1,
         corpus_marker="sequence-10",
-        created_at="2026-08-10T12:00:00.100000+00:00",
         include_scope_identity=False,
         limitations=("Older unavailable attempt.",),
     )
     _write_synthesis(
         tmp_path,
         status=SynthesisStatus.REJECTED,
-        sequence=1,
+        sequence=2,
         corpus_marker="sequence-2",
-        created_at="2026-08-10T12:00:00.900000+00:00",
         include_scope_identity=False,
         limitations=("Latest rejected attempt.",),
     )

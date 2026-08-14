@@ -1464,7 +1464,7 @@ def test_persist_synthesis_attempt_retries_sequence_collision(
             writes.append(value.attempt_id)
             if len(writes) == 1:
                 raise cli.SynthesisArtifactError(
-                    "attempt already exists; overwrite refused"
+                    "attempt sequence already exists for creation token"
                 )
             return tmp_path / value.attempt_id
 
@@ -1481,6 +1481,24 @@ def test_persist_synthesis_attempt_retries_sequence_collision(
 
     assert result == tmp_path / "attempt-2"
     assert writes == ["attempt-1", "attempt-2"]
+
+
+def test_storage_attempt_id_uses_global_same_second_sequence() -> None:
+    first = SynthesisAttempt(
+        attempt_id="2026-08-10T120000Z-aaaaaaaaaaaa-1",
+        status=SynthesisStatus.NO_ISSUES,
+    )
+    second = SynthesisAttempt(
+        attempt_id="placeholder",
+        status=SynthesisStatus.NO_ISSUES,
+        corpus_digest="b" * 64,
+        created_at="2026-08-10T12:00:00+00:00",
+    )
+    store = SimpleNamespace(attempts=(first,))
+
+    assert cli._storage_attempt_id(second, store) == (
+        "2026-08-10T120000Z-bbbbbbbbbbbb-2"
+    )
 
 
 def test_configured_run_synthesizes_after_summary_before_render(
