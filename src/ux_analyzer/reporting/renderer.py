@@ -58,6 +58,8 @@ DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
 _MAX_REPORT_JSON_BYTES = 8 * 1024 * 1024
 _MAX_REPORT_TIMELINE_BYTES = 16 * 1024 * 1024
 _MAX_SOURCE_SCREENSHOT_BYTES = 16 * 1024 * 1024
+_MAX_SYNTHESIS_HEATMAP_BYTES = 8 * 1024 * 1024
+_MAX_SYNTHESIS_NATIVE_MAP_BYTES = 64 * 1024 * 1024
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
 _PRIVATE_KEYS = frozenset(
     {
@@ -1319,7 +1321,16 @@ def _validate_synthesis_saliency_artifact(
     candidate = _secure_bundle_file(run_path, run_relative)
     if candidate is None:
         raise SynthesisArtifactError("synthesis saliency path is unavailable")
-    content = secure_read_bytes(candidate, "synthesis saliency artifact")
+    maximum = (
+        _MAX_SYNTHESIS_HEATMAP_BYTES
+        if reference.kind == "heatmap"
+        else _MAX_SYNTHESIS_NATIVE_MAP_BYTES
+    )
+    content = secure_read_bytes(
+        candidate,
+        "synthesis saliency artifact",
+        max_bytes=maximum,
+    )
     if hashlib.sha256(content).hexdigest() != reference.sha256:
         raise SynthesisArtifactError("synthesis saliency artifact digest mismatch")
     try:
@@ -1367,7 +1378,11 @@ def _screenshot_navigation_target(
     candidate = _secure_bundle_file(run_path, run_relative)
     if candidate is None:
         raise SynthesisArtifactError("synthesis screenshot path is unavailable")
-    content = secure_read_bytes(candidate, "synthesis screenshot")
+    content = secure_read_bytes(
+        candidate,
+        "synthesis screenshot",
+        max_bytes=_MAX_SOURCE_SCREENSHOT_BYTES,
+    )
     if hashlib.sha256(content).hexdigest() != reference.sha256:
         raise SynthesisArtifactError("synthesis screenshot digest mismatch")
     target["viewport_id"] = snapshot.get("id")
