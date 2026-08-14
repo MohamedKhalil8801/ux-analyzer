@@ -802,6 +802,64 @@ def test_failed_index_replace_keeps_previous_accepted_pointer_and_attempt(
     }
 
 
+def test_source_swap_after_prevalidation_cannot_publish_invalid_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    retained_attempt = _attempt(corpus, sequence=1)
+    raced_attempt = _attempt(corpus, sequence=2)
+    store = SynthesisArtifactStore(tmp_path)
+    store.write_attempt(retained_attempt, corpus)
+    retained_index = store.index_path.read_bytes()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    validated_source = outside / "validated-source"
+    real_secure_replace = synthesis_artifacts.secure_replace
+    swapped = False
+
+    def swap_before_rename(
+        source: Path,
+        destination: Path,
+        label: str,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        nonlocal swapped
+        if label == "synthesis attempt publication":
+            source.rename(validated_source)
+            source.mkdir()
+            (source / "synthesis.json").write_text("{}\n", encoding="ascii")
+            (source / "corpus-manifest.json").write_text("{}\n", encoding="ascii")
+            swapped = True
+        real_secure_replace(
+            source,
+            destination,
+            label,
+            replace_existing=replace_existing,
+        )
+
+    monkeypatch.setattr(synthesis_artifacts, "secure_replace", swap_before_rename)
+
+    with pytest.raises(SynthesisArtifactError):
+        store.write_attempt(raced_attempt, corpus)
+
+    destination = store.attempts_root / raced_attempt.attempt_id
+    assert swapped
+    assert not destination.exists()
+    assert store.index_path.read_bytes() == retained_index
+    assert store.accepted_attempt == retained_attempt
+    assert (
+        json.loads((validated_source / "synthesis.json").read_text(encoding="ascii"))[
+            "attempt_id"
+        ]
+        == raced_attempt.attempt_id
+    )
+    assert (validated_source / "corpus-manifest.json").read_bytes() == (
+        corpus.to_json().encode("ascii")
+    )
+
+
 def test_replace_index_windows_uses_secure_handle_relative_replacement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

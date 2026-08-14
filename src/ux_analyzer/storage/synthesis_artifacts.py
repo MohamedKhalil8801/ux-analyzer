@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -49,6 +50,7 @@ _ATTEMPT_CREATED_PATTERN = re.compile(
     r"^(?:\d{8}T\d{6}(?:\d{6})?Z|\d{4}-\d{2}-\d{2}T\d{6}(?:\.\d{1,6})?Z)$"
 )
 _ACCEPTED_STATUSES = frozenset({SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES})
+_ATTEMPT_BUNDLE_FILES = ("synthesis.json", "corpus-manifest.json")
 _PUBLICATION_LOCKS: dict[str, threading.RLock] = {}
 _PUBLICATION_LOCKS_GUARD = threading.Lock()
 _ReadResult = TypeVar("_ReadResult")
@@ -876,6 +878,7 @@ class SynthesisArtifactStore:
                     attempt.attempt_id,
                 )
             )
+            validated_identity = self._attempt_bundle_identity(staging)
             self._validate_index_record(
                 self._index_record(persisted, synthesis_bytes, corpus_bytes),
                 persisted,
@@ -883,10 +886,14 @@ class SynthesisArtifactStore:
                 corpus_bytes,
             )
             self._publish_attempt(staging, destination)
+            self._verify_published_attempt(
+                destination,
+                validated_identity,
+                synthesis_bytes,
+                corpus_bytes,
+            )
             selected = (
-                persisted.attempt_id
-                if persisted.status in _ACCEPTED_STATUSES
-                else None
+                persisted.attempt_id if persisted.status in _ACCEPTED_STATUSES else None
             )
             self._write_index(selected)
         except BaseException:
@@ -1283,6 +1290,111 @@ class SynthesisArtifactStore:
         _validate_objection_evidence_refs(attempt, corpus_value)
         return attempt, synthesis_bytes, corpus_bytes
 
+    def _attempt_bundle_identity(
+        self, directory: Path
+    ) -> tuple[os.stat_result, os.stat_result, os.stat_result]:
+        """Snapshot allowlisted directory/file identities around publication."""
+
+        if secure_is_link_or_reparse(directory) or not directory.is_dir():
+            raise SynthesisArtifactError("synthesis attempt is not a real directory")
+        children = tuple(directory.iterdir())
+        if {child.name for child in children} != set(_ATTEMPT_BUNDLE_FILES) or len(
+            children
+        ) != len(_ATTEMPT_BUNDLE_FILES):
+            raise SynthesisArtifactError(
+                "synthesis attempt contains unexpected bundle entries"
+            )
+        paths = tuple(directory / name for name in _ATTEMPT_BUNDLE_FILES)
+        if any(secure_is_link_or_reparse(path) or not path.is_file() for path in paths):
+            raise SynthesisArtifactError(
+                "synthesis attempt files must be real regular files"
+            )
+        return (
+            os.stat(directory, follow_symlinks=False),
+            os.stat(paths[0], follow_symlinks=False),
+            os.stat(paths[1], follow_symlinks=False),
+        )
+
+    def _verify_published_attempt(
+        self,
+        destination: Path,
+        validated_identity: tuple[
+            os.stat_result,
+            os.stat_result,
+            os.stat_result,
+        ],
+        synthesis_bytes: bytes,
+        corpus_bytes: bytes,
+    ) -> None:
+        """Bind published identities and bytes before any index mutation."""
+
+        try:
+            published_identity = self._attempt_bundle_identity(destination)
+        except SynthesisArtifactError:
+            self._quarantine_invalid_published_attempt(destination)
+            raise
+        except OSError as error:
+            raise SynthesisArtifactError(
+                "cannot verify published synthesis attempt identity"
+            ) from error
+        if not all(
+            os.path.samestat(validated, published)
+            for validated, published in zip(
+                validated_identity, published_identity, strict=True
+            )
+        ):
+            self._quarantine_invalid_published_attempt(destination)
+            raise SynthesisArtifactError(
+                "published synthesis attempt differs from validated staging identity"
+            )
+
+        try:
+            published_bytes = tuple(
+                secure_read_bytes(
+                    destination / name,
+                    f"published synthesis attempt {name}",
+                    max_bytes=MAX_SYNTHESIS_JSON_BYTES,
+                )
+                for name in _ATTEMPT_BUNDLE_FILES
+            )
+            identity_after_read = self._attempt_bundle_identity(destination)
+        except (OSError, RuntimeError, ValueError) as error:
+            try:
+                identity_after_error = self._attempt_bundle_identity(destination)
+            except (OSError, RuntimeError, ValueError):
+                identity_after_error = None
+            if identity_after_error is not None and any(
+                not os.path.samestat(before, after)
+                for before, after in zip(
+                    published_identity, identity_after_error, strict=True
+                )
+            ):
+                self._quarantine_invalid_published_attempt(destination)
+            raise SynthesisArtifactError(
+                "cannot verify published synthesis attempt bytes"
+            ) from error
+
+        expected_bytes = (synthesis_bytes, corpus_bytes)
+        identities_match = all(
+            os.path.samestat(before, after)
+            for before, after in zip(
+                published_identity, identity_after_read, strict=True
+            )
+        )
+        digests_match = all(
+            hmac.compare_digest(
+                hashlib.sha256(actual).digest(), hashlib.sha256(expected).digest()
+            )
+            and actual == expected
+            for actual, expected in zip(published_bytes, expected_bytes, strict=True)
+        )
+        if identities_match and digests_match:
+            return
+        self._quarantine_invalid_published_attempt(destination)
+        raise SynthesisArtifactError(
+            "published synthesis attempt differs from validated staged bytes"
+        )
+
     def _index_record(
         self,
         attempt: SynthesisAttempt,
@@ -1356,6 +1468,44 @@ class SynthesisArtifactStore:
             raise
         except (OSError, RuntimeError, ValueError) as error:
             raise SynthesisArtifactError(str(error)) from error
+
+    def _quarantine_invalid_published_attempt(self, destination: Path) -> None:
+        """Remove a proven mismatch from the immutable attempt namespace."""
+
+        if not os.path.lexists(destination):
+            return
+        try:
+            if secure_is_link_or_reparse(destination):
+                secure_unlink(destination, "invalid synthesis attempt publication")
+                return
+            quarantine = destination.with_name(
+                f".invalid-{destination.name}-{uuid4().hex}"
+            )
+            secure_replace(
+                destination,
+                quarantine,
+                "invalid synthesis attempt quarantine",
+                replace_existing=False,
+            )
+            try:
+                if quarantine.is_dir():
+                    secure_remove_tree(
+                        quarantine,
+                        "invalid synthesis attempt quarantine cleanup",
+                    )
+                else:
+                    secure_unlink(
+                        quarantine,
+                        "invalid synthesis attempt quarantine cleanup",
+                    )
+            except (OSError, RuntimeError, ValueError):
+                pass
+        except SynthesisArtifactError:
+            raise
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SynthesisArtifactError(
+                "cannot quarantine invalid synthesis attempt publication"
+            ) from error
 
     def _write_index(self, preferred_accepted_id: str | None) -> None:
         ids = self._attempt_ids()
