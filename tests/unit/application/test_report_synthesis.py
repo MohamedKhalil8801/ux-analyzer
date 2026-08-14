@@ -32,6 +32,7 @@ from ux_analyzer.providers.report_synthesis import (
     EvidenceReference,
     ObjectionResolution,
     PatternReviewResponse,
+    ReportTransportBudgetError,
     TypedObjection,
 )
 
@@ -52,7 +53,11 @@ def _corpus(
                 ref=EvidenceRef(EVIDENCE_ID, "event", "run-a", replay_sequence=1),
                 evidence_class=EvidenceClass.DETERMINISTIC_FACT,
                 summary="The user searched outside the expected task area.",
-                payload={"sequence": 1, "succeeded": True},
+                payload={
+                    "sequence": 1,
+                    "succeeded": True,
+                    "surface_ids": ("settings", "billing", "profile"),
+                },
             ),
             *extra_entries,
         ),
@@ -109,6 +114,15 @@ def _expectation_entry(
     )
 
 
+def _scenario_entry() -> EvidenceEntry:
+    return EvidenceEntry(
+        ref=EvidenceRef("scenario:run-a", "scenario", "run-a"),
+        evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+        summary="The scenario scope was recorded.",
+        payload={"id": "invite"},
+    )
+
+
 def _verification_entry(*, verified: bool) -> EvidenceEntry:
     return EvidenceEntry(
         ref=EvidenceRef("verification:run-a", "verification", "run-a"),
@@ -127,6 +141,15 @@ def _second_event_entry() -> EvidenceEntry:
     )
 
 
+def _surface_event_entry() -> EvidenceEntry:
+    return EvidenceEntry(
+        ref=EvidenceRef(SECOND_EVIDENCE_ID, "event", "run-a", replay_sequence=2),
+        evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+        summary="The user opened the settings surface.",
+        payload={"sequence": 2, "succeeded": True, "surface_id": "settings"},
+    )
+
+
 def _heatmap_entry() -> EvidenceEntry:
     return EvidenceEntry(
         ref=EvidenceRef(
@@ -140,6 +163,56 @@ def _heatmap_entry() -> EvidenceEntry:
         summary="A validated heatmap reference.",
         payload={"media_type": "image/png"},
     )
+
+
+def _large_mixed_reference_entries() -> tuple[EvidenceEntry, ...]:
+    return tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(
+                f"event:run-a:{index}",
+                "event",
+                "run-a",
+                replay_sequence=index,
+            ),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"Recorded event {index}.",
+            payload={"sequence": index},
+        )
+        for index in range(2, 34)
+    ) + (
+        EvidenceEntry(
+            ref=EvidenceRef(
+                "metric:run-a:outcome",
+                "metric",
+                "run-a",
+                metric_id="outcome",
+            ),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary="The task outcome was recorded.",
+            payload={"value": "verified-success"},
+        ),
+    )
+
+
+def _large_mixed_evidence_references() -> list[EvidenceReference]:
+    references = [
+        EvidenceReference(
+            evidence_id=f"event:run-a:{index}",
+            kind="event",
+            run_id="run-a",
+            replay_sequence=index,
+        )
+        for index in range(1, 34)
+    ]
+    references.append(
+        EvidenceReference(
+            evidence_id="metric:run-a:outcome",
+            kind="metric",
+            run_id="run-a",
+            metric_id="outcome",
+        )
+    )
+    return references
 
 
 class _HappyAnalyst:
@@ -251,6 +324,7 @@ def _scripted_service(
     adjudicator: Sequence[object] = (),
     resolver: EvidenceResolver | None = None,
     max_adjudication_revisions: int = 1,
+    max_final_verifications: int = 1,
     model_record_source: object | None = None,
 ) -> tuple[ReportSynthesisService, tuple[_ScriptedRole, ...]]:
     roles = (
@@ -267,6 +341,7 @@ def _scripted_service(
             adjudicator=roles[3],
             resolver=resolver,
             max_adjudication_revisions=max_adjudication_revisions,
+            max_final_verifications=max_final_verifications,
             model_record_source=model_record_source,
         ),
         roles,
@@ -352,7 +427,30 @@ async def test_retrieval_stops_after_complete_and_uses_resolver(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_retrieval_chunks_large_requests_before_resolver_boundary(
+async def test_role_retrieval_preserves_prior_resolved_evidence_across_rounds(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    service, roles = _scripted_service(
+        analyst=[
+            AnalystResponse(complete=False, evidence_requests=[EVIDENCE_ID]),
+            AnalystResponse(complete=False, evidence_requests=[SECOND_EVIDENCE_ID]),
+            AnalystResponse(complete=True, candidate_findings=[candidate]),
+        ],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_second_event_entry(),))
+    )
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    resolved = roles[0].calls[2]["kwargs"]["resolved_evidence"]
+    assert resolved.evidence_ids == (EVIDENCE_ID, SECOND_EVIDENCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_retrieval_rejects_requests_above_total_role_limit(
     tmp_path: Path,
 ) -> None:
     evidence_ids = [f"event:run-a:{index}" for index in range(1, 61)]
@@ -374,30 +472,92 @@ async def test_retrieval_chunks_large_requests_before_resolver_boundary(
         resolver=resolver,
     )
 
-    attempt = await service.synthesize(
-        _corpus(tmp_path, extra_entries=extra_entries)
-    )
+    attempt = await service.synthesize(_corpus(tmp_path, extra_entries=extra_entries))
 
-    assert attempt.status is SynthesisStatus.NO_ISSUES
-    assert resolver.calls == [tuple(evidence_ids[:32]), tuple(evidence_ids[32:])]
-    assert resolver.limits == [
-        {"max_entries": 32, "max_attachment_bytes": 16 * 1024 * 1024},
-        {"max_entries": 32, "max_attachment_bytes": 16 * 1024 * 1024},
-    ]
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert resolver.calls == []
     retrieval_log = next(
         entry
         for entry in attempt.retrieval_log
         if entry["request"] == tuple(evidence_ids)
     )
-    batch_logs = retrieval_log["batches"]
-    assert [(entry["batch_index"], entry["batch_count"]) for entry in batch_logs] == [
-        (0, 2),
-        (1, 2),
-    ]
-    assert batch_logs[0]["request"] == tuple(evidence_ids[:32])
-    assert batch_logs[1]["request"] == tuple(evidence_ids[32:])
-    assert batch_logs[0]["resolved_evidence_ids"] == tuple(evidence_ids[:32])
-    assert batch_logs[1]["resolved_evidence_ids"] == tuple(evidence_ids[32:])
+    assert retrieval_log["response"]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_retrieval_rejects_cumulative_role_requests_above_total_limit(
+    tmp_path: Path,
+) -> None:
+    evidence_ids = [f"event:run-a:{index}" for index in range(1, 41)]
+    entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(evidence_id, "event", "run-a", replay_sequence=index),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"Recorded event {index}.",
+            payload={"sequence": index},
+        )
+        for index, evidence_id in enumerate(evidence_ids[1:], start=2)
+    )
+    resolver = _RecordingResolver()
+    service, _ = _scripted_service(
+        analyst=[
+            AnalystResponse(complete=False, evidence_requests=evidence_ids[:20]),
+            AnalystResponse(complete=False, evidence_requests=evidence_ids[20:]),
+        ],
+        resolver=resolver,
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path, extra_entries=entries))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert resolver.calls == [tuple(evidence_ids[:16]), tuple(evidence_ids[16:20])]
+    assert any("retrieval request" in item for item in attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_review_rejects_large_mixed_reference_collections(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    references = _large_mixed_evidence_references()
+    objection = TypedObjection(
+        objection_id="large-objection",
+        finding_id=candidate.finding_id,
+        objection_type="factual-support",
+        severity=ObjectionSeverity.MATERIAL,
+        message="The broader evidence set should be checked.",
+        evidence_refs=references,
+        reviewer_role="report-evidence-auditor",
+    )
+    resolution = ObjectionResolution(
+        objection_id=objection.objection_id,
+        finding_id=candidate.finding_id,
+        resolved=True,
+        resolution="The broader evidence set supports the reviewed claim.",
+        evidence_refs=references,
+    )
+    resolver = _RecordingResolver()
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        pattern=[PatternReviewResponse(complete=True)],
+        adjudicator=[
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[candidate],
+                objection_resolutions=[resolution],
+            )
+        ],
+        resolver=resolver,
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=_large_mixed_reference_entries())
+    )
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert all(len(call) <= 16 for call in resolver.calls)
 
 
 @pytest.mark.asyncio
@@ -421,12 +581,95 @@ async def test_retrieval_budget_returns_unavailable_without_fourth_call(
 
 
 @pytest.mark.asyncio
+async def test_report_transport_budget_is_unavailable_with_safe_diagnostics(
+    tmp_path: Path,
+) -> None:
+    budget_error = ReportTransportBudgetError(
+        {
+            "stage": "request_budget",
+            "request_bytes": 750_001,
+            "budget_bytes": 750_000,
+            "attachment_bytes": 588_028,
+            "attachment_bytes_deferred": 0,
+            "attachment_count": 1,
+            "response_content_length": -1,
+            "top_level_keys": ["privateProviderField"],
+        }
+    )
+    service, _ = _scripted_service(analyst=[budget_error])
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.UNAVAILABLE
+    analyst_log = next(
+        entry for entry in attempt.retrieval_log if entry["role"] == "report-analyst"
+    )
+    assert analyst_log["error"] == "report request exceeded transport budget"
+    assert analyst_log["response"]["provider"]["diagnostics"] == {
+        "stage": "request_budget",
+        "request_bytes": 750_001,
+        "budget_bytes": 750_000,
+        "attachment_bytes": 588_028,
+        "attachment_bytes_deferred": 0,
+        "attachment_count": 1,
+    }
+    assert "invalid structured output" not in repr(attempt.retrieval_log)
+
+
+@pytest.mark.asyncio
+async def test_role_validation_failure_keeps_safe_stage_diagnostics(
+    tmp_path: Path,
+) -> None:
+    service, _ = _scripted_service(
+        analyst=[
+            ModelResponseValidationError(
+                ModelRole.REPORT_ANALYST,
+                "unknown evidence ID: private-provider-content-must-not-be-recorded",
+                response_summary={
+                    "schema": "AnalystResponse",
+                    "top_level_keys": ["private-provider-content-must-not-be-recorded"],
+                    "private": "private-provider-content-must-not-be-recorded",
+                },
+            )
+        ]
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert any(
+        "invalid structured output" in limitation for limitation in attempt.limitations
+    )
+    assert "private-provider-content-must-not-be-recorded" not in repr(
+        attempt.limitations
+    )
+    analyst_log = next(
+        entry for entry in attempt.retrieval_log if entry["role"] == "report-analyst"
+    )
+    assert analyst_log["response"]["provider"]["diagnostics"] == {
+        "role": "report-analyst",
+        "stage": "role_validation",
+        "error_type": "ModelResponseValidationError",
+        "validation_reason_code": "unknown-evidence-id",
+        "validation_reason": "unknown evidence ID",
+        "response_summary": {
+            "schema": "AnalystResponse",
+        },
+    }
+    assert "private-provider-content-must-not-be-recorded" not in repr(
+        attempt.retrieval_log
+    )
+
+
+@pytest.mark.asyncio
 async def test_hallucinated_reference_is_rejected_before_publication(
     tmp_path: Path,
 ) -> None:
     candidate = _candidate(evidence_id="event:run-a:999")
     service, _ = _scripted_service(
-        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])]
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
@@ -435,6 +678,9 @@ async def test_hallucinated_reference_is_rejected_before_publication(
     assert not attempt.findings
     assert any(
         "publication validation" in limitation for limitation in attempt.limitations
+    )
+    assert any(
+        "unknown evidence ID" in limitation for limitation in attempt.limitations
     )
 
 
@@ -848,7 +1094,170 @@ async def test_unsupported_causal_language_is_rejected(tmp_path: Path) -> None:
     attempt = await service.synthesize(_corpus(tmp_path))
 
     assert attempt.status is SynthesisStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_counterevidence_cannot_supply_primary_support(tmp_path: Path) -> None:
+    payload = _candidate().model_dump(mode="python")
+    payload["evidence_refs"] = [
+        {
+            "evidence_id": "expectation:run-a",
+            "kind": "expectation",
+            "run_id": "run-a",
+        }
+    ]
+    payload["counterevidence"] = [
+        {
+            "evidence_id": EVIDENCE_ID,
+            "kind": "event",
+            "run_id": "run-a",
+            "replay_sequence": 1,
+        }
+    ]
+    candidate = CandidateFinding.model_validate(payload)
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate])
+        ],
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_expectation_entry(),))
+    )
+
+    assert attempt.status is SynthesisStatus.REJECTED
     assert not attempt.findings
+
+
+@pytest.mark.asyncio
+async def test_counterevidence_cannot_supply_causal_ui_state_support(
+    tmp_path: Path,
+) -> None:
+    payload = _candidate(root_cause="The layout causes the extra navigation.").model_dump(
+        mode="python"
+    )
+    payload["counterevidence"] = [
+        {
+            "evidence_id": HEATMAP_ID,
+            "kind": "heatmap",
+            "run_id": "run-a",
+            "viewport_id": "viewport-1",
+            "sha256": "a" * 64,
+        }
+    ]
+    candidate = CandidateFinding.model_validate(payload)
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate])
+        ],
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_heatmap_entry(),))
+    )
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+
+
+@pytest.mark.asyncio
+async def test_affected_surfaces_must_be_named_by_supporting_evidence(
+    tmp_path: Path,
+) -> None:
+    unsupported = _candidate(affected_surfaces=("admin",))
+    supported = _candidate(
+        finding_id="settings-surface",
+        evidence_id=SECOND_EVIDENCE_ID,
+        affected_surfaces=("settings",),
+    )
+    service, _ = _scripted_service(
+        analyst=[
+            AnalystResponse(
+                complete=True,
+                candidate_findings=[unsupported, supported],
+            )
+        ],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[supported])
+        ],
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_surface_event_entry(),))
+    )
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert [finding.finding_id for finding in attempt.findings] == ["settings-surface"]
+    assert [finding.finding_id for finding in attempt.candidate_findings] == [
+        "settings-surface"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scope_and_expectation_metadata_cannot_establish_a_finding(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate(root_cause="The expectation is not met.")
+    candidate = candidate.model_copy(
+        update={
+            "evidence_refs": [
+                EvidenceReference(
+                    evidence_id="scenario:run-a",
+                    kind="scenario",
+                    run_id="run-a",
+                ),
+                EvidenceReference(
+                    evidence_id="expectation:run-a",
+                    kind="expectation",
+                    run_id="run-a",
+                ),
+            ]
+        }
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])]
+    )
+
+    attempt = await service.synthesize(
+        _corpus(
+            tmp_path,
+            extra_entries=(_scenario_entry(), _expectation_entry()),
+        )
+    )
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert any(
+        "publication validation" in limitation for limitation in attempt.limitations
+    )
+
+
+@pytest.mark.asyncio
+async def test_adjudicator_cannot_replace_reviewed_core_claim(tmp_path: Path) -> None:
+    reviewed = _candidate(severity="low")
+    replacement = _candidate(
+        finding_id=reviewed.finding_id,
+        severity="critical",
+        title="An unrelated account deletion blocker",
+        issue="The user cannot delete an account.",
+        impact="A separate critical workflow is blocked.",
+        root_cause="The account deletion control is missing.",
+        severity_justification="A critical account workflow is unavailable.",
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[reviewed])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[replacement])
+        ],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert attempt.rejected_findings
     assert any(
         "publication validation" in limitation for limitation in attempt.limitations
     )
@@ -957,6 +1366,79 @@ async def test_one_adjudication_revision_can_resolve_blocking_objection(
         if item.severity is ObjectionSeverity.BLOCKING and not item.resolved
     ]
     assert len(roles[3].calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_configured_adjudication_revision_limit_is_honored(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    objection = _blocking_objection(candidate.finding_id)
+    resolution = ObjectionResolution(
+        objection_id=objection.objection_id,
+        finding_id=candidate.finding_id,
+        resolved=True,
+        resolution="The cited event resolves the reviewed objection.",
+        evidence_refs=objection.evidence_refs,
+    )
+    service, roles = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate]),
+            AdjudicationResponse(complete=True, final_findings=[candidate]),
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[candidate],
+                objection_resolutions=[resolution],
+            ),
+        ],
+        max_adjudication_revisions=2,
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert len(roles[3].calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_configured_final_verification_count_is_honored(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+
+    class CountingService(ReportSynthesisService):
+        final_verification_calls = 0
+
+        def _final_verification(self, *args: Any, **kwargs: Any):
+            self.final_verification_calls += 1
+            return super()._final_verification(*args, **kwargs)
+
+    roles = (
+        _ScriptedRole(
+            "analyst",
+            [AnalystResponse(complete=True, candidate_findings=[candidate])],
+        ),
+        _ScriptedRole("auditor", [EvidenceAuditResponse(complete=True)]),
+        _ScriptedRole("pattern", [PatternReviewResponse(complete=True)]),
+        _ScriptedRole(
+            "adjudicator",
+            [AdjudicationResponse(complete=True, final_findings=[candidate])],
+        ),
+    )
+    service = CountingService(
+        analyst=roles[0],
+        evidence_auditor=roles[1],
+        pattern_reviewer=roles[2],
+        adjudicator=roles[3],
+        max_final_verifications=2,
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert service.final_verification_calls == 2
 
 
 @pytest.mark.asyncio

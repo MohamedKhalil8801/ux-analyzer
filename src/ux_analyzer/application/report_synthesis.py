@@ -32,6 +32,7 @@ from ux_analyzer.domain.synthesis import (
     SynthesisObjection,
     SynthesisStatus,
 )
+from ux_analyzer.ports.model_transport import TransportBudgetError
 from ux_analyzer.ports.models import (
     ModelCallRecord,
     ModelManifest,
@@ -58,7 +59,8 @@ from ux_analyzer.ports.report_synthesis import (
 REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION = "synthesis-v1"
 REPORT_SYNTHESIS_PROMPT_VERSION = "report-synthesis-orchestrator-v1"
 MAX_RETRIEVAL_ROUNDS = 3
-DEFAULT_MAX_RETRIEVAL_ENTRIES = 32
+DEFAULT_MAX_RETRIEVAL_ENTRIES = 16
+MAX_ROLE_RETRIEVAL_ENTRIES = 32
 DEFAULT_MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 
 _PRINCIPLE_AUTHORITY_MARKERS = (
@@ -74,6 +76,24 @@ _PRINCIPLE_AUTHORITY_MARKERS = (
 _CAUSAL_MARKERS = re.compile(
     r"\b(?:because|due to|causes?|caused by|results? in|leads? to|drives?)\b",
     re.IGNORECASE,
+)
+_PRIMARY_OBSERVED_EVIDENCE_KINDS = frozenset(
+    {
+        "event",
+        "replay",
+        "verification",
+        "metric",
+        "viewport",
+        "element",
+        "screenshot",
+        "heatmap",
+    }
+)
+_UI_STATE_EVIDENCE_KINDS = frozenset(
+    {"viewport", "element", "screenshot", "heatmap"}
+)
+_BEHAVIOR_OR_OUTCOME_EVIDENCE_KINDS = frozenset(
+    {"event", "replay", "verification", "metric"}
 )
 _HARM_MARKERS = (
     "abandon",
@@ -213,6 +233,8 @@ def _response_payload(response: _Response) -> Mapping[str, object]:
 def _error_category(error: BaseException) -> tuple[bool, str]:
     name = type(error).__name__
     reason = getattr(error, "reason", None)
+    if isinstance(error, TransportBudgetError):
+        return True, "report request exceeded transport budget"
     if name == "ModelFailureError" and reason == "invalid structured output":
         return False, "invalid structured synthesis output"
     if name == "ModelFailureError" and reason == "model unavailable":
@@ -250,11 +272,302 @@ def _provider_failure_details(error: BaseException) -> dict[str, object]:
             and "\n" not in value
         ):
             details[key] = value
+    diagnostics = getattr(error, "diagnostics", None)
+    if isinstance(diagnostics, Mapping):
+        safe_diagnostics = _safe_structural_diagnostics(
+            cast(Mapping[object, object], diagnostics)
+        )
+        if safe_diagnostics:
+            details["diagnostics"] = safe_diagnostics
+    elif isinstance(error, ModelResponseValidationError):
+        reason_code, reason = _safe_role_validation_reason(error.reason)
+        details["diagnostics"] = _safe_structural_diagnostics(
+            {
+                "role": error.role.value,
+                "stage": "role_validation",
+                "error_type": type(error).__name__,
+                "validation_reason_code": reason_code,
+                "validation_reason": reason,
+                "response_summary": error.response_summary,
+            }
+        )
     return details
 
 
+def _safe_role_validation_reason(reason: str) -> tuple[str, str]:
+    normalized = reason.strip().casefold()
+    known_reasons = (
+        ("incomplete response", "incomplete-response", "incomplete response"),
+        (
+            "invalid evidence request id",
+            "invalid-evidence-id",
+            "invalid evidence request ID",
+        ),
+        (
+            "evidence request cannot be validated",
+            "missing-corpus-evidence",
+            "evidence request cannot be validated without corpus IDs",
+        ),
+        ("unknown evidence id", "unknown-evidence-id", "unknown evidence ID"),
+        ("duplicate evidence id", "duplicate-evidence-id", "duplicate evidence ID"),
+        (
+            "principles are not evidence",
+            "principle-used-as-evidence",
+            "principles are not evidence",
+        ),
+        (
+            "unknown ux principle",
+            "unknown-principle",
+            "finding references an unknown UX principle",
+        ),
+    )
+    for prefix, code, safe_message in known_reasons:
+        if normalized.startswith(prefix):
+            return code, safe_message
+    if normalized == "response schema validation failed":
+        return "schema-validation", "response schema validation failed"
+    return "role-validation-failed", "role validation failed"
+
+
+def _safe_response_summary(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    summary = cast(Mapping[object, object], value)
+    result: dict[str, object] = {}
+    for name in ("schema", "parsed_type"):
+        item = summary.get(name)
+        if isinstance(item, str) and 0 < len(item) <= 128 and "\n" not in item:
+            result[name] = item
+    for name in ("top_level_key_count", "candidate_count", "objection_count"):
+        item = summary.get(name)
+        if type(item) is int and 0 <= item <= 10_000:
+            result[name] = item
+    return result
+
+
+def _safe_structural_diagnostics(value: Mapping[object, object]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    enum_fields = {
+        "role": {role.value for role in ModelRole if role.value.startswith("report-")},
+        "response_mode": {"plain", "strict", "json-object"},
+        "stage": {
+            "content_parsing",
+            "normalization",
+            "schema_validation",
+            "request_budget",
+            "role_validation",
+        },
+        "response_content_type": {
+            "missing",
+            "object",
+            "list",
+            "tuple",
+            "bool",
+            "str",
+            "int",
+            "float",
+            "null",
+            "other",
+        },
+        "parsed_type": {
+            "object",
+            "list",
+            "tuple",
+            "bool",
+            "str",
+            "int",
+            "float",
+            "null",
+            "other",
+        },
+        "finish_reason": {
+            "stop",
+            "length",
+            "tool_calls",
+            "function_call",
+            "content_filter",
+        },
+        "error_type": {
+            "ValueError",
+            "TypeError",
+            "ValidationError",
+            "ModelResponseValidationError",
+        },
+    }
+    for name, allowed in enum_fields.items():
+        item = value.get(name)
+        if isinstance(item, str) and item in allowed:
+            result[name] = item
+    for name in (
+        "attempt_count",
+        "response_content_length",
+        "response_content_part_count",
+        "request_bytes",
+        "budget_bytes",
+        "attachment_bytes",
+        "attachment_bytes_deferred",
+        "attachment_count",
+        "resolved_evidence_count",
+        "resolved_evidence_deferred",
+    ):
+        item = value.get(name)
+        if type(item) is int and 0 <= item <= 1_000_000_000:
+            result[name] = item
+    markers = value.get("response_content_markers")
+    allowed_markers = {
+        "missing",
+        "content_parts",
+        "text_only_parts",
+        "mixed_parts",
+        "multiple_parts",
+        "empty",
+        "text_part",
+        "structured_object",
+        "object",
+        "list",
+        "tuple",
+        "bool",
+        "str",
+        "int",
+        "float",
+        "null",
+        "other",
+        "markdown_fence",
+        "object_candidate",
+        "prose_prefix",
+        "raw_object_prefix",
+        "array_prefix",
+        "scalar_prefix",
+        "prose_suffix",
+        "prose",
+    }
+    if isinstance(markers, Sequence) and not isinstance(markers, (str, bytes)):
+        safe_markers = [
+            item
+            for item in cast(Sequence[object], markers)[:16]
+            if isinstance(item, str) and item in allowed_markers
+        ]
+        if safe_markers:
+            result["response_content_markers"] = safe_markers
+    names = value.get("top_level_keys")
+    if isinstance(names, Sequence) and not isinstance(names, (str, bytes)):
+        safe_names = [
+            item
+            for item in cast(Sequence[object], names)[:64]
+            if _safe_diagnostic_name(item)
+        ]
+        if safe_names:
+            result["top_level_keys"] = safe_names
+    value_types = value.get("top_level_value_types")
+    if isinstance(value_types, Mapping):
+        safe_types = {
+            str(key): item
+            for key, item in cast(Mapping[object, object], value_types).items()
+            if _safe_diagnostic_name(key)
+            and isinstance(item, str)
+            and item
+            in {"object", "list", "tuple", "bool", "str", "int", "float", "null", "other"}
+        }
+        if safe_types:
+            result["top_level_value_types"] = safe_types
+    errors = value.get("validation_errors")
+    if isinstance(errors, Sequence) and not isinstance(errors, (str, bytes)):
+        safe_errors = [
+            safe
+            for item in cast(Sequence[object], errors)[:16]
+            if (safe := _safe_validation_error(item)) is not None
+        ]
+        if safe_errors:
+            result["validation_errors"] = safe_errors
+    for name in ("validation_reason_code", "validation_reason"):
+        item = value.get(name)
+        if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9 ._-]{1,128}", item):
+            result[name] = item
+    summary = _safe_response_summary(value.get("response_summary"))
+    if summary:
+        result["response_summary"] = summary
+    return result
+
+
+_DIAGNOSTIC_SCHEMA_FIELDS = frozenset(
+    {
+        "complete",
+        "evidence_requests",
+        "candidate_findings",
+        "objections",
+        "final_findings",
+        "objection_resolutions",
+        "finding_id",
+        "title",
+        "issue",
+        "impact",
+        "root_cause",
+        "fixes",
+        "severity",
+        "confidence",
+        "evidence_refs",
+        "affected_surfaces",
+        "principles",
+        "counterevidence",
+        "limitations",
+        "reviewer_state",
+        "evidence_class",
+        "reproducibility",
+        "severity_justification",
+        "reviewer_notes",
+        "objection_id",
+        "objection_type",
+        "message",
+        "reviewer_role",
+        "resolved",
+        "resolution",
+        "evidence_id",
+        "kind",
+        "run_id",
+        "viewport_id",
+        "element_id",
+        "event_id",
+        "metric_id",
+        "artifact_path",
+        "replay_sequence",
+        "sha256",
+    }
+)
+_DIAGNOSTIC_HASHED_NAME = re.compile(r"^unknown-[0-9a-f]{12}$")
+
+
+def _safe_diagnostic_name(value: object) -> bool:
+    return isinstance(value, str) and (
+        value in _DIAGNOSTIC_SCHEMA_FIELDS
+        or _DIAGNOSTIC_HASHED_NAME.fullmatch(value) is not None
+    )
+
+
+def _safe_validation_error(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    item = cast(Mapping[object, object], value)
+    path = item.get("path")
+    error_type = item.get("type")
+    if not isinstance(path, Sequence) or isinstance(path, (str, bytes)):
+        return None
+    safe_path: list[object] = []
+    for component in cast(Sequence[object], path)[:16]:
+        if type(component) is int and 0 <= component <= 10_000:
+            safe_path.append(component)
+        elif _safe_diagnostic_name(component):
+            safe_path.append(component)
+        else:
+            return None
+    if not isinstance(error_type, str) or re.fullmatch(r"[a-z0-9_]{1,64}", error_type) is None:
+        return None
+    return {"path": safe_path, "type": error_type}
+
+
 def _operational_limitation(error: BaseException, category: str) -> str:
-    if category == "model provider unavailable":
+    if category == "report request exceeded transport budget":
+        limitation = "The synthesis request exceeded its bounded transport budget."
+    elif category == "model provider unavailable":
         limitation = (
             "The synthesis provider reports that the configured model is unavailable."
         )
@@ -675,15 +988,14 @@ class ReportSynthesisService:
         )
         limitations.extend(final_limitations)
 
-        if (
-            self._has_unresolved_blocking(resolved_objections)
-            and self.max_adjudication_revisions
-        ):
+        for _revision_number in range(self.max_adjudication_revisions):
+            if not self._has_unresolved_blocking(resolved_objections):
+                break
             revision_run = await self._run_role(
                 ModelRole.REPORT_ADJUDICATOR,
                 cast(object, self.adjudicator),
                 corpus,
-                candidate_findings=tuple(final_models) or candidate_input,
+                candidate_findings=candidate_input,
                 objections=resolved_objections,
                 initial_evidence_ids=tuple(dict.fromkeys(adjudication_evidence_ids)),
                 previous_output=adjudication_response,
@@ -696,6 +1008,7 @@ class ReportSynthesisService:
                     revision_run.limitation
                     or "Adjudication repair produced no usable output."
                 )
+                break
             else:
                 adjudication_response = cast(
                     AdjudicationResponse, revision_run.response
@@ -716,24 +1029,29 @@ class ReportSynthesisService:
                         candidate_findings,
                         "Resolution validation rejected the adjudication repair.",
                     )
+                    break
                 else:
+                    final_models = tuple(adjudication_response.final_findings)
                     accepted, rejected, final_limitations = (
                         self._validated_final_findings(
                             corpus,
-                            tuple(adjudication_response.final_findings),
+                            final_models,
                             candidate_findings,
                             resolved_objections,
                         )
                     )
                     limitations.extend(final_limitations)
 
-        accepted, rejected, verification_limitations = self._final_verification(
-            corpus,
-            accepted,
-            rejected,
-            resolved_objections,
-        )
-        limitations.extend(verification_limitations)
+        for _verification_number in range(self.max_final_verifications):
+            accepted, rejected, verification_limitations = self._final_verification(
+                corpus,
+                accepted,
+                rejected,
+                resolved_objections,
+            )
+            limitations.extend(verification_limitations)
+            if not accepted:
+                break
         unresolved_blocking = self._has_unresolved_blocking(resolved_objections)
 
         if duplicate_candidate_ids:
@@ -791,7 +1109,9 @@ class ReportSynthesisService:
     ) -> _RoleRun:
         logs: list[Mapping[str, object]] = []
         resolved: ResolvedEvidence | None = None
+        cumulative_requested: set[str] = set()
         if initial_evidence_ids:
+            cumulative_requested.update(initial_evidence_ids)
             try:
                 resolved, batches = self._resolve_evidence_batches(
                     corpus,
@@ -892,13 +1212,35 @@ class ReportSynthesisService:
                 return _RoleRun(response, tuple(logs))
 
             try:
-                resolved, batches = self._resolve_evidence_batches(
+                requested_ids = tuple(dict.fromkeys(response.evidence_requests))
+                if len(cumulative_requested | set(requested_ids)) > MAX_ROLE_RETRIEVAL_ENTRIES:
+                    raise ValueError("cumulative evidence request limit exceeded")
+                cumulative_requested.update(requested_ids)
+                newly_resolved, batches = self._resolve_evidence_batches(
                     corpus,
                     response.evidence_requests,
                     role=role,
                     phase=phase,
                     round_number=round_number,
                 )
+                if resolved is None:
+                    resolved = newly_resolved
+                else:
+                    combined_entries = {
+                        entry.ref.evidence_id: entry for entry in resolved.entries
+                    }
+                    combined_entries.update(
+                        {
+                            entry.ref.evidence_id: entry
+                            for entry in newly_resolved.entries
+                        }
+                    )
+                    resolved = ResolvedEvidence.from_entries(
+                        corpus,
+                        tuple(combined_entries.values()),
+                        max_entries=MAX_ROLE_RETRIEVAL_ENTRIES,
+                        max_attachment_bytes=self.max_attachment_bytes,
+                    )
             except (OSError, RuntimeError, ValueError, TypeError) as error:
                 cause = getattr(error, "cause", error)
                 log["response"] = {
@@ -912,8 +1254,7 @@ class ReportSynthesisService:
                     retrieval_log=tuple(logs),
                     invalid=True,
                     limitation=(
-                        "The synthesis evidence boundary rejected a retrieval "
-                        "request."
+                        "The synthesis evidence boundary rejected a retrieval request."
                     ),
                 )
             log["resolved_evidence_ids"] = resolved.evidence_ids
@@ -949,6 +1290,8 @@ class ReportSynthesisService:
         requested = tuple(dict.fromkeys(evidence_ids))
         if not requested:
             raise ValueError("evidence request must not be empty")
+        if len(requested) > MAX_ROLE_RETRIEVAL_ENTRIES:
+            raise ValueError("evidence request exceeds role retrieval limit")
         batch_count = (
             len(requested) + self.max_retrieval_entries - 1
         ) // self.max_retrieval_entries
@@ -1081,7 +1424,10 @@ class ReportSynthesisService:
             raise ValueError("finding contains forbidden narrative input")
         if not finding.severity_justification.strip():
             raise ValueError("finding requires severity justification")
-        evidence_refs = self._finding_evidence_refs(finding)
+        evidence_refs = tuple(finding.evidence_refs)
+        counterevidence_refs = tuple(
+            item for item in finding.counterevidence if isinstance(item, EvidenceRef)
+        )
         if any(marker in lowered for marker in _PRINCIPLE_AUTHORITY_MARKERS):
             raise ValueError("UX principles cannot justify severity")
         if any(
@@ -1091,18 +1437,17 @@ class ReportSynthesisService:
             raise ValueError("UX principles cannot justify severity")
         if finding.evidence_class is EvidenceClass.UNSUPPORTED_HUMAN_CLAIM:
             raise ValueError("unsupported human claim cannot become finding")
-        validate_evidence_refs(corpus, evidence_refs)
-        self.resolver.resolve(
+        self._validate_and_resolve_references(
             corpus,
-            tuple(ref.evidence_id for ref in evidence_refs),
-            max_entries=self.max_retrieval_entries,
-            max_attachment_bytes=self.max_attachment_bytes,
+            (*evidence_refs, *counterevidence_refs),
+            role=ModelRole.REPORT_ANALYST,
+            phase="publication-validation",
         )
         entries = tuple(corpus.require(ref.evidence_id) for ref in evidence_refs)
-        if any(
-            entry.evidence_class is EvidenceClass.UNSUPPORTED_HUMAN_CLAIM
-            for entry in entries
-        ):
+        counter_entries = tuple(
+            corpus.require(ref.evidence_id) for ref in counterevidence_refs
+        )
+        if any(entry.evidence_class is EvidenceClass.UNSUPPORTED_HUMAN_CLAIM for entry in (*entries, *counter_entries)):
             raise ValueError("unsupported human claim cannot support a finding")
         if finding.evidence_class is EvidenceClass.DETERMINISTIC_FACT and any(
             entry.evidence_class is not EvidenceClass.DETERMINISTIC_FACT
@@ -1111,10 +1456,26 @@ class ReportSynthesisService:
             raise ValueError(
                 "finding evidence class is incompatible with referenced evidence"
             )
+        evidence_kinds = {entry.ref.kind for entry in entries}
+        if not evidence_kinds.intersection(_PRIMARY_OBSERVED_EVIDENCE_KINDS):
+            raise ValueError("finding has no primary observed evidence")
+        if finding.affected_surfaces:
+            supported_surfaces = {
+                value.casefold()
+                for entry in entries
+                for value in self._surface_tokens(entry.payload)
+            }
+            missing_surfaces = tuple(
+                surface
+                for surface in finding.affected_surfaces
+                if surface.casefold() not in supported_surfaces
+            )
+            if missing_surfaces:
+                raise ValueError("affected surfaces are not named by supporting evidence")
         self._validate_verifier_consistency(corpus, finding)
-        if (
-            _CAUSAL_MARKERS.search(finding.root_cause)
-            and len({(ref.run_id, ref.kind) for ref in evidence_refs}) < 2
+        if _CAUSAL_MARKERS.search(finding.root_cause) and not (
+            {entry.ref.kind for entry in entries}.intersection(_UI_STATE_EVIDENCE_KINDS)
+            and {entry.ref.kind for entry in entries}.intersection(_BEHAVIOR_OR_OUTCOME_EVIDENCE_KINDS)
         ):
             raise ValueError("causal language is not supported by enough evidence")
 
@@ -1123,6 +1484,41 @@ class ReportSynthesisService:
         return tuple(finding.evidence_refs) + tuple(
             item for item in finding.counterevidence if isinstance(item, EvidenceRef)
         )
+
+    @staticmethod
+    def _surface_tokens(payload: Mapping[str, object]) -> tuple[str, ...]:
+        values: list[str] = []
+        for key, raw in payload.items():
+            if str(key).casefold() not in {"surface", "surface_id", "surface_ids", "surfaces"}:
+                continue
+            if isinstance(raw, str) and raw.strip():
+                values.append(raw.strip())
+            elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+                raw_values = cast(Sequence[object], raw)
+                values.extend(
+                    item.strip()
+                    for item in raw_values
+                    if isinstance(item, str) and item.strip()
+                )
+        return tuple(values)
+
+    def _validate_and_resolve_references(
+        self,
+        corpus: EvidenceCorpus,
+        refs: Sequence[EvidenceRef],
+        *,
+        role: ModelRole,
+        phase: str,
+    ) -> None:
+        validate_evidence_refs(corpus, refs)
+        if refs:
+            self._resolve_evidence_batches(
+                corpus,
+                tuple(ref.evidence_id for ref in refs),
+                role=role,
+                phase=phase,
+                round_number=0,
+            )
 
     @staticmethod
     def _validate_verifier_consistency(
@@ -1208,14 +1604,12 @@ class ReportSynthesisService:
                 raise ValueError(
                     "reviewer objection contains forbidden narrative input"
                 )
-            validate_evidence_refs(corpus, domain.evidence_refs)
-            if domain.evidence_refs:
-                self.resolver.resolve(
-                    corpus,
-                    tuple(ref.evidence_id for ref in domain.evidence_refs),
-                    max_entries=self.max_retrieval_entries,
-                    max_attachment_bytes=self.max_attachment_bytes,
-                )
+            self._validate_and_resolve_references(
+                corpus,
+                domain.evidence_refs,
+                role=role,
+                phase="review-validation",
+            )
             reviewer_role = domain.reviewer_role.strip().casefold()
             if not reviewer_role:
                 canonical_role = role
@@ -1281,12 +1675,11 @@ class ReportSynthesisService:
                 )
             if refs:
                 try:
-                    validate_evidence_refs(corpus, refs)
-                    self.resolver.resolve(
+                    self._validate_and_resolve_references(
                         corpus,
-                        tuple(ref.evidence_id for ref in refs),
-                        max_entries=self.max_retrieval_entries,
-                        max_attachment_bytes=self.max_attachment_bytes,
+                        refs,
+                        role=ModelRole.REPORT_ADJUDICATOR,
+                        phase="resolution-validation",
                     )
                 except (OSError, RuntimeError, TypeError, ValueError):
                     valid_resolution = False
@@ -1319,7 +1712,10 @@ class ReportSynthesisService:
         candidate_findings: Sequence[SynthesisFinding],
         objections: Sequence[SynthesisObjection],
     ) -> tuple[list[SynthesisFinding], list[SynthesisFinding], list[str]]:
-        candidate_ids = {finding.finding_id for finding in candidate_findings}
+        candidates_by_id = {
+            finding.finding_id: finding for finding in candidate_findings
+        }
+        candidate_ids = set(candidates_by_id)
         accepted: list[SynthesisFinding] = []
         rejected: list[SynthesisFinding] = []
         limitations: list[str] = []
@@ -1344,6 +1740,20 @@ class ReportSynthesisService:
             if model.finding_id not in candidate_ids:
                 limitations.append(
                     f"Final finding {model.finding_id} was not present in analyst candidates."
+                )
+                continue
+            reviewed = candidates_by_id[model.finding_id]
+            if not self._preserves_reviewed_claim(model, reviewed):
+                limitations.append(
+                    f"Final finding {model.finding_id} failed publication validation because it changed the reviewed core claim."
+                )
+                rejected.append(
+                    replace(
+                        reviewed,
+                        reviewer_state="not-established",
+                        reviewer_notes=tuple(reviewed.reviewer_notes)
+                        + ("The adjudicator changed the reviewed core claim.",),
+                    )
                 )
                 continue
             try:
@@ -1381,6 +1791,24 @@ class ReportSynthesisService:
             )
         accepted.sort(key=_finding_sort_key)
         return accepted, rejected, limitations
+
+    @staticmethod
+    def _preserves_reviewed_claim(
+        final_model: CandidateFinding,
+        reviewed: SynthesisFinding,
+    ) -> bool:
+        core_claim = (
+            (final_model.issue, reviewed.issue),
+            (final_model.impact, reviewed.impact),
+            (final_model.root_cause, reviewed.root_cause),
+        )
+        if any(final.strip() != original.strip() for final, original in core_claim):
+            return False
+        reviewed_evidence_ids = {
+            ref.evidence_id for ref in reviewed.evidence_refs
+        }
+        final_evidence_ids = {ref.evidence_id for ref in final_model.evidence_refs}
+        return reviewed_evidence_ids <= final_evidence_ids
 
     def _final_verification(
         self,
@@ -1579,6 +2007,50 @@ class ReportSynthesisService:
 
     @staticmethod
     def _safe_validation_reason(error: BaseException) -> str:
+        reason = str(error).strip().casefold()
+        known_reasons = (
+            (
+                "evidence reference does not match corpus entry",
+                "evidence reference does not match corpus entry",
+            ),
+            (
+                "evidence reference",
+                "evidence reference validation failed",
+            ),
+            (
+                "evidence id namespace",
+                "evidence ID namespace validation failed",
+            ),
+            (
+                "finding evidence class is incompatible",
+                "finding evidence class is incompatible with referenced evidence",
+            ),
+            (
+                "finding conflicts with verifier outcome",
+                "finding conflicts with verifier outcome",
+            ),
+            (
+                "finding contains forbidden narrative input",
+                "finding contains forbidden narrative input",
+            ),
+            (
+                "finding requires severity justification",
+                "finding requires severity justification",
+            ),
+            (
+                "causal language is not supported",
+                "causal language is not supported by evidence",
+            ),
+            (
+                "finding has no primary observed evidence",
+                "finding has no primary observed evidence",
+            ),
+            ("unknown evidence id", "unknown evidence ID"),
+            ("duplicate evidence id", "duplicate evidence ID"),
+        )
+        for prefix, safe_message in known_reasons:
+            if reason.startswith(prefix):
+                return safe_message
         name = type(error).__name__
         if name in {"ValueError", "TypeError", "ValidationError"}:
             return "evidence, schema, or publication contract failed"
@@ -1588,6 +2060,7 @@ class ReportSynthesisService:
 __all__ = [
     "DEFAULT_MAX_ATTACHMENT_BYTES",
     "DEFAULT_MAX_RETRIEVAL_ENTRIES",
+    "MAX_ROLE_RETRIEVAL_ENTRIES",
     "MAX_RETRIEVAL_ROUNDS",
     "REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION",
     "REPORT_SYNTHESIS_PROMPT_VERSION",

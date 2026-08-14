@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -7,10 +8,12 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 
 from ux_analyzer.application.evidence_corpus import (
@@ -20,9 +23,11 @@ from ux_analyzer.application.evidence_corpus import (
 )
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
 from ux_analyzer.domain.synthesis import EvidenceRef, ObjectionSeverity
+from ux_analyzer.ports.model_transport import TransportBudgetError
 from ux_analyzer.ports.models import ModelResponseValidationError, ModelRole
 from ux_analyzer.providers.report_synthesis import (
     _INITIAL_MANIFEST_MAX_BYTES,
+    _REPORT_MODEL_CONTEXT_MAX_ENTRIES,
     _REPORT_REQUEST_MAX_BYTES,
     _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES,
     AdjudicationResponse,
@@ -114,6 +119,31 @@ class MeasuringRecordingClient(RecordingClient):
         return _REPORT_REQUEST_MAX_BYTES + 1
 
 
+class AttachmentAwareRecordingClient(RecordingClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.measured_sizes: list[int] = []
+
+    def request_size(
+        self,
+        schema: type[Any],
+        messages: Sequence[Any],
+        *,
+        model: str,
+        role: ModelRole,
+    ) -> int:
+        del schema, model, role
+        has_attachments = any(message.attachments for message in messages)
+        resolved_evidence = json.loads(messages[1].content)["resolved_evidence"]
+        measured = (
+            _REPORT_REQUEST_MAX_BYTES + 1
+            if has_attachments or len(resolved_evidence) > 1
+            else _REPORT_REQUEST_MAX_BYTES - 1
+        )
+        self.measured_sizes.append(measured)
+        return measured
+
+
 def _manifest(*, include_sentinels: bool = False) -> dict[str, object]:
     manifest: dict[str, object] = {
         "schema_version": "evidence-corpus-v1",
@@ -176,7 +206,7 @@ def _finding_payload(*, principle_only: bool = False) -> dict[str, object]:
         "impact": "Important collaboration tasks take longer.",
         "root_cause": "The entry point is labeled around internal structure.",
         "fixes": ["Label the entry point around the user's goal."],
-        "severity": "medium",
+        "severity": FindingSeverity.MEDIUM,
         "confidence": 0.8,
         "evidence_refs": []
         if principle_only
@@ -216,6 +246,25 @@ async def test_analyst_prompt_has_boundary_and_excludes_prior_agent_context() ->
     assert "run_ids, viewport_values" in prompt
     assert "PRIOR_AGENT_PRIVATE_REASONING_SENTINEL" not in serialized_messages
     assert "PRIOR_FINDING_PROSE_SENTINEL" not in serialized_messages
+
+
+@pytest.mark.asyncio
+async def test_plain_report_request_delivers_role_schema_contract() -> None:
+    client = RecordingClient()
+    analyst = ReportAnalyst(client, model="gpt-report")
+
+    await analyst.analyze(_manifest(), ux_principles())
+
+    payload = json.loads(client.messages[1].content)
+    contract = payload["response_schema"]
+    assert contract["role"] == ModelRole.REPORT_ANALYST.value
+    assert contract["schema_version"] == AnalystResponse.schema_version
+    schema = contract["schema"]
+    expected_schema = AnalystResponse.model_json_schema()
+    assert schema["type"] == expected_schema["type"]
+    assert schema["required"] == expected_schema["required"]
+    assert schema["properties"] == expected_schema["properties"]
+    assert schema["$defs"].keys() == expected_schema["$defs"].keys()
 
 
 @pytest.mark.asyncio
@@ -388,7 +437,7 @@ def test_initial_manifest_uses_compact_handles_without_exposing_full_ids() -> No
 
 
 @pytest.mark.asyncio
-async def test_report_role_expands_provider_handles_before_reference_validation() -> (
+async def test_report_role_expands_provider_handles_before_delivery_validation() -> (
     None
 ):
     class HandleClient(RecordingClient):
@@ -415,12 +464,10 @@ async def test_report_role_expands_provider_handles_before_reference_validation(
         def __init__(self) -> None:
             super().__init__(self._handle_response)
 
-    response = await ReportAnalyst(HandleClient(), model="gpt-report").analyze(
-        _manifest(), ux_principles()
-    )
-
-    assert response.candidate_findings[0].evidence_refs[0].evidence_id == EVIDENCE_ID
-    assert response.evidence_requests == [EVIDENCE_ID]
+    with pytest.raises(ModelResponseValidationError, match="undelivered evidence ID"):
+        await ReportAnalyst(HandleClient(), model="gpt-report").analyze(
+            _manifest(), ux_principles()
+        )
 
 
 def test_initial_manifest_omits_attachment_and_filesystem_path_fields() -> None:
@@ -1211,23 +1258,291 @@ async def test_oversized_resolved_context_is_rejected_before_model_client() -> N
     )
     client = RecordingClient()
 
-    with pytest.raises(ValueError, match="transport-safe byte budget"):
+    with pytest.raises(
+        TransportBudgetError, match="transport-safe byte budget"
+    ) as failure:
         await ReportAnalyst(client, model="gpt-report").analyze(
             corpus,
             resolved_evidence=resolved,
         )
 
     assert client.calls == []
+    assert failure.value.diagnostics["stage"] == "request_budget"
+    assert failure.value.diagnostics["budget_bytes"] == _REPORT_REQUEST_MAX_BYTES
 
 
 @pytest.mark.asyncio
 async def test_report_preflight_uses_transport_owned_request_measurement() -> None:
     client = MeasuringRecordingClient()
 
-    with pytest.raises(ValueError, match="transport-safe byte budget"):
+    with pytest.raises(TransportBudgetError, match="transport-safe byte budget"):
         await ReportAnalyst(client, model="gpt-report").analyze(_manifest())
 
     assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_over_budget_visual_attachment_is_deferred_before_model_client(
+    tmp_path: Path,
+) -> None:
+    image_buffer = BytesIO()
+    Image.new("RGB", (1, 1), color=(220, 80, 80)).save(image_buffer, format="PNG")
+    attachment_bytes = image_buffer.getvalue()
+    attachment_path = Path("runs/run-a/screenshot.png")
+    corpus_root = tmp_path
+    target = corpus_root / attachment_path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(attachment_bytes)
+    attachment_digest = hashlib.sha256(attachment_bytes).hexdigest()
+    corpus = EvidenceCorpus(
+        output_root=corpus_root,
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"screenshot:run-a:{attachment_digest}",
+                    "screenshot",
+                    "run-a",
+                    viewport_id="viewport-1",
+                    artifact_path=attachment_path.as_posix(),
+                    sha256=attachment_digest,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="A recorded screenshot.",
+                payload={"media_type": "image/png"},
+                attachment_path=attachment_path,
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [f"screenshot:run-a:{attachment_digest}"],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+    evidence_id = f"screenshot:run-a:{attachment_digest}"
+    candidate = CandidateFinding.model_validate(
+        {
+            **_finding_payload(),
+            "evidence_refs": [
+                {
+                    "evidence_id": evidence_id,
+                    "kind": "screenshot",
+                    "run_id": "run-a",
+                    "viewport_id": "viewport-1",
+                    "sha256": attachment_digest,
+                }
+            ],
+        }
+    )
+    client = AttachmentAwareRecordingClient()
+    client.response_factory = lambda schema, role: AnalystResponse(
+            complete=True,
+            candidate_findings=[candidate],
+        )
+
+    with pytest.raises(ModelResponseValidationError, match="undelivered evidence ID"):
+        await ReportAnalyst(client, model="gpt-report").analyze(
+            corpus,
+            resolved_evidence=resolved,
+        )
+
+    assert client.measured_sizes == [
+        _REPORT_REQUEST_MAX_BYTES + 1,
+        _REPORT_REQUEST_MAX_BYTES - 1,
+    ]
+    assert client.messages[1].attachments == ()
+
+
+@pytest.mark.asyncio
+async def test_over_budget_resolved_entries_are_bounded_before_model_client() -> None:
+    class EntryAwareRecordingClient(RecordingClient):
+        def request_size(
+            self,
+            schema: type[Any],
+            messages: Sequence[Any],
+            *,
+            model: str,
+            role: ModelRole,
+        ) -> int:
+            del schema, model, role
+            entry_count = len(json.loads(messages[1].content)["resolved_evidence"])
+            return (
+                _REPORT_REQUEST_MAX_BYTES - 1
+                if entry_count <= 1
+                else _REPORT_REQUEST_MAX_BYTES + entry_count
+            )
+
+    entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(
+                f"event:run-a:{index}", "event", "run-a", replay_sequence=index
+            ),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"Recorded event {index}.",
+            payload={"sequence": index},
+        )
+        for index in range(1, 4)
+    )
+    corpus = EvidenceCorpus(output_root=Path.cwd(), entries=entries)
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [entry.ref.evidence_id for entry in entries],
+        max_entries=3,
+        max_attachment_bytes=1024,
+    )
+    candidate = CandidateFinding.model_validate(
+        {
+            **_finding_payload(),
+            "evidence_refs": [
+                {
+                    "evidence_id": "event:run-a:3",
+                    "kind": "event",
+                    "run_id": "run-a",
+                    "replay_sequence": 3,
+                }
+            ],
+        }
+    )
+    client = EntryAwareRecordingClient(
+        lambda schema, role: AnalystResponse(
+            complete=True,
+            candidate_findings=[candidate],
+        )
+    )
+
+    with pytest.raises(ModelResponseValidationError, match="undelivered evidence ID"):
+        await ReportAnalyst(client, model="gpt-report").analyze(
+            corpus,
+            resolved_evidence=resolved,
+        )
+
+    payload = json.loads(client.messages[1].content)
+    assert len(payload["resolved_evidence"]) == 1
+    assert payload["resolved_evidence_context"]["deferred_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_large_metric_continuation_uses_compact_bounded_context() -> None:
+    core_kinds = (
+        "scenario",
+        "persona",
+        "goal",
+        "expectation",
+        "verification",
+    )
+    core_entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(
+                f"{kind}:run-a" if index < 5 else f"event:run-a:{index}",
+                kind if index < 5 else "event",
+                "run-a",
+                replay_sequence=index if index >= 5 else None,
+            ),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"Recorded {kind}.",
+            payload={"value": kind},
+        )
+        for index, kind in enumerate(core_kinds + ("event",) * 5)
+    )
+    metric_entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(
+                f"metric:run-{run}:{name}",
+                "metric",
+                f"run-{run}",
+                metric_id=name,
+            ),
+            evidence_class=EvidenceClass.MODEL_ESTIMATE,
+            summary=f"Metric {name} recorded for run {run}.",
+            payload={
+                "name": name,
+                "value": run / 10,
+                "evidence_class": EvidenceClass.MODEL_ESTIMATE.value,
+                "source_evidence_ids": (f"event:run-{run}:1",),
+                "provenance": {
+                    "provider_id": "heuristic",
+                    "provider_version": "heuristic-v1",
+                    "model_id": "heuristic-model",
+                    "model_version": "v1",
+                },
+            },
+        )
+        for run in range(1, 7)
+        for name in (
+            "target-discovery-rank",
+            "inspected-elements",
+            "inspected-regions",
+            "scrolls",
+            "wrong-actions",
+            "backtracks",
+            "verified-completion",
+            "claimed-completion",
+            "false-success",
+            "target-prominence",
+            "target-below-fold",
+            "unexpected-hierarchy",
+            "ambiguous-target",
+            "navigation-depth",
+            "feedback-observed",
+            "recovery-actions",
+            "inspection-cost",
+            "region-cost",
+            "scroll-cost",
+            "wrong-action-cost",
+            "backtrack-cost",
+            "uncertainty-cost",
+            "abandonment-penalty",
+            "discovery-cost",
+            "outcome",
+        )
+    )
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(), entries=core_entries + metric_entries
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [entry.ref.evidence_id for entry in corpus.entries],
+        max_entries=160,
+        max_attachment_bytes=1024,
+    )
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+    )
+
+    payload = json.loads(client.calls[0][1][1].content)
+    context_entries = payload["resolved_evidence"]
+    metric_groups = [
+        item
+        for item in context_entries
+        if item.get("representation") == "metric-group-v1"
+    ]
+    assert len(context_entries) <= _REPORT_MODEL_CONTEXT_MAX_ENTRIES
+    assert len(metric_groups) == 1
+    assert len(metric_groups[0]["entries"]) == 150
+    assert {item["evidence_id"] for item in metric_groups[0]["entries"]} == {
+        entry.ref.evidence_id for entry in metric_entries
+    }
+    assert payload["resolved_evidence_context"] == {
+        "requested_count": 160,
+        "included_count": 160,
+        "deferred_count": 0,
+        "model_context_item_count": len(context_entries),
+        "representation": "compact-metric-group-v1",
+        "visual_attachments_deferred": False,
+        "instruction": (
+            "Context is transport-bounded; request deferred evidence "
+            "again when it is required for a complete conclusion."
+        ),
+    }
+    assert all("private" not in repr(item) for item in context_entries)
+    serialized_size = len(client.calls[0][1][1].content.encode("utf-8"))
+    assert (
+        serialized_size + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
+        <= _REPORT_REQUEST_MAX_BYTES
+    )
 
 
 @pytest.mark.asyncio
@@ -1371,11 +1686,89 @@ async def test_path_deviation_is_tolerated_when_outcome_evidence_is_valid() -> N
                 )
             return RecordingClient._default_response(schema, ModelRole.REPORT_ANALYST)
 
+    corpus = _corpus(Path.cwd())
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
     response = await ReportAnalyst(AlternatePathClient(), model="gpt-report").analyze(
-        _manifest(), ux_principles()
+        corpus,
+        ux_principles(),
+        resolved_evidence=resolved,
     )
 
     assert response.candidate_findings[0].evidence_refs[0].evidence_id == EVIDENCE_ID
+
+
+@pytest.mark.asyncio
+async def test_complete_finding_cannot_cite_manifest_only_evidence() -> None:
+    class ManifestOnlyClient(RecordingClient):
+        @staticmethod
+        def _default_response(schema: type[Any], role: ModelRole) -> object:
+            del role
+            return schema.model_validate(
+                {
+                    "complete": True,
+                    "candidate_findings": [_finding_payload()],
+                }
+            )
+
+    with pytest.raises(ModelResponseValidationError, match="undelivered evidence ID"):
+        await ReportAnalyst(ManifestOnlyClient(), model="gpt-report").analyze(
+            _manifest(), ux_principles()
+        )
+
+
+@pytest.mark.asyncio
+async def test_role_response_rejects_oversized_lists() -> None:
+    class OversizedListClient(RecordingClient):
+        @staticmethod
+        def _default_response(schema: type[Any], role: ModelRole) -> object:
+            del schema, role
+            return AnalystResponse.model_construct(
+                complete=False,
+                evidence_requests=[EVIDENCE_ID] * 129,
+                candidate_findings=[],
+            )
+
+    with pytest.raises(ModelResponseValidationError, match="bounded output limits"):
+        await ReportAnalyst(OversizedListClient(), model="gpt-report").analyze(
+            _manifest(), ux_principles()
+        )
+
+
+@pytest.mark.asyncio
+async def test_role_response_rejects_oversized_strings() -> None:
+    oversized = "x" * 8_193
+
+    class OversizedStringClient(RecordingClient):
+        @staticmethod
+        def _default_response(schema: type[Any], role: ModelRole) -> object:
+            del role
+            payload = _finding_payload()
+            payload["title"] = oversized
+            return schema.model_validate(
+                {
+                    "complete": True,
+                    "candidate_findings": [payload],
+                }
+            )
+
+    corpus = _corpus(Path.cwd())
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+    with pytest.raises(ModelResponseValidationError, match="bounded output limits"):
+        await ReportAnalyst(OversizedStringClient(), model="gpt-report").analyze(
+            corpus,
+            ux_principles(),
+            resolved_evidence=resolved,
+        )
 
 
 @pytest.mark.asyncio
@@ -1517,7 +1910,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
         is ModelRole.REPORT_ANALYST
     )
     assert ReportAnalyst(client, model="gpt-report").manifest.prompt_version == (
-        "report-analyst-v2"
+        "report-analyst-v3"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role

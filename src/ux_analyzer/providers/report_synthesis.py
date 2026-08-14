@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from hashlib import sha256
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, is_dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import ClassVar, Literal, cast
 
@@ -27,6 +27,7 @@ from ux_analyzer.domain.synthesis import (
 )
 from ux_analyzer.ports.model_transport import (
     MODEL_REQUEST_MAX_BYTES,
+    TransportBudgetError,
     require_finite_float,
 )
 from ux_analyzer.ports.models import (
@@ -86,6 +87,10 @@ _INITIAL_MANIFEST_SUMMARY_MAX_CHARS = 512
 # Reserve measured room for role prompts, principles, schemas, and transport data.
 _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES = 50_000
 _REPORT_REQUEST_MAX_BYTES = MODEL_REQUEST_MAX_BYTES
+_REPORT_MODEL_CONTEXT_MAX_ENTRIES = 32
+_REPORT_RESPONSE_MAX_BYTES = 256_000
+_REPORT_RESPONSE_MAX_TEXT_CHARS = 8_192
+_REPORT_RESPONSE_MAX_SEQUENCE_ITEMS = 128
 _INITIAL_MANIFEST_MAX_BYTES = (
     _REPORT_REQUEST_MAX_BYTES - _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
 )
@@ -116,6 +121,17 @@ _COMPACT_PROVIDER_MANIFEST_ENTRY_FIELDS = (
     "element_index",
 )
 _PROVIDER_EVIDENCE_HANDLE = re.compile(r"^e[0-9]+$")
+
+
+class ReportTransportBudgetError(TransportBudgetError):
+    """Raised when a report role cannot fit its bounded request context."""
+
+    def __init__(self, diagnostics: Mapping[str, object]) -> None:
+        self.diagnostics = dict(diagnostics)
+        super().__init__(
+            "report synthesis request context exceeds transport-safe byte budget"
+        )
+
 
 ManifestInput = EvidenceCorpus | Mapping[str, object]
 
@@ -523,6 +539,8 @@ def _safe_evidence_ref(
 
 
 def _safe_entry(entry: EvidenceEntry, *, depth: int = 0) -> dict[str, object]:
+    if entry.ref.kind == "metric":
+        return _safe_metric_row(entry, depth=depth)
     return {
         "evidence_id": entry.ref.evidence_id,
         "kind": entry.ref.kind,
@@ -532,6 +550,65 @@ def _safe_entry(entry: EvidenceEntry, *, depth: int = 0) -> dict[str, object]:
         "summary": _safe_prompt_value(entry.summary, depth=depth + 1),
         "payload": _safe_prompt_value(entry.payload, depth=depth + 1),
     }
+
+
+def _safe_metric_row(entry: EvidenceEntry, *, depth: int = 0) -> dict[str, object]:
+    payload = entry.payload
+    row: dict[str, object] = {
+        "evidence_id": entry.ref.evidence_id,
+        "kind": entry.ref.kind,
+        "run_id": entry.ref.run_id,
+        "metric_id": entry.ref.metric_id,
+        "evidence_class": entry.evidence_class.value,
+    }
+    for name in ("value", "source_evidence_ids", "provenance"):
+        if name in payload:
+            row[name] = _safe_prompt_value(payload[name], depth=depth + 1)
+    additional = {
+        str(name): _safe_prompt_value(value, depth=depth + 1)
+        for name, value in payload.items()
+        if name
+        not in {"name", "value", "evidence_class", "source_evidence_ids", "provenance"}
+    }
+    if additional:
+        row["additional_values"] = additional
+    return row
+
+
+def _safe_context_entries(
+    entries: Sequence[EvidenceEntry],
+    *,
+    max_entries: int,
+) -> tuple[list[dict[str, object]], int, int, frozenset[str]]:
+    """Serialize bounded model context without dropping metric references."""
+
+    metric_rows: list[dict[str, object]] = []
+    non_metric_entries: list[EvidenceEntry] = []
+    for entry in entries:
+        if entry.ref.kind == "metric":
+            metric_rows.append(_safe_metric_row(entry))
+        else:
+            non_metric_entries.append(entry)
+
+    metric_group: dict[str, object] | None = None
+    if metric_rows:
+        metric_group = {
+            "representation": "metric-group-v1",
+            "entries": metric_rows,
+        }
+    non_metric_limit = max_entries - (1 if metric_group is not None else 0)
+    included_non_metric = non_metric_entries[: max(0, non_metric_limit)]
+    context_entries = [_safe_entry(entry) for entry in included_non_metric]
+    if metric_group is not None and len(context_entries) < max_entries:
+        context_entries.append(metric_group)
+    included_count = len(included_non_metric) + len(metric_rows)
+    deferred_count = len(entries) - included_count
+    included_ids = {
+        entry.ref.evidence_id for entry in included_non_metric
+    } | {
+        entry.ref.evidence_id for entry in entries if entry.ref.kind == "metric"
+    }
+    return context_entries, included_count, deferred_count, frozenset(included_ids)
 
 
 def _bounded_manifest_summary(value: object) -> str:
@@ -808,11 +885,12 @@ def _compact_provider_manifest_candidate(
         ):
             field_index = _COMPACT_PROVIDER_MANIFEST_ENTRY_FIELDS.index(field_name)
             value = row[field_index] if len(row) > field_index else None
+            indexed_values = cast(Sequence[object], values)
             if value is not None and (
                 type(value) is not int
                 or not isinstance(values, Sequence)
                 or value < 0
-                or value >= len(values)
+                or value >= len(indexed_values)
             ):
                 raise ValueError(
                     f"compact provider manifest {field_name} is inconsistent"
@@ -1111,12 +1189,6 @@ def _known_evidence_ids(manifest: ManifestInput) -> frozenset[str]:
     return frozenset(values)
 
 
-def _resolved_payload(resolved: ResolvedEvidence | None) -> list[object]:
-    if resolved is None:
-        return []
-    return [_safe_entry(entry) for entry in resolved.entries]
-
-
 def _principle_payload(
     principles: object | None,
 ) -> tuple[UxPrinciple, ...]:
@@ -1134,12 +1206,12 @@ def _principle_payload(
 
 def _attachment_values(
     manifest: ManifestInput,
-    resolved: ResolvedEvidence | None,
+    entries: Sequence[EvidenceEntry] | None,
 ) -> tuple[ModelAttachment, ...]:
-    if resolved is None or not isinstance(manifest, EvidenceCorpus):
+    if entries is None or not isinstance(manifest, EvidenceCorpus):
         return ()
     attachments: list[ModelAttachment] = []
-    for entry in resolved.entries:
+    for entry in entries:
         if entry.attachment_path is None or entry.ref.sha256 is None:
             continue
         media_type = entry.payload.get("media_type")
@@ -1183,7 +1255,7 @@ def _request_context_size(
     *,
     model: str,
     role: ModelRole,
-    resolved_evidence: ResolvedEvidence | None,
+    attachment_bytes: int,
     client: StructuredModelClient | None = None,
 ) -> int:
     request_size = getattr(client, "request_size", None)
@@ -1216,8 +1288,8 @@ def _request_context_size(
         ],
     }
     serialized_size = len(_raw_canonical_json(request).encode("utf-8"))
-    if resolved_evidence is not None and resolved_evidence.attachment_bytes:
-        encoded_bytes = ((resolved_evidence.attachment_bytes + 2) // 3) * 4
+    if attachment_bytes and any(message.attachments for message in messages):
+        encoded_bytes = ((attachment_bytes + 2) // 3) * 4
         serialized_size += encoded_bytes
     return serialized_size
 
@@ -1273,42 +1345,153 @@ class _ReportRole:
             previous_output, self.response_schema
         ):
             raise ValueError("previous output must belong to this role")
-        message_payload: dict[str, object] = {
+        base_message_payload: dict[str, object] = {
             "corpus_manifest": _initial_manifest_payload(manifest),
-            "resolved_evidence": _resolved_payload(resolved_evidence),
             "ux_principle_pack": [asdict(item) for item in normalized_principles],
             "role_input": dict(role_input or {}),
+            "response_schema": {
+                "role": self.role.value,
+                "schema_version": self.response_schema.schema_version,
+                "schema": self.response_schema.model_json_schema(),
+            },
         }
         if previous_output is not None:
-            message_payload["prior_structured_output"] = previous_output.model_dump(
-                mode="json"
+            base_message_payload["prior_structured_output"] = (
+                previous_output.model_dump(mode="json")
             )
-        messages = (
-            ChatMessage(role="system", content=self.prompt),
-            ChatMessage(
-                role="user",
-                content=_canonical_json(message_payload),
-                attachments=_attachment_values(manifest, resolved_evidence),
-            ),
+        all_entries = (
+            tuple(resolved_evidence.entries) if resolved_evidence is not None else ()
         )
-        request_size = _request_context_size(
-            self.response_schema,
-            messages,
-            model=self.model,
-            role=self.role,
-            resolved_evidence=resolved_evidence,
-            client=self.client,
+        all_attachment_bytes = (
+            resolved_evidence.attachment_bytes if resolved_evidence is not None else 0
         )
-        has_transport_measurement = callable(getattr(self.client, "request_size", None))
-        measured_size = (
-            request_size
-            if has_transport_measurement
-            else (request_size + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES)
-        )
+
+        def _messages(
+            entries: Sequence[EvidenceEntry],
+            message_attachments: tuple[ModelAttachment, ...],
+        ) -> tuple[ChatMessage, ChatMessage]:
+            context_entries, included_count, _, _ = _safe_context_entries(
+                entries,
+                max_entries=_REPORT_MODEL_CONTEXT_MAX_ENTRIES,
+            )
+            context_deferred_count = max(0, len(all_entries) - included_count)
+            message_payload = {
+                **base_message_payload,
+                "resolved_evidence": context_entries,
+            }
+            if (
+                context_deferred_count
+                or len(context_entries) < len(all_entries)
+                or (all_attachment_bytes and not message_attachments)
+            ):
+                message_payload["resolved_evidence_context"] = {
+                    "requested_count": len(all_entries),
+                    "included_count": included_count,
+                    "deferred_count": context_deferred_count,
+                    "model_context_item_count": len(context_entries),
+                    "representation": "compact-metric-group-v1",
+                    "visual_attachments_deferred": bool(
+                        all_attachment_bytes and not message_attachments
+                    ),
+                    "instruction": (
+                        "Context is transport-bounded; request deferred evidence "
+                        "again when it is required for a complete conclusion."
+                    ),
+                }
+            return (
+                ChatMessage(role="system", content=self.prompt),
+                ChatMessage(
+                    role="user",
+                    content=_canonical_json(message_payload),
+                    attachments=message_attachments,
+                ),
+            )
+
+        def _measured_size(current_messages: Sequence[ChatMessage]) -> int:
+            raw_size = _request_context_size(
+                self.response_schema,
+                current_messages,
+                model=self.model,
+                role=self.role,
+                attachment_bytes=(
+                    all_attachment_bytes if current_messages[1].attachments else 0
+                ),
+                client=self.client,
+            )
+            has_transport_measurement = callable(
+                getattr(self.client, "request_size", None)
+            )
+            return (
+                raw_size
+                if has_transport_measurement
+                else (raw_size + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES)
+            )
+
+        entries = all_entries
+        attachments = _attachment_values(manifest, entries)
+        original_attachment_count = len(attachments)
+        messages = _messages(entries, attachments)
+        measured_size = _measured_size(messages)
+        deferred_attachment_bytes = 0
+        if measured_size > _REPORT_REQUEST_MAX_BYTES and attachments:
+            deferred_attachment_bytes = all_attachment_bytes
+            attachments = ()
+            messages = _messages(entries, attachments)
+            measured_size = _measured_size(messages)
+        deferred_entry_count = 0
+        if measured_size > _REPORT_REQUEST_MAX_BYTES and entries:
+            lower = 1
+            upper = len(entries)
+            best_entries: tuple[EvidenceEntry, ...] = ()
+            best_messages: tuple[ChatMessage, ChatMessage] | None = None
+            best_size: int | None = None
+            while lower <= upper:
+                middle = (lower + upper) // 2
+                candidate_entries = entries[:middle]
+                candidate_messages = _messages(candidate_entries, ())
+                candidate_size = _measured_size(candidate_messages)
+                if candidate_size <= _REPORT_REQUEST_MAX_BYTES:
+                    best_entries = candidate_entries
+                    best_messages = candidate_messages
+                    best_size = candidate_size
+                    lower = middle + 1
+                else:
+                    upper = middle - 1
+            if best_messages is not None and best_size is not None:
+                entries = best_entries
+                messages = best_messages
+                measured_size = best_size
+                deferred_entry_count = len(all_entries) - len(entries)
         if measured_size > _REPORT_REQUEST_MAX_BYTES:
-            raise ValueError(
-                "report synthesis request context exceeds transport-safe byte budget"
+            raise ReportTransportBudgetError(
+                {
+                    "stage": "request_budget",
+                    "request_bytes": measured_size,
+                    "budget_bytes": _REPORT_REQUEST_MAX_BYTES,
+                    "attachment_bytes": all_attachment_bytes,
+                    "attachment_bytes_deferred": deferred_attachment_bytes,
+                    "attachment_count": original_attachment_count,
+                    "resolved_evidence_count": len(all_entries),
+                    "resolved_evidence_deferred": deferred_entry_count,
+                }
             )
+        _, _, _, delivered_ids = _safe_context_entries(
+            entries,
+            max_entries=_REPORT_MODEL_CONTEXT_MAX_ENTRIES,
+        )
+        attachment_ids = {
+            attachment.evidence_id for attachment in attachments
+        }
+        delivered_ids = frozenset(
+            evidence_id
+            for evidence_id in delivered_ids
+            if not any(
+                entry.ref.evidence_id == evidence_id
+                and entry.attachment_path is not None
+                and evidence_id not in attachment_ids
+                for entry in entries
+            )
+        )
         try:
             response = await self.client.complete(
                 self.response_schema,
@@ -1316,6 +1499,8 @@ class _ReportRole:
                 model=self.model,
                 role=self.role,
             )
+        except (ReportTransportBudgetError, TransportBudgetError):
+            raise
         except ModelResponseValidationError:
             raise
         except ValidationError as error:
@@ -1341,15 +1526,55 @@ class _ReportRole:
                     response_summary={"schema": self.response_schema.__name__},
                 ) from error
         response = _expand_provider_handles(response, manifest)
-        self._validate_response(response, manifest, normalized_principles)
+        self._validate_response(
+            response,
+            manifest,
+            normalized_principles,
+            delivered_ids=delivered_ids,
+        )
         return response
+
+    @staticmethod
+    def _validate_response_bounds(response: InvestigativeResponse) -> None:
+        def visit(value: object, *, depth: int = 0) -> None:
+            if depth > 16:
+                raise ValueError("response exceeds bounded output limits")
+            if isinstance(value, str):
+                if len(value) > _REPORT_RESPONSE_MAX_TEXT_CHARS:
+                    raise ValueError("response exceeds bounded output limits")
+                return
+            if isinstance(value, Mapping):
+                mapping_value = cast(Mapping[object, object], value)
+                if len(mapping_value) > _REPORT_RESPONSE_MAX_SEQUENCE_ITEMS:
+                    raise ValueError("response exceeds bounded output limits")
+                for key, item in mapping_value.items():
+                    visit(key, depth=depth + 1)
+                    visit(item, depth=depth + 1)
+                return
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                sequence_value = cast(Sequence[object], value)
+                if len(sequence_value) > _REPORT_RESPONSE_MAX_SEQUENCE_ITEMS:
+                    raise ValueError("response exceeds bounded output limits")
+                for item in sequence_value:
+                    visit(item, depth=depth + 1)
+
+        payload = response.model_dump(mode="json")
+        visit(payload)
+        if len(_canonical_json(payload).encode("utf-8")) > _REPORT_RESPONSE_MAX_BYTES:
+            raise ValueError("response exceeds bounded output limits")
 
     def _validate_response(
         self,
         response: InvestigativeResponse,
         manifest: ManifestInput,
         principles: Sequence[UxPrinciple],
+        *,
+        delivered_ids: frozenset[str],
     ) -> None:
+        try:
+            self._validate_response_bounds(response)
+        except ValueError:
+            self._invalid("response exceeds bounded output limits")
         known_ids = _known_evidence_ids(manifest)
         if not response.complete and not response.evidence_requests:
             self._invalid("incomplete response needs evidence requests")
@@ -1358,11 +1583,11 @@ class _ReportRole:
 
         principle_ids = {principle.principle_id for principle in principles}
         for finding in self._findings(response):
-            self._validate_finding(finding, known_ids, principle_ids)
+            self._validate_finding(finding, known_ids, principle_ids, delivered_ids)
         for objection in self._objections(response):
-            self._validate_refs(objection.evidence_refs, known_ids)
+            self._validate_refs(objection.evidence_refs, known_ids, delivered_ids)
         for resolution in self._resolutions(response):
-            self._validate_refs(resolution.evidence_refs, known_ids)
+            self._validate_refs(resolution.evidence_refs, known_ids, delivered_ids)
 
     def _validate_requested_id(
         self,
@@ -1382,6 +1607,7 @@ class _ReportRole:
         self,
         refs: Sequence[EvidenceReference],
         known_ids: frozenset[str],
+        delivered_ids: frozenset[str] | None = None,
     ) -> None:
         evidence_ids = [reference.evidence_id for reference in refs]
         if len(evidence_ids) != len(set(evidence_ids)):
@@ -1391,19 +1617,22 @@ class _ReportRole:
                 self._invalid("principles are not evidence")
             if reference.evidence_id not in known_ids:
                 self._invalid(f"unknown evidence ID: {reference.evidence_id}")
+            if delivered_ids is not None and reference.evidence_id not in delivered_ids:
+                self._invalid("undelivered evidence ID")
 
     def _validate_finding(
         self,
         finding: CandidateFinding,
         known_ids: frozenset[str],
         principle_ids: set[str],
+        delivered_ids: frozenset[str],
     ) -> None:
         refs = tuple(finding.evidence_refs) + tuple(
             item
             for item in finding.counterevidence
             if isinstance(item, EvidenceReference)
         )
-        self._validate_refs(refs, known_ids)
+        self._validate_refs(refs, known_ids, delivered_ids)
         unknown_principles = set(finding.principles) - principle_ids
         if unknown_principles:
             self._invalid("finding references an unknown UX principle")
@@ -1436,7 +1665,10 @@ class _ReportRole:
         raise ModelResponseValidationError(
             self.role,
             reason,
-            response_summary={"schema": self.response_schema.__name__},
+            response_summary={
+                "schema": self.response_schema.__name__,
+                "validation_reason": reason,
+            },
         )
 
 
@@ -1455,7 +1687,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v2"
+    prompt_version = "report-analyst-v3"
     response_schema = AnalystResponse
 
     @property
@@ -1484,7 +1716,7 @@ class EvidenceAuditor(_ReportRole):
     """Challenge factual and visual support for analyst candidates."""
 
     role = ModelRole.REPORT_EVIDENCE_AUDITOR
-    prompt_version = "report-evidence-auditor-v2"
+    prompt_version = "report-evidence-auditor-v3"
     response_schema = EvidenceAuditResponse
 
     @property
@@ -1538,7 +1770,7 @@ class PatternReviewer(_ReportRole):
     """Review recurrence, cross-surface impact, severity, and fix leverage."""
 
     role = ModelRole.REPORT_PATTERN_REVIEWER
-    prompt_version = "report-pattern-reviewer-v2"
+    prompt_version = "report-pattern-reviewer-v3"
     response_schema = PatternReviewResponse
 
     @property
@@ -1573,7 +1805,7 @@ class ReportAdjudicator(_ReportRole):
     """Resolve reviewer objections and write plain-language final findings."""
 
     role = ModelRole.REPORT_ADJUDICATOR
-    prompt_version = "report-adjudicator-v2"
+    prompt_version = "report-adjudicator-v3"
     response_schema = AdjudicationResponse
 
     @property
@@ -1655,6 +1887,7 @@ __all__ = [
     "ReportAnalystResponse",
     "ReportEvidenceAuditorResponse",
     "ReportPatternReviewerResponse",
+    "ReportTransportBudgetError",
     "REPORT_SYNTHESIS_SCHEMA_VERSION",
     "TypedObjection",
     "FORBIDDEN_NARRATIVE_MARKERS",
