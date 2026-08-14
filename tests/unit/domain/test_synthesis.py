@@ -98,6 +98,36 @@ def test_evidence_ref_rejects_negative_replay_sequence() -> None:
         EvidenceRef("event:run-a:18", "event", "run-a", replay_sequence=-1)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "hostile_value"),
+    (
+        ("evidence_id", 18),
+        ("kind", True),
+        ("run_id", {"id": "run-a"}),
+        ("viewport_id", 1),
+        ("element_id", ["element-7"]),
+        ("event_id", False),
+        ("metric_id", 2.5),
+        ("artifact_path", 1),
+        ("artifact_path", {"path": "runs/run-a/event.json"}),
+        ("sha256", 1234),
+    ),
+)
+def test_evidence_ref_rejects_non_string_text_fields(
+    field_name: str,
+    hostile_value: object,
+) -> None:
+    values: dict[str, object] = {
+        "evidence_id": "event:run-a:18",
+        "kind": "event",
+        "run_id": "run-a",
+        field_name: hostile_value,
+    }
+
+    with pytest.raises(ValueError, match=field_name.split("_", maxsplit=1)[0]):
+        EvidenceRef(**values)  # type: ignore[arg-type]
+
+
 def test_synthesis_finding_normalizes_collections_and_existing_contracts() -> None:
     finding = _finding(
         fixes=["Fix the label."],

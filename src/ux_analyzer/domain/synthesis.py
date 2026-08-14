@@ -134,7 +134,6 @@ class EvidenceRef:
             if value is not None:
                 _require_non_empty(value, field_name)
         if self.artifact_path is not None:
-            object.__setattr__(self, "artifact_path", str(self.artifact_path))
             _require_non_empty(self.artifact_path, "artifact_path")
         replay_sequence: object = self.replay_sequence
         if replay_sequence is not None:

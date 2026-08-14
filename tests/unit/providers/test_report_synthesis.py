@@ -35,6 +35,7 @@ from ux_analyzer.providers.report_synthesis import (
     CandidateFinding,
     EvidenceAuditor,
     EvidenceAuditResponse,
+    EvidenceReference,
     ObjectionResolution,
     PatternReviewer,
     PatternReviewResponse,
@@ -1668,6 +1669,77 @@ def test_role_response_schemas_require_role_outputs_and_validate_domains() -> No
     assert pattern.objections[0].finding_id == candidate.finding_id
     assert adjudicator.final_findings[0].finding_id == candidate.finding_id
     assert adjudicator.objection_resolutions[0].resolved is True
+
+
+@pytest.mark.parametrize(
+    ("schema", "payload"),
+    (
+        (
+            TypedObjection,
+            {
+                "objection_id": "objection-1",
+                "finding_id": "invite-control",
+                "severity": "blocking",
+                "message": "The cited event does not establish the claim.",
+            },
+        ),
+        (
+            ObjectionResolution,
+            {
+                "objection_id": "objection-1",
+                "finding_id": "invite-control",
+                "resolved": True,
+                "resolution": "A later event resolves the objection.",
+            },
+        ),
+    ),
+)
+@pytest.mark.parametrize("replay_sequence", (True, 1.0, "1"))
+def test_reviewer_and_adjudicator_refs_reject_coerced_replay_sequences(
+    schema: type[Any],
+    payload: dict[str, object],
+    replay_sequence: object,
+) -> None:
+    payload["evidence_refs"] = [
+        {
+            "evidence_id": EVIDENCE_ID,
+            "kind": "event",
+            "run_id": "run-a",
+            "replay_sequence": replay_sequence,
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="replay_sequence"):
+        schema.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "hostile_value"),
+    (
+        ("evidence_id", 1),
+        ("kind", True),
+        ("run_id", 1.0),
+        ("viewport_id", {"id": "viewport-1"}),
+        ("element_id", ["element-1"]),
+        ("event_id", False),
+        ("metric_id", 7),
+        ("artifact_path", {"path": "runs/run-a/event.json"}),
+        ("sha256", 1234),
+    ),
+)
+def test_evidence_reference_rejects_non_string_text_fields(
+    field_name: str,
+    hostile_value: object,
+) -> None:
+    payload: dict[str, object] = {
+        "evidence_id": EVIDENCE_ID,
+        "kind": "event",
+        "run_id": "run-a",
+        field_name: hostile_value,
+    }
+
+    with pytest.raises(ValidationError, match=field_name):
+        EvidenceReference.model_validate(payload)
 
 
 @pytest.mark.asyncio

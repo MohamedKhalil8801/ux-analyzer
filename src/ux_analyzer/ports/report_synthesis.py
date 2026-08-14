@@ -152,6 +152,8 @@ class _RoleSchema(BaseModel):
 class EvidenceReference(_RoleSchema):
     """Transport form of the domain ``EvidenceRef`` contract."""
 
+    model_config = ConfigDict(strict=True)
+
     evidence_id: str = Field(min_length=1)
     kind: str = Field(min_length=1)
     run_id: str = Field(min_length=1)

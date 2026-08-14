@@ -363,6 +363,11 @@ def _evidence_ref_to_dict(reference: EvidenceRef) -> dict[str, object]:
 
 def _evidence_ref_from_dict(value: object) -> EvidenceRef:
     mapping = _mapping(value, "evidence reference")
+    artifact_path = mapping.get("artifact_path")
+    if artifact_path is not None and not isinstance(artifact_path, str):
+        raise SynthesisArtifactError(
+            "evidence reference artifact_path must be a string"
+        )
     replay_sequence = mapping.get("replay_sequence")
     if replay_sequence is not None and type(replay_sequence) is not int:
         raise SynthesisArtifactError(
@@ -376,7 +381,7 @@ def _evidence_ref_from_dict(value: object) -> EvidenceRef:
         element_id=cast(str | None, mapping.get("element_id")),
         event_id=cast(str | None, mapping.get("event_id")),
         metric_id=cast(str | None, mapping.get("metric_id")),
-        artifact_path=cast(str | None, mapping.get("artifact_path")),
+        artifact_path=artifact_path,
         replay_sequence=replay_sequence,
         sha256=cast(str | None, mapping.get("sha256")),
     )

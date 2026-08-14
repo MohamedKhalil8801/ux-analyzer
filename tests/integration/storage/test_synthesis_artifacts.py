@@ -855,6 +855,24 @@ def test_reader_and_selection_reject_objection_reference_outside_exact_corpus(
             _ = store.accepted_attempt
 
 
+@pytest.mark.parametrize(
+    "artifact_path",
+    (1, {"path": "runs/run-a/event.json"}),
+)
+def test_evidence_ref_deserializer_rejects_non_string_artifact_path(
+    artifact_path: object,
+) -> None:
+    with pytest.raises(SynthesisArtifactError, match="artifact_path.*string"):
+        synthesis_artifacts._evidence_ref_from_dict(
+            {
+                "evidence_id": "event:run-a:1",
+                "kind": "event",
+                "run_id": "run-a",
+                "artifact_path": artifact_path,
+            }
+        )
+
+
 def test_storage_module_does_not_import_application_corpus() -> None:
     source = Path(synthesis_artifacts.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
