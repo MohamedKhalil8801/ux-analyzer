@@ -112,6 +112,9 @@ def _write_synthesis(
     sequence: int = 1,
     run_id: str = "run-1",
     findings: tuple[SynthesisFinding, ...] | None = None,
+    limitations: tuple[str, ...] | None = None,
+    include_scope_identity: bool = True,
+    scope_run_ids: tuple[str, ...] | None = None,
 ) -> None:
     finding_values = findings
     if finding_values is None:
@@ -146,7 +149,36 @@ def _write_synthesis(
         )
         for ref in refs
     )
-    corpus = EvidenceCorpus(output_root=root, entries=entries)
+    scoped_run_ids = scope_run_ids or (run_id,)
+    metadata: dict[str, object] = {"experiment_run_ids": scoped_run_ids}
+    if include_scope_identity:
+        metadata["experiment_run_identities"] = tuple(
+            {
+                "run_id": scoped_run_id,
+                "seed": loaded_run["seed"],
+                "model_trial": loaded_run["model_trial"],
+                "config_digest": manifest.get("config_digest"),
+                "scenario_id": loaded_run["scenario_id"],
+                "application_version_id": loaded_run["version_id"],
+                "persona_id": loaded_run["persona_id"],
+                "policy": loaded_run["policy"],
+                "prominence_provider_id": loaded_run["prominence_provider_id"],
+            }
+            for scoped_run_id in scoped_run_ids
+            for loaded_run in (renderer._load_run(root / "runs" / scoped_run_id),)
+            for manifest in (
+                json.loads(
+                    (root / "runs" / scoped_run_id / "manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+            )
+        )
+    corpus = EvidenceCorpus(
+        output_root=root,
+        entries=entries,
+        metadata=metadata,
+    )
     created_at = "2026-08-10T12:00:00+00:00"
     attempt = SynthesisAttempt(
         attempt_id=f"20260810T120000Z-{corpus.digest[:12]}-{sequence}",
@@ -158,7 +190,11 @@ def _write_synthesis(
         schema_version="synthesis-v1",
         candidate_findings=finding_values,
         findings=finding_values,
-        limitations=("Fixture synthesis evidence only.",),
+        limitations=(
+            limitations
+            if limitations is not None
+            else ("Fixture synthesis evidence only.",)
+        ),
         created_at=created_at,
     )
     SynthesisArtifactStore(root).write_attempt(attempt, corpus)
@@ -966,6 +1002,67 @@ def test_renderer_split_fallback_preserves_scope_findings_and_limitations(
     assert run_context["synthesis"]["findings"]
 
 
+@pytest.mark.parametrize(
+    "status",
+    (SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES),
+)
+def test_renderer_rejects_selected_synthesis_for_stale_run_set(
+    tmp_path: Path,
+    status: SynthesisStatus,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path, status=status)
+    _write_run(tmp_path, "run-2", version="improved", discovery_cost=2)
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+
+
+def test_renderer_rejects_selected_synthesis_for_changed_run_identity(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path, status=SynthesisStatus.NO_ISSUES)
+    run = tmp_path / "runs" / "run-1"
+    result_path = run / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["spec"]["application_version"]["id"] = "improved"
+    result["spec"]["application_version"]["label"] = "Improved"
+    result["metrics"]["application_version_id"] = "improved"
+    _write_json(result_path, result)
+    _write_checksums(run)
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+
+
+@pytest.mark.parametrize(
+    "status",
+    (SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES),
+)
+def test_renderer_rejects_legacy_selected_synthesis_without_run_identities(
+    tmp_path: Path,
+    status: SynthesisStatus,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path, status=status, include_scope_identity=False)
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+
+
 def test_renderer_rejects_forged_synthesis_event_viewport(tmp_path: Path) -> None:
     _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
     forged_ref = _synthesis_ref("event", viewport_id="forged-viewport")
@@ -1116,9 +1213,7 @@ def test_renderer_preserves_boundary_limitation_from_rejected_attempt(
     _write_synthesis(
         tmp_path,
         status=SynthesisStatus.REJECTED,
-        limitations=(
-            "The synthesis evidence boundary rejected a retrieval request.",
-        ),
+        limitations=("The synthesis evidence boundary rejected a retrieval request.",),
     )
 
     synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
@@ -1159,6 +1254,8 @@ def test_renderer_split_index_keeps_accepted_findings_and_counts_synthesis_bytes
         tmp_path,
         corpus_refs=(_synthesis_ref("event", run_id="run.active"),),
         finding_refs=(_synthesis_ref("event", run_id="run.active"),),
+        run_id="run.active",
+        scope_run_ids=("run.active", "run_active"),
     )
 
     experiment = renderer._load_experiment(tmp_path)
@@ -1463,6 +1560,8 @@ async def test_renderer_split_index_evidence_button_opens_run_page(
     _write_synthesis(
         tmp_path,
         finding_refs=(_synthesis_ref("event", run_id="run.active"),),
+        run_id="run.active",
+        scope_run_ids=("run.active", "run_active"),
     )
     report_path = render_experiment_report(
         tmp_path, tmp_path / "report.html", max_single_file_bytes=100

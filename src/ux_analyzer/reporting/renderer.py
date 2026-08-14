@@ -91,6 +91,17 @@ _SALIENCY_DURATIONS = ("1s", "3s", "7s")
 _SYNTHESIS_SELECTED_STATUSES = frozenset(
     {SynthesisStatus.ACCEPTED, SynthesisStatus.NO_ISSUES}
 )
+_SYNTHESIS_RUN_IDENTITY_FIELDS = (
+    "run_id",
+    "seed",
+    "model_trial",
+    "config_digest",
+    "scenario_id",
+    "application_version_id",
+    "persona_id",
+    "policy",
+    "prominence_provider_id",
+)
 _FALLBACK_SEVERITY_ORDER = {
     "critical": 0,
     "high": 1,
@@ -342,6 +353,7 @@ def _load_synthesis(
                 "selected synthesis attempt has an ineligible status"
             )
         corpus = _load_synthesis_corpus(root, attempt)
+        _validate_synthesis_run_scope(corpus, runs)
         findings = _synthesis_findings(attempt, corpus, runs, root)
         status = _synthesis_enum_text(attempt.status)
         assessment = (
@@ -685,6 +697,81 @@ def _synthesis_scope(runs: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
         "version_ids": _unique(_text(run.get("version_id")) for run in runs),
         "persona_ids": _unique(_text(run.get("persona_id")) for run in runs),
     }
+
+
+def _validate_synthesis_run_scope(
+    corpus: EvidenceCorpus,
+    runs: Sequence[Mapping[str, Any]],
+) -> None:
+    metadata = corpus.metadata
+    expected_ids = tuple(_text(run.get("run_id")) for run in runs)
+    expected_id_set = frozenset(expected_ids)
+    if not expected_ids or len(expected_id_set) != len(expected_ids):
+        raise SynthesisArtifactError("report runs have invalid synthesis scope")
+
+    persisted_ids = _synthesis_scope_run_ids(metadata.get("experiment_run_ids"))
+    if frozenset(persisted_ids) != expected_id_set:
+        raise SynthesisArtifactError("synthesis run IDs do not match report scope")
+
+    raw_identities = metadata.get("experiment_run_identities")
+    if not isinstance(raw_identities, (list, tuple)):
+        raise SynthesisArtifactError("synthesis run identities are missing")
+    persisted_identities = tuple(
+        _synthesis_run_identity(identity)
+        for identity in cast(Sequence[object], raw_identities)
+    )
+    expected_identities = tuple(_report_run_identity(run) for run in runs)
+    if len(set(persisted_identities)) != len(persisted_identities) or set(
+        persisted_identities
+    ) != set(expected_identities):
+        raise SynthesisArtifactError(
+            "synthesis run identities do not match report scope"
+        )
+
+
+def _synthesis_scope_run_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise SynthesisArtifactError("synthesis run IDs are missing")
+    raw_run_ids = cast(Sequence[object], value)
+    run_ids = tuple(item for item in raw_run_ids if isinstance(item, str) and item)
+    if len(run_ids) != len(raw_run_ids) or len(set(run_ids)) != len(run_ids):
+        raise SynthesisArtifactError("synthesis run IDs are invalid")
+    return run_ids
+
+
+def _synthesis_run_identity(value: object) -> tuple[object, ...]:
+    if not isinstance(value, Mapping):
+        raise SynthesisArtifactError("synthesis run identity is invalid")
+    identity = cast(Mapping[str, object], value)
+    values: list[object] = []
+    for name in _SYNTHESIS_RUN_IDENTITY_FIELDS:
+        item = identity.get(name)
+        if name in {"seed", "model_trial"}:
+            if isinstance(item, bool) or not isinstance(item, int):
+                raise SynthesisArtifactError("synthesis run identity is invalid")
+        elif not isinstance(item, str) or not item:
+            raise SynthesisArtifactError("synthesis run identity is invalid")
+        values.append(item)
+    provider = _canonical_provider_id(values[-1])
+    if provider is None:
+        raise SynthesisArtifactError("synthesis run identity is invalid")
+    values[-1] = provider
+    return tuple(values)
+
+
+def _report_run_identity(run: Mapping[str, Any]) -> tuple[object, ...]:
+    identity = {
+        "run_id": run.get("run_id"),
+        "seed": run.get("seed"),
+        "model_trial": run.get("model_trial"),
+        "config_digest": run.get("config_digest"),
+        "scenario_id": run.get("scenario_id"),
+        "application_version_id": run.get("version_id"),
+        "persona_id": run.get("persona_id"),
+        "policy": run.get("policy"),
+        "prominence_provider_id": run.get("prominence_provider_id"),
+    }
+    return _synthesis_run_identity(identity)
 
 
 def _synthesis_artifact_bytes(root: Path, attempt_id: str | None) -> int:
@@ -1615,6 +1702,7 @@ def _load_run(path: Path) -> dict[str, Any]:
         "integrity_status": "trusted" if trusted else "failed",
         "seed": seed,
         "model_trial": model_trial,
+        "config_digest": _text(manifest.get("config_digest")),
         "prominence_provider_id": prominence_provider_id,
         "reproducibility": reproducibility,
         "reproducibility_label": reproducibility_label,

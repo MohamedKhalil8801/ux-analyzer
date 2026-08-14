@@ -643,6 +643,58 @@ def test_finalized_invalid_run_reasons_are_published_as_sanitized_limitations(
     }
 
 
+def test_finalized_invalid_run_does_not_require_a_summary_metric_row(
+    tmp_path: Path,
+) -> None:
+    experiment, run = _experiment(tmp_path)
+    result_path = run / "result.json"
+    result = json.loads(result_path.read_text())
+    result["outcome"] = {"kind": "model-failure", "reason": "request rejected"}
+    result["terminal_reason"] = "request rejected"
+    result["ux_sample_valid"] = False
+    result["ux_sample_invalid_reason"] = "model-failure: request rejected"
+    result["metrics"] = {}
+    _write_json(result_path, result)
+    _write_checksums(run)
+
+    summary_path = tmp_path / "experiment.json"
+    summary = json.loads(summary_path.read_text())
+    summary["run_metrics"] = []
+    _write_json(summary_path, summary)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    assert corpus.require("scenario:run-a").payload["id"] == "invite"
+    assert corpus.require("metric:run-a:outcome").payload["value"] == "model-failure"
+    assert corpus.require("limitation:run-a:ux-sample-invalid").payload == {
+        "kind": "ux-sample-invalid",
+        "reason": "model-failure: request rejected",
+    }
+
+
+def test_verified_run_requires_a_trusted_summary_metric_row(tmp_path: Path) -> None:
+    experiment, _ = _experiment(tmp_path)
+    summary_path = tmp_path / "experiment.json"
+    summary = json.loads(summary_path.read_text())
+    summary["run_metrics"] = []
+    _write_json(summary_path, summary)
+
+    with pytest.raises(ValueError, match="experiment summary.*missing"):
+        EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+
+def test_verified_run_requires_trusted_result_metrics(tmp_path: Path) -> None:
+    experiment, run = _experiment(tmp_path)
+    result_path = run / "result.json"
+    result = json.loads(result_path.read_text())
+    result["metrics"] = {}
+    _write_json(result_path, result)
+    _write_checksums(run)
+
+    with pytest.raises(ValueError, match="result metrics.*missing"):
+        EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+
 def test_builder_accepts_legacy_bundle_without_model_trial(tmp_path: Path) -> None:
     experiment, run = _experiment(tmp_path)
     spec = experiment.specs[0]

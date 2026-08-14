@@ -45,6 +45,17 @@ _MAX_NATIVE_MAP_BYTES = 64 * 1024 * 1024
 _MAX_TEXT_LENGTH = 4096
 _MAX_GEOMETRY_COORDINATE = 1_000_000.0
 _MAX_VIEWPORT_DIMENSION = 32_768
+_EXPERIMENT_RUN_IDENTITY_FIELDS = (
+    "run_id",
+    "seed",
+    "model_trial",
+    "config_digest",
+    "scenario_id",
+    "application_version_id",
+    "persona_id",
+    "policy",
+    "prominence_provider_id",
+)
 _UX_PRINCIPLE_PACK_VERSION = "ux-principles-v1"
 _UX_PRINCIPLE_PACK_DIGEST = (
     "b460e6bde12cd108199e4fa6d96676149a6809d03bcdfc894f4025663e0238df"
@@ -1414,6 +1425,14 @@ class EvidenceCorpusBuilder:
             metadata={
                 "schema_version": "evidence-corpus-v1",
                 "experiment_run_ids": tuple(specs_by_id),
+                "experiment_run_identities": tuple(
+                    {
+                        name: identity[name]
+                        for name in _EXPERIMENT_RUN_IDENTITY_FIELDS
+                    }
+                    for spec in specs
+                    for identity in (_identity(spec),)
+                ),
                 "ux_principles_are_metadata_only": True,
             },
         )
@@ -1559,6 +1578,13 @@ class EvidenceCorpusBuilder:
         events = tuple(persisted.events)
         if _text(raw_result.get("run_id")) != run_id:
             raise ValueError(f"result run ID does not match spec for {run_id}")
+        outcome_kind = _text(_mapping(raw_result.get("outcome")).get("kind"))
+        explicit_validity = raw_result.get("ux_sample_valid")
+        evaluable = explicit_validity is True or (
+            explicit_validity is not False
+            and outcome_kind
+            in {"verified-success", "agent-abandoned", "budget-exhausted"}
+        )
         _check_identity(
             f"manifest for {run_id}",
             manifest,
@@ -1583,43 +1609,49 @@ class EvidenceCorpusBuilder:
             expected,
             required=frozenset(expected),
         )
-        _check_identity(
-            f"experiment summary for {run_id}",
-            summary_row,
-            expected,
-            required=frozenset(
-                {
-                    "run_id",
-                    "seed",
-                    "model_trial",
-                    "config_digest",
-                    "scenario_id",
-                    "application_version_id",
-                    "persona_id",
-                    "policy",
-                    "prominence_provider_id",
-                }
-            ),
-        )
+        if evaluable and not summary_row:
+            raise ValueError(f"experiment summary metrics are missing for {run_id}")
+        if summary_row:
+            _check_identity(
+                f"experiment summary for {run_id}",
+                summary_row,
+                expected,
+                required=frozenset(
+                    {
+                        "run_id",
+                        "seed",
+                        "model_trial",
+                        "config_digest",
+                        "scenario_id",
+                        "application_version_id",
+                        "persona_id",
+                        "policy",
+                        "prominence_provider_id",
+                    }
+                ),
+            )
         raw_metrics = _mapping(raw_result.get("metrics"))
-        _check_identity(
-            f"result metrics for {run_id}",
-            raw_metrics,
-            expected,
-            required=frozenset(
-                {
-                    "run_id",
-                    "seed",
-                    "model_trial",
-                    "config_digest",
-                    "scenario_id",
-                    "application_version_id",
-                    "persona_id",
-                    "policy",
-                    "prominence_provider_id",
-                }
-            ),
-        )
+        if evaluable and not raw_metrics:
+            raise ValueError(f"result metrics are missing for {run_id}")
+        if raw_metrics:
+            _check_identity(
+                f"result metrics for {run_id}",
+                raw_metrics,
+                expected,
+                required=frozenset(
+                    {
+                        "run_id",
+                        "seed",
+                        "model_trial",
+                        "config_digest",
+                        "scenario_id",
+                        "application_version_id",
+                        "persona_id",
+                        "policy",
+                        "prominence_provider_id",
+                    }
+                ),
+            )
 
         snapshots = tuple(
             snapshot
