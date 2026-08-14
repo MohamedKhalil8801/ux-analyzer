@@ -1369,6 +1369,7 @@ class _ReportRole:
         def _messages(
             entries: Sequence[EvidenceEntry],
             message_attachments: tuple[ModelAttachment, ...],
+            candidate_attachments: tuple[ModelAttachment, ...],
         ) -> tuple[ChatMessage, ChatMessage]:
             context_entries, included_count, _, _ = _safe_context_entries(
                 entries,
@@ -1379,25 +1380,49 @@ class _ReportRole:
                 **base_message_payload,
                 "resolved_evidence": context_entries,
             }
+            attached_ids = {
+                attachment.evidence_id for attachment in message_attachments
+            }
+            unavailable_attachments = tuple(
+                attachment
+                for attachment in candidate_attachments
+                if attachment.evidence_id not in attached_ids
+            )
             if (
                 context_deferred_count
                 or len(context_entries) < len(all_entries)
-                or (all_attachment_bytes and not message_attachments)
+                or unavailable_attachments
             ):
-                message_payload["resolved_evidence_context"] = {
+                context: dict[str, object] = {
                     "requested_count": len(all_entries),
                     "included_count": included_count,
                     "deferred_count": context_deferred_count,
                     "model_context_item_count": len(context_entries),
                     "representation": "compact-metric-group-v1",
-                    "visual_attachments_deferred": bool(
-                        all_attachment_bytes and not message_attachments
-                    ),
-                    "instruction": (
+                    "visual_attachments_deferred": bool(unavailable_attachments),
+                }
+                if unavailable_attachments:
+                    context["visual_attachments"] = [
+                        {
+                            "evidence_id": attachment.evidence_id,
+                            "media_type": attachment.media_type,
+                            "sha256": attachment.sha256,
+                            "status": "unavailable",
+                            "reason": "transport_budget_exceeded",
+                        }
+                        for attachment in unavailable_attachments
+                    ]
+                    context["instruction"] = (
+                        "Listed visual attachments exceed this transport budget. "
+                        "Their text evidence remains available, but they must not be "
+                        "requested again."
+                    )
+                else:
+                    context["instruction"] = (
                         "Context is transport-bounded; request deferred evidence "
                         "again when it is required for a complete conclusion."
-                    ),
-                }
+                    )
+                message_payload["resolved_evidence_context"] = context
             return (
                 ChatMessage(role="system", content=self.prompt),
                 ChatMessage(
@@ -1428,16 +1453,12 @@ class _ReportRole:
             )
 
         entries = all_entries
-        attachments = _attachment_values(manifest, entries)
-        original_attachment_count = len(attachments)
-        messages = _messages(entries, attachments)
+        candidate_attachments = _attachment_values(manifest, entries)
+        original_attachment_count = len(candidate_attachments)
+        attachments: tuple[ModelAttachment, ...] = ()
+        messages = _messages(entries, attachments, candidate_attachments)
         measured_size = _measured_size(messages)
-        deferred_attachment_bytes = 0
-        if measured_size > _REPORT_REQUEST_MAX_BYTES and attachments:
-            deferred_attachment_bytes = all_attachment_bytes
-            attachments = ()
-            messages = _messages(entries, attachments)
-            measured_size = _measured_size(messages)
+        deferred_attachment_bytes = all_attachment_bytes if candidate_attachments else 0
         deferred_entry_count = 0
         if measured_size > _REPORT_REQUEST_MAX_BYTES and entries:
             lower = 1
@@ -1448,7 +1469,10 @@ class _ReportRole:
             while lower <= upper:
                 middle = (lower + upper) // 2
                 candidate_entries = entries[:middle]
-                candidate_messages = _messages(candidate_entries, ())
+                bounded_attachments = _attachment_values(manifest, candidate_entries)
+                candidate_messages = _messages(
+                    candidate_entries, (), bounded_attachments
+                )
                 candidate_size = _measured_size(candidate_messages)
                 if candidate_size <= _REPORT_REQUEST_MAX_BYTES:
                     best_entries = candidate_entries
@@ -1462,6 +1486,46 @@ class _ReportRole:
                 messages = best_messages
                 measured_size = best_size
                 deferred_entry_count = len(all_entries) - len(entries)
+                candidate_attachments = _attachment_values(manifest, entries)
+        if measured_size <= _REPORT_REQUEST_MAX_BYTES:
+            ranked_attachments: list[
+                tuple[
+                    int,
+                    int,
+                    ModelAttachment,
+                    tuple[ChatMessage, ChatMessage],
+                ]
+            ] = []
+            for index, attachment in enumerate(candidate_attachments):
+                attachment_messages = _messages(
+                    entries, (attachment,), candidate_attachments
+                )
+                ranked_attachments.append(
+                    (
+                        _measured_size(attachment_messages),
+                        index,
+                        attachment,
+                        attachment_messages,
+                    )
+                )
+            for single_size, _, attachment, single_messages in sorted(
+                ranked_attachments, key=lambda item: (item[0], item[1])
+            ):
+                candidate_values = (*attachments, attachment)
+                if attachments:
+                    candidate_messages = _messages(
+                        entries, candidate_values, candidate_attachments
+                    )
+                    candidate_size = _measured_size(candidate_messages)
+                else:
+                    candidate_messages = single_messages
+                    candidate_size = single_size
+                if candidate_size <= _REPORT_REQUEST_MAX_BYTES:
+                    attachments = candidate_values
+                    messages = candidate_messages
+                    measured_size = candidate_size
+            if len(attachments) == len(candidate_attachments):
+                deferred_attachment_bytes = 0
         if measured_size > _REPORT_REQUEST_MAX_BYTES:
             raise ReportTransportBudgetError(
                 {
@@ -1482,6 +1546,11 @@ class _ReportRole:
         attachment_ids = {
             attachment.evidence_id for attachment in attachments
         }
+        unavailable_attachment_ids = frozenset(
+            attachment.evidence_id
+            for attachment in candidate_attachments
+            if attachment.evidence_id not in attachment_ids
+        )
         delivered_ids = frozenset(
             evidence_id
             for evidence_id in delivered_ids
@@ -1531,6 +1600,7 @@ class _ReportRole:
             manifest,
             normalized_principles,
             delivered_ids=delivered_ids,
+            unavailable_attachment_ids=unavailable_attachment_ids,
         )
         return response
 
@@ -1570,6 +1640,7 @@ class _ReportRole:
         principles: Sequence[UxPrinciple],
         *,
         delivered_ids: frozenset[str],
+        unavailable_attachment_ids: frozenset[str],
     ) -> None:
         try:
             self._validate_response_bounds(response)
@@ -1580,6 +1651,8 @@ class _ReportRole:
             self._invalid("incomplete response needs evidence requests")
         for evidence_id in response.evidence_requests:
             self._validate_requested_id(evidence_id, known_ids)
+            if evidence_id in unavailable_attachment_ids:
+                self._invalid("unavailable visual evidence must not be requested again")
 
         principle_ids = {principle.principle_id for principle in principles}
         for finding in self._findings(response):

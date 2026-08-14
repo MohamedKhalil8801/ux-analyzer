@@ -25,7 +25,10 @@ from ux_analyzer.adapters.openai import (
     OpenAICompatibleStructuredClient,
     create_structured_model_client,
 )
-from ux_analyzer.ports.model_transport import MODEL_REQUEST_MAX_BYTES
+from ux_analyzer.ports.model_transport import (
+    MODEL_ATTACHMENT_MAX_BYTES,
+    MODEL_REQUEST_MAX_BYTES,
+)
 from ux_analyzer.ports.models import ChatMessage, ModelAttachment, ModelRole
 from ux_analyzer.ports.report_synthesis import AnalystResponse
 from ux_analyzer.providers.cognitive import CognitiveModelResponse
@@ -2009,6 +2012,11 @@ async def test_http_attachment_rejects_checksum_and_size_before_encoding(
             role=ModelRole.REPORT_ANALYST,
         )
     await http_client.aclose()
+
+
+def test_attachment_read_ceiling_uses_shared_limit() -> None:
+    assert openai_adapter._MAX_MODEL_ATTACHMENT_BYTES == MODEL_ATTACHMENT_MAX_BYTES
+    assert openai_adapter._MAX_MODEL_ATTACHMENT_BYTES > MODEL_REQUEST_MAX_BYTES
 
 
 @pytest.mark.asyncio

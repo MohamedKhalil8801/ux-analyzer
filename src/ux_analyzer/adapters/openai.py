@@ -33,6 +33,7 @@ from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from ux_analyzer.ports.model_transport import (
+    MODEL_ATTACHMENT_MAX_BYTES,
     TransportBudgetError,
     enforce_transport_size,
     serialize_transport_json,
@@ -88,7 +89,7 @@ _SAFE_FINISH_REASONS = frozenset(
     {"stop", "length", "tool_calls", "function_call", "content_filter"}
 )
 _SAFE_TEXT_PART_TYPES = frozenset({"text", "output_text"})
-_MAX_MODEL_ATTACHMENT_BYTES = 16 * 1024 * 1024
+_MAX_MODEL_ATTACHMENT_BYTES = MODEL_ATTACHMENT_MAX_BYTES
 _MAX_MODEL_RESPONSE_BYTES = 1_000_000
 _MAX_DIAGNOSTIC_CONTENT_LENGTH = 1_000_000
 _SAFE_STRUCTURAL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")

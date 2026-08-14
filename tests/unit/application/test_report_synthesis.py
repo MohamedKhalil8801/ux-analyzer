@@ -11,12 +11,19 @@ from ux_analyzer.application.evidence_corpus import (
     EvidenceEntry,
     EvidenceResolver,
 )
-from ux_analyzer.application.report_synthesis import ReportSynthesisService
+from ux_analyzer.application.report_synthesis import (
+    DEFAULT_MAX_ATTACHMENT_BYTES,
+    ReportSynthesisService,
+)
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
     ObjectionSeverity,
     SynthesisStatus,
+)
+from ux_analyzer.ports.model_transport import (
+    MODEL_ATTACHMENT_MAX_BYTES,
+    MODEL_REQUEST_MAX_BYTES,
 )
 from ux_analyzer.ports.models import (
     ModelCallRecord,
@@ -39,6 +46,11 @@ from ux_analyzer.providers.report_synthesis import (
 EVIDENCE_ID = "event:run-a:1"
 SECOND_EVIDENCE_ID = "event:run-a:2"
 HEATMAP_ID = "heatmap:run-a:viewport-1:1s"
+
+
+def test_attachment_resolution_and_request_ceilings_are_distinct() -> None:
+    assert DEFAULT_MAX_ATTACHMENT_BYTES == MODEL_ATTACHMENT_MAX_BYTES
+    assert DEFAULT_MAX_ATTACHMENT_BYTES > MODEL_REQUEST_MAX_BYTES
 
 
 def _corpus(
@@ -561,7 +573,7 @@ async def test_review_rejects_large_mixed_reference_collections(
 
 
 @pytest.mark.asyncio
-async def test_retrieval_budget_returns_unavailable_without_fourth_call(
+async def test_repeated_evidence_request_is_rejected_without_third_call(
     tmp_path: Path,
 ) -> None:
     resolver = _RecordingResolver()
@@ -573,10 +585,10 @@ async def test_retrieval_budget_returns_unavailable_without_fourth_call(
 
     attempt = await service.synthesize(_corpus(tmp_path))
 
-    assert attempt.status is SynthesisStatus.UNAVAILABLE
-    assert len(roles[0].calls) == 3
-    assert len(resolver.calls) == 3
-    assert any("retrieval budget" in limitation for limitation in attempt.limitations)
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert len(roles[0].calls) == 2
+    assert len(resolver.calls) == 1
+    assert any("retrieval request" in limitation for limitation in attempt.limitations)
     assert all(entry["role"] == "report-analyst" for entry in attempt.retrieval_log)
 
 

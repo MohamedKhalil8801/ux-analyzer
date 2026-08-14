@@ -34,7 +34,10 @@ from ux_analyzer.domain.synthesis import (
     SynthesisStatus,
     final_finding_preserves_candidate,
 )
-from ux_analyzer.ports.model_transport import TransportBudgetError
+from ux_analyzer.ports.model_transport import (
+    MODEL_ATTACHMENT_MAX_BYTES,
+    TransportBudgetError,
+)
 from ux_analyzer.ports.models import (
     ModelCallRecord,
     ModelManifest,
@@ -63,7 +66,7 @@ REPORT_SYNTHESIS_PROMPT_VERSION = "report-synthesis-orchestrator-v1"
 MAX_RETRIEVAL_ROUNDS = 3
 DEFAULT_MAX_RETRIEVAL_ENTRIES = 16
 MAX_ROLE_RETRIEVAL_ENTRIES = 32
-DEFAULT_MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_ATTACHMENT_BYTES = MODEL_ATTACHMENT_MAX_BYTES
 
 _PRINCIPLE_AUTHORITY_MARKERS = (
     "principle proves",
@@ -1232,6 +1235,8 @@ class ReportSynthesisService:
 
             try:
                 requested_ids = tuple(dict.fromkeys(response.evidence_requests))
+                if cumulative_requested.intersection(requested_ids):
+                    raise ValueError("repeated evidence request")
                 if (
                     len(cumulative_requested | set(requested_ids))
                     > MAX_ROLE_RETRIEVAL_ENTRIES

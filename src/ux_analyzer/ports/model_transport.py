@@ -6,6 +6,9 @@ import json
 import math
 
 MODEL_REQUEST_MAX_BYTES = 750_000
+# Evidence may be resolved above one request's encoded budget so the provider can
+# select a fitting subset and report omitted attachments explicitly.
+MODEL_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
 
 
 class TransportBudgetError(ValueError):

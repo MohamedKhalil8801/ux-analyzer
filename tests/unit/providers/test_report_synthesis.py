@@ -145,6 +145,32 @@ class AttachmentAwareRecordingClient(RecordingClient):
         return measured
 
 
+class SelectiveAttachmentRecordingClient(RecordingClient):
+    def __init__(self, rejected_evidence_id: str) -> None:
+        super().__init__()
+        self.rejected_evidence_id = rejected_evidence_id
+
+    def request_size(
+        self,
+        schema: type[Any],
+        messages: Sequence[Any],
+        *,
+        model: str,
+        role: ModelRole,
+    ) -> int:
+        del schema, model, role
+        attachment_ids = {
+            attachment.evidence_id
+            for message in messages
+            for attachment in message.attachments
+        }
+        if self.rejected_evidence_id in attachment_ids and len(attachment_ids) > 1:
+            return _REPORT_REQUEST_MAX_BYTES + 1
+        if attachment_ids == {self.rejected_evidence_id}:
+            return _REPORT_REQUEST_MAX_BYTES - 1
+        return _REPORT_REQUEST_MAX_BYTES - 100
+
+
 def _manifest(*, include_sentinels: bool = False) -> dict[str, object]:
     manifest: dict[str, object] = {
         "schema_version": "evidence-corpus-v1",
@@ -1348,10 +1374,102 @@ async def test_over_budget_visual_attachment_is_deferred_before_model_client(
         )
 
     assert client.measured_sizes == [
-        _REPORT_REQUEST_MAX_BYTES + 1,
         _REPORT_REQUEST_MAX_BYTES - 1,
+        _REPORT_REQUEST_MAX_BYTES + 1,
     ]
     assert client.messages[1].attachments == ()
+    payload = json.loads(client.messages[1].content)
+    assert payload["resolved_evidence_context"]["visual_attachments"] == [
+        {
+            "evidence_id": evidence_id,
+            "media_type": "image/png",
+            "reason": "transport_budget_exceeded",
+            "sha256": attachment_digest,
+            "status": "unavailable",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mixed_visuals_keep_fitting_subset_and_mark_oversized_visual(
+    tmp_path: Path,
+) -> None:
+    image_buffer = BytesIO()
+    Image.new("RGB", (1, 1), color=(220, 80, 80)).save(image_buffer, format="PNG")
+    content = image_buffer.getvalue()
+    digest = hashlib.sha256(content).hexdigest()
+    visual_entries: list[EvidenceEntry] = []
+    for run_id in ("run-large", "run-small-a", "run-small-b"):
+        relative_path = Path("runs") / run_id / "screenshot.png"
+        target = tmp_path / relative_path
+        target.parent.mkdir(parents=True)
+        target.write_bytes(content)
+        visual_entries.append(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"screenshot:{run_id}:{digest}",
+                    "screenshot",
+                    run_id,
+                    viewport_id="viewport-1",
+                    artifact_path=relative_path.as_posix(),
+                    sha256=digest,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Recorded screenshot for {run_id}.",
+                payload={"media_type": "image/png"},
+                attachment_path=relative_path,
+            )
+        )
+    text_entry = EvidenceEntry(
+        ref=EvidenceRef("event:run-large:1", "event", "run-large", replay_sequence=1),
+        evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+        summary="User opened the settings panel.",
+        payload={"sequence": 1},
+    )
+    entries = (visual_entries[0], text_entry, *visual_entries[1:])
+    corpus = EvidenceCorpus(output_root=tmp_path, entries=entries)
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [entry.ref.evidence_id for entry in entries],
+        max_entries=len(entries),
+        max_attachment_bytes=1024,
+    )
+    rejected_id = visual_entries[0].ref.evidence_id
+    client = SelectiveAttachmentRecordingClient(rejected_id)
+    client.response_factory = lambda schema, role: AnalystResponse(
+        complete=False,
+        evidence_requests=[rejected_id],
+    )
+
+    with pytest.raises(ModelResponseValidationError, match="must not be requested"):
+        await ReportAnalyst(client, model="gpt-report").analyze(
+            corpus,
+            resolved_evidence=resolved,
+        )
+
+    message = client.calls[0][1][1]
+    assert [attachment.evidence_id for attachment in message.attachments] == [
+        visual_entries[1].ref.evidence_id,
+        visual_entries[2].ref.evidence_id,
+    ]
+    payload = json.loads(message.content)
+    assert {
+        entry["evidence_id"]
+        for entry in payload["resolved_evidence"]
+        if "evidence_id" in entry
+    } == {entry.ref.evidence_id for entry in entries}
+    assert payload["resolved_evidence_context"]["visual_attachments"] == [
+        {
+            "evidence_id": rejected_id,
+            "media_type": "image/png",
+            "reason": "transport_budget_exceeded",
+            "sha256": digest,
+            "status": "unavailable",
+        }
+    ]
+    assert "must not be requested again" in payload["resolved_evidence_context"][
+        "instruction"
+    ]
 
 
 @pytest.mark.asyncio
