@@ -24,6 +24,7 @@ from ux_analyzer.domain.synthesis import (
 from ux_analyzer.ports.model_transport import (
     MODEL_ATTACHMENT_MAX_BYTES,
     MODEL_REQUEST_MAX_BYTES,
+    TransportEvidenceUnavailableError,
 )
 from ux_analyzer.ports.models import (
     ModelCallRecord,
@@ -590,6 +591,58 @@ async def test_repeated_evidence_request_is_rejected_without_third_call(
     assert len(resolver.calls) == 1
     assert any("retrieval request" in limitation for limitation in attempt.limitations)
     assert all(entry["role"] == "report-analyst" for entry in attempt.retrieval_log)
+
+
+@pytest.mark.asyncio
+async def test_completed_role_unavailable_evidence_limitation_is_retained(
+    tmp_path: Path,
+) -> None:
+    limitations = (
+        "Analyst visual evidence was unavailable within the transport budget.",
+        "Auditor visual evidence was unavailable within the transport budget.",
+        "Pattern visual evidence was unavailable within the transport budget.",
+        "Adjudicator visual evidence was unavailable within the transport budget.",
+    )
+    service, _ = _scripted_service(
+        analyst=[
+            AnalystResponse(
+                complete=True,
+                unavailable_evidence_ids=[EVIDENCE_ID],
+                limitations=[limitations[0]],
+            )
+        ],
+        auditor=[EvidenceAuditResponse(complete=True, limitations=[limitations[1]])],
+        pattern=[PatternReviewResponse(complete=True, limitations=[limitations[2]])],
+        adjudicator=[AdjudicationResponse(complete=True, limitations=[limitations[3]])],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.NO_ISSUES
+    assert set(limitations).issubset(attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_re_requested_transport_unavailable_evidence_is_operational(
+    tmp_path: Path,
+) -> None:
+    service, _ = _scripted_service(
+        analyst=[TransportEvidenceUnavailableError(1)],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.UNAVAILABLE
+    assert any(
+        "visual evidence was unavailable within the bounded transport request"
+        in limitation.casefold()
+        for limitation in attempt.limitations
+    )
+    analyst_log = next(
+        entry for entry in attempt.retrieval_log if entry["role"] == "report-analyst"
+    )
+    assert analyst_log["error"] == "visual evidence unavailable"
+    assert "event:run-a:1" not in repr(analyst_log)
 
 
 @pytest.mark.asyncio

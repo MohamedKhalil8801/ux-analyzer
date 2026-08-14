@@ -1323,10 +1323,10 @@ class _StructuredCallSupport:
             ModelRole.COARSE_SCENT: "scent-coarse-v1",
             ModelRole.FULL_SCENT: "scent-full-v1",
             ModelRole.COGNITIVE: "cognitive-v1",
-            ModelRole.REPORT_ANALYST: "report-analyst-v3",
-            ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v3",
-            ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v3",
-            ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v3",
+            ModelRole.REPORT_ANALYST: "report-analyst-v4",
+            ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v4",
+            ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v4",
+            ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v4",
         }[role_value]
         return ModelManifest(
             provider_id=self._provider_id,
@@ -2632,17 +2632,13 @@ class CodexStructuredClient(_StructuredCallSupport):
         model: str,
         role: ModelRole,
     ) -> int:
-        del model
-        role_value = ModelRole(role)
+        del model, role
         prompt = _serialize_codex_messages(messages)
         schema_bytes = serialize_transport_json(
             _codex_transport_schema(schema),
             sort_keys=False,
         )
-        size = transport_size(prompt, schema_bytes)
-        if role_value in _REPORT_ROLES:
-            enforce_transport_size(prompt, schema_bytes)
-        return size
+        return transport_size(prompt, schema_bytes)
 
 
 def create_structured_model_client(

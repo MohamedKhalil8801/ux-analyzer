@@ -37,6 +37,7 @@ from ux_analyzer.domain.synthesis import (
 from ux_analyzer.ports.model_transport import (
     MODEL_ATTACHMENT_MAX_BYTES,
     TransportBudgetError,
+    TransportEvidenceUnavailableError,
 )
 from ux_analyzer.ports.models import (
     ModelCallRecord,
@@ -233,9 +234,19 @@ def _response_payload(response: _Response) -> Mapping[str, object]:
     return cast(Mapping[str, object], payload)
 
 
+def _retain_response_limitations(
+    target: list[str], response: _Response
+) -> None:
+    for limitation in response.limitations:
+        if limitation not in target:
+            target.append(limitation)
+
+
 def _error_category(error: BaseException) -> tuple[bool, str]:
     name = type(error).__name__
     reason = getattr(error, "reason", None)
+    if isinstance(error, TransportEvidenceUnavailableError):
+        return True, "visual evidence unavailable"
     if isinstance(error, TransportBudgetError):
         return True, "report request exceeded transport budget"
     if name == "ModelFailureError" and reason == "invalid structured output":
@@ -506,6 +517,7 @@ _DIAGNOSTIC_SCHEMA_FIELDS = frozenset(
     {
         "complete",
         "evidence_requests",
+        "unavailable_evidence_ids",
         "candidate_findings",
         "objections",
         "final_findings",
@@ -581,7 +593,11 @@ def _safe_validation_error(value: object) -> dict[str, object] | None:
 
 
 def _operational_limitation(error: BaseException, category: str) -> str:
-    if category == "report request exceeded transport budget":
+    if category == "visual evidence unavailable":
+        limitation = (
+            "Visual evidence was unavailable within the bounded transport request."
+        )
+    elif category == "report request exceeded transport budget":
         limitation = "The synthesis request exceeded its bounded transport budget."
     elif category == "model provider unavailable":
         limitation = (
@@ -797,6 +813,7 @@ class ReportSynthesisService:
             )
 
         analyst_response = cast(AnalystResponse, analyst_run.response)
+        _retain_response_limitations(limitations, analyst_response)
         candidate_models = tuple(analyst_response.candidate_findings)
         candidate_findings: list[SynthesisFinding] = []
         benign_candidate_count = 0
@@ -904,15 +921,19 @@ class ReportSynthesisService:
                 ),
             )
 
+        auditor_response = cast(EvidenceAuditResponse, auditor_run.response)
+        pattern_response = cast(PatternReviewResponse, pattern_run.response)
+        _retain_response_limitations(limitations, auditor_response)
+        _retain_response_limitations(limitations, pattern_response)
         try:
             auditor_objections = self._reviewer_objections(
                 corpus,
-                cast(EvidenceAuditResponse, auditor_run.response),
+                auditor_response,
                 ModelRole.REPORT_EVIDENCE_AUDITOR,
             )
             pattern_objections = self._reviewer_objections(
                 corpus,
-                cast(PatternReviewResponse, pattern_run.response),
+                pattern_response,
                 ModelRole.REPORT_PATTERN_REVIEWER,
             )
             objections = auditor_objections + pattern_objections
@@ -975,6 +996,7 @@ class ReportSynthesisService:
             )
 
         adjudication_response = cast(AdjudicationResponse, adjudication_run.response)
+        _retain_response_limitations(limitations, adjudication_response)
         final_models = tuple(adjudication_response.final_findings)
         try:
             resolved_objections = self._apply_resolutions(
@@ -1035,6 +1057,7 @@ class ReportSynthesisService:
                 adjudication_response = cast(
                     AdjudicationResponse, revision_run.response
                 )
+                _retain_response_limitations(limitations, adjudication_response)
                 try:
                     resolved_objections = self._apply_resolutions(
                         corpus,

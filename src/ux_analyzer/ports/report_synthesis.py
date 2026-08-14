@@ -342,26 +342,40 @@ class _InvestigativeResponse(_RoleSchema):
     schema_version: ClassVar[str] = REPORT_SYNTHESIS_SCHEMA_VERSION
     complete: bool
     evidence_requests: list[str] = Field(default_factory=list)
+    unavailable_evidence_ids: list[str] = Field(default_factory=list, max_length=32)
+    limitations: list[str] = Field(default_factory=list, max_length=16)
 
-    @field_validator("evidence_requests", mode="before")
+    @field_validator(
+        "evidence_requests",
+        "unavailable_evidence_ids",
+        "limitations",
+        mode="before",
+    )
     @classmethod
-    def _normalize_evidence_requests(cls, value: object) -> object:
+    def _normalize_common_lists(cls, value: object) -> object:
         if value is None:
             return []
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-            raise TypeError("evidence_requests must be a list of strings")
+            raise TypeError("response list fields must be lists of strings")
         return [
             item.strip() if isinstance(item, str) else item
             for item in cast(Sequence[object], value)
         ]
 
-    @field_validator("evidence_requests")
+    @field_validator("evidence_requests", "unavailable_evidence_ids")
     @classmethod
-    def _validate_evidence_request_values(cls, value: list[str]) -> list[str]:
+    def _validate_evidence_id_values(cls, value: list[str]) -> list[str]:
         if any(not item for item in value):
-            raise ValueError("evidence_requests must not contain empty IDs")
+            raise ValueError("evidence ID lists must not contain empty IDs")
         if len(value) != len(set(value)):
-            raise ValueError("evidence_requests must contain unique IDs")
+            raise ValueError("evidence ID lists must contain unique IDs")
+        return value
+
+    @field_validator("limitations")
+    @classmethod
+    def _validate_limitations(cls, value: list[str]) -> list[str]:
+        if any(not item or len(item) > 512 for item in value):
+            raise ValueError("limitations must contain bounded non-empty text")
         return value
 
     @model_validator(mode="after")
@@ -370,13 +384,15 @@ class _InvestigativeResponse(_RoleSchema):
             raise ValueError(
                 "incomplete response requires at least one evidence_requests value"
             )
+        if self.unavailable_evidence_ids and not self.limitations:
+            raise ValueError("unavailable evidence declarations require limitations")
         return self
 
 
 class AnalystResponse(_InvestigativeResponse):
     """Structured candidate findings emitted by the report analyst."""
 
-    schema_version: ClassVar[str] = "report-analyst-response-v1"
+    schema_version: ClassVar[str] = "report-analyst-response-v2"
     candidate_findings: list[CandidateFinding] = Field(
         default_factory=_new_candidate_findings
     )
@@ -385,7 +401,7 @@ class AnalystResponse(_InvestigativeResponse):
 class EvidenceAuditResponse(_InvestigativeResponse):
     """Structured factual and visual objections emitted by the evidence auditor."""
 
-    schema_version: ClassVar[str] = "report-evidence-auditor-response-v1"
+    schema_version: ClassVar[str] = "report-evidence-auditor-response-v2"
     objections: list[TypedObjection] = Field(default_factory=_new_typed_objections)
 
     @property
@@ -396,7 +412,7 @@ class EvidenceAuditResponse(_InvestigativeResponse):
 class PatternReviewResponse(_InvestigativeResponse):
     """Structured recurrence and severity objections emitted by the pattern reviewer."""
 
-    schema_version: ClassVar[str] = "report-pattern-reviewer-response-v1"
+    schema_version: ClassVar[str] = "report-pattern-reviewer-response-v2"
     objections: list[TypedObjection] = Field(default_factory=_new_typed_objections)
 
     @property
@@ -407,7 +423,7 @@ class PatternReviewResponse(_InvestigativeResponse):
 class AdjudicationResponse(_InvestigativeResponse):
     """Structured final findings and explicit objection resolutions."""
 
-    schema_version: ClassVar[str] = "report-adjudicator-response-v1"
+    schema_version: ClassVar[str] = "report-adjudicator-response-v2"
     final_findings: list[CandidateFinding] = Field(
         default_factory=_new_candidate_findings
     )

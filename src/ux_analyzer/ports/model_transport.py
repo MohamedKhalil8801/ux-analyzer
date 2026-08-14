@@ -15,6 +15,18 @@ class TransportBudgetError(ValueError):
     """Raised when one structured model request exceeds its byte ceiling."""
 
 
+class TransportEvidenceUnavailableError(TransportBudgetError):
+    """Raised when a role re-requests evidence excluded by transport fitting."""
+
+    reason = "visual evidence unavailable"
+
+    def __init__(self, unavailable_count: int) -> None:
+        if not 1 <= unavailable_count <= 32:
+            raise ValueError("unavailable evidence count must be between 1 and 32")
+        self.unavailable_count = unavailable_count
+        super().__init__(self.reason)
+
+
 def serialize_transport_json(
     value: object,
     *,

@@ -2202,6 +2202,15 @@ async def test_http_report_transport_enforces_exact_byte_boundary_with_data_uri(
     )
     expected_size = len(openai_adapter.serialize_transport_json(payload))
     assert expected_size == MODEL_REQUEST_MAX_BYTES + overage
+    assert (
+        client.request_size(
+            SimpleResponse,
+            (message,),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+        == expected_size
+    )
 
     if overage:
         with pytest.raises(ValueError, match="transport-safe byte budget"):
@@ -2277,6 +2286,15 @@ async def test_codex_report_transport_enforces_exact_byte_boundary(
     )
     expected_prompt = openai_adapter._serialize_codex_messages((message,))
     assert len(expected_prompt) + schema_size == MODEL_REQUEST_MAX_BYTES + overage
+    assert (
+        client.request_size(
+            SimpleResponse,
+            (message,),
+            model="report-model",
+            role=ModelRole.REPORT_ANALYST,
+        )
+        == len(expected_prompt) + schema_size
+    )
 
     if overage:
         with pytest.raises(ValueError, match="transport-safe byte budget"):

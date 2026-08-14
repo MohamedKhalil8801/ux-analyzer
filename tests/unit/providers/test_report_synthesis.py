@@ -1363,9 +1363,11 @@ async def test_over_budget_visual_attachment_is_deferred_before_model_client(
     )
     client = AttachmentAwareRecordingClient()
     client.response_factory = lambda schema, role: AnalystResponse(
-            complete=True,
-            candidate_findings=[candidate],
-        )
+        complete=True,
+        unavailable_evidence_ids=[evidence_id],
+        limitations=["The screenshot could not be reviewed."],
+        candidate_findings=[candidate],
+    )
 
     with pytest.raises(ModelResponseValidationError, match="undelivered evidence ID"):
         await ReportAnalyst(client, model="gpt-report").analyze(
@@ -1437,15 +1439,15 @@ async def test_mixed_visuals_keep_fitting_subset_and_mark_oversized_visual(
     rejected_id = visual_entries[0].ref.evidence_id
     client = SelectiveAttachmentRecordingClient(rejected_id)
     client.response_factory = lambda schema, role: AnalystResponse(
-        complete=False,
-        evidence_requests=[rejected_id],
+        complete=True,
+        unavailable_evidence_ids=["e0"],
+        limitations=["The large screenshot could not be reviewed."],
     )
 
-    with pytest.raises(ModelResponseValidationError, match="must not be requested"):
-        await ReportAnalyst(client, model="gpt-report").analyze(
-            corpus,
-            resolved_evidence=resolved,
-        )
+    response = await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+    )
 
     message = client.calls[0][1][1]
     assert [attachment.evidence_id for attachment in message.attachments] == [
@@ -1467,9 +1469,33 @@ async def test_mixed_visuals_keep_fitting_subset_and_mark_oversized_visual(
             "status": "unavailable",
         }
     ]
-    assert "must not be requested again" in payload["resolved_evidence_context"][
+    assert "unavailable_evidence_ids" in payload["resolved_evidence_context"][
         "instruction"
     ]
+    assert "do not claim visual review" in payload["resolved_evidence_context"][
+        "instruction"
+    ]
+    request_policy = payload["evidence_request_policy"]
+    assert request_policy["resolver_deferred_handle_ranges"] == []
+    assert request_policy["already_requested_handles"] == ["e0", "e1", "e2", "e3"]
+    assert request_policy["transport_unavailable_handles"] == ["e0"]
+    assert response.unavailable_evidence_ids == [rejected_id]
+    assert response.limitations == ["The large screenshot could not be reviewed."]
+
+    requesting_client = SelectiveAttachmentRecordingClient(rejected_id)
+    requesting_client.response_factory = lambda schema, role: AnalystResponse(
+        complete=False,
+        evidence_requests=[rejected_id],
+    )
+    with pytest.raises(TransportBudgetError) as failure:
+        await ReportAnalyst(requesting_client, model="gpt-report").analyze(
+            corpus,
+            resolved_evidence=resolved,
+        )
+    assert type(failure.value).__name__ == "TransportEvidenceUnavailableError"
+    assert failure.value.reason == "visual evidence unavailable"
+    assert failure.value.unavailable_count == 1
+    assert len(requesting_client.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -1652,10 +1678,12 @@ async def test_large_metric_continuation_uses_compact_bounded_context() -> None:
         "representation": "compact-metric-group-v1",
         "visual_attachments_deferred": False,
         "instruction": (
-            "Context is transport-bounded; request deferred evidence "
-            "again when it is required for a complete conclusion."
+            "Resolved evidence was compacted for transport. Already requested "
+            "evidence must not be requested again."
         ),
     }
+    assert payload["evidence_request_policy"]["resolver_deferred_handle_ranges"] == []
+    assert len(payload["evidence_request_policy"]["already_requested_handles"]) == 160
     assert all("private" not in repr(item) for item in context_entries)
     serialized_size = len(client.calls[0][1][1].content.encode("utf-8"))
     assert (
@@ -1692,6 +1720,9 @@ async def test_role_prompts_state_distinct_review_responsibilities() -> None:
     for prompt in prompts.values():
         assert "principles are not evidence" in prompt
         assert "cannot determine severity" in prompt
+        assert "resolver_deferred_handle_ranges" in prompt
+        assert "unavailable_evidence_ids" in prompt
+        assert "do not claim visual review" in prompt
 
 
 @pytest.mark.asyncio
@@ -1746,6 +1777,14 @@ def test_investigative_response_requires_retrieval_request_when_incomplete() -> 
     )
     assert response.complete is False
     assert response.evidence_requests == [EVIDENCE_ID]
+
+
+def test_unavailable_evidence_declaration_requires_limitation() -> None:
+    with pytest.raises(ValidationError, match="limitations"):
+        AnalystResponse(
+            complete=True,
+            unavailable_evidence_ids=[EVIDENCE_ID],
+        )
 
 
 def test_role_response_schemas_require_role_outputs_and_validate_domains() -> None:
@@ -2100,7 +2139,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
         is ModelRole.REPORT_ANALYST
     )
     assert ReportAnalyst(client, model="gpt-report").manifest.prompt_version == (
-        "report-analyst-v3"
+        "report-analyst-v4"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role

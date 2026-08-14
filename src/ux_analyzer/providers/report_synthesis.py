@@ -28,6 +28,7 @@ from ux_analyzer.domain.synthesis import (
 from ux_analyzer.ports.model_transport import (
     MODEL_REQUEST_MAX_BYTES,
     TransportBudgetError,
+    TransportEvidenceUnavailableError,
     require_finite_float,
 )
 from ux_analyzer.ports.models import (
@@ -1138,6 +1139,12 @@ def _expand_provider_handles(
     if isinstance(requests, list):
         request_values = cast(list[object], requests)
         payload["evidence_requests"] = [expand(value) for value in request_values]
+    unavailable = payload.get("unavailable_evidence_ids")
+    if isinstance(unavailable, list):
+        unavailable_values = cast(list[object], unavailable)
+        payload["unavailable_evidence_ids"] = [
+            expand(value) for value in unavailable_values
+        ]
 
     def replace_reference_ids(value: object) -> object:
         if isinstance(value, Mapping):
@@ -1365,6 +1372,22 @@ class _ReportRole:
         all_attachment_bytes = (
             resolved_evidence.attachment_bytes if resolved_evidence is not None else 0
         )
+        handle_map = _provider_evidence_handle_map(manifest)
+        handle_by_evidence_id = {
+            evidence_id: handle for handle, evidence_id in handle_map.items()
+        }
+        resolved_ids = {entry.ref.evidence_id for entry in all_entries}
+        already_requested_handles = [
+            handle for handle, evidence_id in handle_map.items() if evidence_id in resolved_ids
+        ]
+        requestable_ranges: list[list[int]] = []
+        for index, evidence_id in enumerate(handle_map.values()):
+            if evidence_id in resolved_ids:
+                continue
+            if requestable_ranges and index == requestable_ranges[-1][1] + 1:
+                requestable_ranges[-1][1] = index
+            else:
+                requestable_ranges.append([index, index])
 
         def _messages(
             entries: Sequence[EvidenceEntry],
@@ -1388,6 +1411,21 @@ class _ReportRole:
                 for attachment in candidate_attachments
                 if attachment.evidence_id not in attached_ids
             )
+            unavailable_handles = [
+                handle_by_evidence_id[attachment.evidence_id]
+                for attachment in unavailable_attachments
+            ]
+            message_payload["evidence_request_policy"] = {
+                "handle_format": "e{index}",
+                "resolver_deferred_handle_ranges": requestable_ranges,
+                "already_requested_handles": already_requested_handles,
+                "transport_unavailable_handles": unavailable_handles,
+                "instruction": (
+                    "Only handles in resolver_deferred_handle_ranges may be requested. "
+                    "Already requested and transport-unavailable handles must not be "
+                    "requested."
+                ),
+            }
             if (
                 context_deferred_count
                 or len(context_entries) < len(all_entries)
@@ -1414,13 +1452,13 @@ class _ReportRole:
                     ]
                     context["instruction"] = (
                         "Listed visual attachments exceed this transport budget. "
-                        "Their text evidence remains available, but they must not be "
-                        "requested again."
+                        "Declare their IDs in unavailable_evidence_ids with a "
+                        "limitation; do not claim visual review or request them again."
                     )
                 else:
                     context["instruction"] = (
-                        "Context is transport-bounded; request deferred evidence "
-                        "again when it is required for a complete conclusion."
+                        "Resolved evidence was compacted for transport. Already "
+                        "requested evidence must not be requested again."
                     )
                 message_payload["resolved_evidence_context"] = context
             return (
@@ -1651,8 +1689,20 @@ class _ReportRole:
             self._invalid("incomplete response needs evidence requests")
         for evidence_id in response.evidence_requests:
             self._validate_requested_id(evidence_id, known_ids)
-            if evidence_id in unavailable_attachment_ids:
-                self._invalid("unavailable visual evidence must not be requested again")
+        requested_unavailable_ids = unavailable_attachment_ids.intersection(
+            response.evidence_requests
+        )
+        if requested_unavailable_ids:
+            raise TransportEvidenceUnavailableError(len(requested_unavailable_ids))
+        declared_unavailable_ids = frozenset(response.unavailable_evidence_ids)
+        for evidence_id in declared_unavailable_ids:
+            self._validate_requested_id(evidence_id, known_ids)
+        if declared_unavailable_ids != unavailable_attachment_ids:
+            self._invalid(
+                "transport-unavailable evidence declaration does not match context"
+            )
+        if any(contains_forbidden_narrative(item) for item in response.limitations):
+            self._invalid("response limitation contains forbidden narrative")
 
         principle_ids = {principle.principle_id for principle in principles}
         for finding in self._findings(response):
@@ -1753,14 +1803,16 @@ The initial corpus_manifest is always an index-only manifest_format compact-para
 
 The UX principle pack is optional interpretive guidance. Principles are not evidence and cannot determine severity. A principle may help name or explain an issue only when observed evidence supports it. Never request or cite a principle as an evidence ID.
 
-Every factual claim and finding must use resolvable evidence IDs from corpus_manifest. If more evidence is needed, set complete to false and request only valid evidence IDs listed in corpus_manifest. Return exactly one valid JSON object matching the requested structured response schema. Do not include private reasoning or extra fields."""
+Every factual claim and finding must use delivered resolvable evidence. The evidence_request_policy is authoritative: only handles inside resolver_deferred_handle_ranges may be requested. Never request handles listed in already_requested_handles or transport_unavailable_handles.
+
+When visual evidence is transport-unavailable, list its handle in unavailable_evidence_ids and add a plain limitation. You may still set complete to true using delivered evidence, but do not claim visual review, cite the unavailable visual, or infer its contents. Return exactly one valid JSON object matching the requested structured response schema. Do not include private reasoning or extra fields."""
 
 
 class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v3"
+    prompt_version = "report-analyst-v4"
     response_schema = AnalystResponse
 
     @property
@@ -1789,7 +1841,7 @@ class EvidenceAuditor(_ReportRole):
     """Challenge factual and visual support for analyst candidates."""
 
     role = ModelRole.REPORT_EVIDENCE_AUDITOR
-    prompt_version = "report-evidence-auditor-v3"
+    prompt_version = "report-evidence-auditor-v4"
     response_schema = EvidenceAuditResponse
 
     @property
@@ -1843,7 +1895,7 @@ class PatternReviewer(_ReportRole):
     """Review recurrence, cross-surface impact, severity, and fix leverage."""
 
     role = ModelRole.REPORT_PATTERN_REVIEWER
-    prompt_version = "report-pattern-reviewer-v3"
+    prompt_version = "report-pattern-reviewer-v4"
     response_schema = PatternReviewResponse
 
     @property
@@ -1878,7 +1930,7 @@ class ReportAdjudicator(_ReportRole):
     """Resolve reviewer objections and write plain-language final findings."""
 
     role = ModelRole.REPORT_ADJUDICATOR
-    prompt_version = "report-adjudicator-v3"
+    prompt_version = "report-adjudicator-v4"
     response_schema = AdjudicationResponse
 
     @property
