@@ -271,7 +271,7 @@ async def test_analyst_prompt_has_boundary_and_excludes_prior_agent_context() ->
     assert "element_index" in prompt
     assert "element_values" in prompt
     assert "run_ids, viewport_values" in prompt
-    assert "At most 12 candidate findings" in prompt
+    assert "At most 8 candidate findings" in prompt
     assert "Consolidate repeated signals" in prompt
     assert "PRIOR_AGENT_PRIVATE_REASONING_SENTINEL" not in serialized_messages
     assert "PRIOR_FINDING_PROSE_SENTINEL" not in serialized_messages
@@ -294,7 +294,11 @@ async def test_plain_report_request_delivers_role_schema_contract() -> None:
     assert schema["required"] == expected_schema["required"]
     assert schema["properties"] == expected_schema["properties"]
     assert schema["$defs"].keys() == expected_schema["$defs"].keys()
-    assert schema["properties"]["candidate_findings"]["maxItems"] == 12
+    assert schema["properties"]["candidate_findings"]["maxItems"] == 8
+    finding_schema = schema["$defs"]["CandidateFinding"]["properties"]
+    assert finding_schema["issue"]["maxLength"] == 800
+    assert finding_schema["fixes"]["maxItems"] == 3
+    assert finding_schema["evidence_refs"]["maxItems"] == 12
 
 
 @pytest.mark.asyncio
@@ -2070,15 +2074,17 @@ async def test_role_response_rejects_oversized_strings() -> None:
     class OversizedStringClient(RecordingClient):
         @staticmethod
         def _default_response(schema: type[Any], role: ModelRole) -> object:
-            del role
-            payload = _finding_payload()
-            payload["title"] = oversized
-            return schema.model_validate(
-                {
-                    "complete": True,
-                    "candidate_findings": [payload],
-                }
-            )
+                del role
+                payload = _finding_payload()
+                payload["title"] = oversized
+                payload["evidence_refs"] = [
+                    EvidenceReference.model_validate(item)
+                    for item in payload["evidence_refs"]
+                ]
+                return AnalystResponse.model_construct(
+                    complete=True,
+                    candidate_findings=[CandidateFinding.model_construct(**payload)],
+                )
 
     corpus = _corpus(Path.cwd())
     resolved = EvidenceResolver().resolve(

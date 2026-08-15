@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol, cast
+from typing import Annotated, Any, ClassVar, Protocol, cast
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     field_validator,
     model_validator,
 )
@@ -39,6 +40,27 @@ _OBJECTION_TYPES = {
     "visual-interpretation",
     "other",
 }
+
+_BoundedIdentifier = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=256),
+]
+_BoundedNarrative = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=800),
+]
+_BoundedFix = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=400),
+]
+_BoundedNote = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=400),
+]
+_BoundedLabel = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=160),
+]
 
 _SENSITIVE_KEY_MARKERS = (
     "private_reasoning",
@@ -154,16 +176,16 @@ class EvidenceReference(_RoleSchema):
 
     model_config = ConfigDict(strict=True)
 
-    evidence_id: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    viewport_id: str | None = None
-    element_id: str | None = None
-    event_id: str | None = None
-    metric_id: str | None = None
-    artifact_path: str | None = None
+    evidence_id: _BoundedIdentifier
+    kind: _BoundedLabel
+    run_id: _BoundedIdentifier
+    viewport_id: _BoundedIdentifier | None = None
+    element_id: _BoundedIdentifier | None = None
+    event_id: _BoundedIdentifier | None = None
+    metric_id: _BoundedIdentifier | None = None
+    artifact_path: Annotated[str, StringConstraints(max_length=512)] | None = None
     replay_sequence: int | None = Field(default=None, ge=0)
-    sha256: str | None = None
+    sha256: Annotated[str, StringConstraints(max_length=64)] | None = None
 
     def to_domain(self) -> EvidenceRef:
         return EvidenceRef(**self.model_dump(mode="python"))
@@ -180,26 +202,27 @@ def _new_counterevidence() -> list[str | EvidenceReference]:
 class CandidateFinding(_RoleSchema):
     """Candidate or final finding fields shared by synthesis role responses."""
 
-    finding_id: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    issue: str = Field(min_length=1)
-    impact: str = Field(min_length=1)
-    root_cause: str = Field(min_length=1)
-    fixes: list[str] = Field(min_length=1)
+    finding_id: _BoundedIdentifier
+    title: _BoundedLabel
+    issue: _BoundedNarrative
+    impact: _BoundedNarrative
+    root_cause: _BoundedNarrative
+    fixes: list[_BoundedFix] = Field(min_length=1, max_length=3)
     severity: FindingSeverity
     confidence: float = Field(ge=0.0, le=1.0)
-    evidence_refs: list[EvidenceReference] = Field(min_length=1)
-    affected_surfaces: list[str] = Field(default_factory=list)
-    principles: list[str] = Field(default_factory=list)
-    counterevidence: list[str | EvidenceReference] = Field(
-        default_factory=_new_counterevidence
+    evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
+    affected_surfaces: list[_BoundedLabel] = Field(default_factory=list, max_length=8)
+    principles: list[_BoundedLabel] = Field(default_factory=list, max_length=6)
+    counterevidence: list[_BoundedNote | EvidenceReference] = Field(
+        default_factory=_new_counterevidence,
+        max_length=8,
     )
-    limitations: list[str] = Field(default_factory=list)
-    reviewer_state: str = Field(default="candidate", min_length=1)
+    limitations: list[_BoundedNote] = Field(default_factory=list, max_length=4)
+    reviewer_state: _BoundedLabel = "candidate"
     evidence_class: EvidenceClass = EvidenceClass.MODEL_ESTIMATE
     reproducibility: Reproducibility = Reproducibility.MODEL_DEPENDENT
-    severity_justification: str = ""
-    reviewer_notes: list[str] = Field(default_factory=list)
+    severity_justification: Annotated[str, StringConstraints(max_length=600)] = ""
+    reviewer_notes: list[_BoundedNote] = Field(default_factory=list, max_length=4)
 
     @field_validator(
         "fixes",
@@ -259,17 +282,18 @@ class CandidateFinding(_RoleSchema):
 class TypedObjection(_RoleSchema):
     """Typed challenge emitted by an evidence or pattern reviewer."""
 
-    objection_id: str = Field(min_length=1)
-    finding_id: str = Field(min_length=1)
-    objection_type: str = Field(default="other", min_length=1)
+    objection_id: _BoundedIdentifier
+    finding_id: _BoundedIdentifier
+    objection_type: _BoundedLabel = "other"
     severity: ObjectionSeverity
-    message: str = Field(min_length=1)
+    message: _BoundedNarrative
     evidence_refs: list[EvidenceReference] = Field(
-        default_factory=_new_evidence_references
+        default_factory=_new_evidence_references,
+        max_length=12,
     )
-    reviewer_role: str = ""
+    reviewer_role: Annotated[str, StringConstraints(max_length=160)] = ""
     resolved: bool = False
-    resolution: str | None = None
+    resolution: _BoundedNarrative | None = None
 
     @field_validator("objection_type")
     @classmethod
@@ -313,12 +337,13 @@ def _new_typed_objections() -> list[TypedObjection]:
 class ObjectionResolution(_RoleSchema):
     """Adjudicator's explicit disposition for one reviewer objection."""
 
-    objection_id: str = Field(min_length=1)
-    finding_id: str = Field(min_length=1)
+    objection_id: _BoundedIdentifier
+    finding_id: _BoundedIdentifier
     resolved: bool
-    resolution: str = Field(min_length=1)
+    resolution: _BoundedNarrative
     evidence_refs: list[EvidenceReference] = Field(
-        default_factory=_new_evidence_references
+        default_factory=_new_evidence_references,
+        max_length=12,
     )
 
     @field_validator("evidence_refs")
@@ -341,9 +366,12 @@ class _InvestigativeResponse(_RoleSchema):
 
     schema_version: ClassVar[str] = REPORT_SYNTHESIS_SCHEMA_VERSION
     complete: bool
-    evidence_requests: list[str] = Field(default_factory=list)
-    unavailable_evidence_ids: list[str] = Field(default_factory=list, max_length=32)
-    limitations: list[str] = Field(default_factory=list, max_length=16)
+    evidence_requests: list[_BoundedIdentifier] = Field(default_factory=list)
+    unavailable_evidence_ids: list[_BoundedIdentifier] = Field(
+        default_factory=list,
+        max_length=32,
+    )
+    limitations: list[_BoundedNote] = Field(default_factory=list, max_length=16)
 
     @field_validator(
         "evidence_requests",
@@ -395,7 +423,7 @@ class AnalystResponse(_InvestigativeResponse):
     schema_version: ClassVar[str] = "report-analyst-response-v2"
     candidate_findings: list[CandidateFinding] = Field(
         default_factory=_new_candidate_findings,
-        max_length=12,
+        max_length=8,
     )
 
 
@@ -433,7 +461,7 @@ class AdjudicationResponse(_InvestigativeResponse):
     schema_version: ClassVar[str] = "report-adjudicator-response-v2"
     final_findings: list[CandidateFinding] = Field(
         default_factory=_new_candidate_findings,
-        max_length=12,
+        max_length=8,
     )
     objection_resolutions: list[ObjectionResolution] = Field(
         default_factory=_new_objection_resolutions,

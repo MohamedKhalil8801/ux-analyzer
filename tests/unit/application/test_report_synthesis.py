@@ -639,7 +639,7 @@ async def test_review_rejects_large_mixed_reference_collections(
 ) -> None:
     candidate = _candidate()
     references = _large_mixed_evidence_references()
-    objection = TypedObjection(
+    objection = TypedObjection.model_construct(
         objection_id="large-objection",
         finding_id=candidate.finding_id,
         objection_type="factual-support",
@@ -648,7 +648,7 @@ async def test_review_rejects_large_mixed_reference_collections(
         evidence_refs=references,
         reviewer_role="report-evidence-auditor",
     )
-    resolution = ObjectionResolution(
+    resolution = ObjectionResolution.model_construct(
         objection_id=objection.objection_id,
         finding_id=candidate.finding_id,
         resolved=True,

@@ -1886,7 +1886,7 @@ class ReportAnalyst(_ReportRole):
     @property
     def _role_prompt(self) -> str:
         return (
-            "Discover material UX issues and their likely root causes. At most 12 "
+            "Discover material UX issues and their likely root causes. At most 8 "
             "candidate findings may be returned. Consolidate repeated signals that "
             "share a root cause across runs or surfaces. Emit plain language, concrete "
             "fixes, evidence references, limitations, and justified severity."
@@ -2009,7 +2009,7 @@ class ReportAdjudicator(_ReportRole):
     @property
     def _role_prompt(self) -> str:
         return (
-            "This role resolves objections and writes at most 12 plain-language final "
+            "This role resolves objections and writes at most 8 plain-language final "
             "findings. Consolidate repeated findings only when their shared root cause "
             "and affected surfaces are supported. Publish only findings with supported "
             "evidence, concrete fixes, justified severity, and explicit resolutions for "
