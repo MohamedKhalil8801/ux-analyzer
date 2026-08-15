@@ -35,6 +35,12 @@
   "scripts": {
     "report-analyst": [
       {
+        "complete": false,
+        "evidence_requests": [
+          "e0"
+        ]
+      },
+      {
         "complete": true,
         "candidate_findings": [
           {
@@ -67,6 +73,12 @@
       }
     ],
     "report-evidence-auditor": [
+      {
+        "complete": false,
+        "evidence_requests": [
+          "e1"
+        ]
+      },
       {
         "complete": true,
         "objections": [

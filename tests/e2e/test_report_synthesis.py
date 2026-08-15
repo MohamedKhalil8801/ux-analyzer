@@ -317,7 +317,41 @@ async def test_every_published_finding_opens_independently_verifiable_playback(
         "isolated-critical-blocker.json", tmp_path / "fixture"
     )
     report_root = tmp_path / "report"
-    _write_run(report_root, "run-1", version="defective", discovery_cost=8)
+    _write_run(
+        report_root,
+        "run-1",
+        version="defective",
+        discovery_cost=8,
+        outcome="agent-abandoned",
+        verified=False,
+        event_overrides={
+            6: {
+                "kind": "action-proposed",
+                "action": {"kind": "inspect-element", "element_id": "target"},
+                "reason": "Dashboard uses a mismatched member label.",
+            },
+            7: {
+                "kind": "action-executed",
+                "action": {
+                    "kind": "interact-with-element",
+                    "element_id": "target",
+                },
+                "succeeded": False,
+                "viewport_id": "viewport-1",
+                "failure_reason": "Required security submit action is unavailable.",
+            },
+            8: {
+                "kind": "action-proposed",
+                "action": {"kind": "inspect-element", "element_id": "target"},
+                "reason": "Profile uses the same mismatched member label.",
+            },
+            9: {
+                "kind": "action-proposed",
+                "action": {"kind": "inspect-element", "element_id": "target"},
+                "reason": "Members uses the same mismatched member label.",
+            },
+        },
+    )
     _write_synthesis(report_root, findings=attempt.findings)
     report_path = render_experiment_report(report_root, report_root / "report.html")
 
@@ -332,6 +366,8 @@ async def test_every_published_finding_opens_independently_verifiable_playback(
         for evidence_id, event_text in (
             ("event:run-1:6", "Event 6 /"),
             ("event:run-1:7", "Event 7 /"),
+            ("event:run-1:8", "Event 8 /"),
+            ("event:run-1:9", "Event 9 /"),
         ):
             open_evidence = page.get_by_label(
                 re.compile(rf"^Open evidence {re.escape(evidence_id)}$")

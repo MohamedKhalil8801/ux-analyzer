@@ -52,10 +52,36 @@
         "surface": "Profile",
         "outcome": "recoverable"
       }
+    },
+    {
+      "ref": {
+        "evidence_id": "event:run-1:9",
+        "kind": "event",
+        "run_id": "run-1",
+        "viewport_id": "viewport-1",
+        "event_id": "event-9",
+        "replay_sequence": 9
+      },
+      "evidence_class": "deterministic-fact",
+      "summary": "The verifier recorded the broad label mismatch in the members surface.",
+      "payload": {
+        "sequence": 9,
+        "surface": "Members",
+        "outcome": "recoverable"
+      }
     }
   ],
   "scripts": {
     "report-analyst": [
+      {
+        "complete": false,
+        "evidence_requests": [
+          "e0",
+          "e1",
+          "e2",
+          "e3"
+        ]
+      },
       {
         "complete": true,
         "candidate_findings": [
@@ -86,6 +112,14 @@
                 "viewport_id": "viewport-1",
                 "event_id": "event-8",
                 "replay_sequence": 8
+              },
+              {
+                "evidence_id": "event:run-1:9",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-9",
+                "replay_sequence": 9
               }
             ],
             "affected_surfaces": [
@@ -164,6 +198,14 @@
                 "viewport_id": "viewport-1",
                 "event_id": "event-8",
                 "replay_sequence": 8
+              },
+              {
+                "evidence_id": "event:run-1:9",
+                "kind": "event",
+                "run_id": "run-1",
+                "viewport_id": "viewport-1",
+                "event_id": "event-9",
+                "replay_sequence": 9
               }
             ],
             "affected_surfaces": [

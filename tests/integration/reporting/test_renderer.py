@@ -553,6 +553,7 @@ def _write_run(
     ux_sample_valid: bool | None = None,
     ux_sample_invalid_reason: str | None = None,
     prominence_provider_id: str = "heuristic",
+    event_overrides: dict[int, dict[str, object]] | None = None,
 ) -> None:
     is_verified = outcome == "verified-success" if verified is None else verified
     is_valid_sample = (
@@ -730,6 +731,11 @@ def _write_run(
             "outcome": {"kind": outcome},
         },
     ]
+    if event_overrides:
+        for index, event in enumerate(events):
+            sequence = event.get("sequence")
+            if isinstance(sequence, int) and sequence in event_overrides:
+                events[index] = {"sequence": sequence, **event_overrides[sequence]}
     (run / "timeline.jsonl").write_text(
         "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
     )
