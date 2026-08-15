@@ -28,7 +28,13 @@ from ux_analyzer.config.loader import load_project
 from ux_analyzer.domain.attention import AttentionState
 from ux_analyzer.domain.benchmark import Budget, ExperimentPolicy, FixtureInputs
 from ux_analyzer.domain.interface import BoundingBox, ElementSnapshot, ViewportSnapshot
-from ux_analyzer.domain.synthesis import SynthesisAttempt, SynthesisStatus
+from ux_analyzer.domain.synthesis import (
+    CANONICAL_SYNTHESIS_ROLES,
+    SynthesisAttempt,
+    SynthesisRoleReceipt,
+    SynthesisStatus,
+)
+from ux_analyzer.ports.models import ModelCallRecord, TokenUsage
 from ux_analyzer.ports.observation import (
     ObservationCapture,
     SessionHandle,
@@ -2059,10 +2065,10 @@ def test_synthesize_relative_output_reaches_report_roles_and_persists_artifacts(
         provider_id = "fake-report-client"
         provider_version = "fake-report-v1"
         endpoint_origin = "https://llm.example.test"
-        records: tuple[object, ...] = ()
 
         def __init__(self) -> None:
             self.calls: list[tuple[Any, str, tuple[Any, ...]]] = []
+            self.records: list[ModelCallRecord] = []
 
         async def complete(
             self,
@@ -2084,7 +2090,24 @@ def test_synthesize_relative_output_reaches_report_roles_and_persists_artifacts(
             ):
                 if field_name in schema.model_fields:
                     payload[field_name] = []
-            return schema.model_validate(payload)
+            response = schema.model_validate(payload)
+            self.records.append(
+                ModelCallRecord(
+                    role=role,
+                    model=model,
+                    endpoint_origin=self.endpoint_origin,
+                    prompt_digest=hashlib.sha256(
+                        repr(tuple(messages)).encode("utf-8")
+                    ).hexdigest(),
+                    schema_version=schema.schema_version,
+                    attempts=1,
+                    latency_ms=0,
+                    token_usage=TokenUsage(0, 0, 0),
+                    request={},
+                    response={},
+                )
+            )
+            return response
 
     client = FakeReportClient()
     monkeypatch.setattr(
@@ -2167,7 +2190,22 @@ def test_synthesize_regeneration_retains_immutable_attempts(
             loaded=loaded_project,
         )
         attempt = await cli.ReportSynthesisService().synthesize(corpus)
-        return replace(attempt, status=SynthesisStatus.NO_ISSUES)
+        receipts = tuple(
+            SynthesisRoleReceipt(
+                role=role,
+                provider_id="fixture-provider",
+                model_id="fixture-model",
+                prompt_digest=hashlib.sha256(f"{role}:prompt".encode()).hexdigest(),
+                schema_digest=hashlib.sha256(f"{role}:schema".encode()).hexdigest(),
+                output_digest=hashlib.sha256(f"{role}:output".encode()).hexdigest(),
+            )
+            for role in CANONICAL_SYNTHESIS_ROLES
+        )
+        return replace(
+            attempt,
+            status=SynthesisStatus.NO_ISSUES,
+            role_receipts=receipts,
+        )
 
     def fake_render(*, output: Path) -> Path:
         report = output / "report.html"

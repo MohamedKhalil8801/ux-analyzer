@@ -13,9 +13,11 @@ from ux_analyzer.domain.findings import (
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
     ObjectionSeverity,
+    RejectedCandidateAudit,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
+    SynthesisRoleReceipt,
     SynthesisStatus,
 )
 
@@ -219,17 +221,37 @@ def test_synthesis_objection_preserves_adjudicator_resolution_provenance() -> No
     assert objection.resolution_evidence_refs == (resolution_ref,)
 
 
+def test_synthesis_objection_preserves_upheld_decision_and_reviewed_type() -> None:
+    resolution_ref = EvidenceRef("event:run-a:20", "event", "run-a")
+
+    objection = SynthesisObjection(
+        objection_id="objection-1",
+        finding_id="finding-1",
+        objection_type="severity",
+        severity="material",
+        message="The proposed severity is too high.",
+        resolved=False,
+        resolution="The objection is upheld and the severity must be reduced.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=[resolution_ref],
+    )
+
+    assert objection.objection_type == "severity"
+    assert objection.resolved is False
+    assert objection.resolved_by_role == "report-adjudicator"
+    assert objection.resolution_evidence_refs == (resolution_ref,)
+
+
 def test_final_finding_preserves_reviewed_core_claim_and_evidence() -> None:
     second_ref = EvidenceRef("metric:run-a:task-time", "metric", "run-a")
     candidate = _finding(evidence_refs=(*_finding().evidence_refs, second_ref))
-    edited = _finding(
+    editorial_edit = _finding(
         title="Settings navigation obscures user goals",
-        fixes=("Expose a task-oriented settings entry point.",),
         evidence_refs=candidate.evidence_refs,
         reviewer_state="accepted",
     )
 
-    assert synthesis.final_finding_preserves_candidate(edited, candidate)
+    assert synthesis.final_finding_preserves_candidate(editorial_edit, candidate)
     assert not synthesis.final_finding_preserves_candidate(
         _finding(issue="A different issue replaced the reviewed claim."),
         candidate,
@@ -238,6 +260,74 @@ def test_final_finding_preserves_reviewed_core_claim_and_evidence() -> None:
         _finding(evidence_refs=(candidate.evidence_refs[0],)),
         candidate,
     )
+
+
+def test_final_finding_requires_evidence_backed_objection_for_reviewed_decision_change() -> None:
+    candidate = _finding(
+        severity="high",
+        confidence=0.91,
+        severity_justification="The task is important and recovery is difficult.",
+    )
+    downgraded = _finding(
+        severity="medium",
+        confidence=0.78,
+        severity_justification="The task is important but recovery is immediate.",
+        reviewer_state="accepted",
+    )
+    evidence_ref = EvidenceRef("event:run-a:20", "event", "run-a")
+    authorized = SynthesisObjection(
+        objection_id="severity-review",
+        finding_id=candidate.finding_id,
+        objection_type="severity",
+        severity="material",
+        message="Recovery is immediate, so high severity is not established.",
+        evidence_refs=(evidence_ref,),
+        resolved=True,
+        resolution="The final severity and confidence were reduced.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=(evidence_ref,),
+    )
+
+    assert not synthesis.final_finding_preserves_candidate(downgraded, candidate)
+    assert synthesis.final_finding_preserves_candidate(
+        downgraded,
+        candidate,
+        objections=(authorized,),
+    )
+
+
+def test_role_receipt_and_rejected_candidate_audit_are_immutable_and_bounded() -> None:
+    receipt = SynthesisRoleReceipt(
+        role="report-analyst",
+        provider_id="fixture-provider",
+        model_id="fixture-model",
+        prompt_digest="a" * 64,
+        schema_digest="b" * 64,
+        output_digest="c" * 64,
+    )
+    audit = RejectedCandidateAudit(
+        finding_id="candidate-abc123",
+        source_role="report-analyst",
+        reason_code="unknown-evidence-id",
+        output_digest="d" * 64,
+    )
+
+    assert receipt.role == "report-analyst"
+    assert audit.reason_code == "unknown-evidence-id"
+    with pytest.raises(FrozenInstanceError):
+        receipt.role = "report-adjudicator"  # type: ignore[misc]
+
+
+def test_role_receipt_rejects_missing_provider_provenance() -> None:
+    with pytest.raises(ValueError, match="provider_id|provenance"):
+        SynthesisRoleReceipt(
+            role="report-analyst",
+            provider_id="unavailable",
+            model_id="fixture-model",
+            prompt_digest="a" * 64,
+            schema_digest="b" * 64,
+            output_digest="c" * 64,
+        )
 
 
 def test_synthesis_attempt_supports_all_immutable_statuses_and_artifact_metadata() -> (
@@ -264,6 +354,16 @@ def test_synthesis_attempt_supports_all_immutable_statuses_and_artifact_metadata
         schema_version="synthesis-v1",
         retrieval_log=[{"role": "report-analyst", "round": 1}],
         usage={"input_tokens": 12, "output_tokens": 9},
+        role_receipts=[
+            SynthesisRoleReceipt(
+                role="report-analyst",
+                provider_id="fixture-provider",
+                model_id="fixture-model",
+                prompt_digest="a" * 64,
+                schema_digest="b" * 64,
+                output_digest="c" * 64,
+            )
+        ],
         candidate_findings=[finding],
         objections=[objection],
         rejected_findings=[],
@@ -276,6 +376,7 @@ def test_synthesis_attempt_supports_all_immutable_statuses_and_artifact_metadata
     assert attempt.candidate_findings == (finding,)
     assert attempt.objections == (objection,)
     assert attempt.findings == (finding,)
+    assert attempt.role_receipts[0].role == "report-analyst"
     assert attempt.retrieval_log == ({"role": "report-analyst", "round": 1},)
     assert isinstance(attempt.model_manifest, MappingProxyType)
     assert isinstance(attempt.usage, MappingProxyType)

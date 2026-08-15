@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -23,7 +24,12 @@ from ux_analyzer.domain.synthesis import (
     SynthesisAttempt,
     SynthesisStatus,
 )
-from ux_analyzer.ports.models import ChatMessage, ModelRole
+from ux_analyzer.ports.models import (
+    ChatMessage,
+    ModelCallRecord,
+    ModelRole,
+    TokenUsage,
+)
 from ux_analyzer.providers.report_synthesis import (
     EvidenceAuditor,
     PatternReviewer,
@@ -67,6 +73,7 @@ class RoleAwareFakeClient:
         self.calls: list[
             tuple[type[BaseModel], tuple[ChatMessage, ...], ModelRole]
         ] = []
+        self.records: list[ModelCallRecord] = []
 
     async def complete(
         self,
@@ -75,7 +82,6 @@ class RoleAwareFakeClient:
         model: str,
         role: ModelRole,
     ) -> SchemaT:
-        del model
         message_tuple = tuple(messages)
         self.calls.append((schema, message_tuple, role))
         response = self.scripts[role].pop(0)
@@ -85,7 +91,22 @@ class RoleAwareFakeClient:
                 raise ConnectionError("deterministic fake transport unavailable")
         if isinstance(response, BaseException):
             raise response
-        return schema.model_validate(response)
+        result = schema.model_validate(response)
+        self.records.append(
+            ModelCallRecord(
+                role=role,
+                model=model,
+                endpoint_origin=self.endpoint_origin,
+                prompt_digest=hashlib.sha256(repr(message_tuple).encode()).hexdigest(),
+                schema_version=schema.schema_version,
+                attempts=1,
+                latency_ms=0,
+                token_usage=TokenUsage(0, 0, 0),
+                request={},
+                response={},
+            )
+        )
+        return result
 
 
 def _fixture_payload(fixture_name: str) -> dict[str, object]:
@@ -152,6 +173,7 @@ def _service(client: RoleAwareFakeClient) -> ReportSynthesisService:
         pattern_reviewer=PatternReviewer(client, model="task-12-report-model"),
         adjudicator=ReportAdjudicator(client, model="task-12-report-model"),
         principles=ux_principles(),
+        model_record_source=client,
     )
 
 

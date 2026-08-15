@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -96,12 +97,73 @@ class SynthesisStatus(StrEnum):
 
 
 REPORT_ADJUDICATOR_ROLE = "report-adjudicator"
+CANONICAL_SYNTHESIS_ROLES = (
+    "report-analyst",
+    "report-evidence-auditor",
+    "report-pattern-reviewer",
+    REPORT_ADJUDICATOR_ROLE,
+)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_AUDIT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_REASON_CODE_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class ObjectionSeverity(StrEnum):
     BLOCKING = "blocking"
     MATERIAL = "material"
     EDITORIAL = "editorial"
+
+
+def _sha256_digest(value: object, field_name: str) -> str:
+    digest = _require_non_empty(value, field_name)
+    if _SHA256_PATTERN.fullmatch(digest) is None:
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
+    return digest
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisRoleReceipt:
+    """Digest-bound proof that one canonical synthesis role completed."""
+
+    role: str
+    provider_id: str
+    model_id: str
+    prompt_digest: str
+    schema_digest: str
+    output_digest: str
+
+    def __post_init__(self) -> None:
+        role = _require_non_empty(self.role, "role")
+        if role not in CANONICAL_SYNTHESIS_ROLES:
+            raise ValueError("role receipt must use a canonical synthesis role")
+        provider_id = _require_non_empty(self.provider_id, "provider_id")
+        model_id = _require_non_empty(self.model_id, "model_id")
+        if provider_id == "unavailable" or model_id == "unavailable":
+            raise ValueError("role receipt requires provider_id and model_id provenance")
+        _sha256_digest(self.prompt_digest, "prompt_digest")
+        _sha256_digest(self.schema_digest, "schema_digest")
+        _sha256_digest(self.output_digest, "output_digest")
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedCandidateAudit:
+    """Sanitized identity and disposition for an invalid analyst candidate."""
+
+    finding_id: str
+    source_role: str
+    reason_code: str
+    output_digest: str
+
+    def __post_init__(self) -> None:
+        finding_id = _require_non_empty(self.finding_id, "finding_id")
+        if _AUDIT_ID_PATTERN.fullmatch(finding_id) is None:
+            raise ValueError("finding_id must be a bounded audit identifier")
+        if self.source_role != "report-analyst":
+            raise ValueError("rejected candidate source_role must be report-analyst")
+        reason_code = _require_non_empty(self.reason_code, "reason_code")
+        if _REASON_CODE_PATTERN.fullmatch(reason_code) is None:
+            raise ValueError("reason_code must be a lowercase hyphenated code")
+        _sha256_digest(self.output_digest, "output_digest")
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +304,7 @@ class SynthesisObjection:
     finding_id: str
     severity: ObjectionSeverity | str
     message: str
+    objection_type: str = "other"
     evidence_refs: tuple[EvidenceRef, ...] = ()
     reviewer_role: str = ""
     resolved: bool = False
@@ -252,6 +315,9 @@ class SynthesisObjection:
     def __post_init__(self) -> None:
         _require_non_empty(self.objection_id, "objection ID")
         _require_non_empty(self.finding_id, "finding ID")
+        objection_type = _require_non_empty(self.objection_type, "objection_type")
+        if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", objection_type) is None:
+            raise ValueError("objection_type must be a lowercase hyphenated code")
         _require_non_empty(self.message, "objection message")
         if self.reviewer_role:
             _require_non_empty(self.reviewer_role, "reviewer_role")
@@ -278,6 +344,8 @@ class SynthesisObjection:
 def final_finding_preserves_candidate(
     final: SynthesisFinding,
     candidate: SynthesisFinding,
+    *,
+    objections: Iterable[SynthesisObjection] = (),
 ) -> bool:
     """Return whether a final preserves reviewed claim and supporting evidence."""
 
@@ -294,7 +362,62 @@ def final_finding_preserves_candidate(
         return False
     candidate_evidence_ids = {ref.evidence_id for ref in candidate.evidence_refs}
     final_evidence_ids = {ref.evidence_id for ref in final.evidence_refs}
-    return candidate_evidence_ids <= final_evidence_ids
+    if not candidate_evidence_ids <= final_evidence_ids:
+        return False
+
+    reviewed_fields = (
+        "fixes",
+        "severity",
+        "confidence",
+        "affected_surfaces",
+        "principles",
+        "counterevidence",
+        "severity_justification",
+    )
+    changed_fields = {
+        field_name
+        for field_name in reviewed_fields
+        if getattr(final, field_name) != getattr(candidate, field_name)
+    }
+    if not changed_fields:
+        return True
+
+    authorization_types = {
+        "fixes": frozenset({"fix-leverage"}),
+        "severity": frozenset({"severity"}),
+        "confidence": frozenset(
+            {
+                "citation-accuracy",
+                "contradiction",
+                "counterexample",
+                "factual-support",
+                "severity",
+                "visual-interpretation",
+            }
+        ),
+        "affected_surfaces": frozenset(
+            {"affected-surface", "recurrence", "shared-cause"}
+        ),
+        "principles": frozenset({"recurrence", "shared-cause"}),
+        "counterevidence": frozenset({"contradiction", "counterexample"}),
+        "severity_justification": frozenset({"severity"}),
+    }
+    relevant = tuple(
+        objection
+        for objection in objections
+        if objection.finding_id == candidate.finding_id
+        and objection.resolved
+        and objection.resolution is not None
+        and objection.resolved_by_role == REPORT_ADJUDICATOR_ROLE
+        and objection.resolution_evidence_refs
+    )
+    return all(
+        any(
+            objection.objection_type in authorization_types[field_name]
+            for objection in relevant
+        )
+        for field_name in changed_fields
+    )
 
 
 def _tuple_of_findings(values: object, field_name: str) -> tuple[SynthesisFinding, ...]:
@@ -319,6 +442,28 @@ def _tuple_of_objections(
     return cast(tuple[SynthesisObjection, ...], normalized)
 
 
+def _tuple_of_role_receipts(values: object) -> tuple[SynthesisRoleReceipt, ...]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError("role_receipts must be a collection")
+    normalized = tuple(cast(Iterable[object], values))
+    if any(not isinstance(value, SynthesisRoleReceipt) for value in normalized):
+        raise TypeError("role_receipts must contain SynthesisRoleReceipt values")
+    return cast(tuple[SynthesisRoleReceipt, ...], normalized)
+
+
+def _tuple_of_rejected_candidate_audits(
+    values: object,
+) -> tuple[RejectedCandidateAudit, ...]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError("rejected_candidate_audits must be a collection")
+    normalized = tuple(cast(Iterable[object], values))
+    if any(not isinstance(value, RejectedCandidateAudit) for value in normalized):
+        raise TypeError(
+            "rejected_candidate_audits must contain RejectedCandidateAudit values"
+        )
+    return cast(tuple[RejectedCandidateAudit, ...], normalized)
+
+
 @dataclass(frozen=True, slots=True)
 class SynthesisAttempt:
     """Immutable, auditable result of one report-synthesis attempt."""
@@ -335,9 +480,11 @@ class SynthesisAttempt:
         default_factory=lambda: dict[str, object]()
     )
     prompt_version: str = ""
-    schema_version: str = "synthesis-v1"
+    schema_version: str = "synthesis-v2"
     retrieval_log: tuple[Mapping[str, object], ...] = ()
     usage: Mapping[str, float] = field(default_factory=lambda: dict[str, float]())
+    role_receipts: tuple[SynthesisRoleReceipt, ...] = ()
+    rejected_candidate_audits: tuple[RejectedCandidateAudit, ...] = ()
     candidate_findings: tuple[SynthesisFinding, ...] = ()
     objections: tuple[SynthesisObjection, ...] = ()
     rejected_findings: tuple[SynthesisFinding, ...] = ()
@@ -366,6 +513,16 @@ class SynthesisAttempt:
         object.__setattr__(self, "model_manifest", _mapping_proxy(self.model_manifest))
         object.__setattr__(self, "role_manifest", _mapping_proxy(self.role_manifest))
         object.__setattr__(self, "usage", _float_mapping(self.usage))
+        object.__setattr__(
+            self,
+            "role_receipts",
+            _tuple_of_role_receipts(self.role_receipts),
+        )
+        object.__setattr__(
+            self,
+            "rejected_candidate_audits",
+            _tuple_of_rejected_candidate_audits(self.rejected_candidate_audits),
+        )
         object.__setattr__(
             self,
             "retrieval_log",
@@ -409,12 +566,15 @@ class SynthesisAttempt:
 
 
 __all__ = [
+    "CANONICAL_SYNTHESIS_ROLES",
     "EvidenceRef",
     "ObjectionSeverity",
     "REPORT_ADJUDICATOR_ROLE",
+    "RejectedCandidateAudit",
     "SynthesisAttempt",
     "SynthesisFinding",
     "SynthesisObjection",
+    "SynthesisRoleReceipt",
     "SynthesisStatus",
     "final_finding_preserves_candidate",
 ]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ from ux_analyzer.application.evidence_corpus import (
 from ux_analyzer.application.report_synthesis import (
     DEFAULT_MAX_ATTACHMENT_BYTES,
     ReportSynthesisService,
+    _safe_role_validation_reason,  # pyright: ignore[reportPrivateUsage]
 )
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
 from ux_analyzer.domain.synthesis import (
@@ -52,6 +55,28 @@ HEATMAP_ID = "heatmap:run-a:viewport-1:1s"
 def test_attachment_resolution_and_request_ceilings_are_distinct() -> None:
     assert DEFAULT_MAX_ATTACHMENT_BYTES == MODEL_ATTACHMENT_MAX_BYTES
     assert DEFAULT_MAX_ATTACHMENT_BYTES > MODEL_REQUEST_MAX_BYTES
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    (
+        ("response exceeds bounded output limits", "bounded-output"),
+        (
+            "response limitation contains forbidden narrative",
+            "forbidden-narrative",
+        ),
+        ("undelivered evidence ID", "undelivered-evidence-id"),
+        (
+            "finding references an unknown UX principle",
+            "unknown-principle",
+        ),
+    ),
+)
+def test_role_validation_reason_codes_are_safe_and_specific(
+    reason: str,
+    expected: str,
+) -> None:
+    assert _safe_role_validation_reason(reason) == (expected, reason)
 
 
 def _corpus(
@@ -228,55 +253,22 @@ def _large_mixed_evidence_references() -> list[EvidenceReference]:
     return references
 
 
-class _HappyAnalyst:
-    def __init__(self, candidate: CandidateFinding) -> None:
-        self.candidate = candidate
-        self.calls: list[dict[str, Any]] = []
-
-    async def analyze(self, *args: Any, **kwargs: Any) -> AnalystResponse:
-        self.calls.append({"args": args, "kwargs": kwargs})
-        return AnalystResponse(
-            complete=True,
-            candidate_findings=[self.candidate],
-        )
-
-
-class _HappyAuditor:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def audit(self, *args: Any, **kwargs: Any) -> EvidenceAuditResponse:
-        self.calls.append({"args": args, "kwargs": kwargs})
-        return EvidenceAuditResponse(complete=True)
-
-
-class _HappyPatternReviewer:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def review(self, *args: Any, **kwargs: Any) -> PatternReviewResponse:
-        self.calls.append({"args": args, "kwargs": kwargs})
-        return PatternReviewResponse(complete=True)
-
-
-class _HappyAdjudicator:
-    def __init__(self, candidate: CandidateFinding) -> None:
-        self.candidate = candidate
-        self.calls: list[dict[str, Any]] = []
-
-    async def adjudicate(self, *args: Any, **kwargs: Any) -> AdjudicationResponse:
-        self.calls.append({"args": args, "kwargs": kwargs})
-        return AdjudicationResponse(
-            complete=True,
-            final_findings=[self.candidate],
-        )
-
-
 class _ScriptedRole:
-    def __init__(self, role: str, responses: Sequence[object]) -> None:
+    def __init__(
+        self,
+        role: str,
+        responses: Sequence[object],
+        record_source: _RecordingModelSource | None = None,
+    ) -> None:
         self.role = role
+        self.provider_id = "fixture-provider"
+        self.model = "fixture-model"
+        self.endpoint_origin = "https://fixture.invalid"
+        self.prompt_version = f"fixture-{role}-v1"
+        self.provider_version = "fixture-v1"
         self.responses = list(responses)
         self.calls: list[dict[str, Any]] = []
+        self.record_source = record_source
 
     def _next(self, **call: Any) -> object:
         self.calls.append(call)
@@ -284,14 +276,18 @@ class _ScriptedRole:
         if isinstance(response, BaseException):
             raise response
         if response is not None:
-            return response
-        if self.role == "analyst":
-            return AnalystResponse(complete=True)
-        if self.role == "auditor":
-            return EvidenceAuditResponse(complete=True)
-        if self.role == "pattern":
-            return PatternReviewResponse(complete=True)
-        return AdjudicationResponse(complete=True)
+            result = response
+        elif self.role == "analyst":
+            result = AnalystResponse(complete=True)
+        elif self.role == "auditor":
+            result = EvidenceAuditResponse(complete=True)
+        elif self.role == "pattern":
+            result = PatternReviewResponse(complete=True)
+        else:
+            result = AdjudicationResponse(complete=True)
+        if self.record_source is not None:
+            self.record_source.record(self.role, call, result)
+        return result
 
     async def analyze(self, *args: Any, **kwargs: Any) -> object:
         return self._next(args=args, kwargs=kwargs)
@@ -329,6 +325,41 @@ class _ModelRecordSource:
         self.records = tuple(records)
 
 
+class _RecordingModelSource:
+    def __init__(self) -> None:
+        self.records: list[ModelCallRecord] = []
+
+    def record(self, role: str, call: Mapping[str, Any], response: object) -> None:
+        roles = {
+            "analyst": ModelRole.REPORT_ANALYST,
+            "auditor": ModelRole.REPORT_EVIDENCE_AUDITOR,
+            "pattern": ModelRole.REPORT_PATTERN_REVIEWER,
+            "adjudicator": ModelRole.REPORT_ADJUDICATOR,
+        }
+        schemas = {
+            "analyst": AnalystResponse,
+            "auditor": EvidenceAuditResponse,
+            "pattern": PatternReviewResponse,
+            "adjudicator": AdjudicationResponse,
+        }
+        self.records.append(
+            ModelCallRecord(
+                role=roles[role],
+                model="fixture-model",
+                endpoint_origin="https://fixture.invalid",
+                prompt_digest=hashlib.sha256(
+                    repr(dict(call)).encode("utf-8")
+                ).hexdigest(),
+                schema_version=schemas[role].schema_version,
+                attempts=1,
+                latency_ms=0,
+                token_usage=TokenUsage(0, 0, 0),
+                request={},
+                response={"type": type(response).__name__},
+            )
+        )
+
+
 def _scripted_service(
     *,
     analyst: Sequence[object] = (),
@@ -340,11 +371,16 @@ def _scripted_service(
     max_final_verifications: int = 1,
     model_record_source: object | None = None,
 ) -> tuple[ReportSynthesisService, tuple[_ScriptedRole, ...]]:
+    recording_source = None
+    effective_source = model_record_source
+    if effective_source is None:
+        recording_source = _RecordingModelSource()
+        effective_source = recording_source
     roles = (
-        _ScriptedRole("analyst", analyst),
-        _ScriptedRole("auditor", auditor),
-        _ScriptedRole("pattern", pattern),
-        _ScriptedRole("adjudicator", adjudicator),
+        _ScriptedRole("analyst", analyst, recording_source),
+        _ScriptedRole("auditor", auditor, recording_source),
+        _ScriptedRole("pattern", pattern, recording_source),
+        _ScriptedRole("adjudicator", adjudicator, recording_source),
     )
     return (
         ReportSynthesisService(
@@ -355,7 +391,7 @@ def _scripted_service(
             resolver=resolver,
             max_adjudication_revisions=max_adjudication_revisions,
             max_final_verifications=max_final_verifications,
-            model_record_source=model_record_source,
+            model_record_source=effective_source,
         ),
         roles,
     )
@@ -383,15 +419,11 @@ def _blocking_objection(finding_id: str) -> TypedObjection:
 @pytest.mark.asyncio
 async def test_synthesis_publishes_only_after_review_consensus(tmp_path: Path) -> None:
     candidate = _candidate()
-    analyst = _HappyAnalyst(candidate)
-    auditor = _HappyAuditor()
-    pattern_reviewer = _HappyPatternReviewer()
-    adjudicator = _HappyAdjudicator(candidate)
-    service = ReportSynthesisService(
-        analyst=analyst,
-        evidence_auditor=auditor,
-        pattern_reviewer=pattern_reviewer,
-        adjudicator=adjudicator,
+    service, roles = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate])
+        ],
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
@@ -403,16 +435,95 @@ async def test_synthesis_publishes_only_after_review_consensus(tmp_path: Path) -
         for objection in attempt.objections
         if objection.severity is ObjectionSeverity.BLOCKING and not objection.resolved
     ]
-    assert analyst.calls
-    assert auditor.calls
-    assert pattern_reviewer.calls
-    assert adjudicator.calls
+    assert all(role.calls for role in roles)
     assert {str(entry["role"]) for entry in attempt.retrieval_log} == {
         "report-analyst",
         "report-evidence-auditor",
         "report-pattern-reviewer",
         "report-adjudicator",
     }
+    assert {receipt.role for receipt in attempt.role_receipts} == {
+        "report-analyst",
+        "report-evidence-auditor",
+        "report-pattern-reviewer",
+        "report-adjudicator",
+    }
+    assert all(
+        len(digest) == 64
+        for receipt in attempt.role_receipts
+        for digest in (
+            receipt.prompt_digest,
+            receipt.schema_digest,
+            receipt.output_digest,
+        )
+    )
+    schemas = {
+        "report-analyst": AnalystResponse,
+        "report-evidence-auditor": EvidenceAuditResponse,
+        "report-pattern-reviewer": PatternReviewResponse,
+        "report-adjudicator": AdjudicationResponse,
+    }
+    outputs = {
+        "report-analyst": AnalystResponse(
+            complete=True,
+            candidate_findings=[candidate],
+        ),
+        "report-evidence-auditor": EvidenceAuditResponse(complete=True),
+        "report-pattern-reviewer": PatternReviewResponse(complete=True),
+        "report-adjudicator": AdjudicationResponse(
+            complete=True,
+            final_findings=[candidate],
+        ),
+    }
+    recorded = {
+        record.role.value: record
+        for record in service._model_record_source.records  # pyright: ignore[reportOptionalMemberAccess, reportPrivateUsage]
+    }
+    for receipt in attempt.role_receipts:
+        expected_schema_digest = hashlib.sha256(
+            json.dumps(
+                schemas[receipt.role].model_json_schema(),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        assert receipt.schema_digest == expected_schema_digest
+        assert receipt.prompt_digest == recorded[receipt.role].prompt_digest
+        expected_output_digest = hashlib.sha256(
+            json.dumps(
+                outputs[receipt.role].model_dump(mode="python"),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        assert receipt.output_digest == expected_output_digest
+
+
+@pytest.mark.asyncio
+async def test_manifest_only_role_completions_cannot_publish_no_issues(
+    tmp_path: Path,
+) -> None:
+    roles = (
+        _ScriptedRole("analyst", ()),
+        _ScriptedRole("auditor", ()),
+        _ScriptedRole("pattern", ()),
+        _ScriptedRole("adjudicator", ()),
+    )
+    service = ReportSynthesisService(
+        analyst=roles[0],
+        evidence_auditor=roles[1],
+        pattern_reviewer=roles[2],
+        adjudicator=roles[3],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.role_receipts
+    assert any("completion receipts" in item for item in attempt.limitations)
 
 
 @pytest.mark.asyncio
@@ -462,8 +573,7 @@ async def test_role_retrieval_preserves_prior_resolved_evidence_across_rounds(
     assert resolved.evidence_ids == (EVIDENCE_ID, SECOND_EVIDENCE_ID)
 
 
-@pytest.mark.asyncio
-async def test_retrieval_rejects_requests_above_total_role_limit(
+def test_retrieval_rejects_requests_above_total_role_limit(
     tmp_path: Path,
 ) -> None:
     evidence_ids = [f"event:run-a:{index}" for index in range(1, 61)]
@@ -478,23 +588,19 @@ async def test_retrieval_rejects_requests_above_total_role_limit(
     )
     resolver = _RecordingResolver()
     service, _ = _scripted_service(
-        analyst=[
-            AnalystResponse(complete=False, evidence_requests=evidence_ids),
-            AnalystResponse(complete=True),
-        ],
         resolver=resolver,
     )
+    corpus = _corpus(tmp_path, extra_entries=extra_entries)
 
-    attempt = await service.synthesize(_corpus(tmp_path, extra_entries=extra_entries))
-
-    assert attempt.status is SynthesisStatus.REJECTED
+    with pytest.raises(ValueError, match="role retrieval limit"):
+        service._resolve_evidence_batches(  # pyright: ignore[reportPrivateUsage]
+            corpus,
+            evidence_ids,
+            role=ModelRole.REPORT_ANALYST,
+            phase="retrieval",
+            round_number=1,
+        )
     assert resolver.calls == []
-    retrieval_log = next(
-        entry
-        for entry in attempt.retrieval_log
-        if entry["request"] == tuple(evidence_ids)
-    )
-    assert retrieval_log["response"]["status"] == "rejected"
 
 
 @pytest.mark.asyncio
@@ -747,6 +853,10 @@ async def test_hallucinated_reference_is_rejected_before_publication(
     assert any(
         "unknown evidence ID" in limitation for limitation in attempt.limitations
     )
+    assert len(attempt.rejected_candidate_audits) == 1
+    assert attempt.rejected_candidate_audits[0].source_role == "report-analyst"
+    assert attempt.rejected_candidate_audits[0].reason_code == "unknown-evidence-id"
+    assert "event:run-a:999" not in repr(attempt.rejected_candidate_audits)
 
 
 @pytest.mark.asyncio
@@ -1321,6 +1431,114 @@ async def test_adjudicator_cannot_replace_reviewed_core_claim(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_adjudicator_cannot_change_reviewed_severity_without_resolution(
+    tmp_path: Path,
+) -> None:
+    reviewed = _candidate(severity="high")
+    changed = reviewed.model_copy(
+        update={
+            "severity": FindingSeverity.MEDIUM,
+            "confidence": 0.72,
+            "severity_justification": "Recovery is immediate.",
+        }
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[reviewed])],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[changed])],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert attempt.rejected_findings[0].finding_id == reviewed.finding_id
+
+
+@pytest.mark.asyncio
+async def test_evidence_backed_severity_resolution_authorizes_reviewed_change(
+    tmp_path: Path,
+) -> None:
+    reviewed = _candidate(severity="high")
+    changed = reviewed.model_copy(
+        update={
+            "severity": FindingSeverity.MEDIUM,
+            "confidence": 0.72,
+            "severity_justification": "Recovery is immediate.",
+        }
+    )
+    objection = TypedObjection(
+        objection_id="severity-review",
+        finding_id=reviewed.finding_id,
+        objection_type="severity",
+        severity=ObjectionSeverity.MATERIAL,
+        message="The evidence shows immediate recovery, so high severity is not established.",
+        evidence_refs=[
+            EvidenceReference(
+                evidence_id=EVIDENCE_ID,
+                kind="event",
+                run_id="run-a",
+                replay_sequence=1,
+            )
+        ],
+        reviewer_role="report-pattern-reviewer",
+    )
+    resolution = ObjectionResolution(
+        objection_id=objection.objection_id,
+        finding_id=reviewed.finding_id,
+        resolved=True,
+        resolution="The final severity and confidence were reduced.",
+        evidence_refs=objection.evidence_refs,
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[reviewed])],
+        pattern=[PatternReviewResponse(complete=True, objections=[objection])],
+        adjudicator=[
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[changed],
+                objection_resolutions=[resolution],
+            )
+        ],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert attempt.findings[0].severity is FindingSeverity.MEDIUM
+    assert attempt.objections[0].objection_type == "severity"
+    assert attempt.objections[0].resolved_by_role == "report-adjudicator"
+
+
+@pytest.mark.asyncio
+async def test_every_objection_requires_explicit_adjudicator_disposition(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    objection = TypedObjection(
+        objection_id="editorial-review",
+        finding_id=candidate.finding_id,
+        objection_type="other",
+        severity=ObjectionSeverity.EDITORIAL,
+        message="The title could be shorter.",
+        evidence_refs=[],
+        reviewer_role="report-pattern-reviewer",
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        pattern=[PatternReviewResponse(complete=True, objections=[objection])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate])
+        ],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert any("explicit disposition" in item for item in attempt.limitations)
+
+
+@pytest.mark.asyncio
 async def test_unresolved_blocking_objection_rejects_finding(tmp_path: Path) -> None:
     candidate = _candidate()
     objection = _blocking_objection(candidate.finding_id)
@@ -1354,6 +1572,13 @@ async def test_unresolved_blocker_rejects_only_its_finding(tmp_path: Path) -> No
         root_cause="The entry point is labeled around internal product structure.",
     )
     objection = _blocking_objection(blocked.finding_id)
+    disposition = ObjectionResolution(
+        objection_id=objection.objection_id,
+        finding_id=blocked.finding_id,
+        resolved=False,
+        resolution="The objection is upheld and the blocked finding must not publish.",
+        evidence_refs=objection.evidence_refs,
+    )
     service, _ = _scripted_service(
         analyst=[
             AnalystResponse(
@@ -1366,6 +1591,7 @@ async def test_unresolved_blocker_rejects_only_its_finding(tmp_path: Path) -> No
             AdjudicationResponse(
                 complete=True,
                 final_findings=[blocked, independent],
+                objection_resolutions=[disposition],
             ),
             AdjudicationResponse(
                 complete=True,
@@ -1487,16 +1713,23 @@ async def test_configured_final_verification_count_is_honored(
             self.final_verification_calls += 1
             return super()._final_verification(*args, **kwargs)
 
+    record_source = _RecordingModelSource()
     roles = (
         _ScriptedRole(
             "analyst",
             [AnalystResponse(complete=True, candidate_findings=[candidate])],
+            record_source,
         ),
-        _ScriptedRole("auditor", [EvidenceAuditResponse(complete=True)]),
-        _ScriptedRole("pattern", [PatternReviewResponse(complete=True)]),
+        _ScriptedRole(
+            "auditor", [EvidenceAuditResponse(complete=True)], record_source
+        ),
+        _ScriptedRole(
+            "pattern", [PatternReviewResponse(complete=True)], record_source
+        ),
         _ScriptedRole(
             "adjudicator",
             [AdjudicationResponse(complete=True, final_findings=[candidate])],
+            record_source,
         ),
     )
     service = CountingService(
@@ -1505,6 +1738,7 @@ async def test_configured_final_verification_count_is_honored(
         pattern_reviewer=roles[2],
         adjudicator=roles[3],
         max_final_verifications=2,
+        model_record_source=record_source,
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
@@ -1682,3 +1916,32 @@ async def test_attempt_usage_aggregates_model_call_records(tmp_path: Path) -> No
     assert attempt.usage["total_tokens"] == 20
     assert attempt.usage["latency_ms"] == 40
     assert attempt.usage["usage_available"] == 1
+
+
+@pytest.mark.asyncio
+async def test_no_issues_requires_valid_completion_provenance_for_every_role(
+    tmp_path: Path,
+) -> None:
+    source = _ModelRecordSource(
+        (
+            ModelCallRecord(
+                role=ModelRole.REPORT_ANALYST,
+                model="report-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest="a" * 64,
+                schema_version="wrong-schema-version",
+                attempts=1,
+                latency_ms=17,
+                token_usage=TokenUsage(4, 3, 7),
+                request={},
+                response={},
+            ),
+        )
+    )
+    service, _ = _scripted_service(model_record_source=source)
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert any("completion receipts" in item for item in attempt.limitations)

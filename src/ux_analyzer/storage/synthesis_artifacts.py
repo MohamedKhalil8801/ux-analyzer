@@ -18,12 +18,15 @@ from typing import TypeVar, cast
 from uuid import uuid4
 
 from ux_analyzer.domain.synthesis import (
+    CANONICAL_SYNTHESIS_ROLES,
     REPORT_ADJUDICATOR_ROLE,
     EvidenceRef,
     ObjectionSeverity,
+    RejectedCandidateAudit,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
+    SynthesisRoleReceipt,
     SynthesisStatus,
     final_finding_preserves_candidate,
 )
@@ -44,7 +47,7 @@ from ux_analyzer.storage.run_bundle import (
 )
 
 _INDEX_SCHEMA_VERSION = "synthesis-index-v1"
-_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v1"
+_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v2"
 MAX_SYNTHESIS_JSON_BYTES = 64 * 1024 * 1024
 _OPTIMISTIC_READ_ATTEMPTS = 3
 _DIGEST_LENGTH = 64
@@ -73,7 +76,24 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
     final_ids = [finding.finding_id for finding in finals]
     rejected_ids = [finding.finding_id for finding in rejected]
     objection_ids = [objection.objection_id for objection in attempt.objections]
+    receipt_roles = [receipt.role for receipt in attempt.role_receipts]
+    rejected_audit_ids = [
+        audit.finding_id for audit in attempt.rejected_candidate_audits
+    ]
     candidate_id_set = set(candidate_ids)
+
+    if len(receipt_roles) != len(set(receipt_roles)):
+        raise SynthesisArtifactError("synthesis role receipt roles must be unique")
+    if attempt.status in _ACCEPTED_STATUSES and set(receipt_roles) != set(
+        CANONICAL_SYNTHESIS_ROLES
+    ):
+        raise SynthesisArtifactError(
+            "accepted or no-issues synthesis requires one completion receipt for every canonical role"
+        )
+    if len(rejected_audit_ids) != len(set(rejected_audit_ids)):
+        raise SynthesisArtifactError(
+            "rejected candidate audit finding IDs must be unique"
+        )
 
     if attempt.status is SynthesisStatus.NO_ISSUES:
         if candidates or rejected or attempt.objections or finals:
@@ -91,6 +111,13 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
             "synthesis objection must reference an analyst candidate"
         )
     for objection in attempt.objections:
+        if attempt.status is SynthesisStatus.ACCEPTED and (
+            objection.resolution is None
+            or objection.resolved_by_role != REPORT_ADJUDICATOR_ROLE
+        ):
+            raise SynthesisArtifactError(
+                "accepted synthesis requires an explicit report-adjudicator disposition for every objection"
+            )
         if (
             objection.severity is not ObjectionSeverity.BLOCKING
             or not objection.resolved
@@ -147,7 +174,11 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
         )
     candidates_by_id = {finding.finding_id: finding for finding in candidates}
     if any(
-        not final_finding_preserves_candidate(final, candidates_by_id[final.finding_id])
+        not final_finding_preserves_candidate(
+            final,
+            candidates_by_id[final.finding_id],
+            objections=attempt.objections,
+        )
         for final in finals
         if final.finding_id in candidates_by_id
     ):
@@ -560,6 +591,7 @@ def _objection_to_dict(objection: SynthesisObjection) -> dict[str, object]:
     return {
         "objection_id": objection.objection_id,
         "finding_id": objection.finding_id,
+        "objection_type": objection.objection_type,
         "severity": _enum_text(objection.severity, "objection severity"),
         "message": objection.message,
         "evidence_refs": [
@@ -594,6 +626,7 @@ def _objection_from_dict(value: object) -> SynthesisObjection:
     return SynthesisObjection(
         objection_id=_text(mapping.get("objection_id"), "objection ID"),
         finding_id=_text(mapping.get("finding_id"), "objection finding ID"),
+        objection_type=_text(mapping.get("objection_type"), "objection type"),
         severity=_text(mapping.get("severity"), "objection severity"),
         message=_text(mapping.get("message"), "objection message"),
         evidence_refs=tuple(
@@ -613,6 +646,50 @@ def _objection_from_dict(value: object) -> SynthesisObjection:
                 "objection resolution_evidence_refs",
             )
         ),
+    )
+
+
+def _role_receipt_to_dict(receipt: SynthesisRoleReceipt) -> dict[str, object]:
+    return {
+        "role": receipt.role,
+        "provider_id": receipt.provider_id,
+        "model_id": receipt.model_id,
+        "prompt_digest": receipt.prompt_digest,
+        "schema_digest": receipt.schema_digest,
+        "output_digest": receipt.output_digest,
+    }
+
+
+def _role_receipt_from_dict(value: object) -> SynthesisRoleReceipt:
+    mapping = _mapping(value, "role receipt")
+    return SynthesisRoleReceipt(
+        role=_text(mapping.get("role"), "receipt role"),
+        provider_id=_text(mapping.get("provider_id"), "receipt provider_id"),
+        model_id=_text(mapping.get("model_id"), "receipt model_id"),
+        prompt_digest=_digest(mapping.get("prompt_digest"), "receipt prompt_digest"),
+        schema_digest=_digest(mapping.get("schema_digest"), "receipt schema_digest"),
+        output_digest=_digest(mapping.get("output_digest"), "receipt output_digest"),
+    )
+
+
+def _rejected_candidate_audit_to_dict(
+    audit: RejectedCandidateAudit,
+) -> dict[str, object]:
+    return {
+        "finding_id": audit.finding_id,
+        "source_role": audit.source_role,
+        "reason_code": audit.reason_code,
+        "output_digest": audit.output_digest,
+    }
+
+
+def _rejected_candidate_audit_from_dict(value: object) -> RejectedCandidateAudit:
+    mapping = _mapping(value, "rejected candidate audit")
+    return RejectedCandidateAudit(
+        finding_id=_text(mapping.get("finding_id"), "audit finding_id"),
+        source_role=_text(mapping.get("source_role"), "audit source_role"),
+        reason_code=_text(mapping.get("reason_code"), "audit reason_code"),
+        output_digest=_digest(mapping.get("output_digest"), "audit output_digest"),
     )
 
 
@@ -641,6 +718,13 @@ def _attempt_to_dict(attempt: SynthesisAttempt) -> dict[str, object]:
         "role_manifest": attempt.role_manifest,
         "retrieval_log": attempt.retrieval_log,
         "usage": attempt.usage,
+        "role_receipts": [
+            _role_receipt_to_dict(item) for item in attempt.role_receipts
+        ],
+        "rejected_candidate_audits": [
+            _rejected_candidate_audit_to_dict(item)
+            for item in attempt.rejected_candidate_audits
+        ],
         "candidates": [_finding_to_dict(item) for item in attempt.candidates],
         "objections": [_objection_to_dict(item) for item in attempt.objections],
         "rejected_findings": [
@@ -705,6 +789,17 @@ def _attempt_from_dict(value: Mapping[str, object]) -> SynthesisAttempt:
             key: _float(item, f"usage.{key}")
             for key, item in _mapping(value.get("usage"), "usage").items()
         },
+        role_receipts=tuple(
+            _role_receipt_from_dict(item)
+            for item in _list(value.get("role_receipts"), "role_receipts")
+        ),
+        rejected_candidate_audits=tuple(
+            _rejected_candidate_audit_from_dict(item)
+            for item in _list(
+                value.get("rejected_candidate_audits"),
+                "rejected_candidate_audits",
+            )
+        ),
         candidate_findings=tuple(
             _finding_from_dict(item)
             for item in _list(value.get("candidates"), "candidates")

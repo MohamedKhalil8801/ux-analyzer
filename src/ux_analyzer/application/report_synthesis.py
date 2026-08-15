@@ -25,12 +25,15 @@ from ux_analyzer.application.evidence_corpus import (
 )
 from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.synthesis import (
+    CANONICAL_SYNTHESIS_ROLES,
     REPORT_ADJUDICATOR_ROLE,
     EvidenceRef,
     ObjectionSeverity,
+    RejectedCandidateAudit,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
+    SynthesisRoleReceipt,
     SynthesisStatus,
     final_finding_preserves_candidate,
 )
@@ -62,7 +65,7 @@ from ux_analyzer.ports.report_synthesis import (
     redact_forbidden_narrative,
 )
 
-REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION = "synthesis-v1"
+REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION = "synthesis-v2"
 REPORT_SYNTHESIS_PROMPT_VERSION = "report-synthesis-orchestrator-v1"
 MAX_RETRIEVAL_ROUNDS = 3
 DEFAULT_MAX_RETRIEVAL_ENTRIES = 16
@@ -172,6 +175,7 @@ class _EvidenceBatchResolutionError(ValueError):
 class _RoleRun:
     response: _Response | None
     retrieval_log: tuple[Mapping[str, object], ...]
+    receipt: SynthesisRoleReceipt | None = None
     unavailable: bool = False
     invalid: bool = False
     limitation: str | None = None
@@ -234,9 +238,7 @@ def _response_payload(response: _Response) -> Mapping[str, object]:
     return cast(Mapping[str, object], payload)
 
 
-def _retain_response_limitations(
-    target: list[str], response: _Response
-) -> None:
+def _retain_response_limitations(target: list[str], response: _Response) -> None:
     for limitation in response.limitations:
         if limitation not in target:
             target.append(limitation)
@@ -311,6 +313,26 @@ def _provider_failure_details(error: BaseException) -> dict[str, object]:
 def _safe_role_validation_reason(reason: str) -> tuple[str, str]:
     normalized = reason.strip().casefold()
     known_reasons = (
+        (
+            "response exceeds bounded output limits",
+            "bounded-output",
+            "response exceeds bounded output limits",
+        ),
+        (
+            "response limitation contains forbidden narrative",
+            "forbidden-narrative",
+            "response limitation contains forbidden narrative",
+        ),
+        (
+            "undelivered evidence id",
+            "undelivered-evidence-id",
+            "undelivered evidence ID",
+        ),
+        (
+            "finding references an unknown ux principle",
+            "unknown-principle",
+            "finding references an unknown UX principle",
+        ),
         ("incomplete response", "incomplete-response", "incomplete response"),
         (
             "invalid evidence request id",
@@ -769,6 +791,8 @@ class ReportSynthesisService:
         corpus = corpus_input
         attempt_id, created_at = self._attempt_identity(corpus)
         retrieval_log: list[Mapping[str, object]] = []
+        role_receipts: dict[str, SynthesisRoleReceipt] = {}
+        rejected_candidate_audits: list[RejectedCandidateAudit] = []
         limitations = self._base_limitations(corpus)
         role_manifest = self._role_manifests()
         missing_roles = self._missing_roles()
@@ -813,6 +837,8 @@ class ReportSynthesisService:
             )
 
         analyst_response = cast(AnalystResponse, analyst_run.response)
+        if analyst_run.receipt is not None:
+            role_receipts[analyst_run.receipt.role] = analyst_run.receipt
         _retain_response_limitations(limitations, analyst_response)
         candidate_models = tuple(analyst_response.candidate_findings)
         candidate_findings: list[SynthesisFinding] = []
@@ -837,6 +863,9 @@ class ReportSynthesisService:
                     f"Candidate {candidate.finding_id} described a valid alternate path and was not treated as an issue."
                 )
             except (TypeError, ValueError) as error:
+                rejected_candidate_audits.append(
+                    self._rejected_candidate_audit(candidate, error)
+                )
                 candidate_limitations.append(
                     f"Candidate {candidate.finding_id} failed deterministic publication validation: {self._safe_validation_reason(error)}."
                 )
@@ -882,6 +911,8 @@ class ReportSynthesisService:
                 ],
                 retrieval_log=retrieval_log,
                 role_manifest=role_manifest,
+                role_receipts=tuple(role_receipts.values()),
+                rejected_candidate_audits=tuple(rejected_candidate_audits),
                 candidate_findings=tuple(candidate_findings),
                 rejected_findings=self._not_established(
                     candidate_findings,
@@ -914,6 +945,8 @@ class ReportSynthesisService:
                 ],
                 retrieval_log=retrieval_log,
                 role_manifest=role_manifest,
+                role_receipts=tuple(role_receipts.values()),
+                rejected_candidate_audits=tuple(rejected_candidate_audits),
                 candidate_findings=tuple(candidate_findings),
                 rejected_findings=self._not_established(
                     candidate_findings,
@@ -923,6 +956,9 @@ class ReportSynthesisService:
 
         auditor_response = cast(EvidenceAuditResponse, auditor_run.response)
         pattern_response = cast(PatternReviewResponse, pattern_run.response)
+        for role_run in (auditor_run, pattern_run):
+            if role_run.receipt is not None:
+                role_receipts[role_run.receipt.role] = role_run.receipt
         _retain_response_limitations(limitations, auditor_response)
         _retain_response_limitations(limitations, pattern_response)
         try:
@@ -950,6 +986,8 @@ class ReportSynthesisService:
                 limitations=limitations,
                 retrieval_log=retrieval_log,
                 role_manifest=role_manifest,
+                role_receipts=tuple(role_receipts.values()),
+                rejected_candidate_audits=tuple(rejected_candidate_audits),
                 candidate_findings=tuple(candidate_findings),
                 rejected_findings=self._not_established(
                     candidate_findings, "reviewer output was not trustworthy"
@@ -987,6 +1025,8 @@ class ReportSynthesisService:
                 ],
                 retrieval_log=retrieval_log,
                 role_manifest=role_manifest,
+                role_receipts=tuple(role_receipts.values()),
+                rejected_candidate_audits=tuple(rejected_candidate_audits),
                 candidate_findings=tuple(candidate_findings),
                 objections=objections,
                 rejected_findings=self._not_established(
@@ -996,6 +1036,8 @@ class ReportSynthesisService:
             )
 
         adjudication_response = cast(AdjudicationResponse, adjudication_run.response)
+        if adjudication_run.receipt is not None:
+            role_receipts[adjudication_run.receipt.role] = adjudication_run.receipt
         _retain_response_limitations(limitations, adjudication_response)
         final_models = tuple(adjudication_response.final_findings)
         try:
@@ -1017,6 +1059,8 @@ class ReportSynthesisService:
                 limitations=limitations,
                 retrieval_log=retrieval_log,
                 role_manifest=role_manifest,
+                role_receipts=tuple(role_receipts.values()),
+                rejected_candidate_audits=tuple(rejected_candidate_audits),
                 candidate_findings=tuple(candidate_findings),
                 objections=objections,
                 rejected_findings=self._not_established(
@@ -1057,6 +1101,8 @@ class ReportSynthesisService:
                 adjudication_response = cast(
                     AdjudicationResponse, revision_run.response
                 )
+                if revision_run.receipt is not None:
+                    role_receipts[revision_run.receipt.role] = revision_run.receipt
                 _retain_response_limitations(limitations, adjudication_response)
                 try:
                     resolved_objections = self._apply_resolutions(
@@ -1098,6 +1144,35 @@ class ReportSynthesisService:
             if not accepted:
                 break
         unresolved_blocking = self._has_unresolved_blocking(resolved_objections)
+        publication_invalid = False
+
+        undispositioned = tuple(
+            objection
+            for objection in resolved_objections
+            if objection.resolution is None
+            or objection.resolved_by_role != REPORT_ADJUDICATOR_ROLE
+        )
+        if undispositioned:
+            publication_invalid = True
+            limitations.append(
+                "Publication validation requires an explicit disposition from the report adjudicator for every objection."
+            )
+            rejected = self._not_established(
+                candidate_findings,
+                "One or more reviewer objections lacked an explicit adjudicator disposition.",
+            )
+            accepted = []
+
+        if set(role_receipts) != set(CANONICAL_SYNTHESIS_ROLES):
+            publication_invalid = True
+            limitations.append(
+                "Publication validation requires validated completion receipts for all four synthesis roles."
+            )
+            rejected = self._not_established(
+                candidate_findings,
+                "The synthesis role completion provenance was incomplete.",
+            )
+            accepted = []
 
         if duplicate_candidate_ids:
             limitations.append("Publication validation rejected duplicate finding IDs.")
@@ -1114,7 +1189,9 @@ class ReportSynthesisService:
             ]
             accepted = []
 
-        if accepted:
+        if publication_invalid:
+            status = SynthesisStatus.REJECTED
+        elif accepted:
             status = SynthesisStatus.ACCEPTED
         elif unresolved_blocking or final_models:
             status = SynthesisStatus.REJECTED
@@ -1133,6 +1210,8 @@ class ReportSynthesisService:
             limitations=limitations,
             retrieval_log=retrieval_log,
             role_manifest=role_manifest,
+            role_receipts=tuple(role_receipts.values()),
+            rejected_candidate_audits=tuple(rejected_candidate_audits),
             candidate_findings=tuple(candidate_findings),
             objections=resolved_objections,
             rejected_findings=tuple(rejected),
@@ -1203,6 +1282,7 @@ class ReportSynthesisService:
         prior = previous_output
         rounds = max_rounds or self.max_retrieval_rounds
         for round_number in range(1, rounds + 1):
+            prior_role_record_count = self._role_record_count(role)
             try:
                 raw_response = await self._invoke_role(
                     role,
@@ -1254,7 +1334,16 @@ class ReportSynthesisService:
             }
             if response.complete:
                 logs.append(log)
-                return _RoleRun(response, tuple(logs))
+                return _RoleRun(
+                    response,
+                    tuple(logs),
+                    receipt=self._completion_receipt(
+                        role,
+                        provider,
+                        response,
+                        prior_role_record_count=prior_role_record_count,
+                    ),
+                )
 
             try:
                 requested_ids = tuple(dict.fromkeys(response.evidence_requests))
@@ -1653,6 +1742,7 @@ class ReportSynthesisService:
             seen_ids.add(normalized.objection_id)
             domain = replace(
                 normalized.to_domain(),
+                objection_type=normalized.objection_type,
                 resolved=False,
                 resolution=None,
                 resolved_by_role=None,
@@ -1768,10 +1858,8 @@ class ReportSynthesisService:
                     resolution=resolution.resolution
                     if resolution.resolved or resolution.resolution
                     else None,
-                    resolved_by_role=(
-                        REPORT_ADJUDICATOR_ROLE if resolution.resolved else None
-                    ),
-                    resolution_evidence_refs=refs if resolution.resolved else (),
+                    resolved_by_role=REPORT_ADJUDICATOR_ROLE,
+                    resolution_evidence_refs=refs,
                 )
             )
         return tuple(result)
@@ -1830,7 +1918,11 @@ class ReportSynthesisService:
                     f"Final finding {model.finding_id} failed deterministic publication validation: {self._safe_validation_reason(error)}."
                 )
                 continue
-            if not final_finding_preserves_candidate(finding, reviewed):
+            if not final_finding_preserves_candidate(
+                finding,
+                reviewed,
+                objections=objections,
+            ):
                 limitations.append(
                     f"Final finding {model.finding_id} failed publication validation because it changed the reviewed core claim."
                 )
@@ -1955,6 +2047,93 @@ class ReportSynthesisService:
                 values[role.value] = _manifest_payload(provider, role)
         return values
 
+    def _completion_receipt(
+        self,
+        role: ModelRole,
+        provider: object,
+        response: _Response,
+        *,
+        prior_role_record_count: int | None,
+    ) -> SynthesisRoleReceipt | None:
+        manifest = _manifest_payload(provider, role)
+        if str(manifest.get("role", "")) != role.value:
+            return None
+        if str(manifest.get("schema_version", "")) != response.schema_version:
+            return None
+        prompt_digest: str | None = None
+        source = self._model_record_source
+        if source is None:
+            return None
+        matching = self._role_call_records(role)
+        if prior_role_record_count is None or len(matching) <= prior_role_record_count:
+            return None
+        record = matching[-1]
+        if record.schema_version != response.schema_version:
+            return None
+        if re.fullmatch(r"[0-9a-f]{64}", record.prompt_digest) is None:
+            return None
+        prompt_digest = record.prompt_digest
+        provider_id = str(manifest.get("provider_id", ""))
+        model_id = str(manifest.get("model_id", ""))
+        if (
+            not provider_id
+            or not model_id
+            or provider_id == "unavailable"
+            or model_id == "unavailable"
+        ):
+            return None
+        return SynthesisRoleReceipt(
+            role=role.value,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_digest=prompt_digest,
+            schema_digest=hashlib.sha256(
+                _canonical_json(_role_schema(role).model_json_schema()).encode("utf-8")
+            ).hexdigest(),
+            output_digest=hashlib.sha256(
+                _canonical_json(response.model_dump(mode="python")).encode("utf-8")
+            ).hexdigest(),
+        )
+
+    def _role_call_records(self, role: ModelRole) -> tuple[ModelCallRecord, ...]:
+        source = self._model_record_source
+        if source is None:
+            return ()
+        try:
+            records = tuple(getattr(source, "records"))
+        except (AttributeError, TypeError, RuntimeError, ValueError):
+            return ()
+        return tuple(
+            record
+            for record in records
+            if isinstance(record, ModelCallRecord) and record.role is role
+        )
+
+    def _role_record_count(self, role: ModelRole) -> int | None:
+        if self._model_record_source is None:
+            return None
+        return len(self._role_call_records(role))
+
+    @staticmethod
+    def _rejected_candidate_audit(
+        candidate: CandidateFinding,
+        error: BaseException,
+    ) -> RejectedCandidateAudit:
+        finding_id = candidate.finding_id
+        if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", finding_id) is None:
+            finding_id = "candidate-" + hashlib.sha256(
+                finding_id.encode("utf-8")
+            ).hexdigest()[:12]
+        reason_code, _ = _safe_role_validation_reason(str(error))
+        return RejectedCandidateAudit(
+            finding_id=finding_id,
+            source_role=ModelRole.REPORT_ANALYST.value,
+            reason_code=reason_code,
+            output_digest=hashlib.sha256(
+                _canonical_json(candidate.model_dump(mode="python")).encode("utf-8")
+            ).hexdigest(),
+        )
+
     def _missing_roles(self) -> tuple[str, ...]:
         missing: list[str] = []
         for role, provider in (
@@ -2029,6 +2208,8 @@ class ReportSynthesisService:
         limitations: Sequence[str],
         retrieval_log: Sequence[Mapping[str, object]],
         role_manifest: Mapping[str, object],
+        role_receipts: Sequence[SynthesisRoleReceipt] = (),
+        rejected_candidate_audits: Sequence[RejectedCandidateAudit] = (),
         candidate_findings: Sequence[SynthesisFinding] = (),
         objections: Sequence[SynthesisObjection] = (),
         rejected_findings: Sequence[SynthesisFinding] = (),
@@ -2052,6 +2233,8 @@ class ReportSynthesisService:
             schema_version=REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION,
             retrieval_log=tuple(retrieval_log),
             usage=self._usage(),
+            role_receipts=tuple(role_receipts),
+            rejected_candidate_audits=tuple(rejected_candidate_audits),
             candidate_findings=tuple(candidate_findings),
             objections=tuple(objections),
             rejected_findings=tuple(rejected_findings),

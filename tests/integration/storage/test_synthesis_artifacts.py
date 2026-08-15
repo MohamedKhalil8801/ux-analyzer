@@ -15,11 +15,14 @@ import pytest
 from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntry
 from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.synthesis import (
+    CANONICAL_SYNTHESIS_ROLES,
     EvidenceRef,
     ObjectionSeverity,
+    RejectedCandidateAudit,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
+    SynthesisRoleReceipt,
     SynthesisStatus,
 )
 from ux_analyzer.storage import synthesis_artifacts
@@ -92,6 +95,20 @@ def _finding() -> SynthesisFinding:
     )
 
 
+def _role_receipts() -> tuple[SynthesisRoleReceipt, ...]:
+    return tuple(
+        SynthesisRoleReceipt(
+            role=role,
+            provider_id="fixture-provider",
+            model_id="fixture-model",
+            prompt_digest=hashlib.sha256(f"{role}:prompt".encode()).hexdigest(),
+            schema_digest=hashlib.sha256(f"{role}:schema".encode()).hexdigest(),
+            output_digest=hashlib.sha256(f"{role}:output".encode()).hexdigest(),
+        )
+        for role in CANONICAL_SYNTHESIS_ROLES
+    )
+
+
 def _attempt(
     corpus: EvidenceCorpus,
     *,
@@ -101,6 +118,8 @@ def _attempt(
     candidate_findings: tuple[SynthesisFinding, ...] | None = None,
     rejected_findings: tuple[SynthesisFinding, ...] | None = None,
     objections: tuple[SynthesisObjection, ...] = (),
+    role_receipts: tuple[SynthesisRoleReceipt, ...] | None = None,
+    rejected_candidate_audits: tuple[RejectedCandidateAudit, ...] = (),
 ) -> SynthesisAttempt:
     if findings is None:
         findings = (_finding(),) if status is SynthesisStatus.ACCEPTED else ()
@@ -113,6 +132,8 @@ def _attempt(
                 replace(finding, reviewer_state="not-established")
                 for finding in candidate_findings
             )
+    if role_receipts is None:
+        role_receipts = _role_receipts()
     return SynthesisAttempt(
         attempt_id=f"20260810T120000Z-{corpus.digest[:12]}-{sequence}",
         status=status,
@@ -138,6 +159,8 @@ def _attempt(
             },
         ),
         usage={"role_calls": 1},
+        role_receipts=role_receipts,
+        rejected_candidate_audits=rejected_candidate_audits,
         candidate_findings=candidate_findings,
         objections=objections,
         rejected_findings=rejected_findings,
@@ -198,6 +221,7 @@ def test_write_attempt_publishes_canonical_layout_and_round_trips(
     assert index_bytes == _canonical_bytes(json.loads(index_bytes))
 
     synthesis_value = json.loads(synthesis_bytes)
+    assert synthesis_value["artifact_schema_version"] == "synthesis-artifact-v2"
     assert {
         "corpus",
         "expectation",
@@ -209,6 +233,8 @@ def test_write_attempt_publishes_canonical_layout_and_round_trips(
         "role_manifest",
         "retrieval_log",
         "usage",
+        "role_receipts",
+        "rejected_candidate_audits",
         "candidates",
         "objections",
         "rejected_findings",
@@ -218,6 +244,7 @@ def test_write_attempt_publishes_canonical_layout_and_round_trips(
     } <= set(synthesis_value)
     assert synthesis_value["status"] == "accepted"
     assert synthesis_value["final_findings"][0]["finding_id"] == "invite-control"
+    assert len(synthesis_value["role_receipts"]) == 4
 
     assert store.attempts == (attempt,)
     assert store.accepted_attempt == attempt
@@ -248,6 +275,46 @@ def test_write_attempt_rejects_accepted_without_final_findings(tmp_path: Path) -
         SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
 
 
+def test_write_attempt_rejects_accepted_without_all_canonical_role_receipts(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        role_receipts=_role_receipts()[:-1],
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="receipt|role"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_rejected_candidate_audit_round_trips_without_candidate_narrative(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    audit = RejectedCandidateAudit(
+        finding_id="candidate-a1b2c3",
+        source_role="report-analyst",
+        reason_code="unknown-evidence-id",
+        output_digest="d" * 64,
+    )
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        status=SynthesisStatus.REJECTED,
+        findings=(),
+        candidate_findings=(),
+        rejected_candidate_audits=(audit,),
+    )
+    store = SynthesisArtifactStore(tmp_path)
+
+    store.write_attempt(attempt, corpus)
+
+    assert store.attempts[0].rejected_candidate_audits == (audit,)
+    assert "unknown evidence body" not in repr(store.attempts[0])
+
+
 def test_write_attempt_rejects_accepted_finding_with_unresolved_blocker(
     tmp_path: Path,
 ) -> None:
@@ -260,7 +327,31 @@ def test_write_attempt_rejects_accepted_finding_with_unresolved_blocker(
         objections=(_blocking_objection(finding.finding_id),),
     )
 
-    with pytest.raises(SynthesisArtifactError, match="blocking|publish"):
+    with pytest.raises(SynthesisArtifactError, match="blocking|publish|disposition"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_write_attempt_rejects_accepted_with_undispositioned_objection(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    objection = SynthesisObjection(
+        objection_id="editorial-review",
+        finding_id=finding.finding_id,
+        objection_type="other",
+        severity=ObjectionSeverity.EDITORIAL,
+        message="The title could be shorter.",
+        reviewer_role="report-pattern-reviewer",
+    )
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(finding,),
+        objections=(objection,),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="disposition|adjudicator"):
         SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
 
 
@@ -410,6 +501,84 @@ def test_write_attempt_rejects_final_that_does_not_preserve_candidate(
         SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
 
 
+def test_write_attempt_rejects_reviewed_decision_change_without_resolution(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    evidence_ref = EvidenceRef(
+        "event:run-a:1",
+        "event",
+        "run-a",
+        replay_sequence=1,
+    )
+    candidate = replace(
+        _finding(),
+        reviewer_state="candidate",
+        evidence_refs=(evidence_ref,),
+    )
+    final = replace(
+        candidate,
+        severity="medium",
+        confidence=0.72,
+        severity_justification="Recovery is immediate.",
+        reviewer_state="accepted",
+    )
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(final,),
+        candidate_findings=(candidate,),
+    )
+
+    with pytest.raises(SynthesisArtifactError, match="reviewed|candidate|decision"):
+        SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_write_attempt_accepts_reviewed_decision_change_with_evidence_provenance(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    evidence_ref = EvidenceRef(
+        "event:run-a:1",
+        "event",
+        "run-a",
+        replay_sequence=1,
+    )
+    candidate = replace(
+        _finding(),
+        reviewer_state="candidate",
+        evidence_refs=(evidence_ref,),
+    )
+    final = replace(
+        candidate,
+        severity="medium",
+        confidence=0.72,
+        severity_justification="Recovery is immediate.",
+        reviewer_state="accepted",
+    )
+    objection = SynthesisObjection(
+        objection_id="severity-review",
+        finding_id=candidate.finding_id,
+        objection_type="severity",
+        severity=ObjectionSeverity.MATERIAL,
+        message="The recorded recovery is immediate.",
+        evidence_refs=(evidence_ref,),
+        resolved=True,
+        resolution="The final severity and confidence were reduced.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=(evidence_ref,),
+    )
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(final,),
+        candidate_findings=(candidate,),
+        objections=(objection,),
+    )
+
+    SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
 @pytest.mark.parametrize(
     "status",
     (SynthesisStatus.NO_ISSUES, SynthesisStatus.REJECTED, SynthesisStatus.UNAVAILABLE),
@@ -524,7 +693,6 @@ def test_valid_publication_states_round_trip(
             replace(
                 candidate,
                 title="Invite action is difficult to locate",
-                fixes=("Expose an Invite teammate action in the team area.",),
                 reviewer_state="accepted",
             ),
         )
