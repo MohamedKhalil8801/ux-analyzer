@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, Protocol, cast
+from typing import Annotated, Any, ClassVar, Literal, Protocol, cast
 
 from pydantic import (
     BaseModel,
@@ -27,7 +27,7 @@ from ux_analyzer.ports.models import ModelManifest
 
 REPORT_SYNTHESIS_SCHEMA_VERSION = "report-synthesis-v1"
 
-_OBJECTION_TYPES = {
+_ObjectionType = Literal[
     "affected-surface",
     "citation-accuracy",
     "contradiction",
@@ -39,7 +39,8 @@ _OBJECTION_TYPES = {
     "shared-cause",
     "visual-interpretation",
     "other",
-}
+]
+_OBJECTION_TYPES = frozenset(_ObjectionType.__args__)
 
 _BoundedIdentifier = Annotated[
     str,
@@ -284,7 +285,7 @@ class TypedObjection(_RoleSchema):
 
     objection_id: _BoundedIdentifier
     finding_id: _BoundedIdentifier
-    objection_type: _BoundedLabel = "other"
+    objection_type: _ObjectionType = "other"
     severity: ObjectionSeverity
     message: _BoundedNarrative
     evidence_refs: list[EvidenceReference] = Field(
@@ -295,9 +296,11 @@ class TypedObjection(_RoleSchema):
     resolved: bool = False
     resolution: _BoundedNarrative | None = None
 
-    @field_validator("objection_type")
+    @field_validator("objection_type", mode="before")
     @classmethod
-    def _normalize_objection_type(cls, value: str) -> str:
+    def _normalize_objection_type(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         normalized = value.strip().lower().replace("_", "-")
         if normalized not in _OBJECTION_TYPES:
             raise ValueError("objection_type is not a supported typed objection")
@@ -317,6 +320,7 @@ class TypedObjection(_RoleSchema):
         return SynthesisObjection(
             objection_id=self.objection_id,
             finding_id=self.finding_id,
+            objection_type=self.objection_type,
             severity=self.severity,
             message=self.message,
             evidence_refs=tuple(ref.to_domain() for ref in self.evidence_refs),

@@ -2025,9 +2025,28 @@ def test_role_response_schemas_require_role_outputs_and_validate_domains() -> No
 
     assert analyst.candidate_findings[0].severity is FindingSeverity.MEDIUM
     assert auditor.objections[0].objection_type == "factual-support"
+    assert auditor.objections[0].to_domain().objection_type == "factual-support"
     assert pattern.objections[0].finding_id == candidate.finding_id
     assert adjudicator.final_findings[0].finding_id == candidate.finding_id
     assert adjudicator.objection_resolutions[0].resolved is True
+
+
+def test_objection_schema_exposes_supported_types_to_model() -> None:
+    objection_schema = TypedObjection.model_json_schema()
+
+    assert objection_schema["properties"]["objection_type"]["enum"] == [
+        "affected-surface",
+        "citation-accuracy",
+        "contradiction",
+        "counterexample",
+        "factual-support",
+        "fix-leverage",
+        "recurrence",
+        "severity",
+        "shared-cause",
+        "visual-interpretation",
+        "other",
+    ]
 
 
 @pytest.mark.parametrize(
