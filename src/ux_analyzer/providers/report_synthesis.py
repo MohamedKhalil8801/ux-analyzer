@@ -1720,6 +1720,10 @@ class _ReportRole:
                     response_summary={"schema": self.response_schema.__name__},
                 ) from error
         response = _expand_provider_handles(response, manifest)
+        response = self._normalize_principle_labels(
+            response,
+            normalized_principles,
+        )
         response = self._defer_undelivered_claims(
             response,
             manifest,
@@ -1737,6 +1741,37 @@ class _ReportRole:
             unavailable_attachment_ids=unavailable_attachment_ids,
         )
         return response
+
+    def _normalize_principle_labels(
+        self,
+        response: InvestigativeResponse,
+        principles: Sequence[UxPrinciple],
+    ) -> InvestigativeResponse:
+        known_principle_ids = {principle.principle_id for principle in principles}
+        findings = self._findings(response)
+        if not any(
+            set(finding.principles) - known_principle_ids for finding in findings
+        ):
+            return response
+
+        normalized_findings = [
+            finding.model_copy(
+                update={
+                    "principles": [
+                        principle_id
+                        for principle_id in finding.principles
+                        if principle_id in known_principle_ids
+                    ]
+                }
+            )
+            for finding in findings
+        ]
+        payload = response.model_dump(mode="python")
+        if isinstance(response, AnalystResponse):
+            payload["candidate_findings"] = normalized_findings
+        elif isinstance(response, AdjudicationResponse):
+            payload["final_findings"] = normalized_findings
+        return type(response).model_validate(payload)
 
     def _defer_undelivered_claims(
         self,

@@ -2153,6 +2153,34 @@ async def test_path_deviation_is_tolerated_when_outcome_evidence_is_valid() -> N
 
 
 @pytest.mark.asyncio
+async def test_unknown_principle_label_is_removed_without_rejecting_finding() -> None:
+    candidate_payload = _finding_payload()
+    candidate_payload["principles"] = ["invented-principle"]
+    client = RecordingClient(
+        lambda schema, role: AnalystResponse(
+            complete=True,
+            candidate_findings=[CandidateFinding.model_validate(candidate_payload)],
+        )
+    )
+    corpus = _corpus(Path.cwd())
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+
+    response = await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        ux_principles(),
+        resolved_evidence=resolved,
+    )
+
+    assert response.complete is True
+    assert response.candidate_findings[0].principles == []
+
+
+@pytest.mark.asyncio
 async def test_manifest_only_finding_is_deferred_without_exposing_claim() -> None:
     class ManifestOnlyClient(RecordingClient):
         @staticmethod
