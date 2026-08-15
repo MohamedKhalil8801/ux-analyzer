@@ -72,7 +72,12 @@ def _write_checksums(run: Path) -> None:
     )
 
 
-def _spec(run_id: str = "run-a") -> SimpleNamespace:
+def _spec(
+    run_id: str = "run-a",
+    *,
+    scenario_id: str = "invite",
+    scenario_name: str = "Invite teammate",
+) -> SimpleNamespace:
     return SimpleNamespace(
         run_id=run_id,
         seed=7,
@@ -81,17 +86,33 @@ def _spec(run_id: str = "run-a") -> SimpleNamespace:
         policy=SimpleNamespace(value="progressive-prominence-scent"),
         prominence_provider_id="heuristic",
         scenario=SimpleNamespace(
-            id="invite",
-            name="Invite teammate",
+            id=scenario_id,
+            name=scenario_name,
             goal="Invite a teammate",
+            safeguards=("fixture-only",),
+            fixture_inputs=SimpleNamespace(values={}, sensitive_keys=frozenset()),
         ),
-        application_version=SimpleNamespace(id="improved", label="Improved"),
+        application_version=SimpleNamespace(
+            id="improved",
+            label="Improved",
+            kind=SimpleNamespace(value="improved"),
+        ),
         persona=SimpleNamespace(id="first-time", name="First-time teammate"),
     )
 
 
-def _experiment(tmp_path: Path, run_id: str = "run-a") -> tuple[ExperimentResult, Path]:
-    spec = _spec(run_id)
+def _experiment(
+    tmp_path: Path,
+    run_id: str = "run-a",
+    *,
+    scenario_id: str = "invite",
+    scenario_name: str = "Invite teammate",
+) -> tuple[ExperimentResult, Path]:
+    spec = _spec(
+        run_id,
+        scenario_id=scenario_id,
+        scenario_name=scenario_name,
+    )
     run = tmp_path / "runs" / spec.run_id
     screenshot = _png_bytes()
     (run / "artifacts").mkdir(parents=True)
@@ -232,9 +253,9 @@ def _experiment(tmp_path: Path, run_id: str = "run-a") -> tuple[ExperimentResult
                 "run_id": spec.run_id,
                 "seed": spec.seed,
                 "model_trial": spec.model_trial,
-                "scenario_id": "invite",
-                "application_version_id": "improved",
-                "persona_id": "first-time",
+                "scenario_id": spec.scenario.id,
+                "application_version_id": spec.application_version.id,
+                "persona_id": spec.persona.id,
                 "policy": spec.policy.value,
                 "config_digest": "fixture-config",
                 "verified_completion": True,
@@ -354,7 +375,7 @@ def test_corpus_accepts_cli_relative_output_and_bundle_reference(
 async def test_corpus_redacts_prior_narrative_and_includes_allowlisted_evidence(
     tmp_path: Path,
 ) -> None:
-    experiment, _ = _experiment(tmp_path)
+    experiment, run = _experiment(tmp_path)
 
     corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
     serialized = corpus.to_json()
@@ -446,6 +467,36 @@ async def test_corpus_redacts_prior_narrative_and_includes_allowlisted_evidence(
     assert "selector" not in element.payload
     assert "execution_reference" not in element.payload
     assert corpus.require("expectation:run-a").payload["matched"] is True
+    assert corpus.require("scenario:run-a").payload["surface_id"] == "invite"
+    assert corpus.require("scenario:run-a").payload["surface"] == "Invite teammate"
+    assert corpus.require("event:run-a:4").payload["surface_id"] == "invite"
+    assert corpus.metadata["surface_identities"] == (
+        {
+            "run_id": "run-a",
+            "surface_id": "invite",
+            "surface": "Invite teammate",
+        },
+    )
+    assert corpus.metadata["finalized_bundle_checksums"] == (
+        {
+            "run_id": "run-a",
+            "checksums_sha256": hashlib.sha256(
+                (run / "checksums.sha256").read_bytes()
+            ).hexdigest(),
+        },
+    )
+    screenshot_entry = next(
+        entry for entry in corpus.entries if entry.ref.kind == "screenshot"
+    )
+    assert screenshot_entry.payload["visual_disclosure"] == {
+        "policy": "visual-evidence-v1",
+        "result": "allowed",
+        "reason": "fixture-only-safeguard",
+        "verified": True,
+    }
+    assert corpus.model_visual_evidence_ids == frozenset(
+        {screenshot_entry.ref.evidence_id}
+    )
     assert corpus.require("metric:run-a:outcome").payload["value"] == "verified-success"
     assert "metric:run-a:human-claim" not in evidence_ids
     assert corpus.principle_pack_version == UX_PRINCIPLE_PACK_VERSION
@@ -464,6 +515,221 @@ async def test_corpus_redacts_prior_narrative_and_includes_allowlisted_evidence(
         "model_id": "heuristic-model",
         "model_version": "v1",
     }
+
+
+def test_live_screenshot_defaults_to_excluded_with_recorded_policy(
+    tmp_path: Path,
+) -> None:
+    experiment, _ = _experiment(tmp_path)
+    spec = experiment.specs[0]
+    spec.application_version.kind = SimpleNamespace(value="live")
+    spec.scenario.safeguards = ("public-target-only",)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    assert not any(entry.ref.kind == "screenshot" for entry in corpus.entries)
+    assert corpus.model_visual_evidence_ids == frozenset()
+    disclosure = corpus.require("visual-disclosure:run-a:viewport-1")
+    assert disclosure.payload == {
+        "media_kind": "screenshot",
+        "viewport_id": "viewport-1",
+        "policy": "visual-evidence-v1",
+        "result": "excluded",
+        "reason": "live-target-default",
+        "verified": True,
+        "surface_id": "invite",
+        "surface": "Invite teammate",
+    }
+
+
+@pytest.mark.parametrize(
+    ("artifact_case", "expected_reason"),
+    (
+        ("invalid-reference", "artifact-reference-invalid"),
+        ("missing", "artifact-missing"),
+        ("oversized", "artifact-unreadable-or-oversized"),
+        ("invalid-media", "invalid-media"),
+    ),
+)
+def test_screenshot_artifact_exclusions_are_recorded(
+    tmp_path: Path,
+    artifact_case: str,
+    expected_reason: str,
+) -> None:
+    experiment, run = _experiment(tmp_path)
+    timeline_path = run / "timeline.jsonl"
+    events = [json.loads(line) for line in timeline_path.read_text().splitlines()]
+    snapshot = events[0]["snapshot"]
+    if artifact_case == "invalid-reference":
+        snapshot["screenshot_artifact"] = "../outside.png"
+    elif artifact_case == "missing":
+        snapshot["screenshot_artifact"] = "artifacts/missing.png"
+    elif artifact_case == "oversized":
+        (run / "artifacts" / "screenshot.png").write_bytes(
+            b"x" * (16 * 1024 * 1024 + 1)
+        )
+    else:
+        (run / "artifacts" / "screenshot.png").write_bytes(b"not-an-image")
+    timeline_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    _write_checksums(run)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    assert not any(entry.ref.kind == "screenshot" for entry in corpus.entries)
+    disclosure = corpus.require("visual-disclosure:run-a:viewport-1")
+    assert disclosure.payload["result"] == "excluded"
+    assert disclosure.payload["reason"] == expected_reason
+
+
+def test_finalized_runs_publish_canonical_cross_surface_identities(
+    tmp_path: Path,
+) -> None:
+    built = tuple(
+        _experiment(
+            tmp_path,
+            run_id,
+            scenario_id=surface_id,
+            scenario_name=surface_name,
+        )[0]
+        for run_id, surface_id, surface_name in (
+            ("run-settings", "settings", "Settings"),
+            ("run-billing", "billing", "Billing"),
+            ("run-profile", "profile", "Profile"),
+        )
+    )
+    specs = tuple(experiment.specs[0] for experiment in built)
+    results = tuple(experiment.results[0] for experiment in built)
+    _write_json(
+        tmp_path / "experiment.json",
+        {
+            "run_metrics": [
+                {
+                    "run_id": spec.run_id,
+                    "seed": spec.seed,
+                    "model_trial": spec.model_trial,
+                    "scenario_id": spec.scenario.id,
+                    "application_version_id": spec.application_version.id,
+                    "persona_id": spec.persona.id,
+                    "policy": spec.policy.value,
+                    "prominence_provider_id": spec.prominence_provider_id,
+                    "config_digest": spec.config_digest,
+                }
+                for spec in specs
+            ]
+        },
+    )
+
+    corpus = EvidenceCorpusBuilder().build(
+        ExperimentResult(specs=specs, results=results, failures=()),
+        tmp_path,
+        {},
+    )
+
+    assert {
+        entry.payload["surface_id"]
+        for entry in corpus.entries
+        if entry.ref.kind == "event"
+    } == {"settings", "billing", "profile"}
+    assert corpus.metadata["surface_identities"] == (
+        {"run_id": "run-settings", "surface_id": "settings", "surface": "Settings"},
+        {"run_id": "run-billing", "surface_id": "billing", "surface": "Billing"},
+        {"run_id": "run-profile", "surface_id": "profile", "surface": "Profile"},
+    )
+    assert corpus.metadata["finalized_bundle_checksums"] == tuple(
+        {
+            "run_id": result.run_id,
+            "checksums_sha256": hashlib.sha256(
+                (Path(result.bundle_path) / "checksums.sha256").read_bytes()
+            ).hexdigest(),
+        }
+        for result in results
+    )
+    assert len(
+        {
+            row["checksums_sha256"]
+            for row in corpus.metadata["finalized_bundle_checksums"]
+        }
+    ) == 3
+
+
+def test_raw_checksum_manifest_bytes_change_corpus_digest(tmp_path: Path) -> None:
+    experiment, run = _experiment(tmp_path)
+    first = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+    checksum_path = run / "checksums.sha256"
+    checksum_path.write_bytes(checksum_path.read_bytes() + b"\n")
+
+    second = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    assert (
+        first.metadata["finalized_bundle_checksums"]
+        != second.metadata["finalized_bundle_checksums"]
+    )
+    assert first.digest != second.digest
+
+
+def test_identical_screenshots_preserve_each_viewport_linkage(tmp_path: Path) -> None:
+    experiment, run = _experiment(tmp_path)
+    timeline_path = run / "timeline.jsonl"
+    events = [json.loads(line) for line in timeline_path.read_text().splitlines()]
+    duplicate = json.loads(json.dumps(events[0]))
+    duplicate["sequence"] = 2
+    duplicate["snapshot"]["id"] = "viewport-2"
+    for event in events[1:]:
+        event["sequence"] += 1
+    events.insert(1, duplicate)
+    timeline_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    _write_checksums(run)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    screenshots = tuple(entry for entry in corpus.entries if entry.ref.kind == "screenshot")
+    assert len(screenshots) == 1
+    link = next(entry for entry in corpus.entries if entry.ref.kind == "screenshot-link")
+    assert link.ref.viewport_id == "viewport-2"
+    assert link.payload["canonical_screenshot_evidence_id"] == screenshots[0].ref.evidence_id
+    assert link.payload["sha256"] == screenshots[0].ref.sha256
+
+
+def test_fixture_screenshot_requires_verified_blank_when_sensitive_values_exist(
+    tmp_path: Path,
+) -> None:
+    experiment, _ = _experiment(tmp_path)
+    spec = experiment.specs[0]
+    spec.scenario.fixture_inputs = SimpleNamespace(
+        values={"invite_email": "person@example.test"},
+        sensitive_keys=frozenset({"invite_email"}),
+    )
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    assert not any(entry.ref.kind == "screenshot" for entry in corpus.entries)
+    disclosure = corpus.require("visual-disclosure:run-a:viewport-1")
+    assert disclosure.payload["result"] == "excluded"
+    assert disclosure.payload["reason"] == "redaction-not-verified"
+
+
+def test_invalid_fixture_redaction_policy_fails_closed_for_screenshot(
+    tmp_path: Path,
+) -> None:
+    experiment, _ = _experiment(tmp_path)
+    spec = experiment.specs[0]
+    spec.scenario.fixture_inputs = SimpleNamespace(
+        values={},
+        sensitive_keys=frozenset({"missing-secret"}),
+    )
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    assert not any(entry.ref.kind == "screenshot" for entry in corpus.entries)
+    disclosure = corpus.require("visual-disclosure:run-a:viewport-1")
+    assert disclosure.payload["result"] == "excluded"
+    assert disclosure.payload["reason"] == "redaction-policy-invalid"
 
 
 def test_corpus_records_explicit_missing_expectation(tmp_path: Path) -> None:
@@ -715,6 +981,8 @@ def test_finalized_invalid_state_is_published_without_freeform_reason_prose(
             "artifact": "result.json",
             "field": "evaluation_failure_reason",
         },
+        "surface_id": "invite",
+        "surface": "Invite teammate",
     }
     assert corpus.require("limitation:run-a:evaluation-failure").payload == {
         "kind": "evaluation-failure",
@@ -723,6 +991,8 @@ def test_finalized_invalid_state_is_published_without_freeform_reason_prose(
             "artifact": "result.json",
             "field": "evaluation_failure_reason",
         },
+        "surface_id": "invite",
+        "surface": "Invite teammate",
     }
     assert "The invite flow is broken" not in corpus.to_json()
     assert "Evaluator found a severe navigation flaw" not in corpus.to_json()
@@ -767,6 +1037,8 @@ def test_saliency_fallback_limitation_uses_timeline_event_provenance(
             "event_id": "event-8",
             "event_kind": "saliency-fallback-recorded",
         },
+        "surface_id": "invite",
+        "surface": "Invite teammate",
     }
     assert "navigation design caused" not in corpus.to_json()
     assert "Prior finding says" not in corpus.to_json()
@@ -799,6 +1071,8 @@ def test_finalized_invalid_run_does_not_require_a_summary_metric_row(
         "kind": "ux-sample-invalid",
         "reason_code": "model-failure",
         "source": {"artifact": "result.json", "field": "outcome.kind"},
+        "surface_id": "invite",
+        "surface": "Invite teammate",
     }
 
 

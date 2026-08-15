@@ -85,9 +85,17 @@ def _spec() -> SimpleNamespace:
         policy=SimpleNamespace(value="progressive-prominence-scent"),
         prominence_provider_id="foveacast",
         scenario=SimpleNamespace(
-            id="invite", name="Invite teammate", goal="Invite a teammate"
+            id="invite",
+            name="Invite teammate",
+            goal="Invite a teammate",
+            safeguards=("fixture-only",),
+            fixture_inputs=SimpleNamespace(values={}, sensitive_keys=frozenset()),
         ),
-        application_version=SimpleNamespace(id="improved", label="Improved"),
+        application_version=SimpleNamespace(
+            id="improved",
+            label="Improved",
+            kind=SimpleNamespace(value="improved"),
+        ),
         persona=SimpleNamespace(id="first-time", name="First-time teammate"),
     )
 
@@ -425,6 +433,18 @@ def test_validated_heatmap_and_native_map_are_bounded_retrieval_entries(
         == hashlib.sha256(_screenshot_bytes()).hexdigest()
     )
     assert heatmap.payload["replay_linkage"] is True
+    assert heatmap.payload["visual_disclosure"] == {
+        "policy": "visual-evidence-v1",
+        "result": "allowed",
+        "reason": "validated-heatmap-only",
+        "source_policy_reason": "fixture-only-safeguard",
+        "verified": True,
+    }
+    assert corpus.model_visual_evidence_ids == frozenset(
+        entry.ref.evidence_id
+        for entry in corpus.entries
+        if entry.ref.kind in {"heatmap", "screenshot"}
+    )
     assert native_map.payload["provider_id"] == "foveacast"
 
     resolved = EvidenceResolver().resolve(
@@ -435,6 +455,30 @@ def test_validated_heatmap_and_native_map_are_bounded_retrieval_entries(
     )
     assert resolved.entries[0].attachment_path is not None
     assert resolved.entries[0].attachment_path.as_posix().endswith("1s-heatmap.png")
+
+
+def test_live_heatmaps_are_retained_but_not_transport_eligible(
+    tmp_path: Path,
+) -> None:
+    experiment, _ = _write_valid_saliency_experiment(tmp_path)
+    spec = experiment.specs[0]
+    spec.application_version.kind = SimpleNamespace(value="live")
+    spec.scenario.safeguards = ("public-target-only",)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    heatmaps = tuple(entry for entry in corpus.entries if entry.ref.kind == "heatmap")
+    assert len(heatmaps) == 3
+    assert corpus.model_visual_evidence_ids.isdisjoint(
+        entry.ref.evidence_id for entry in heatmaps
+    )
+    assert {
+        (
+            entry.payload["visual_disclosure"]["result"],
+            entry.payload["visual_disclosure"]["reason"],
+        )
+        for entry in heatmaps
+    } == {("excluded", "live-target-default")}
 
 
 def test_forged_saliency_linkage_is_not_published_as_heatmap_evidence(

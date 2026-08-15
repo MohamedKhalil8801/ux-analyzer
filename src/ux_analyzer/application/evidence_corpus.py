@@ -26,6 +26,7 @@ from ux_analyzer.domain.expectations import ExpectationKey, FrozenExpectation
 from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.synthesis import EvidenceRef
 from ux_analyzer.ports.artifacts import (
+    RedactionPolicy,
     validate_saliency_artifact_path,
     validate_saliency_heatmap_content,
     validate_saliency_native_map_content,
@@ -38,6 +39,7 @@ from ux_analyzer.storage.run_bundle import (
 from ux_analyzer.storage.saliency_replay import load_saliency_replay
 
 _MAX_JSON_BYTES = 8 * 1024 * 1024
+_MAX_BUNDLE_CHECKSUM_BYTES = 8 * 1024 * 1024
 _MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024
 _MAX_SCREENSHOT_PIXELS = 16 * 1024 * 1024
 _MAX_SALIENCY_BYTES = 8 * 1024 * 1024
@@ -200,6 +202,7 @@ _REF_NAMESPACE_KINDS = {
     "viewport",
     "element",
     "screenshot",
+    "screenshot-link",
     "event",
     "replay",
     "verification",
@@ -212,7 +215,9 @@ _REF_NAMESPACE_KINDS = {
     "limitation",
     "counterevidence",
     "failure",
+    "visual-disclosure",
 }
+_VISUAL_DISCLOSURE_POLICY = "visual-evidence-v1"
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -598,6 +603,51 @@ def _identity(spec: object) -> dict[str, object]:
     }
 
 
+def _surface_identity(spec: object) -> tuple[str, str]:
+    identity = _identity(spec)
+    surface_id = _text(identity.get("scenario_id"), "unknown")
+    surface_name = _text(identity.get("scenario_name"), surface_id)
+    return surface_id, surface_name
+
+
+def _visual_source_policy(spec: object) -> tuple[bool, str, RedactionPolicy]:
+    scenario = getattr(spec, "scenario", None)
+    version = getattr(spec, "application_version", None)
+    raw_kind = getattr(version, "kind", None)
+    version_kind = _text(getattr(raw_kind, "value", raw_kind), "unknown")
+    safeguards = {
+        _text(value)
+        for value in _sequence_values(getattr(scenario, "safeguards", ()))
+        if _optional_text(value) is not None
+    }
+    fixture_inputs = getattr(scenario, "fixture_inputs", None)
+    try:
+        redaction = (
+            RedactionPolicy.from_fixture_inputs(fixture_inputs)
+            if fixture_inputs is not None
+            else RedactionPolicy()
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False, "redaction-policy-invalid", RedactionPolicy()
+    if version_kind == "live":
+        return False, "live-target-default", redaction
+    if "fixture-only" not in safeguards:
+        return False, "explicit-allow-missing", redaction
+    return True, "fixture-only-safeguard", redaction
+
+
+def _is_verified_redaction_placeholder(content: bytes) -> bool:
+    try:
+        with Image.open(BytesIO(content)) as image:
+            extrema = cast(
+                tuple[tuple[int, int], ...],
+                image.convert("RGBA").getextrema(),
+            )
+    except (OSError, ValueError):
+        return False
+    return extrema == ((0, 0), (0, 0), (0, 0), (255, 255))
+
+
 def _raw_identity(value: object) -> dict[str, object]:
     raw = _mapping(value)
     scenario = _mapping(raw.get("scenario"))
@@ -935,6 +985,27 @@ class EvidenceEntry:
             object.__setattr__(self, "attachment_path", path)
 
 
+def _is_model_visual_evidence(entry: EvidenceEntry) -> bool:
+    raw_disclosure = entry.payload.get("visual_disclosure")
+    if not isinstance(raw_disclosure, Mapping):
+        return False
+    disclosure = cast(Mapping[object, object], raw_disclosure)
+    if (
+        disclosure.get("policy") != _VISUAL_DISCLOSURE_POLICY
+        or disclosure.get("verified") is not True
+    ):
+        return False
+    decision = (disclosure.get("result"), disclosure.get("reason"))
+    if entry.ref.kind == "screenshot":
+        return decision in {
+            ("allowed", "fixture-only-safeguard"),
+            ("redacted", "verified-blank-redaction"),
+        }
+    if entry.ref.kind == "heatmap":
+        return decision == ("allowed", "validated-heatmap-only")
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceCorpus:
     """Immutable experiment-level evidence registry."""
@@ -945,6 +1016,9 @@ class EvidenceCorpus:
     principle_pack_digest: str = _UX_PRINCIPLE_PACK_DIGEST
     metadata: Mapping[str, object] = field(
         default_factory=lambda: cast(Mapping[str, object], {})
+    )
+    model_visual_evidence_ids: frozenset[str] = field(
+        default_factory=lambda: cast(frozenset[str], frozenset())
     )
     _index: Mapping[str, EvidenceEntry] = field(init=False, repr=False, compare=False)
 
@@ -962,6 +1036,30 @@ class EvidenceCorpus:
             index[evidence_id] = entry
         object.__setattr__(self, "entries", entries)
         object.__setattr__(self, "_index", MappingProxyType(index))
+        model_visual_evidence_ids: frozenset[str] = frozenset(
+            self.model_visual_evidence_ids
+        )
+        for evidence_id in model_visual_evidence_ids:
+            entry = index.get(evidence_id)
+            if entry is None:
+                raise ValueError(
+                    "model visual evidence ID is absent from corpus: "
+                    f"{evidence_id}"
+                )
+            if (
+                entry.attachment_path is None
+                or entry.ref.sha256 is None
+                or not _is_model_visual_evidence(entry)
+            ):
+                raise ValueError(
+                    "model visual evidence ID is not an approved visual attachment: "
+                    f"{evidence_id}"
+                )
+        object.__setattr__(
+            self,
+            "model_visual_evidence_ids",
+            model_visual_evidence_ids,
+        )
         object.__setattr__(
             self,
             "metadata",
@@ -984,6 +1082,7 @@ class EvidenceCorpus:
             "principle_pack_version": self.principle_pack_version,
             "principle_pack_digest": self.principle_pack_digest,
             "metadata": self.metadata,
+            "model_visual_evidence_ids": sorted(self.model_visual_evidence_ids),
             "entries": [
                 {
                     "evidence_id": entry.ref.evidence_id,
@@ -1102,6 +1201,12 @@ def _validate_ref_namespace(ref: EvidenceRef) -> None:
         or not _matches_component(ref.viewport_id, parts[2])
     ):
         raise ValueError("viewport evidence namespace does not match reference")
+    if namespace == "visual-disclosure" and (
+        len(parts) != 3
+        or not _is_id_component(parts[2])
+        or not _matches_component(ref.viewport_id, parts[2])
+    ):
+        raise ValueError("visual disclosure namespace does not match reference")
     if namespace == "element" and (
         len(parts) != 4
         or not _is_id_component(parts[2])
@@ -1123,6 +1228,14 @@ def _validate_ref_namespace(ref: EvidenceRef) -> None:
         or not _matches_component(ref.sha256, parts[2])
     ):
         raise ValueError("screenshot evidence namespace does not match reference")
+    if namespace == "screenshot-link" and (
+        len(parts) != 4
+        or not _is_id_component(parts[2])
+        or not re.fullmatch(r"[0-9a-f]{64}", parts[3])
+        or not _matches_component(ref.viewport_id, parts[2])
+        or not _matches_component(ref.sha256, parts[3])
+    ):
+        raise ValueError("screenshot link namespace does not match reference")
     if namespace in {"event", "replay"} and len(parts) != 3:
         raise ValueError("event evidence namespace does not match reference")
     if namespace in {"event", "replay"} and (
@@ -1319,6 +1432,10 @@ class _EntryCollector:
     def __init__(self) -> None:
         self.entries: list[EvidenceEntry] = []
         self.by_id: dict[str, EvidenceEntry] = {}
+        self.surfaces: dict[str, tuple[str, str]] = {}
+
+    def set_surface(self, run_id: str, surface_id: str, surface_name: str) -> None:
+        self.surfaces[run_id] = (surface_id, surface_name)
 
     def add(
         self,
@@ -1331,13 +1448,42 @@ class _EntryCollector:
         existing = self.by_id.get(ref.evidence_id)
         if existing is not None:
             if ref.kind == "screenshot" and ref.sha256 == existing.ref.sha256:
+                if ref.viewport_id == existing.ref.viewport_id:
+                    return
+                if ref.viewport_id is None or ref.sha256 is None:
+                    raise ValueError(
+                        "duplicate screenshot evidence lacks viewport linkage"
+                    )
+                self.add(
+                    EvidenceRef(
+                        (
+                            f"screenshot-link:{ref.run_id}:{ref.viewport_id}:"
+                            f"{ref.sha256}"
+                        ),
+                        "screenshot-link",
+                        ref.run_id,
+                        viewport_id=ref.viewport_id,
+                        sha256=ref.sha256,
+                    ),
+                    EvidenceClass.DETERMINISTIC_FACT,
+                    f"Viewport {ref.viewport_id} reused a canonical screenshot.",
+                    {
+                        "viewport_id": ref.viewport_id,
+                        "sha256": ref.sha256,
+                        "canonical_screenshot_evidence_id": existing.ref.evidence_id,
+                    },
+                )
                 return
             raise ValueError(f"duplicate evidence ID: {ref.evidence_id}")
+        public_payload = dict(payload)
+        if surface := self.surfaces.get(ref.run_id):
+            public_payload["surface_id"] = surface[0]
+            public_payload["surface"] = surface[1]
         entry = EvidenceEntry(
             ref=ref,
             evidence_class=evidence_class,
             summary=summary,
-            payload=payload,
+            payload=public_payload,
             attachment_path=attachment_path,
         )
         self.entries.append(entry)
@@ -1386,7 +1532,9 @@ class EvidenceCorpusBuilder:
             if _optional_text(getattr(failure, "run_id", None)) is not None
         }
         collector = _EntryCollector()
+        finalized_bundle_checksums: list[dict[str, str]] = []
         for run_id, spec in specs_by_id.items():
+            collector.set_surface(run_id, *_surface_identity(spec))
             result = results_by_id.get(run_id)
             if result is None:
                 self._add_scope_entries(collector, spec, expectations)
@@ -1413,17 +1561,23 @@ class EvidenceCorpusBuilder:
                     },
                 )
                 continue
-            self._build_run(
-                collector,
-                root,
-                spec,
-                result,
-                summary_rows.get(run_id, {}),
-                expectations,
+            finalized_bundle_checksums.append(
+                {
+                    "run_id": run_id,
+                    "checksums_sha256": self._build_run(
+                        collector,
+                        root,
+                        spec,
+                        result,
+                        summary_rows.get(run_id, {}),
+                        expectations,
+                    ),
+                }
             )
+        entries = tuple(collector.entries)
         return EvidenceCorpus(
             output_root=root,
-            entries=tuple(collector.entries),
+            entries=entries,
             principle_pack_version=_UX_PRINCIPLE_PACK_VERSION,
             principle_pack_digest=_UX_PRINCIPLE_PACK_DIGEST,
             metadata={
@@ -1434,8 +1588,22 @@ class EvidenceCorpusBuilder:
                     for spec in specs
                     for identity in (_identity(spec),)
                 ),
+                "surface_identities": tuple(
+                    {
+                        "run_id": _text(_identity(spec).get("run_id")),
+                        "surface_id": _surface_identity(spec)[0],
+                        "surface": _surface_identity(spec)[1],
+                    }
+                    for spec in specs
+                ),
+                "finalized_bundle_checksums": tuple(finalized_bundle_checksums),
                 "ux_principles_are_metadata_only": True,
             },
+            model_visual_evidence_ids=frozenset(
+                entry.ref.evidence_id
+                for entry in entries
+                if _is_model_visual_evidence(entry)
+            ),
         )
 
     @staticmethod
@@ -1528,7 +1696,7 @@ class EvidenceCorpusBuilder:
         result: object,
         summary_row: Mapping[str, object],
         expectations: Mapping[ExpectationKey, FrozenExpectation],
-    ) -> None:
+    ) -> str:
         expected = _identity(spec)
         run_id = _text(expected["run_id"])
         bundle_value = getattr(result, "bundle_path", None)
@@ -1574,6 +1742,17 @@ class EvidenceCorpusBuilder:
             )
         except (OSError, RuntimeError, UnicodeError, ValueError) as error:
             raise ValueError(f"invalid finalized bundle for {run_id}") from error
+        try:
+            checksum_manifest = secure_read_bytes(
+                bundle / "checksums.sha256",
+                "finalized bundle checksum manifest",
+                max_bytes=_MAX_BUNDLE_CHECKSUM_BYTES,
+            )
+        except (OSError, RuntimeError) as error:
+            raise ValueError(
+                f"invalid finalized bundle checksum manifest for {run_id}"
+            ) from error
+        checksum_manifest_digest = hashlib.sha256(checksum_manifest).hexdigest()
         manifest = persisted.manifest
         raw_result = persisted.result
         events = tuple(persisted.events)
@@ -1764,7 +1943,7 @@ class EvidenceCorpusBuilder:
                     f"Element {element_id} was captured in viewport {viewport_id}.",
                     {"viewport_id": viewport_id, **dict(element)},
                 )
-            self._add_screenshot(collector, root, bundle, run_id, snapshot)
+            self._add_screenshot(collector, root, bundle, run_id, snapshot, spec)
 
         for event in events:
             kind = _text(event.get("kind"))
@@ -1875,7 +2054,9 @@ class EvidenceCorpusBuilder:
             events,
             snapshots,
             provider_id,
+            spec,
         )
+        return checksum_manifest_digest
 
     @staticmethod
     def _viewport_before(
@@ -1920,22 +2101,84 @@ class EvidenceCorpusBuilder:
         bundle: Path,
         run_id: str,
         snapshot: Mapping[str, object],
+        spec: object,
     ) -> None:
+        viewport_id = _text(snapshot.get("id"), "unknown")
+        allowed, reason, redaction = _visual_source_policy(spec)
+        disclosure: dict[str, object] = {
+            "media_kind": "screenshot",
+            "viewport_id": viewport_id,
+            "policy": _VISUAL_DISCLOSURE_POLICY,
+            "result": "excluded",
+            "reason": reason,
+            "verified": True,
+        }
+
+        def record_disclosure(
+            decision_reason: str,
+            *,
+            result: str = "excluded",
+            detail: str | None = None,
+        ) -> None:
+            payload = {
+                **disclosure,
+                "result": result,
+                "reason": decision_reason,
+            }
+            if detail is not None:
+                payload["detail"] = detail[:_MAX_TEXT_LENGTH]
+            collector.add(
+                EvidenceRef(
+                    f"visual-disclosure:{run_id}:{viewport_id}",
+                    "visual-disclosure",
+                    run_id,
+                    viewport_id=viewport_id,
+                ),
+                EvidenceClass.DETERMINISTIC_FACT,
+                f"Source screenshot disclosure decision for viewport {viewport_id}.",
+                payload,
+            )
+
+        if not allowed:
+            record_disclosure(reason)
+            return
         artifact = snapshot.get("screenshot_artifact")
         resolved = _root_relative_artifact(root, bundle, artifact)
         if resolved is None:
+            record_disclosure("artifact-reference-invalid")
             return
         root_relative, candidate = resolved
+        if not candidate.is_file():
+            record_disclosure("artifact-missing")
+            return
         try:
             content, digest = _attachment_digest(
                 candidate,
                 "source screenshot",
                 max_bytes=_MAX_SCREENSHOT_BYTES,
             )
-            media_type = _screenshot_media_type(content)
-        except ValueError:
+        except ValueError as error:
+            record_disclosure(
+                "artifact-unreadable-or-oversized",
+                detail=str(error),
+            )
             return
-        viewport_id = _text(snapshot.get("id"), "unknown")
+        try:
+            media_type = _screenshot_media_type(content)
+        except ValueError as error:
+            record_disclosure("invalid-media", detail=str(error))
+            return
+        if redaction.exact_values:
+            if not _is_verified_redaction_placeholder(content):
+                record_disclosure("redaction-not-verified")
+                return
+            decision_result = "redacted"
+            decision_reason = "verified-blank-redaction"
+        else:
+            decision_result = "allowed"
+            decision_reason = reason
+        disclosure.update(result=decision_result, reason=decision_reason)
+        record_disclosure(decision_reason, result=decision_result)
         collector.add(
             EvidenceRef(
                 f"screenshot:{run_id}:{digest}",
@@ -1952,6 +2195,10 @@ class EvidenceCorpusBuilder:
                 "media_type": media_type,
                 "sha256": digest,
                 "dimensions": _mapping(snapshot.get("viewport")),
+                "visual_disclosure": {
+                    name: disclosure[name]
+                    for name in ("policy", "result", "reason", "verified")
+                },
             },
             Path(root_relative),
         )
@@ -2100,7 +2347,9 @@ class EvidenceCorpusBuilder:
         events: Sequence[Mapping[str, object]],
         snapshots: Sequence[Mapping[str, object]],
         provider_id: str,
+        spec: object,
     ) -> None:
+        visual_allowed, visual_reason, _ = _visual_source_policy(spec)
         try:
             replay_groups = load_saliency_replay(
                 bundle,
@@ -2211,6 +2460,8 @@ class EvidenceCorpusBuilder:
                     "heatmap",
                     entry,
                     source_screenshot_sha256,
+                    visual_allowed,
+                    visual_reason,
                 )
                 EvidenceCorpusBuilder._saliency_attachment(
                     collector,
@@ -2222,6 +2473,8 @@ class EvidenceCorpusBuilder:
                     "native-map",
                     entry,
                     source_screenshot_sha256,
+                    visual_allowed,
+                    visual_reason,
                 )
                 ranked = tuple(
                     _ranked_payload(item)
@@ -2269,6 +2522,8 @@ class EvidenceCorpusBuilder:
         kind: str,
         entry: Mapping[str, object],
         source_screenshot_sha256: str | None,
+        visual_allowed: bool,
+        visual_reason: str,
     ) -> EvidenceEntry | None:
         filename = f"{duration}-heatmap.png" if kind == "heatmap" else f"{duration}.npz"
         logical_path = f"saliency/{namespace}/{filename}"
@@ -2313,6 +2568,23 @@ class EvidenceCorpusBuilder:
                 for item in _mappings(entry.get("ranked_elements"))
             ),
         }
+        if kind == "heatmap":
+            payload["visual_disclosure"] = (
+                {
+                    "policy": _VISUAL_DISCLOSURE_POLICY,
+                    "result": "allowed",
+                    "reason": "validated-heatmap-only",
+                    "source_policy_reason": visual_reason,
+                    "verified": True,
+                }
+                if visual_allowed
+                else {
+                    "policy": _VISUAL_DISCLOSURE_POLICY,
+                    "result": "excluded",
+                    "reason": visual_reason,
+                    "verified": True,
+                }
+            )
         reference = EvidenceRef(
             f"{kind}:{run_id}:{namespace}:{duration}",
             kind,

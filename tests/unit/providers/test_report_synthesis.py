@@ -271,6 +271,8 @@ async def test_analyst_prompt_has_boundary_and_excludes_prior_agent_context() ->
     assert "element_index" in prompt
     assert "element_values" in prompt
     assert "run_ids, viewport_values" in prompt
+    assert "At most 12 candidate findings" in prompt
+    assert "Consolidate repeated signals" in prompt
     assert "PRIOR_AGENT_PRIVATE_REASONING_SENTINEL" not in serialized_messages
     assert "PRIOR_FINDING_PROSE_SENTINEL" not in serialized_messages
 
@@ -292,6 +294,7 @@ async def test_plain_report_request_delivers_role_schema_contract() -> None:
     assert schema["required"] == expected_schema["required"]
     assert schema["properties"] == expected_schema["properties"]
     assert schema["$defs"].keys() == expected_schema["$defs"].keys()
+    assert schema["properties"]["candidate_findings"]["maxItems"] == 12
 
 
 @pytest.mark.asyncio
@@ -1335,9 +1338,20 @@ async def test_over_budget_visual_attachment_is_deferred_before_model_client(
                 ),
                 evidence_class=EvidenceClass.DETERMINISTIC_FACT,
                 summary="A recorded screenshot.",
-                payload={"media_type": "image/png"},
+                payload={
+                    "media_type": "image/png",
+                    "visual_disclosure": {
+                        "policy": "visual-evidence-v1",
+                        "result": "allowed",
+                        "reason": "fixture-only-safeguard",
+                        "verified": True,
+                    },
+                },
                 attachment_path=attachment_path,
             ),
+        ),
+        model_visual_evidence_ids=frozenset(
+            {f"screenshot:run-a:{attachment_digest}"}
         ),
     )
     resolved = EvidenceResolver().resolve(
@@ -1418,7 +1432,15 @@ async def test_mixed_visuals_keep_fitting_subset_and_mark_oversized_visual(
                 ),
                 evidence_class=EvidenceClass.DETERMINISTIC_FACT,
                 summary=f"Recorded screenshot for {run_id}.",
-                payload={"media_type": "image/png"},
+                payload={
+                    "media_type": "image/png",
+                    "visual_disclosure": {
+                        "policy": "visual-evidence-v1",
+                        "result": "allowed",
+                        "reason": "fixture-only-safeguard",
+                        "verified": True,
+                    },
+                },
                 attachment_path=relative_path,
             )
         )
@@ -1429,7 +1451,13 @@ async def test_mixed_visuals_keep_fitting_subset_and_mark_oversized_visual(
         payload={"sequence": 1},
     )
     entries = (visual_entries[0], text_entry, *visual_entries[1:])
-    corpus = EvidenceCorpus(output_root=tmp_path, entries=entries)
+    corpus = EvidenceCorpus(
+        output_root=tmp_path,
+        entries=entries,
+        model_visual_evidence_ids=frozenset(
+            entry.ref.evidence_id for entry in visual_entries
+        ),
+    )
     resolved = EvidenceResolver().resolve(
         corpus,
         [entry.ref.evidence_id for entry in entries],
@@ -1496,6 +1524,73 @@ async def test_mixed_visuals_keep_fitting_subset_and_mark_oversized_visual(
     assert failure.value.reason == "visual evidence unavailable"
     assert failure.value.unavailable_count == 1
     assert len(requesting_client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_unverified_visual_attachment_is_not_sent_to_model(
+    tmp_path: Path,
+) -> None:
+    image_buffer = BytesIO()
+    Image.new("RGB", (1, 1), color=(220, 80, 80)).save(image_buffer, format="PNG")
+    content = image_buffer.getvalue()
+    digest = hashlib.sha256(content).hexdigest()
+    relative_path = Path("runs/run-live/screenshot.png")
+    target = tmp_path / relative_path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(content)
+    entry = EvidenceEntry(
+        ref=EvidenceRef(
+            f"screenshot:run-live:{digest}",
+            "screenshot",
+            "run-live",
+            viewport_id="viewport-1",
+            artifact_path=relative_path.as_posix(),
+            sha256=digest,
+        ),
+        evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+        summary="Unverified live screenshot.",
+        payload={
+            "media_type": "image/png",
+            "visual_disclosure": {
+                "policy": "visual-evidence-v1",
+                "result": "allowed",
+                "reason": "fixture-only-safeguard",
+                "verified": True,
+            },
+        },
+        attachment_path=relative_path,
+    )
+    corpus = EvidenceCorpus(output_root=tmp_path, entries=(entry,))
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [entry.ref.evidence_id],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+    client = AttachmentAwareRecordingClient()
+    client.response_factory = lambda schema, role: AnalystResponse(
+        complete=True,
+        unavailable_evidence_ids=[entry.ref.evidence_id],
+        limitations=["The live screenshot was not approved for model review."],
+    )
+
+    await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+    )
+
+    message = client.calls[0][1][1]
+    assert message.attachments == ()
+    payload = json.loads(message.content)
+    assert payload["resolved_evidence_context"]["visual_attachments"] == [
+        {
+            "evidence_id": entry.ref.evidence_id,
+            "media_type": "image/png",
+            "reason": "visual_disclosure_unverified",
+            "sha256": digest,
+            "status": "unavailable",
+        }
+    ]
 
 
 @pytest.mark.asyncio

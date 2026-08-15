@@ -1211,6 +1211,35 @@ def _principle_payload(
     return cast(tuple[UxPrinciple, ...], normalized_values)
 
 
+def _visual_disclosure_verified(
+    manifest: ManifestInput,
+    entry: EvidenceEntry,
+) -> bool:
+    if (
+        not isinstance(manifest, EvidenceCorpus)
+        or entry.ref.evidence_id not in manifest.model_visual_evidence_ids
+    ):
+        return False
+    raw_disclosure = entry.payload.get("visual_disclosure")
+    if not isinstance(raw_disclosure, Mapping):
+        return False
+    disclosure = cast(Mapping[object, object], raw_disclosure)
+    if (
+        disclosure.get("policy") != "visual-evidence-v1"
+        or disclosure.get("verified") is not True
+    ):
+        return False
+    decision = (disclosure.get("result"), disclosure.get("reason"))
+    if entry.ref.kind == "screenshot":
+        return decision in {
+            ("allowed", "fixture-only-safeguard"),
+            ("redacted", "verified-blank-redaction"),
+        }
+    if entry.ref.kind == "heatmap":
+        return decision == ("allowed", "validated-heatmap-only")
+    return False
+
+
 def _attachment_values(
     manifest: ManifestInput,
     entries: Sequence[EvidenceEntry] | None,
@@ -1224,6 +1253,8 @@ def _attachment_values(
         media_type = entry.payload.get("media_type")
         if media_type not in {"image/png", "image/jpeg"}:
             continue
+        if not _visual_disclosure_verified(manifest, entry):
+            continue
         typed_media_type = cast(Literal["image/png", "image/jpeg"], media_type)
         attachments.append(
             ModelAttachment(
@@ -1234,6 +1265,32 @@ def _attachment_values(
             )
         )
     return tuple(attachments)
+
+
+def _blocked_visual_values(
+    manifest: ManifestInput,
+    entries: Sequence[EvidenceEntry],
+) -> tuple[dict[str, object], ...]:
+    blocked: list[dict[str, object]] = []
+    for entry in entries:
+        media_type = entry.payload.get("media_type")
+        if (
+            entry.attachment_path is None
+            or entry.ref.sha256 is None
+            or media_type not in {"image/png", "image/jpeg"}
+            or _visual_disclosure_verified(manifest, entry)
+        ):
+            continue
+        blocked.append(
+            {
+                "evidence_id": entry.ref.evidence_id,
+                "media_type": media_type,
+                "sha256": entry.ref.sha256,
+                "status": "unavailable",
+                "reason": "visual_disclosure_unverified",
+            }
+        )
+    return tuple(blocked)
 
 
 def _canonical_json(value: object) -> str:
@@ -1411,10 +1468,15 @@ class _ReportRole:
                 for attachment in candidate_attachments
                 if attachment.evidence_id not in attached_ids
             )
+            blocked_visuals = _blocked_visual_values(manifest, entries)
             unavailable_handles = [
                 handle_by_evidence_id[attachment.evidence_id]
                 for attachment in unavailable_attachments
             ]
+            unavailable_handles.extend(
+                handle_by_evidence_id[str(visual["evidence_id"])]
+                for visual in blocked_visuals
+            )
             message_payload["evidence_request_policy"] = {
                 "handle_format": "e{index}",
                 "resolver_deferred_handle_ranges": requestable_ranges,
@@ -1430,6 +1492,7 @@ class _ReportRole:
                 context_deferred_count
                 or len(context_entries) < len(all_entries)
                 or unavailable_attachments
+                or blocked_visuals
             ):
                 context: dict[str, object] = {
                     "requested_count": len(all_entries),
@@ -1437,9 +1500,11 @@ class _ReportRole:
                     "deferred_count": context_deferred_count,
                     "model_context_item_count": len(context_entries),
                     "representation": "compact-metric-group-v1",
-                    "visual_attachments_deferred": bool(unavailable_attachments),
+                    "visual_attachments_deferred": bool(
+                        unavailable_attachments or blocked_visuals
+                    ),
                 }
-                if unavailable_attachments:
+                if unavailable_attachments or blocked_visuals:
                     context["visual_attachments"] = [
                         {
                             "evidence_id": attachment.evidence_id,
@@ -1449,11 +1514,11 @@ class _ReportRole:
                             "reason": "transport_budget_exceeded",
                         }
                         for attachment in unavailable_attachments
-                    ]
+                    ] + list(blocked_visuals)
                     context["instruction"] = (
-                        "Listed visual attachments exceed this transport budget. "
-                        "Declare their IDs in unavailable_evidence_ids with a "
-                        "limitation; do not claim visual review or request them again."
+                        "Listed visual attachments are unavailable for this model call. "
+                        "Declare their IDs in unavailable_evidence_ids with a limitation; "
+                        "do not claim visual review or request them again."
                     )
                 else:
                     context["instruction"] = (
@@ -1588,6 +1653,9 @@ class _ReportRole:
             attachment.evidence_id
             for attachment in candidate_attachments
             if attachment.evidence_id not in attachment_ids
+        ) | frozenset(
+            str(value["evidence_id"])
+            for value in _blocked_visual_values(manifest, entries)
         )
         delivered_ids = frozenset(
             evidence_id
@@ -1817,7 +1885,12 @@ class ReportAnalyst(_ReportRole):
 
     @property
     def _role_prompt(self) -> str:
-        return "Discover material UX issues and their likely root causes. Emit candidate findings with plain language, concrete fixes, evidence references, limitations, and justified severity."
+        return (
+            "Discover material UX issues and their likely root causes. At most 12 "
+            "candidate findings may be returned. Consolidate repeated signals that "
+            "share a root cause across runs or surfaces. Emit plain language, concrete "
+            "fixes, evidence references, limitations, and justified severity."
+        )
 
     async def analyze(
         self,
@@ -1935,7 +2008,13 @@ class ReportAdjudicator(_ReportRole):
 
     @property
     def _role_prompt(self) -> str:
-        return "This role resolves objections and writes plain-language final findings. Publish only findings with supported evidence, concrete fixes, justified severity, and explicit resolutions for every objection."
+        return (
+            "This role resolves objections and writes at most 12 plain-language final "
+            "findings. Consolidate repeated findings only when their shared root cause "
+            "and affected surfaces are supported. Publish only findings with supported "
+            "evidence, concrete fixes, justified severity, and explicit resolutions for "
+            "every objection."
+        )
 
     async def adjudicate(
         self,

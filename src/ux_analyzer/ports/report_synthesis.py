@@ -394,7 +394,8 @@ class AnalystResponse(_InvestigativeResponse):
 
     schema_version: ClassVar[str] = "report-analyst-response-v2"
     candidate_findings: list[CandidateFinding] = Field(
-        default_factory=_new_candidate_findings
+        default_factory=_new_candidate_findings,
+        max_length=12,
     )
 
 
@@ -402,7 +403,10 @@ class EvidenceAuditResponse(_InvestigativeResponse):
     """Structured factual and visual objections emitted by the evidence auditor."""
 
     schema_version: ClassVar[str] = "report-evidence-auditor-response-v2"
-    objections: list[TypedObjection] = Field(default_factory=_new_typed_objections)
+    objections: list[TypedObjection] = Field(
+        default_factory=_new_typed_objections,
+        max_length=32,
+    )
 
     @property
     def typed_objections(self) -> list[TypedObjection]:
@@ -413,7 +417,10 @@ class PatternReviewResponse(_InvestigativeResponse):
     """Structured recurrence and severity objections emitted by the pattern reviewer."""
 
     schema_version: ClassVar[str] = "report-pattern-reviewer-response-v2"
-    objections: list[TypedObjection] = Field(default_factory=_new_typed_objections)
+    objections: list[TypedObjection] = Field(
+        default_factory=_new_typed_objections,
+        max_length=32,
+    )
 
     @property
     def typed_objections(self) -> list[TypedObjection]:
@@ -425,10 +432,12 @@ class AdjudicationResponse(_InvestigativeResponse):
 
     schema_version: ClassVar[str] = "report-adjudicator-response-v2"
     final_findings: list[CandidateFinding] = Field(
-        default_factory=_new_candidate_findings
+        default_factory=_new_candidate_findings,
+        max_length=12,
     )
     objection_resolutions: list[ObjectionResolution] = Field(
-        default_factory=_new_objection_resolutions
+        default_factory=_new_objection_resolutions,
+        max_length=32,
     )
 
 
