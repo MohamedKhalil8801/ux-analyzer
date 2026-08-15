@@ -250,6 +250,49 @@ def test_write_attempt_publishes_canonical_layout_and_round_trips(
     assert store.accepted_attempt == attempt
 
 
+def test_write_attempt_appends_after_legacy_v1_rejected_attempt(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    store = SynthesisArtifactStore(tmp_path)
+    legacy = _attempt(
+        corpus,
+        sequence=1,
+        status=SynthesisStatus.REJECTED,
+        findings=(),
+        candidate_findings=(),
+        role_receipts=(),
+    )
+    legacy_path = store.write_attempt(legacy, corpus)
+    synthesis_path = legacy_path / "synthesis.json"
+    synthesis = json.loads(synthesis_path.read_text(encoding="ascii"))
+    synthesis["artifact_schema_version"] = "synthesis-artifact-v1"
+    synthesis.pop("role_receipts")
+    synthesis.pop("rejected_candidate_audits")
+    synthesis_bytes = _canonical_bytes(synthesis)
+    synthesis_path.write_bytes(synthesis_bytes)
+    index_path = tmp_path / "synthesis" / "index.json"
+    index = json.loads(index_path.read_text(encoding="ascii"))
+    index["attempts"][0]["synthesis_digest"] = hashlib.sha256(
+        synthesis_bytes
+    ).hexdigest()
+    index_path.write_bytes(_canonical_bytes(index))
+
+    current = _attempt(
+        corpus,
+        sequence=2,
+        status=SynthesisStatus.REJECTED,
+        findings=(),
+        candidate_findings=(),
+    )
+    store.write_attempt(current, corpus)
+
+    assert [attempt.attempt_id for attempt in store.attempts] == [
+        legacy.attempt_id,
+        current.attempt_id,
+    ]
+
+
 def test_write_attempt_rejects_accepted_unreviewed_finding(tmp_path: Path) -> None:
     corpus = _corpus(tmp_path)
     pending = replace(_finding(), reviewer_state="pending")

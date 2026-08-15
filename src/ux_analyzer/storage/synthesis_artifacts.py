@@ -48,6 +48,10 @@ from ux_analyzer.storage.run_bundle import (
 
 _INDEX_SCHEMA_VERSION = "synthesis-index-v1"
 _ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v2"
+_LEGACY_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v1"
+_SUPPORTED_ARTIFACT_SCHEMA_VERSIONS = frozenset(
+    {_LEGACY_ARTIFACT_SCHEMA_VERSION, _ARTIFACT_SCHEMA_VERSION}
+)
 MAX_SYNTHESIS_JSON_BYTES = 64 * 1024 * 1024
 _OPTIMISTIC_READ_ATTEMPTS = 3
 _DIGEST_LENGTH = 64
@@ -69,6 +73,15 @@ class SynthesisArtifactError(ValueError):
 def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
     """Reject contradictory status and final-finding publication state."""
 
+    _validate_publishable_synthesis_attempt(attempt, legacy=False)
+
+
+def _validate_publishable_synthesis_attempt(
+    attempt: SynthesisAttempt,
+    *,
+    legacy: bool,
+) -> None:
+
     candidates = attempt.candidate_findings
     finals = attempt.findings
     rejected = attempt.rejected_findings
@@ -84,7 +97,7 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
 
     if len(receipt_roles) != len(set(receipt_roles)):
         raise SynthesisArtifactError("synthesis role receipt roles must be unique")
-    if attempt.status in _ACCEPTED_STATUSES and set(receipt_roles) != set(
+    if not legacy and attempt.status in _ACCEPTED_STATUSES and set(receipt_roles) != set(
         CANONICAL_SYNTHESIS_ROLES
     ):
         raise SynthesisArtifactError(
@@ -111,7 +124,7 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
             "synthesis objection must reference an analyst candidate"
         )
     for objection in attempt.objections:
-        if attempt.status is SynthesisStatus.ACCEPTED and (
+        if not legacy and attempt.status is SynthesisStatus.ACCEPTED and (
             objection.resolution is None
             or objection.resolved_by_role != REPORT_ADJUDICATOR_ROLE
         ):
@@ -174,10 +187,17 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
         )
     candidates_by_id = {finding.finding_id: finding for finding in candidates}
     if any(
-        not final_finding_preserves_candidate(
-            final,
-            candidates_by_id[final.finding_id],
-            objections=attempt.objections,
+        not (
+            _legacy_final_finding_preserves_candidate(
+                final,
+                candidates_by_id[final.finding_id],
+            )
+            if legacy
+            else final_finding_preserves_candidate(
+                final,
+                candidates_by_id[final.finding_id],
+                objections=attempt.objections,
+            )
         )
         for final in finals
         if final.finding_id in candidates_by_id
@@ -201,6 +221,22 @@ def validate_publishable_synthesis_attempt(attempt: SynthesisAttempt) -> None:
         raise SynthesisArtifactError(
             "rejected synthesis findings require not-established reviewer state"
         )
+
+
+def _legacy_final_finding_preserves_candidate(
+    final: SynthesisFinding,
+    candidate: SynthesisFinding,
+) -> bool:
+    if final.finding_id != candidate.finding_id:
+        return False
+    if any(
+        getattr(final, field_name) != getattr(candidate, field_name)
+        for field_name in ("issue", "impact", "root_cause")
+    ):
+        return False
+    candidate_evidence_ids = {ref.evidence_id for ref in candidate.evidence_refs}
+    final_evidence_ids = {ref.evidence_id for ref in final.evidence_refs}
+    return candidate_evidence_ids <= final_evidence_ids
 
 
 def _publication_thread_lock(synthesis_root: Path) -> threading.RLock:
@@ -608,7 +644,11 @@ def _objection_to_dict(objection: SynthesisObjection) -> dict[str, object]:
     }
 
 
-def _objection_from_dict(value: object) -> SynthesisObjection:
+def _objection_from_dict(
+    value: object,
+    *,
+    legacy: bool = False,
+) -> SynthesisObjection:
     mapping = _mapping(value, "objection")
     resolved = mapping.get("resolved", False)
     if not isinstance(resolved, bool):
@@ -626,7 +666,11 @@ def _objection_from_dict(value: object) -> SynthesisObjection:
     return SynthesisObjection(
         objection_id=_text(mapping.get("objection_id"), "objection ID"),
         finding_id=_text(mapping.get("finding_id"), "objection finding ID"),
-        objection_type=_text(mapping.get("objection_type"), "objection type"),
+        objection_type=(
+            "other"
+            if legacy and "objection_type" not in mapping
+            else _text(mapping.get("objection_type"), "objection type")
+        ),
         severity=_text(mapping.get("severity"), "objection severity"),
         message=_text(mapping.get("message"), "objection message"),
         evidence_refs=tuple(
@@ -738,8 +782,10 @@ def _attempt_to_dict(attempt: SynthesisAttempt) -> dict[str, object]:
 
 
 def _attempt_from_dict(value: Mapping[str, object]) -> SynthesisAttempt:
-    if value.get("artifact_schema_version") != _ARTIFACT_SCHEMA_VERSION:
+    artifact_schema_version = value.get("artifact_schema_version")
+    if artifact_schema_version not in _SUPPORTED_ARTIFACT_SCHEMA_VERSIONS:
         raise SynthesisArtifactError("unsupported artifact schema version")
+    legacy = artifact_schema_version == _LEGACY_ARTIFACT_SCHEMA_VERSION
     digests = _mapping(value.get("digests"), "digests")
     attempt_id = _text(value.get("attempt_id"), "attempt ID")
     prompt_version = _text(value.get("prompt_version"), "prompt_version")
@@ -791,12 +837,18 @@ def _attempt_from_dict(value: Mapping[str, object]) -> SynthesisAttempt:
         },
         role_receipts=tuple(
             _role_receipt_from_dict(item)
-            for item in _list(value.get("role_receipts"), "role_receipts")
+            for item in _list(
+                value.get("role_receipts", [] if legacy else None),
+                "role_receipts",
+            )
         ),
         rejected_candidate_audits=tuple(
             _rejected_candidate_audit_from_dict(item)
             for item in _list(
-                value.get("rejected_candidate_audits"),
+                value.get(
+                    "rejected_candidate_audits",
+                    [] if legacy else None,
+                ),
                 "rejected_candidate_audits",
             )
         ),
@@ -805,7 +857,7 @@ def _attempt_from_dict(value: Mapping[str, object]) -> SynthesisAttempt:
             for item in _list(value.get("candidates"), "candidates")
         ),
         objections=tuple(
-            _objection_from_dict(item)
+            _objection_from_dict(item, legacy=legacy)
             for item in _list(value.get("objections"), "objections")
         ),
         rejected_findings=tuple(
@@ -1407,7 +1459,13 @@ class SynthesisArtifactStore:
             raise SynthesisArtifactError(
                 "synthesis principle-pack digest field mismatch"
             )
-        validate_publishable_synthesis_attempt(attempt)
+        _validate_publishable_synthesis_attempt(
+            attempt,
+            legacy=(
+                synthesis_value.get("artifact_schema_version")
+                == _LEGACY_ARTIFACT_SCHEMA_VERSION
+            ),
+        )
         _validate_objection_evidence_refs(attempt, corpus_value)
         return attempt, synthesis_bytes, corpus_bytes
 
