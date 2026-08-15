@@ -295,6 +295,7 @@ async def test_plain_report_request_delivers_role_schema_contract() -> None:
     assert schema["properties"] == expected_schema["properties"]
     assert schema["$defs"].keys() == expected_schema["$defs"].keys()
     assert schema["properties"]["candidate_findings"]["maxItems"] == 8
+    assert schema["properties"]["evidence_requests"]["maxItems"] == 16
     finding_schema = schema["$defs"]["CandidateFinding"]["properties"]
     assert finding_schema["issue"]["maxLength"] == 800
     assert finding_schema["fixes"]["maxItems"] == 3
@@ -1820,6 +1821,7 @@ async def test_role_prompts_state_distinct_review_responsibilities() -> None:
         assert "principles are not evidence" in prompt
         assert "cannot determine severity" in prompt
         assert "resolver_deferred_handle_ranges" in prompt
+        assert "at most 16 evidence handles" in prompt
         assert "unavailable_evidence_ids" in prompt
         assert "do not claim visual review" in prompt
 

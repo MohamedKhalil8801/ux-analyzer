@@ -607,7 +607,7 @@ def test_retrieval_rejects_requests_above_total_role_limit(
 async def test_retrieval_rejects_cumulative_role_requests_above_total_limit(
     tmp_path: Path,
 ) -> None:
-    evidence_ids = [f"event:run-a:{index}" for index in range(1, 41)]
+    evidence_ids = [f"event:run-a:{index}" for index in range(1, 34)]
     entries = tuple(
         EvidenceEntry(
             ref=EvidenceRef(evidence_id, "event", "run-a", replay_sequence=index),
@@ -620,8 +620,9 @@ async def test_retrieval_rejects_cumulative_role_requests_above_total_limit(
     resolver = _RecordingResolver()
     service, _ = _scripted_service(
         analyst=[
-            AnalystResponse(complete=False, evidence_requests=evidence_ids[:20]),
-            AnalystResponse(complete=False, evidence_requests=evidence_ids[20:]),
+            AnalystResponse(complete=False, evidence_requests=evidence_ids[:16]),
+            AnalystResponse(complete=False, evidence_requests=evidence_ids[16:32]),
+            AnalystResponse(complete=False, evidence_requests=evidence_ids[32:]),
         ],
         resolver=resolver,
     )
@@ -629,7 +630,7 @@ async def test_retrieval_rejects_cumulative_role_requests_above_total_limit(
     attempt = await service.synthesize(_corpus(tmp_path, extra_entries=entries))
 
     assert attempt.status is SynthesisStatus.REJECTED
-    assert resolver.calls == [tuple(evidence_ids[:16]), tuple(evidence_ids[16:20])]
+    assert resolver.calls == [tuple(evidence_ids[:16]), tuple(evidence_ids[16:32])]
     assert any("retrieval request" in item for item in attempt.limitations)
 
 

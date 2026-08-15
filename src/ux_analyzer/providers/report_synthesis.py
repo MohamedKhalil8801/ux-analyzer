@@ -1873,6 +1873,8 @@ The UX principle pack is optional interpretive guidance. Principles are not evid
 
 Every factual claim and finding must use delivered resolvable evidence. The evidence_request_policy is authoritative: only handles inside resolver_deferred_handle_ranges may be requested. Never request handles listed in already_requested_handles or transport_unavailable_handles.
 
+Request at most 16 evidence handles in one response. Choose the smallest set needed to establish or challenge the highest-impact issues; use later retrieval rounds for additional evidence.
+
 When visual evidence is transport-unavailable, list its handle in unavailable_evidence_ids and add a plain limitation. You may still set complete to true using delivered evidence, but do not claim visual review, cite the unavailable visual, or infer its contents. Return exactly one valid JSON object matching the requested structured response schema. Do not include private reasoning or extra fields."""
 
 

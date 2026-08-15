@@ -366,7 +366,10 @@ class _InvestigativeResponse(_RoleSchema):
 
     schema_version: ClassVar[str] = REPORT_SYNTHESIS_SCHEMA_VERSION
     complete: bool
-    evidence_requests: list[_BoundedIdentifier] = Field(default_factory=list)
+    evidence_requests: list[_BoundedIdentifier] = Field(
+        default_factory=list,
+        max_length=16,
+    )
     unavailable_evidence_ids: list[_BoundedIdentifier] = Field(
         default_factory=list,
         max_length=32,
