@@ -1292,6 +1292,8 @@ class ReportSynthesisService:
                     objections=objections,
                     resolved_evidence=resolved,
                     previous_output=prior,
+                    retrieval_round=round_number,
+                    max_retrieval_rounds=rounds,
                 )
                 response = _normalize_response(role, raw_response)
             except asyncio.CancelledError:
@@ -1497,10 +1499,14 @@ class ReportSynthesisService:
         objections: Sequence[SynthesisObjection],
         resolved_evidence: ResolvedEvidence | None,
         previous_output: _Response | None,
+        retrieval_round: int,
+        max_retrieval_rounds: int,
     ) -> object:
         common = {
             "resolved_evidence": resolved_evidence,
             "previous_output": previous_output,
+            "retrieval_round": retrieval_round,
+            "max_retrieval_rounds": max_retrieval_rounds,
         }
         if role is ModelRole.REPORT_ANALYST:
             method = getattr(provider, "analyze")

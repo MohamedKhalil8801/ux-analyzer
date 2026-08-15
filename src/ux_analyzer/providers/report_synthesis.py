@@ -1403,7 +1403,11 @@ class _ReportRole:
         role_input: Mapping[str, object] | None = None,
         resolved_evidence: ResolvedEvidence | None = None,
         previous_output: InvestigativeResponse | None = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> InvestigativeResponse:
+        if not 1 <= retrieval_round <= max_retrieval_rounds:
+            raise ValueError("retrieval round is outside the configured role budget")
         normalized_principles = _principle_payload(principles)
         if previous_output is not None and not isinstance(
             previous_output, self.response_schema
@@ -1482,10 +1486,24 @@ class _ReportRole:
                 "resolver_deferred_handle_ranges": requestable_ranges,
                 "already_requested_handles": already_requested_handles,
                 "transport_unavailable_handles": unavailable_handles,
+                "retrieval_round": retrieval_round,
+                "max_retrieval_rounds": max_retrieval_rounds,
+                "final_round": retrieval_round == max_retrieval_rounds,
                 "instruction": (
-                    "Only handles in resolver_deferred_handle_ranges may be requested. "
-                    "Already requested and transport-unavailable handles must not be "
-                    "requested."
+                    (
+                        "This is the final retrieval round. Return complete=true. Every "
+                        "finding, objection, and resolution must cite only already "
+                        "requested handles whose evidence is present in resolved_evidence. "
+                        "Do not cite or request deferred handles. Omit unsupported claims "
+                        "and record a plain limitation when needed."
+                    )
+                    if retrieval_round == max_retrieval_rounds
+                    else (
+                        "Only handles in resolver_deferred_handle_ranges may be requested. "
+                        "Already requested and transport-unavailable handles must not be "
+                        "requested. Reserve the final round for conclusions that cite only "
+                        "delivered evidence."
+                    )
                 ),
             }
             if (
@@ -1901,12 +1919,16 @@ class ReportAnalyst(_ReportRole):
         *,
         resolved_evidence: ResolvedEvidence | None = None,
         previous_output: AnalystResponse | None = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> AnalystResponse:
         response = await self._complete(
             corpus_manifest,
             principles,
             resolved_evidence=resolved_evidence,
             previous_output=previous_output,
+            retrieval_round=retrieval_round,
+            max_retrieval_rounds=max_retrieval_rounds,
             role_input={"task": "discover issues and root causes"},
         )
         return cast(AnalystResponse, response)
@@ -1933,12 +1955,16 @@ class EvidenceAuditor(_ReportRole):
         *,
         resolved_evidence: ResolvedEvidence | None = None,
         previous_output: EvidenceAuditResponse | None = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> EvidenceAuditResponse:
         response = await self._complete(
             corpus_manifest,
             principles,
             resolved_evidence=resolved_evidence,
             previous_output=previous_output,
+            retrieval_round=retrieval_round,
+            max_retrieval_rounds=max_retrieval_rounds,
             role_input={
                 "task": "audit factual and visual support",
                 "candidate_findings": list(candidate_findings),
@@ -1956,6 +1982,8 @@ class EvidenceAuditor(_ReportRole):
         *,
         resolved_evidence: ResolvedEvidence | None = None,
         previous_output: EvidenceAuditResponse | None = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> EvidenceAuditResponse:
         return await self.audit(
             corpus_manifest,
@@ -1963,6 +1991,8 @@ class EvidenceAuditor(_ReportRole):
             candidate_findings,
             resolved_evidence=resolved_evidence,
             previous_output=previous_output,
+            retrieval_round=retrieval_round,
+            max_retrieval_rounds=max_retrieval_rounds,
         )
 
 
@@ -1987,12 +2017,16 @@ class PatternReviewer(_ReportRole):
         *,
         resolved_evidence: ResolvedEvidence | None = None,
         previous_output: PatternReviewResponse | None = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> PatternReviewResponse:
         response = await self._complete(
             corpus_manifest,
             principles,
             resolved_evidence=resolved_evidence,
             previous_output=previous_output,
+            retrieval_round=retrieval_round,
+            max_retrieval_rounds=max_retrieval_rounds,
             role_input={
                 "task": "review recurrence, scope, severity, and fix leverage",
                 "candidate_findings": list(candidate_findings),
@@ -2031,12 +2065,16 @@ class ReportAdjudicator(_ReportRole):
         *,
         resolved_evidence: ResolvedEvidence | None = None,
         previous_output: AdjudicationResponse | None = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> AdjudicationResponse:
         response = await self._complete(
             corpus_manifest,
             principles,
             resolved_evidence=resolved_evidence,
             previous_output=previous_output,
+            retrieval_round=retrieval_round,
+            max_retrieval_rounds=max_retrieval_rounds,
             role_input={
                 "task": "resolve objections and write final findings",
                 "candidate_findings": list(candidate_findings),
@@ -2058,6 +2096,8 @@ class ReportAdjudicator(_ReportRole):
         *,
         resolved_evidence: ResolvedEvidence | None = None,
         previous_output: AdjudicationResponse | None = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> AdjudicationResponse:
         return await self.adjudicate(
             corpus_manifest,
@@ -2066,6 +2106,8 @@ class ReportAdjudicator(_ReportRole):
             objections,
             resolved_evidence=resolved_evidence,
             previous_output=previous_output,
+            retrieval_round=retrieval_round,
+            max_retrieval_rounds=max_retrieval_rounds,
         )
 
 

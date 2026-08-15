@@ -499,6 +499,8 @@ class ReportAnalystPort(Protocol):
         *,
         resolved_evidence: Any = None,
         previous_output: Any = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> object: ...
 
 
@@ -516,6 +518,8 @@ class ReportEvidenceAuditorPort(Protocol):
         *,
         resolved_evidence: Any = None,
         previous_output: Any = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> object: ...
 
 
@@ -533,6 +537,8 @@ class ReportPatternReviewerPort(Protocol):
         *,
         resolved_evidence: Any = None,
         previous_output: Any = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> object: ...
 
 
@@ -551,6 +557,8 @@ class ReportAdjudicatorPort(Protocol):
         *,
         resolved_evidence: Any = None,
         previous_output: Any = None,
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 3,
     ) -> object: ...
 
 

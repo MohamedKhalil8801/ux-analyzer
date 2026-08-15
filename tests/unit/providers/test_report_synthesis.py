@@ -303,6 +303,26 @@ async def test_plain_report_request_delivers_role_schema_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_final_retrieval_round_allows_only_delivered_evidence() -> None:
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(
+        _manifest(),
+        ux_principles(),
+        retrieval_round=3,
+        max_retrieval_rounds=3,
+    )
+
+    payload = json.loads(client.messages[1].content)
+    policy = payload["evidence_request_policy"]
+    assert policy["retrieval_round"] == 3
+    assert policy["max_retrieval_rounds"] == 3
+    assert policy["final_round"] is True
+    assert "Return complete=true" in policy["instruction"]
+    assert "cite only already requested handles" in policy["instruction"]
+
+
+@pytest.mark.asyncio
 async def test_initial_manifest_is_bounded_but_resolved_evidence_keeps_payload() -> (
     None
 ):
