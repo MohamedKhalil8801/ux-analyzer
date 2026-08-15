@@ -492,9 +492,7 @@ def test_initial_manifest_uses_compact_handles_without_exposing_full_ids() -> No
 
 
 @pytest.mark.asyncio
-async def test_report_role_expands_provider_handles_before_delivery_validation() -> (
-    None
-):
+async def test_report_role_defers_expanded_undelivered_claims_for_retrieval() -> None:
     class HandleClient(RecordingClient):
         @staticmethod
         def _handle_response(schema: type[Any], role: ModelRole) -> object:
@@ -519,9 +517,92 @@ async def test_report_role_expands_provider_handles_before_delivery_validation()
         def __init__(self) -> None:
             super().__init__(self._handle_response)
 
+    response = await ReportAnalyst(HandleClient(), model="gpt-report").analyze(
+        _manifest(), ux_principles()
+    )
+
+    assert response.complete is False
+    assert response.evidence_requests == [EVIDENCE_ID]
+    assert response.candidate_findings == []
+    assert response.limitations == [
+        "Claims cited evidence that was not delivered; retrieval was requested "
+        "before assessment."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_auditor_defers_known_undelivered_citation_before_final_round() -> None:
+    second_evidence_id = "event:run-a:2"
+    manifest = _manifest()
+    entries = manifest["entries"]
+    assert isinstance(entries, list)
+    entries.append(
+        {
+            "evidence_id": second_evidence_id,
+            "kind": "event",
+            "run_id": "run-a",
+            "summary": "User returned to the team page.",
+            "payload": {"sequence": 2, "action": "navigate"},
+        }
+    )
+    objection = TypedObjection(
+        objection_id="objection-1",
+        finding_id="invite-control",
+        objection_type="factual-support",
+        severity=ObjectionSeverity.BLOCKING,
+        message="The second event is needed to verify the claimed path.",
+        evidence_refs=[
+            EvidenceReference(
+                evidence_id=second_evidence_id,
+                kind="event",
+                run_id="run-a",
+                replay_sequence=2,
+            )
+        ],
+    )
+    client = RecordingClient(
+        lambda schema, role: EvidenceAuditResponse(
+            complete=True,
+            objections=[objection],
+        )
+    )
+
+    response = await EvidenceAuditor(client, model="gpt-report").audit(manifest)
+
+    assert response.complete is False
+    assert response.evidence_requests == [second_evidence_id]
+    assert response.objections == []
+
+
+@pytest.mark.asyncio
+async def test_auditor_rejects_undelivered_citation_on_final_round() -> None:
+    objection = TypedObjection(
+        objection_id="objection-1",
+        finding_id="invite-control",
+        objection_type="factual-support",
+        severity=ObjectionSeverity.BLOCKING,
+        message="The event is needed to verify the claimed path.",
+        evidence_refs=[
+            EvidenceReference(
+                evidence_id=EVIDENCE_ID,
+                kind="event",
+                run_id="run-a",
+                replay_sequence=1,
+            )
+        ],
+    )
+    client = RecordingClient(
+        lambda schema, role: EvidenceAuditResponse(
+            complete=True,
+            objections=[objection],
+        )
+    )
+
     with pytest.raises(ModelResponseValidationError, match="undelivered evidence ID"):
-        await ReportAnalyst(HandleClient(), model="gpt-report").analyze(
-            _manifest(), ux_principles()
+        await EvidenceAuditor(client, model="gpt-report").audit(
+            _manifest(),
+            retrieval_round=3,
+            max_retrieval_rounds=3,
         )
 
 
@@ -2053,7 +2134,7 @@ async def test_path_deviation_is_tolerated_when_outcome_evidence_is_valid() -> N
 
 
 @pytest.mark.asyncio
-async def test_complete_finding_cannot_cite_manifest_only_evidence() -> None:
+async def test_manifest_only_finding_is_deferred_without_exposing_claim() -> None:
     class ManifestOnlyClient(RecordingClient):
         @staticmethod
         def _default_response(schema: type[Any], role: ModelRole) -> object:
@@ -2065,10 +2146,13 @@ async def test_complete_finding_cannot_cite_manifest_only_evidence() -> None:
                 }
             )
 
-    with pytest.raises(ModelResponseValidationError, match="undelivered evidence ID"):
-        await ReportAnalyst(ManifestOnlyClient(), model="gpt-report").analyze(
-            _manifest(), ux_principles()
-        )
+    response = await ReportAnalyst(ManifestOnlyClient(), model="gpt-report").analyze(
+        _manifest(), ux_principles()
+    )
+
+    assert response.complete is False
+    assert response.evidence_requests == [EVIDENCE_ID]
+    assert response.candidate_findings == []
 
 
 @pytest.mark.asyncio

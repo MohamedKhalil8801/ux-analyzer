@@ -92,6 +92,7 @@ _REPORT_MODEL_CONTEXT_MAX_ENTRIES = 32
 _REPORT_RESPONSE_MAX_BYTES = 256_000
 _REPORT_RESPONSE_MAX_TEXT_CHARS = 8_192
 _REPORT_RESPONSE_MAX_SEQUENCE_ITEMS = 128
+_REPORT_ROLE_MAX_EVIDENCE_REQUESTS = 16
 _INITIAL_MANIFEST_MAX_BYTES = (
     _REPORT_REQUEST_MAX_BYTES - _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
 )
@@ -1719,6 +1720,15 @@ class _ReportRole:
                     response_summary={"schema": self.response_schema.__name__},
                 ) from error
         response = _expand_provider_handles(response, manifest)
+        response = self._defer_undelivered_claims(
+            response,
+            manifest,
+            delivered_ids=delivered_ids,
+            resolved_ids=frozenset(resolved_ids),
+            unavailable_attachment_ids=unavailable_attachment_ids,
+            retrieval_round=retrieval_round,
+            max_retrieval_rounds=max_retrieval_rounds,
+        )
         self._validate_response(
             response,
             manifest,
@@ -1727,6 +1737,86 @@ class _ReportRole:
             unavailable_attachment_ids=unavailable_attachment_ids,
         )
         return response
+
+    def _defer_undelivered_claims(
+        self,
+        response: InvestigativeResponse,
+        manifest: ManifestInput,
+        *,
+        delivered_ids: frozenset[str],
+        resolved_ids: frozenset[str],
+        unavailable_attachment_ids: frozenset[str],
+        retrieval_round: int,
+        max_retrieval_rounds: int,
+    ) -> InvestigativeResponse:
+        if retrieval_round >= max_retrieval_rounds:
+            return response
+
+        referenced_ids = {
+            reference.evidence_id
+            for finding in self._findings(response)
+            for reference in (
+                *finding.evidence_refs,
+                *(
+                    item
+                    for item in finding.counterevidence
+                    if isinstance(item, EvidenceReference)
+                ),
+            )
+        }
+        referenced_ids.update(
+            reference.evidence_id
+            for objection in self._objections(response)
+            for reference in objection.evidence_refs
+        )
+        referenced_ids.update(
+            reference.evidence_id
+            for resolution in self._resolutions(response)
+            for reference in resolution.evidence_refs
+        )
+        undelivered_ids = referenced_ids - delivered_ids
+        if not undelivered_ids:
+            return response
+
+        known_ids = _known_evidence_ids(manifest)
+        requestable_ids = known_ids - resolved_ids - unavailable_attachment_ids
+        if not undelivered_ids.issubset(requestable_ids):
+            return response
+        if not set(response.evidence_requests).issubset(requestable_ids):
+            return response
+
+        requested_ids = set(response.evidence_requests) | undelivered_ids
+        ordered_requests = [
+            evidence_id
+            for evidence_id in _provider_evidence_handle_map(manifest).values()
+            if evidence_id in requested_ids
+        ][:_REPORT_ROLE_MAX_EVIDENCE_REQUESTS]
+        if not ordered_requests:
+            return response
+
+        limitation = (
+            "Claims cited evidence that was not delivered; retrieval was requested "
+            "before assessment."
+        )
+        limitations = list(response.limitations)
+        if limitation not in limitations and len(limitations) < 16:
+            limitations.append(limitation)
+        payload = response.model_dump(mode="python")
+        payload.update(
+            {
+                "complete": False,
+                "evidence_requests": ordered_requests,
+                "limitations": limitations,
+            }
+        )
+        if isinstance(response, AnalystResponse):
+            payload["candidate_findings"] = []
+        elif isinstance(response, (EvidenceAuditResponse, PatternReviewResponse)):
+            payload["objections"] = []
+        elif isinstance(response, AdjudicationResponse):
+            payload["final_findings"] = []
+            payload["objection_resolutions"] = []
+        return type(response).model_validate(payload)
 
     @staticmethod
     def _validate_response_bounds(response: InvestigativeResponse) -> None:
