@@ -8,12 +8,14 @@ import html
 import json
 import math
 import mimetypes
+import os
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
+from uuid import uuid4
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 from PIL import Image
@@ -34,9 +36,13 @@ from ux_analyzer.ports.artifacts import (
     validate_timeline_event_order,
 )
 from ux_analyzer.storage.run_bundle import (
+    SecureDirectoryHandle,
     secure_assert_ancestors,
+    secure_create_exclusive_file,
     secure_is_link_or_reparse,
+    secure_open_directory,
     secure_read_bytes,
+    secure_replace_exclusive_file,
     validate_saliency_heatmap_content,
     validate_saliency_native_map_content,
 )
@@ -62,6 +68,7 @@ _MAX_REPORT_TIMELINE_BYTES = 16 * 1024 * 1024
 _MAX_SOURCE_SCREENSHOT_BYTES = 16 * 1024 * 1024
 _MAX_SYNTHESIS_HEATMAP_BYTES = 8 * 1024 * 1024
 _MAX_SYNTHESIS_NATIVE_MAP_BYTES = 64 * 1024 * 1024
+_MAX_BUNDLE_CHECKSUM_BYTES = 16 * 1024 * 1024
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "timeline.jsonl", "result.json"})
 _PRIVATE_KEYS = frozenset(
     {
@@ -187,46 +194,88 @@ def render_experiment_report(
         raise ValueError("report size threshold must be greater than zero")
 
     experiment = _load_experiment(root)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if _estimated_full_report_bytes(experiment) <= threshold:
-        full_context = _report_context(experiment)
-        single_html = _render_html(full_context, "Attention-guided experiment replay")
-        if len(single_html.encode("utf-8")) <= threshold:
-            destination.write_text(single_html, encoding="utf-8")
-            return destination
+    with secure_open_directory(
+        destination.parent,
+        "report output directory",
+        create=True,
+    ) as output_parent:
+        if _estimated_full_report_bytes(experiment) <= threshold:
+            full_context = _report_context(experiment)
+            single_html = _render_html(
+                full_context,
+                "Attention-guided experiment replay",
+            )
+            if len(single_html.encode("utf-8")) <= threshold:
+                _publish_report_text(output_parent, destination.name, single_html)
+                return destination
 
-    run_directory = destination.parent / f"{destination.stem}-runs"
-    run_directory.mkdir(parents=True, exist_ok=True)
-    run_page_names = _run_page_names(experiment["runs"])
-    run_links = {
-        run_id: f"{run_directory.name}/{page_name}"
-        for run_id, page_name in run_page_names.items()
-    }
-    index_context = _report_context(
-        experiment,
-        include_run_payload=False,
-        run_links=run_links,
-    )
-    destination.write_text(
-        _render_html(index_context, "Attention-guided experiment replay"),
-        encoding="utf-8",
-    )
-    for run in experiment["runs"]:
-        run_context = _report_context(
-            {**experiment, "runs": [run]},
-            run_links={run["run_id"]: ""},
-            run_scope=frozenset({run["run_id"]}),
-        )
-        run_html = _render_html(
-            run_context,
-            f"Run replay: {run['run_id']}",
-        )
-        if len(run_html.encode("utf-8")) > threshold:
-            run_html = _oversized_run_html(run["run_id"], threshold)
-        (run_directory / run_page_names[run["run_id"]]).write_text(
-            run_html, encoding="utf-8"
-        )
+        run_directory = destination.parent / f"{destination.stem}-runs"
+        with secure_open_directory(
+            run_directory,
+            "report run-page directory",
+            create=True,
+        ) as run_parent:
+            run_page_names = _run_page_names(experiment["runs"])
+            run_links = {
+                run_id: f"{run_directory.name}/{page_name}"
+                for run_id, page_name in run_page_names.items()
+            }
+            index_context = _report_context(
+                experiment,
+                include_run_payload=False,
+                run_links=run_links,
+            )
+            _publish_report_text(
+                output_parent,
+                destination.name,
+                _render_html(index_context, "Attention-guided experiment replay"),
+            )
+            for run in experiment["runs"]:
+                run_context = _report_context(
+                    {**experiment, "runs": [run]},
+                    run_links={run["run_id"]: ""},
+                    run_scope=frozenset({run["run_id"]}),
+                )
+                run_html = _render_html(
+                    run_context,
+                    f"Run replay: {run['run_id']}",
+                )
+                if len(run_html.encode("utf-8")) > threshold:
+                    run_html = _oversized_run_html(run["run_id"], threshold)
+                _publish_report_text(
+                    run_parent,
+                    run_page_names[run["run_id"]],
+                    run_html,
+                )
     return destination
+
+
+def _publish_report_text(
+    parent: SecureDirectoryHandle,
+    destination_name: str,
+    content: str,
+) -> None:
+    temporary_name = f".{destination_name}.{uuid4().hex}.tmp"
+    encoded = content.encode("utf-8")
+    with secure_create_exclusive_file(
+        parent,
+        temporary_name,
+        "report temporary file",
+    ) as temporary:
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(temporary.descriptor, encoded[offset:])
+            if written <= 0:
+                raise OSError("failed to write report output")
+            offset += written
+        os.fsync(temporary.descriptor)
+        secure_replace_exclusive_file(
+            parent,
+            temporary,
+            destination_name,
+            "report publication",
+            replace_existing=True,
+        )
 
 
 def _estimated_full_report_bytes(experiment: dict[str, Any]) -> int:
@@ -374,7 +423,11 @@ def _load_synthesis(
         assessment = (
             "No supported UX issues were established in the tested scenarios."
             if attempt.status is SynthesisStatus.NO_ISSUES
-            else "Accepted evidence-grounded synthesis findings are shown for the tested scenarios."
+            else (
+                f"{len(findings)} evidence-grounded finding"
+                f"{'s' if len(findings) != 1 else ''} passed independent review. "
+                f"Start with: {findings[0]['title']}"
+            )
         )
         return (
             {
@@ -417,33 +470,57 @@ def _fallback_synthesis(
     fallback_findings: list[dict[str, Any]],
     limitation: str,
 ) -> dict[str, Any]:
+    publishable_findings = [
+        finding
+        for finding in fallback_findings
+        if any(
+            bool(reference.get("available"))
+            for reference in _list_of_mappings(finding.get("evidence_refs"))
+        )
+    ]
+    omitted_count = len(fallback_findings) - len(publishable_findings)
     boundary_rejection = (
         status == "rejected" and "evidence boundary" in limitation.casefold()
     )
     if status in {"missing", "unavailable"}:
         assessment = (
-            "Model review is unavailable. Recorded deterministic findings and evidence "
-            "are shown for the tested scenarios."
+            "Model review is unavailable. "
+            f"{len(publishable_findings)} recorded signal"
+            f"{'s are' if len(publishable_findings) != 1 else ' is'} linked directly "
+            "to evidence; verify each replay before changing the UI."
         )
         model_review_status = "unavailable"
     elif status == "invalid":
         assessment = (
-            "Model review could not be validated. Recorded deterministic findings and "
-            "evidence are shown for the tested scenarios."
+            "Model review could not be validated. "
+            f"{len(publishable_findings)} recorded signal"
+            f"{'s are' if len(publishable_findings) != 1 else ' is'} linked directly "
+            "to evidence; verify each replay before changing the UI."
         )
         model_review_status = "invalid"
     elif boundary_rejection:
         assessment = (
-            "Model review was rejected at the bounded evidence boundary. Recorded "
-            "deterministic findings and evidence are shown for the tested scenarios."
+            "Model review was rejected at the bounded evidence boundary. "
+            f"{len(publishable_findings)} recorded signal"
+            f"{'s remain' if len(publishable_findings) != 1 else ' remains'} linked "
+            "directly to evidence for manual review."
         )
         model_review_status = "rejected"
     else:
         assessment = (
-            "Model review was rejected. Recorded deterministic findings and evidence "
-            "are shown for the tested scenarios."
+            "Model review was rejected. "
+            f"{len(publishable_findings)} recorded signal"
+            f"{'s remain' if len(publishable_findings) != 1 else ' remains'} linked "
+            "directly to evidence for manual review."
         )
         model_review_status = "rejected"
+    limitations = [limitation]
+    if omitted_count:
+        limitations.append(
+            f"{omitted_count} recorded signal"
+            f"{'s were' if omitted_count != 1 else ' was'} omitted because no "
+            "canonical evidence target could be resolved."
+        )
     return {
         "synthesis_status": status,
         "status": status,
@@ -451,9 +528,9 @@ def _fallback_synthesis(
         "attempt_id": None,
         "corpus_digest": None,
         "assessment": assessment,
-        "findings": fallback_findings,
-        "fallback_findings": fallback_findings,
-        "limitations": [limitation],
+        "findings": publishable_findings,
+        "fallback_findings": publishable_findings,
+        "limitations": limitations,
         "tested_scope": _synthesis_scope(runs),
         "model_review_status": model_review_status,
         "review_basis": "recorded-deterministic-evidence",
@@ -743,6 +820,26 @@ def _validate_synthesis_run_scope(
             "synthesis run identities do not match report scope"
         )
 
+    persisted_checksums = _synthesis_bundle_checksums(
+        metadata.get("finalized_bundle_checksums")
+    )
+    current_checksums: dict[str, str] = {}
+    for run in runs:
+        run_id = _text(run.get("run_id"))
+        bundle_path = _text(run.get("bundle_path"))
+        if not bundle_path:
+            continue
+        checksum_bytes = secure_read_bytes(
+            corpus.output_root / bundle_path / "checksums.sha256",
+            f"run {run_id} checksum manifest",
+            max_bytes=_MAX_BUNDLE_CHECKSUM_BYTES,
+        )
+        current_checksums[run_id] = hashlib.sha256(checksum_bytes).hexdigest()
+    if persisted_checksums != current_checksums:
+        raise SynthesisArtifactError(
+            "synthesis finalized bundle checksums do not match report scope"
+        )
+
 
 def _synthesis_scope_run_ids(value: object) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
@@ -752,6 +849,32 @@ def _synthesis_scope_run_ids(value: object) -> tuple[str, ...]:
     if len(run_ids) != len(raw_run_ids) or len(set(run_ids)) != len(run_ids):
         raise SynthesisArtifactError("synthesis run IDs are invalid")
     return run_ids
+
+
+def _synthesis_bundle_checksums(value: object) -> dict[str, str]:
+    if not isinstance(value, (list, tuple)):
+        raise SynthesisArtifactError("synthesis finalized bundle checksums are missing")
+    checksums: dict[str, str] = {}
+    for raw_entry in cast(Sequence[object], value):
+        if not isinstance(raw_entry, Mapping):
+            raise SynthesisArtifactError(
+                "synthesis finalized bundle checksum is invalid"
+            )
+        entry = cast(Mapping[str, object], raw_entry)
+        run_id = entry.get("run_id")
+        digest = entry.get("checksums_sha256")
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or run_id in checksums
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise SynthesisArtifactError(
+                "synthesis finalized bundle checksum is invalid"
+            )
+        checksums[run_id] = digest
+    return checksums
 
 
 def _synthesis_run_identity(value: object) -> tuple[object, ...]:

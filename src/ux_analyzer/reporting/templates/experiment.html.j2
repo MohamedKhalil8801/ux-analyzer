@@ -187,14 +187,14 @@
         <span class="synthesis-status status-{{ synthesis_status }}">{{ status_label(synthesis_status) }}</span>
       </div>
       <p class="summary-assessment">
-        {% if synthesis_status == "no-issues" %}
+        {% if using_fallback %}
+        {{ synthesis.assessment }}
+        {% elif synthesis_status == "no-issues" %}
         No supported UX issues were established in the tested scenarios.
         {% elif synthesis_status == "accepted" %}
-        The tested scenarios show supported issues, with priority and fixes listed below.
+        {{ synthesis.assessment }}
         {% elif synthesis_status == "rejected" %}
         No report-synthesis finding was publishable because all candidate findings were rejected.
-        {% elif using_fallback %}
-        {{ synthesis.assessment }}
         {% else %}
         Model review is unavailable; inspect recorded run evidence below.
         {% endif %}
@@ -292,6 +292,10 @@
               <div class="finding-field">
                 <h4>Recorded cause</h4>
                 <p>{{ finding.get("fallback_root_cause") }}</p>
+              </div>
+              <div class="finding-field">
+                <h4>What to change</h4>
+                <p>{{ finding.get("fallback_fix") }}</p>
               </div>
             </div>
             <div class="finding-meta">
@@ -394,12 +398,12 @@
       {% endif %}
     </section>
 
-    {% if not using_fallback %}
+    {% if not using_fallback or synthesis.findings %}
     <section id="fix-first" class="report-section" aria-labelledby="fix-first-title">
       <div class="report-section-heading">
         <div>
           <p class="eyebrow">Action</p>
-          <h2 id="fix-first-title">Fix first</h2>
+          <h2 id="fix-first-title">{{ "Check first" if using_fallback else "Fix first" }}</h2>
         </div>
       </div>
       {% if synthesis.findings %}
@@ -408,7 +412,7 @@
           {% for finding in synthesis.findings if finding.severity == severity %}
           <li>
             <a href="#finding-{{ finding.finding_id }}">
-              <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }}</span>
+              <span class="severity-label severity-{{ finding.severity }}">{{ "Recorded " if using_fallback else "" }}{{ finding.severity | title }}</span>
               <strong>{{ finding.get("fallback_title", finding.title) }}</strong>
             </a>
                 {% if finding.get("fixes") %}

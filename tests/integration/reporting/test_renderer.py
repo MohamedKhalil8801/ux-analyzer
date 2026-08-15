@@ -20,13 +20,16 @@ from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntr
 from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.run import RunStarted
 from ux_analyzer.domain.synthesis import (
+    CANONICAL_SYNTHESIS_ROLES,
     EvidenceRef,
     SynthesisAttempt,
     SynthesisFinding,
+    SynthesisRoleReceipt,
     SynthesisStatus,
 )
 from ux_analyzer.ports.artifacts import (
     BundleManifest,
+    BundleStateError,
     RedactionPolicy,
     SaliencyArtifactKind,
     canonicalize_saliency_artifact_content,
@@ -162,6 +165,15 @@ def _write_synthesis(
     )
     scoped_run_ids = scope_run_ids or (run_id,)
     metadata: dict[str, object] = {"experiment_run_ids": scoped_run_ids}
+    metadata["finalized_bundle_checksums"] = tuple(
+        {
+            "run_id": scoped_run_id,
+            "checksums_sha256": hashlib.sha256(
+                (root / "runs" / scoped_run_id / "checksums.sha256").read_bytes()
+            ).hexdigest(),
+        }
+        for scoped_run_id in scoped_run_ids
+    )
     if corpus_marker is not None:
         metadata["marker"] = corpus_marker
     if include_scope_identity:
@@ -211,6 +223,17 @@ def _write_synthesis(
         principle_pack_digest=corpus.principle_pack_digest,
         prompt_version="report-synthesis-orchestrator-v1",
         schema_version="synthesis-v1",
+        role_receipts=tuple(
+            SynthesisRoleReceipt(
+                role=role,
+                provider_id="fixture-provider",
+                model_id="fixture-model",
+                prompt_digest=hashlib.sha256(f"{role}:prompt".encode()).hexdigest(),
+                schema_digest=hashlib.sha256(f"{role}:schema".encode()).hexdigest(),
+                output_digest=hashlib.sha256(f"{role}:output".encode()).hexdigest(),
+            )
+            for role in CANONICAL_SYNTHESIS_ROLES
+        ),
         candidate_findings=finding_values,
         rejected_findings=(
             tuple(
@@ -1424,6 +1447,29 @@ def test_renderer_rejects_forged_synthesis_evidence_references(tmp_path: Path) -
     )
 
 
+def test_renderer_rejects_synthesis_copied_beside_changed_finalized_bundle(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path)
+    result_path = tmp_path / "runs" / "run-1" / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["metrics"]["discovery_cost"] = 2
+    _write_json(result_path, result)
+    _write_checksums(result_path.parent)
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["synthesis_status"] == "invalid"
+    assert synthesis["using_fallback"] is True
+    assert all(
+        finding["title"] != "Accepted synthesis finding"
+        for finding in synthesis["findings"]
+    )
+
+
 def test_renderer_does_not_promote_rejected_attempt_findings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1459,7 +1505,7 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     assert "Model review rejected; recorded evidence available" in (normalized_html)
     assert "Recorded signals requiring manual review" in normalized_html
     assert "Priority findings" not in normalized_html
-    assert "Fix first" not in normalized_html
+    assert "Check first" not in normalized_html
     assert "Candidate findings are not publishable." in normalized_html
     assert "the evidence review is unavailable" not in normalized_html
 
@@ -1804,10 +1850,7 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
         fallback_root, fallback_root / "report.html"
     ).read_text(encoding="utf-8")
 
-    assert (
-        "Model review is unavailable. Recorded deterministic findings and evidence are shown for the tested scenarios."
-        in (fallback_html)
-    )
+    assert "1 recorded signal is linked directly to evidence" in fallback_html
     assert 'data-synthesis-status="missing"' in fallback_html
     priority_html = fallback_html[
         fallback_html.index('id="priority-findings"') : fallback_html.index(
@@ -1823,7 +1866,11 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert "Model review unavailable; recorded evidence available" in fallback_html
     assert "Recorded signals requiring manual review" in fallback_html
     assert "Priority findings" not in fallback_html
-    assert "Fix first" not in fallback_html
+    assert "Check first" in fallback_html
+    assert "What to change" in fallback_html
+    assert "in the linked replay and make its label or nearby cue name the goal" in (
+        fallback_html
+    )
     fallback_copy = " ".join(fallback_html.split()).lower()
     assert (
         "model review did not complete. recorded deterministic evidence remains available. "
@@ -1873,7 +1920,7 @@ def test_renderer_fallback_statuses_remove_accepted_priority_hierarchy(
     assert "Recorded signals requiring manual review" in html
     assert "Recorded signal" in html
     assert "Priority findings" not in html
-    assert "Fix first" not in html
+    assert "Check first" in html
 
 
 def test_renderer_omits_prescriptive_hierarchy_without_reviewed_findings(
@@ -1918,6 +1965,27 @@ def test_renderer_fallback_finding_is_self_contained(tmp_path: Path) -> None:
     assert "does not clearly signal the task goal" in finding["fallback_title"]
     assert "model review" in finding["fallback_issue"].lower()
     assert finding["evidence_refs"][0]["available"] is True
+
+
+def test_renderer_omits_fallback_claim_without_resolvable_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    runs = renderer._load_experiment(tmp_path)["runs"]
+    runs[0]["findings"][0]["evidence_ids"] = ["unknown-evidence"]
+
+    synthesis = renderer._fallback_synthesis(
+        "missing",
+        runs,
+        renderer._deterministic_fallback_findings(runs),
+        "No persisted report synthesis is available.",
+    )
+
+    assert synthesis["findings"] == []
+    assert any(
+        "omitted because no canonical evidence target could be resolved" in limitation
+        for limitation in synthesis["limitations"]
+    )
 
 
 @pytest.mark.e2e
@@ -2725,6 +2793,43 @@ def test_renderer_ignores_symlinked_run_directory(tmp_path: Path) -> None:
     directories = renderer._run_directories(tmp_path)
 
     assert all(path.name != "run-link" for path in directories)
+
+
+def test_renderer_does_not_follow_hostile_report_symlink(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-report-link", version="improved", discovery_cost=3)
+    outside = tmp_path / "outside-report.html"
+    outside.write_text("outside report sentinel", encoding="utf-8")
+    destination = tmp_path / "report.html"
+    try:
+        destination.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+    with pytest.raises(BundleStateError, match="must not be a reparse point"):
+        render_experiment_report(tmp_path, destination)
+
+    assert outside.read_text(encoding="utf-8") == "outside report sentinel"
+    assert destination.is_symlink()
+
+
+def test_renderer_rejects_hostile_split_run_directory_link(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-page-link", version="improved", discovery_cost=3)
+    outside = tmp_path / "outside-run-pages"
+    outside.mkdir()
+    run_directory = tmp_path / "report-runs"
+    try:
+        run_directory.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+    with pytest.raises((OSError, RuntimeError, ValueError)):
+        render_experiment_report(
+            tmp_path,
+            tmp_path / "report.html",
+            max_single_file_bytes=100,
+        )
+
+    assert list(outside.iterdir()) == []
 
 
 def test_renderer_rejects_saliency_artifact_path_traversal(tmp_path: Path) -> None:
