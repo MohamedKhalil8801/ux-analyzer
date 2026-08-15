@@ -434,7 +434,9 @@ async def test_production_cli_report_is_interactive_and_causal(
         await page.goto(report_path.resolve().as_uri())
         assert await page.locator("#analysis-summary").is_visible()
         assert await page.locator("#priority-findings").is_visible()
-        assert await page.locator("#fix-first").count() == 0
+        assert await page.locator("#fix-first").count() == 1
+        assert await page.locator("#fix-first").get_by_text("Check first").is_visible()
+        assert await page.get_by_text("What to change").count() >= 1
         assert "Recorded signals requiring manual review" in (
             await page.locator("#priority-findings").text_content() or ""
         )
