@@ -963,9 +963,7 @@ def _report_json_object(content_text: str) -> dict[str, object]:
             continue
         if parsed_end == end - start:
             valid_values.append((start, end, parsed))
-    object_values = [
-        value for value in valid_values if isinstance(value[2], Mapping)
-    ]
+    object_values = [value for value in valid_values if isinstance(value[2], Mapping)]
     if len(object_values) == 1 and len(valid_values) > 1:
         raise ValueError("structured response contains multiple JSON values")
     if len(object_values) != 1 or len(valid_values) != 1:
@@ -2572,7 +2570,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                         if isinstance(communication_result, _CodexAttemptError):
                             raise communication_result
                         if isinstance(communication_result, BaseException):
-                            raise _CodexAttemptError("process-error")
+                            raise communication_result
                         if not isinstance(communication_result, tuple):
                             raise _CodexAttemptError("process-error")
                         communication_values = cast(
@@ -2587,7 +2585,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                         stdout_data, stderr_data = cast(
                             tuple[bytes, bytes], communication_values
                         )
-                    except BaseException:
+                    except BaseException as error:
                         if not cleanup_attempted:
                             await _shielded_codex_cleanup(
                                 process,
@@ -2595,7 +2593,11 @@ class CodexStructuredClient(_StructuredCallSupport):
                                 communication_task=communication_task,
                                 deadline=(loop.time() + _CODEX_CLEANUP_TIMEOUT_SECONDS),
                             )
-                        raise
+                        if isinstance(
+                            error, (asyncio.CancelledError, _CodexAttemptError)
+                        ):
+                            raise
+                        raise _CodexAttemptError("process-error") from None
                     if process.returncode != 0:
                         raise _CodexAttemptError(
                             _codex_process_failure_reason(stdout_data, stderr_data)

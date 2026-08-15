@@ -750,9 +750,7 @@ async def test_codex_forwards_role_reasoning_effort_to_cli(
 
     args = calls[0][0]
     config_values = [
-        args[index + 1]
-        for index, arg in enumerate(args[:-1])
-        if arg == "-c"
+        args[index + 1] for index, arg in enumerate(args[:-1]) if arg == "-c"
     ]
     assert f"model_reasoning_effort={expected_effort}" in config_values
     assert client.records[0].request["reasoning_effort"] == expected_effort
@@ -1139,7 +1137,9 @@ async def test_report_role_accepts_one_json_object_in_plain_model_text(
     await http_client.aclose()
 
 
-def test_direct_structured_mapping_with_text_field_is_not_treated_as_text_part() -> None:
+def test_direct_structured_mapping_with_text_field_is_not_treated_as_text_part() -> (
+    None
+):
     content = {"text": "ordinary schema field", "ok": True}
     body = {"choices": [{"message": {"content": content}}]}
 
@@ -1181,7 +1181,9 @@ async def test_non_report_role_rejects_prose_wrapped_json() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_response_body_is_rejected_before_oversized_content_parsing() -> None:
+async def test_http_response_body_is_rejected_before_oversized_content_parsing() -> (
+    None
+):
     oversized = "x" * (openai_adapter._MAX_MODEL_RESPONSE_BYTES + 1)
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1272,6 +1274,47 @@ async def test_codex_oversized_stream_cleans_and_reaps_never_exiting_process(
     assert process.wait_calls >= 1
     assert process.returncode is not None
     assert client.records[0].response == {"failure": "response-too-large"}
+
+
+@pytest.mark.asyncio
+async def test_codex_unexpected_communication_error_cleans_before_sanitizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _NeverCompletingCodexProcess()
+    _patch_never_completing_process(monkeypatch, process)
+    tree_cleanup_calls: list[tuple[bool, float]] = []
+    _patch_tree_cleanup(monkeypatch, tree_cleanup_calls)
+
+    async def fail_communication(process: object, prompt: bytes) -> tuple[bytes, bytes]:
+        del process, prompt
+        raise RuntimeError("unexpected communication failure")
+
+    monkeypatch.setattr(
+        openai_adapter,
+        "_communicate_codex_bounded",
+        fail_communication,
+    )
+    client = CodexStructuredClient(
+        _settings(
+            mode="codex",
+            retry_policy={"max_attempts": 1, "base_delay_seconds": 0},
+        )
+    )
+
+    with pytest.raises(ModelFailureError, match="process-error"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="Find invite"),),
+            model="gpt-scent",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    expected_forces = [True] if os.name == "nt" else [False, True]
+    assert [force for force, _deadline in tree_cleanup_calls] == expected_forces
+    assert process.kill_calls >= 1
+    assert process.wait_calls >= 1
+    assert process.returncode is not None
+    assert client.records[0].response == {"failure": "process-error"}
 
 
 @pytest.mark.asyncio
@@ -2068,9 +2111,7 @@ async def test_codex_attachment_manifest_lists_only_validated_evidence_paths(
     def inspect_prompt(prompt: bytes) -> None:
         prompt_payload = json.loads(prompt)
         isolated_root = Path(str(calls[0][1]["cwd"]))
-        isolated_relative_path = Path(
-            prompt_payload["evidence_manifest"][0]["path"]
-        )
+        isolated_relative_path = Path(prompt_payload["evidence_manifest"][0]["path"])
         observed["root"] = isolated_root
         observed["relative_path"] = isolated_relative_path
         observed["content"] = (isolated_root / isolated_relative_path).read_bytes()
