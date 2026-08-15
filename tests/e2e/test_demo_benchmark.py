@@ -383,8 +383,10 @@ async def test_production_cli_report_is_interactive_and_causal(
         env={
             "UXA_LLM_BASE_URL": model_base_url,
             "UXA_LLM_API_KEY": "ci-api-key",
+            "UXA_LLM_TIMEOUT_SECONDS": "30",
             "UXA_SCENT_MODEL": "scent-model",
             "UXA_COGNITIVE_MODEL": "cognitive-model",
+            "UXA_REPORT_MODEL": "",
         },
     )
     assert result.exit_code == 0, result.stdout
@@ -440,7 +442,7 @@ async def test_production_cli_report_is_interactive_and_causal(
         assert await page.locator("#analysis-summary").evaluate(
             "node => node.compareDocumentPosition(document.querySelector('#comparison-table')) & Node.DOCUMENT_POSITION_FOLLOWING"
         )
-        assert "Recorded findings are shown" in (
+        assert "Model review unavailable" in (
             await page.locator("#analysis-summary").text_content() or ""
         )
         assert await page.locator("#priority-findings .finding").count() >= 1
