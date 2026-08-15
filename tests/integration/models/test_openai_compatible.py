@@ -925,6 +925,22 @@ async def test_structured_model_client_factory_selects_codex_or_http_transport()
     await http_client.aclose()
 
 
+def test_api_client_forwards_unbounded_timeout_to_httpx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_timeouts: list[object] = []
+
+    def create_http_client(*, timeout: object) -> object:
+        observed_timeouts.append(timeout)
+        return object()
+
+    monkeypatch.setattr(openai_adapter.httpx, "AsyncClient", create_http_client)
+
+    OpenAICompatibleStructuredClient(_settings(timeout_seconds=None))
+
+    assert observed_timeouts == [None]
+
+
 @pytest.mark.asyncio
 async def test_strict_schema_fallback_validates_locally_and_records_usage() -> None:
     requests: list[dict[str, object]] = []

@@ -206,22 +206,14 @@ def _as_float(value: object, *, name: str) -> float:
     return float(value)
 
 
-def _timeout_seconds(value: object, *, mode: Literal["api", "codex"]) -> float | None:
+def _timeout_seconds(value: object) -> float | None:
     if value is None:
-        if mode != "codex":
-            raise ModelConfigurationError(
-                "unbounded timeout is supported only in codex mode"
-            )
         return None
     if isinstance(value, str) and value.strip().lower() in {
         "none",
         "off",
         "unlimited",
     }:
-        if mode != "codex":
-            raise ModelConfigurationError(
-                "unbounded timeout is supported only in codex mode"
-            )
         return None
     parsed = _as_float(value, name="timeout_seconds")
     if parsed <= 0:
@@ -428,10 +420,6 @@ class OpenAICompatibleSettings:
                 name,
                 _normalize_reasoning_effort(getattr(self, name), name=name),
             )
-        if self.timeout_seconds is None and normalized_mode != "codex":
-            raise ModelConfigurationError(
-                "unbounded timeout is supported only in codex mode"
-            )
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ModelConfigurationError("timeout_seconds must be greater than zero")
         if self.max_concurrent_calls < 1:
@@ -491,9 +479,7 @@ class OpenAICompatibleSettings:
         else:
             base_url = ""
             api_key = ""
-        timeout_seconds = _timeout_seconds(
-            values.get("UXA_LLM_TIMEOUT_SECONDS", "30"), mode=mode
-        )
+        timeout_seconds = _timeout_seconds(values.get("UXA_LLM_TIMEOUT_SECONDS", "30"))
         max_concurrent_calls = _as_int(
             values.get("UXA_LLM_MAX_CONCURRENT_CALLS", "2"),
             name="max_concurrent_calls",
@@ -554,9 +540,7 @@ class OpenAICompatibleSettings:
         ):
             raise ModelConfigurationError("redaction_values must be a sequence")
         mode = _normalize_llm_mode(value.get("mode", "api"))
-        timeout_seconds = _timeout_seconds(
-            value.get("timeout_seconds", 30.0), mode=mode
-        )
+        timeout_seconds = _timeout_seconds(value.get("timeout_seconds", 30.0))
         max_concurrent_calls = _as_int(
             value.get("max_concurrent_calls", 2), name="max_concurrent_calls"
         )

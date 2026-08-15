@@ -127,11 +127,12 @@ def test_codex_mode_does_not_require_endpoint_credentials() -> None:
     assert settings.endpoint_origin == "codex-cli"
 
 
-def test_codex_mode_accepts_unbounded_model_timeout() -> None:
+@pytest.mark.parametrize("timeout_value", ("none", "off", "unlimited"))
+def test_codex_mode_accepts_unbounded_model_timeout(timeout_value: str) -> None:
     settings = OpenAICompatibleSettings.from_env(
         {
             "UXA_LLM_MODE": "codex",
-            "UXA_LLM_TIMEOUT_SECONDS": "none",
+            "UXA_LLM_TIMEOUT_SECONDS": timeout_value,
             "UXA_SCENT_MODEL": "gpt-scent",
             "UXA_COGNITIVE_MODEL": "gpt-cognitive",
         },
@@ -155,19 +156,21 @@ def test_model_settings_load_model_call_concurrency_limit() -> None:
     assert settings.max_concurrent_calls == 3
 
 
-def test_api_mode_rejects_unbounded_model_timeout() -> None:
-    with pytest.raises(ModelConfigurationError, match="unbounded"):
-        OpenAICompatibleSettings.from_env(
-            {
-                "UXA_LLM_MODE": "api",
-                "UXA_LLM_TIMEOUT_SECONDS": "none",
-                "UXA_LLM_BASE_URL": "https://llm.example.test/v1",
-                "UXA_LLM_API_KEY": "secret",
-                "UXA_SCENT_MODEL": "gpt-scent",
-                "UXA_COGNITIVE_MODEL": "gpt-cognitive",
-            },
-            dotenv_path=Path("missing-test.env"),
-        )
+@pytest.mark.parametrize("timeout_value", ("none", "off", "unlimited"))
+def test_api_mode_accepts_unbounded_model_timeout(timeout_value: str) -> None:
+    settings = OpenAICompatibleSettings.from_env(
+        {
+            "UXA_LLM_MODE": "api",
+            "UXA_LLM_TIMEOUT_SECONDS": timeout_value,
+            "UXA_LLM_BASE_URL": "https://llm.example.test/v1",
+            "UXA_LLM_API_KEY": "secret",
+            "UXA_SCENT_MODEL": "gpt-scent",
+            "UXA_COGNITIVE_MODEL": "gpt-cognitive",
+        },
+        dotenv_path=Path("missing-test.env"),
+    )
+
+    assert settings.timeout_seconds is None
 
 
 def test_codex_model_validate_does_not_require_endpoint_credentials() -> None:

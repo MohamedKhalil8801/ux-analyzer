@@ -18,6 +18,9 @@ UXA_LLM_API_KEY        secret sent as Bearer authorization header
 UXA_SCENT_MODEL        model ID for coarse and full scent roles
 UXA_COGNITIVE_MODEL    model ID for cognitive role
 UXA_REPORT_MODEL       model ID for the four report-synthesis roles
+UXA_LLM_TIMEOUT_SECONDS
+                       positive model-call timeout in seconds; none, off, or
+                       unlimited disables the model-call timeout
 UXA_LLM_REPORT_REASONING_EFFORT
                        optional report effort: none, minimal, low, medium,
                        high, xhigh, or max
