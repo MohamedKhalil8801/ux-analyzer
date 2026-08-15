@@ -1761,6 +1761,61 @@ def test_secure_create_exclusive_file_is_relative_to_bound_parent(
     assert not (outside / "summary.tmp").exists()
 
 
+def test_secure_create_exclusive_file_can_retain_readable_descriptor(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+
+    with run_bundle_module.secure_open_directory(
+        output, "test output", create=False
+    ) as parent:
+        with run_bundle_module.secure_create_exclusive_file(
+            parent,
+            "trace.raw",
+            "test trace",
+            readable=True,
+        ) as temporary:
+            os.write(temporary.descriptor, b"trace bytes")
+            os.lseek(temporary.descriptor, 0, os.SEEK_SET)
+            assert os.read(temporary.descriptor, 11) == b"trace bytes"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX name-relative publication")
+def test_secure_replace_exclusive_file_rejects_source_name_swap(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    source_path = output / "trace.tmp"
+    displaced = output / "trace-original.tmp"
+    destination = output / "trace.zip"
+
+    with run_bundle_module.secure_open_directory(
+        output, "test output", create=False
+    ) as parent:
+        with run_bundle_module.secure_create_exclusive_file(
+            parent, source_path.name, "test trace"
+        ) as temporary:
+            os.write(temporary.descriptor, b"trusted trace")
+            os.fsync(temporary.descriptor)
+            source_path.rename(displaced)
+            source_path.write_bytes(b"attacker replacement")
+
+            with pytest.raises(BundleStateError, match="identity changed"):
+                run_bundle_module.secure_replace_exclusive_file(
+                    parent,
+                    temporary,
+                    destination.name,
+                    "test trace publication",
+                    replace_existing=True,
+                )
+
+    assert not destination.exists()
+    assert displaced.read_bytes() == b"trusted trace"
+    assert source_path.read_bytes() == b"attacker replacement"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative creation")
 def test_secure_create_exclusive_file_survives_postcheck_parent_swap(
     monkeypatch: pytest.MonkeyPatch,

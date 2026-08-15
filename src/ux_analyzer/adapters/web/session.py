@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
+from uuid import uuid4
 
 from playwright.async_api import (
     Browser,
@@ -25,7 +27,7 @@ from ux_analyzer.adapters.web.network_policy import (
     NetworkPolicy,
     abort_route,
 )
-from ux_analyzer.ports.artifacts import sanitize_artifact_content
+from ux_analyzer.ports.artifacts import BundleStateError, sanitize_artifact_content
 from ux_analyzer.ports.observation import (
     BackAction,
     BlockedRequest,
@@ -48,6 +50,14 @@ from ux_analyzer.ports.observation import (
     ToggleAction,
     TypeTextAction,
     WaitAction,
+)
+from ux_analyzer.storage.run_bundle import (
+    SecureDirectoryHandle,
+    SecureExclusiveFile,
+    secure_create_exclusive_file,
+    secure_open_directory,
+    secure_replace_exclusive_file,
+    secure_unlink,
 )
 
 __all__ = [
@@ -139,13 +149,16 @@ class PlaywrightSessionAdapter:
         )
         if config.session_id in self._sessions:
             raise ProviderFailure("session ID already active")
-        config.trace_path.parent.mkdir(parents=True, exist_ok=True)
+        with secure_open_directory(
+            config.trace_path.parent,
+            "trace directory",
+            create=True,
+        ):
+            pass
         raw_trace_path = _raw_trace_path(config.trace_path)
-        config.trace_path.unlink(missing_ok=True)
         _discard_trace(
             config.trace_path,
             raw_trace_path,
-            include_published=False,
         )
         policy = NetworkPolicy(allowed_origins)
         context: BrowserContext | None = None
@@ -567,6 +580,9 @@ class PlaywrightSessionAdapter:
                 raise cleanup_error
             return
 
+        trace_resources = ExitStack()
+        trace_parent: SecureDirectoryHandle | None = None
+        raw_trace: SecureExclusiveFile | None = None
         try:
             try:
                 listener = managed.popup_listener
@@ -581,9 +597,23 @@ class PlaywrightSessionAdapter:
                 await _cancel_and_gather_tasks(managed.route_tasks)
                 await _cancel_and_gather_tasks(managed.popup_tasks)
                 if managed.trace_started:
-                    await managed.context.tracing.stop(
-                        path=str(managed.raw_trace_path)
+                    trace_parent = trace_resources.enter_context(
+                        secure_open_directory(
+                            managed.handle.trace_path.parent,
+                            "trace directory",
+                            create=False,
+                        )
                     )
+                    _discard_file(managed.raw_trace_path)
+                    raw_trace = trace_resources.enter_context(
+                        secure_create_exclusive_file(
+                            trace_parent,
+                            managed.raw_trace_path.name,
+                            "raw trace archive",
+                            readable=True,
+                        )
+                    )
+                    await managed.context.tracing.stop(path=str(managed.raw_trace_path))
             except BaseException as error:
                 if cleanup_error is None:
                     cleanup_error = error
@@ -600,9 +630,13 @@ class PlaywrightSessionAdapter:
                     return
                 raise cleanup_error
 
-            if managed.trace_started:
+            if (
+                managed.trace_started
+                and trace_parent is not None
+                and raw_trace is not None
+            ):
                 try:
-                    _sanitize_trace(managed)
+                    _sanitize_trace(managed, trace_parent, raw_trace)
                 except PlaywrightError:
                     _discard_trace(managed.handle.trace_path, managed.raw_trace_path)
                 except BaseException:
@@ -612,6 +646,7 @@ class PlaywrightSessionAdapter:
             managed.cleanup_error = error
             raise
         finally:
+            trace_resources.close()
             if self._sessions.get(managed.handle.session_id) is managed:
                 self._sessions.pop(managed.handle.session_id, None)
             managed.route_handler = None
@@ -619,29 +654,80 @@ class PlaywrightSessionAdapter:
             managed.cleanup_complete.set()
 
 
-def _sanitize_trace(managed: _ManagedSession) -> None:
+def _sanitize_trace(
+    managed: _ManagedSession,
+    parent: SecureDirectoryHandle,
+    raw_trace: SecureExclusiveFile,
+) -> None:
     raw_path = managed.raw_trace_path
-    if not raw_path.is_file():
-        return
     sanitized = sanitize_artifact_content(
         managed.handle.trace_path.name,
-        raw_path.read_bytes(),
+        _read_descriptor(raw_trace.descriptor),
         managed.config.artifact_redaction,
     )
-    temporary = managed.handle.trace_path.with_name(
+    legacy_temporary = managed.handle.trace_path.with_name(
         f".{managed.handle.trace_path.name}.sanitized"
     )
-    temporary.write_bytes(sanitized)
-    _replace_trace_with_retry(temporary, managed.handle.trace_path)
-    _discard_file(raw_path)
+    _discard_file(legacy_temporary)
+    temporary_name = f".{managed.handle.trace_path.name}.sanitized.{uuid4().hex}.tmp"
+    with secure_create_exclusive_file(
+        parent,
+        temporary_name,
+        "sanitized trace temporary file",
+    ) as temporary:
+        _write_descriptor(temporary.descriptor, sanitized)
+        _replace_trace_with_retry(
+            parent,
+            temporary,
+            managed.handle.trace_path.name,
+        )
+    secure_unlink(
+        raw_path,
+        "raw trace cleanup",
+        missing_ok=True,
+        expected_identity=raw_trace.identity,
+    )
 
 
-def _replace_trace_with_retry(source: Path, destination: Path) -> None:
+def _read_descriptor(descriptor: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while chunk := os.read(descriptor, 1024 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _write_descriptor(descriptor: int, content: bytes) -> None:
+    offset = 0
+    while offset < len(content):
+        written = os.write(descriptor, content[offset:])
+        if written <= 0:
+            raise OSError("failed to write sanitized trace")
+        offset += written
+    os.fsync(descriptor)
+
+
+def _replace_trace_with_retry(
+    parent: SecureDirectoryHandle,
+    source: SecureExclusiveFile,
+    destination_name: str,
+) -> None:
     for attempt in range(_TRACE_REPLACE_ATTEMPTS):
         try:
-            os.replace(source, destination)
+            secure_replace_exclusive_file(
+                parent,
+                source,
+                destination_name,
+                "sanitized trace publication",
+                replace_existing=True,
+            )
             return
-        except PermissionError:
+        except (PermissionError, BundleStateError) as error:
+            if (
+                isinstance(error, BundleStateError)
+                and "0xc0000043" not in str(error).lower()
+            ):
+                raise
             if attempt == _TRACE_REPLACE_ATTEMPTS - 1:
                 raise
             sleep(_TRACE_REPLACE_DELAY_SECONDS)
@@ -670,11 +756,7 @@ def _discard_trace(
 
 
 def _discard_file(path: Path) -> None:
-    with path.open("r+b") as trace:
-        trace.truncate(0)
-        trace.flush()
-        os.fsync(trace.fileno())
-    path.unlink(missing_ok=True)
+    secure_unlink(path, "trace cleanup", missing_ok=True)
 
 
 def _retrieve_task_exception(task: asyncio.Task[None]) -> None:

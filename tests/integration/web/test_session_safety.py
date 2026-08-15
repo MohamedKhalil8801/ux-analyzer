@@ -41,6 +41,7 @@ _FONT_CSS_HIT: asyncio.Event | None = None
 _FONT_FILE_HIT: asyncio.Event | None = None
 
 from fixture_app.app import app as fixture_app
+from ux_analyzer.adapters.web import session as web_session
 from ux_analyzer.adapters.web.extractor import capture as capture_snapshot
 from ux_analyzer.adapters.web.extractor import capture_with_diagnostics
 from ux_analyzer.adapters.web.network_policy import (
@@ -56,7 +57,7 @@ from ux_analyzer.adapters.web.session import (
 from ux_analyzer.adapters.web.verifier import WebVerifier
 from ux_analyzer.domain.attention import ProgressiveObservation
 from ux_analyzer.domain.benchmark import VisibleResultVerifierSpec
-from ux_analyzer.ports.artifacts import RedactionPolicy
+from ux_analyzer.ports.artifacts import BundleStateError, RedactionPolicy
 from ux_analyzer.ports.observation import (
     BackAction,
     BlockedRequest,
@@ -204,6 +205,13 @@ def _session_config(origin: str, trace_path: Path, account_id: str = "test-accou
         navigation_origins=(origin,),
         fixture_only=True,
     )
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"symlink trace fixture unavailable: {error}")
 
 
 @fixture_app.get("/__test-font.css")
@@ -2002,6 +2010,45 @@ async def test_trace_finalization_uses_private_raw_archive_and_publishes_sanitiz
 
 
 @pytest.mark.asyncio
+async def test_trace_finalization_unlinks_hostile_staging_links_without_touching_targets(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_origin, _ = running_servers
+    session = await browser_adapter.start_session(
+        _session_config(fixture_origin, tmp_path / "hostile-staging.zip")
+    )
+    managed = browser_adapter._sessions[session.session_id]
+    raw_target = tmp_path / "outside-raw.txt"
+    sanitized_target = tmp_path / "outside-sanitized.txt"
+    raw_target.write_bytes(b"outside raw sentinel")
+    sanitized_target.write_bytes(b"outside sanitized sentinel")
+    raw_link = managed.raw_trace_path
+    sanitized_link = session.trace_path.with_name(
+        f".{session.trace_path.name}.sanitized"
+    )
+    _symlink_or_skip(raw_link, raw_target)
+    _symlink_or_skip(sanitized_link, sanitized_target)
+
+    async def write_raw_trace(*, path: str) -> None:
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("trace.network", "safe trace")
+
+    monkeypatch.setattr(managed.context.tracing, "stop", write_raw_trace)
+
+    await browser_adapter.end_session(session)
+
+    assert raw_target.read_bytes() == b"outside raw sentinel"
+    assert sanitized_target.read_bytes() == b"outside sanitized sentinel"
+    assert not os.path.lexists(raw_link)
+    assert not os.path.lexists(sanitized_link)
+    assert session.trace_path.is_file()
+    assert not session.trace_path.is_symlink()
+
+
+@pytest.mark.asyncio
 async def test_trace_replace_retries_transient_sharing_violation_after_context_cleanup(
     browser_adapter: Any,
     running_servers: tuple[str, str],
@@ -2013,18 +2060,24 @@ async def test_trace_replace_retries_transient_sharing_violation_after_context_c
         _session_config(fixture_origin, tmp_path / "transient-replace.zip")
     )
     page = browser_adapter.page_for_testing(session)
-    real_replace = os.replace
+    real_replace = web_session.secure_replace_exclusive_file
     attempts = 0
 
-    def replace_with_transient_failure(source: str, destination: str) -> None:
+    def replace_with_transient_failure(*args: object, **kwargs: object) -> None:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise PermissionError(32, "sharing violation")
+            raise BundleStateError(
+                "atomic trace publication failed with NTSTATUS 0xc0000043"
+            )
         assert page.is_closed()
-        real_replace(source, destination)
+        real_replace(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("ux_analyzer.adapters.web.session.os.replace", replace_with_transient_failure)
+    monkeypatch.setattr(
+        web_session,
+        "secure_replace_exclusive_file",
+        replace_with_transient_failure,
+    )
 
     await browser_adapter.end_session(session)
 
@@ -2046,14 +2099,20 @@ async def test_persistent_trace_replace_failure_discards_trace_and_propagates(
     attempts = 0
     raw_path = browser_adapter._sessions[session.session_id].raw_trace_path
 
-    def always_fail_replace(_source: str, _destination: str) -> None:
+    def always_fail_replace(*_args: object, **_kwargs: object) -> None:
         nonlocal attempts
         attempts += 1
-        raise PermissionError(32, "sharing violation")
+        raise BundleStateError(
+            "atomic trace publication failed with NTSTATUS 0xc0000043"
+        )
 
-    monkeypatch.setattr("ux_analyzer.adapters.web.session.os.replace", always_fail_replace)
+    monkeypatch.setattr(
+        web_session,
+        "secure_replace_exclusive_file",
+        always_fail_replace,
+    )
 
-    with pytest.raises(PermissionError, match="sharing violation"):
+    with pytest.raises(BundleStateError, match="0xc0000043"):
         await browser_adapter.end_session(session)
 
     assert attempts == 3

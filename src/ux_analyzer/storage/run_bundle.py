@@ -288,6 +288,7 @@ def _open_windows_relative(
     create: bool,
     directory: bool,
     writable: bool = False,
+    readable: bool = False,
 ) -> int:
     """Open one child relative to a retained directory handle without reparsing."""
 
@@ -351,11 +352,12 @@ def _open_windows_relative(
     )
     io_status = IoStatusBlock()
     handle = wintypes.HANDLE()
-    desired_access = (
-        0x00130196
-        if writable
-        else (0x00100080 | (0x20 if directory else 0))
-    )
+    if writable:
+        desired_access = 0x00130196
+        if readable:
+            desired_access = (desired_access & ~0x00010000) | 0x1
+    else:
+        desired_access = 0x00100080 | (0x20 if directory else 0)
     create_options = (
         0x20 | (0 if create else 0x00200000) | (0x1 if directory else 0x40)
     )
@@ -666,6 +668,8 @@ def _secure_create_exclusive_file(
     parent: SecureDirectoryHandle,
     name: str,
     label: str,
+    *,
+    readable: bool = False,
 ) -> Generator[SecureExclusiveFile, None, None]:
     """Create one child relative to a retained parent and keep its handle open."""
 
@@ -683,10 +687,13 @@ def _secure_create_exclusive_file(
             create=True,
             directory=False,
             writable=True,
+            readable=readable,
         )
         try:
             descriptor = msvcrt.open_osfhandle(
-                handle, os.O_WRONLY | getattr(os, "O_BINARY", 0)
+                handle,
+                (os.O_RDWR if readable else os.O_WRONLY)
+                | getattr(os, "O_BINARY", 0),
             )
         except BaseException:
             _close_windows_handle(handle)
@@ -696,7 +703,7 @@ def _secure_create_exclusive_file(
             raise BundleStateError(f"{label} has no POSIX parent descriptor")
         descriptor = os.open(
             name,
-            os.O_WRONLY
+            (os.O_RDWR if readable else os.O_WRONLY)
             | os.O_CREAT
             | os.O_EXCL
             | getattr(os, "O_NOFOLLOW", 0),
@@ -821,6 +828,14 @@ def _secure_replace_exclusive_file(
     else:
         if parent.descriptor is None:
             raise BundleStateError(f"{label} has no POSIX parent descriptor")
+        named_source_identity = _path_identity_from_stat(
+            os.stat(
+                source.name,
+                dir_fd=parent.descriptor,
+                follow_symlinks=False,
+            )
+        )
+        _assert_expected_identity(named_source_identity, source.identity, label)
         destination_stat: os.stat_result | None
         try:
             destination_stat = os.stat(
