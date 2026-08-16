@@ -351,21 +351,15 @@ def final_finding_preserves_candidate(
 
     if final.finding_id != candidate.finding_id:
         return False
-    if any(
-        final_value.strip() != candidate_value.strip()
-        for final_value, candidate_value in (
-            (final.issue, candidate.issue),
-            (final.impact, candidate.impact),
-            (final.root_cause, candidate.root_cause),
-        )
-    ):
-        return False
     candidate_evidence_ids = {ref.evidence_id for ref in candidate.evidence_refs}
     final_evidence_ids = {ref.evidence_id for ref in final.evidence_refs}
     if not candidate_evidence_ids <= final_evidence_ids:
         return False
 
     reviewed_fields = (
+        "issue",
+        "impact",
+        "root_cause",
         "fixes",
         "severity",
         "confidence",
@@ -383,6 +377,35 @@ def final_finding_preserves_candidate(
         return True
 
     authorization_types = {
+        "title": frozenset(
+            {"affected-surface", "citation-accuracy", "visual-interpretation"}
+        ),
+        "issue": frozenset(
+            {
+                "affected-surface",
+                "citation-accuracy",
+                "factual-support",
+                "severity",
+                "visual-interpretation",
+            }
+        ),
+        "impact": frozenset(
+            {
+                "affected-surface",
+                "citation-accuracy",
+                "factual-support",
+                "severity",
+            }
+        ),
+        "root_cause": frozenset(
+            {
+                "affected-surface",
+                "citation-accuracy",
+                "factual-support",
+                "fix-leverage",
+                "visual-interpretation",
+            }
+        ),
         "fixes": frozenset({"fix-leverage"}),
         "severity": frozenset({"severity"}),
         "confidence": frozenset(

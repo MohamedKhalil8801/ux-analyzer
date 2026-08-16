@@ -296,6 +296,33 @@ def test_final_finding_requires_evidence_backed_objection_for_reviewed_decision_
     )
 
 
+def test_final_finding_allows_cited_core_claim_correction() -> None:
+    candidate = _finding(issue="The control is hard to find.")
+    corrected = _finding(
+        issue="The control is hard to find in the initial view.",
+        reviewer_state="accepted",
+    )
+    evidence_ref = EvidenceRef("event:run-a:20", "event", "run-a")
+    authorized = SynthesisObjection(
+        objection_id="claim-review",
+        finding_id=candidate.finding_id,
+        objection_type="citation-accuracy",
+        severity="material",
+        message="The wording must be narrowed to the delivered evidence.",
+        evidence_refs=(evidence_ref,),
+        resolved=True,
+        resolution="The final issue was narrowed to the cited initial view.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=(evidence_ref,),
+    )
+
+    assert synthesis.final_finding_preserves_candidate(
+        corrected,
+        candidate,
+        objections=(authorized,),
+    )
+
+
 def test_role_receipt_and_rejected_candidate_audit_are_immutable_and_bounded() -> None:
     receipt = SynthesisRoleReceipt(
         role="report-analyst",
