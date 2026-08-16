@@ -1928,6 +1928,32 @@ def test_report_output_alias_is_not_applied_to_reviewer_roles() -> None:
     )
 
 
+def test_report_output_normalizes_keyed_evidence_handle_reference() -> None:
+    parsed = {
+        "complete": True,
+        "evidence_requests": [],
+        "objections": [
+            {
+                "objection_id": "visual-support",
+                "finding_id": "finding-1",
+                "severity": "material",
+                "message": "The visual claim needs direct support.",
+                "evidence_refs": [
+                    {"e1316": "element", "run_id": "run-a"},
+                ],
+            }
+        ],
+    }
+
+    normalized = openai_adapter._normalize_report_output(
+        ModelRole.REPORT_EVIDENCE_AUDITOR, parsed
+    )
+
+    assert normalized["objections"][0]["evidence_refs"] == [
+        {"evidence_id": "e1316", "kind": "handle", "run_id": "run-a"}
+    ]
+
+
 @pytest.mark.parametrize(
     "content",
     (

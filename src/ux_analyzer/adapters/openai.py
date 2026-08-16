@@ -96,6 +96,21 @@ _SAFE_STRUCTURAL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _REPORT_JSON_SCALAR = re.compile(
     r'(?<![A-Za-z0-9_-])(?:true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|"(?:\\.|[^"\\])*")(?![A-Za-z0-9_-])'
 )
+_REPORT_EVIDENCE_HANDLE = re.compile(r"^e[0-9]+$")
+_REPORT_REFERENCE_FIELDS = frozenset(
+    {
+        "evidence_id",
+        "kind",
+        "run_id",
+        "viewport_id",
+        "element_id",
+        "event_id",
+        "metric_id",
+        "artifact_path",
+        "replay_sequence",
+        "sha256",
+    }
+)
 
 
 def _safe_provider_text(value: object) -> str | None:
@@ -1261,22 +1276,67 @@ def _structured_output_diagnostics(
 
 
 def _normalize_report_output(role: ModelRole, parsed: object) -> object:
-    """Normalize the provider's generic findings key before local validation."""
+    """Normalize unambiguous report aliases before local validation."""
 
     if role not in _REPORT_ROLES or not isinstance(parsed, Mapping):
         return parsed
     parsed_mapping = cast(Mapping[object, object], parsed)
+    normalized: dict[object, object] = dict(parsed_mapping)
     target_field = {
         ModelRole.REPORT_ANALYST: "candidate_findings",
         ModelRole.REPORT_ADJUDICATOR: "final_findings",
     }.get(role)
-    if target_field is None or "findings" not in parsed_mapping:
-        return parsed_mapping
-    if target_field in parsed_mapping:
-        raise ValueError("report response contains conflicting findings fields")
-    normalized = dict(parsed_mapping)
-    normalized[target_field] = normalized.pop("findings")
-    return normalized
+    if target_field is not None and "findings" in parsed_mapping:
+        if target_field in parsed_mapping:
+            raise ValueError("report response contains conflicting findings fields")
+        normalized[target_field] = normalized.pop("findings")
+
+    def normalize_reference(value: object) -> object:
+        if isinstance(value, str) and _REPORT_EVIDENCE_HANDLE.fullmatch(value):
+            return {"evidence_id": value, "kind": "handle", "run_id": "handle"}
+        if not isinstance(value, Mapping):
+            return value
+        reference = cast(Mapping[object, object], value)
+        handle_keys = tuple(
+            key
+            for key in reference
+            if isinstance(key, str) and _REPORT_EVIDENCE_HANDLE.fullmatch(key)
+        )
+        if (
+            "evidence_id" in reference
+            or len(handle_keys) != 1
+            or any(
+                key not in _REPORT_REFERENCE_FIELDS and key != handle_keys[0]
+                for key in reference
+            )
+        ):
+            return dict(reference)
+        repaired = dict(reference)
+        handle = handle_keys[0]
+        repaired.pop(handle)
+        repaired["evidence_id"] = handle
+        repaired.setdefault("kind", "handle")
+        repaired.setdefault("run_id", "handle")
+        return repaired
+
+    def visit(value: object) -> object:
+        if isinstance(value, Mapping):
+            mapping = cast(Mapping[object, object], value)
+            return {
+                key: (
+                    [normalize_reference(item) for item in cast(Sequence[object], item)]
+                    if key in {"evidence_refs", "counterevidence"}
+                    and isinstance(item, Sequence)
+                    and not isinstance(item, (str, bytes))
+                    else visit(item)
+                )
+                for key, item in mapping.items()
+            }
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return [visit(item) for item in cast(Sequence[object], value)]
+        return value
+
+    return visit(normalized)
 
 
 def _response_mode(role: ModelRole) -> str:
