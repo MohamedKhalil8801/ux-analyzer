@@ -297,16 +297,20 @@ def test_final_finding_requires_evidence_backed_objection_for_reviewed_decision_
 
 
 def test_final_finding_allows_cited_core_claim_correction() -> None:
-    candidate = _finding(issue="The control is hard to find.")
+    candidate = _finding(
+        issue="The control is hard to find.",
+        severity_justification="The task fails in every run.",
+    )
     corrected = _finding(
         issue="The control is hard to find in the initial view.",
+        severity_justification="The initial view shows material discovery friction.",
         reviewer_state="accepted",
     )
     evidence_ref = EvidenceRef("event:run-a:20", "event", "run-a")
     authorized = SynthesisObjection(
         objection_id="claim-review",
         finding_id=candidate.finding_id,
-        objection_type="citation-accuracy",
+        objection_type="factual-support",
         severity="material",
         message="The wording must be narrowed to the delivered evidence.",
         evidence_refs=(evidence_ref,),

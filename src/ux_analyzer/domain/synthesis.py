@@ -423,7 +423,14 @@ def final_finding_preserves_candidate(
         ),
         "principles": frozenset({"recurrence", "shared-cause"}),
         "counterevidence": frozenset({"contradiction", "counterexample"}),
-        "severity_justification": frozenset({"severity"}),
+        "severity_justification": frozenset(
+            {
+                "citation-accuracy",
+                "factual-support",
+                "severity",
+                "visual-interpretation",
+            }
+        ),
     }
     relevant = tuple(
         objection
