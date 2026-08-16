@@ -306,6 +306,9 @@ async def test_plain_report_request_delivers_role_schema_contract() -> None:
     assert schema["properties"]["candidate_findings"]["maxItems"] == 8
     assert schema["properties"]["evidence_requests"]["maxItems"] == 16
     finding_schema = schema["$defs"]["CandidateFinding"]["properties"]
+    required_finding_fields = schema["$defs"]["CandidateFinding"]["required"]
+    assert "severity_justification" in required_finding_fields
+    assert finding_schema["severity_justification"]["minLength"] == 1
     assert finding_schema["issue"]["maxLength"] == 800
     assert finding_schema["fixes"]["maxItems"] == 3
     assert finding_schema["evidence_refs"]["maxItems"] == 12
@@ -626,6 +629,7 @@ async def test_final_round_retries_once_with_exact_delivered_handle_set() -> Non
         fixes=["Increase the primary action prominence."],
         severity=FindingSeverity.HIGH,
         confidence=0.9,
+        severity_justification="The tested task could not be completed.",
         evidence_refs=[
             EvidenceReference(
                 evidence_id=EVIDENCE_ID,
@@ -2455,8 +2459,9 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
         ReportAnalyst(client, model="gpt-report").manifest.role
         is ModelRole.REPORT_ANALYST
     )
-    assert ReportAnalyst(client, model="gpt-report").manifest.prompt_version == (
-        "report-analyst-v4"
+    assert (
+        ReportAnalyst(client, model="gpt-report").manifest.prompt_version
+        == "report-analyst-v5"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role

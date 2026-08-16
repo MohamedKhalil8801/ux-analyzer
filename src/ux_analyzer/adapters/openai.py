@@ -1342,7 +1342,7 @@ class _StructuredCallSupport:
             ModelRole.COARSE_SCENT: "scent-coarse-v1",
             ModelRole.FULL_SCENT: "scent-full-v1",
             ModelRole.COGNITIVE: "cognitive-v1",
-            ModelRole.REPORT_ANALYST: "report-analyst-v4",
+            ModelRole.REPORT_ANALYST: "report-analyst-v5",
             ModelRole.REPORT_EVIDENCE_AUDITOR: "report-evidence-auditor-v4",
             ModelRole.REPORT_PATTERN_REVIEWER: "report-pattern-reviewer-v4",
             ModelRole.REPORT_ADJUDICATOR: "report-adjudicator-v4",

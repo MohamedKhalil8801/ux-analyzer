@@ -2089,7 +2089,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v4"
+    prompt_version = "report-analyst-v5"
     response_schema = AnalystResponse
 
     @property
@@ -2098,7 +2098,12 @@ class ReportAnalyst(_ReportRole):
             "Discover material UX issues and their likely root causes. At most 8 "
             "candidate findings may be returned. Consolidate repeated signals that "
             "share a root cause across runs or surfaces. Emit plain language, concrete "
-            "fixes, evidence references, limitations, and justified severity."
+            "fixes, evidence references, limitations, and justified severity. Every "
+            "finding needs a non-empty severity_justification grounded in observed "
+            "task impact, not a principle. Leave affected_surfaces empty unless you "
+            "copy exact surface or surface_id values from delivered evidence. Causal "
+            "root-cause language needs both delivered UI-state evidence and delivered "
+            "behavior or outcome evidence."
         )
 
     async def analyze(

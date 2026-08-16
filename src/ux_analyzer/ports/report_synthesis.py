@@ -222,7 +222,9 @@ class CandidateFinding(_RoleSchema):
     reviewer_state: _BoundedLabel = "candidate"
     evidence_class: EvidenceClass = EvidenceClass.MODEL_ESTIMATE
     reproducibility: Reproducibility = Reproducibility.MODEL_DEPENDENT
-    severity_justification: Annotated[str, StringConstraints(max_length=600)] = ""
+    severity_justification: Annotated[
+        str, StringConstraints(min_length=1, max_length=600)
+    ]
     reviewer_notes: list[_BoundedNote] = Field(default_factory=list, max_length=4)
 
     @field_validator(
