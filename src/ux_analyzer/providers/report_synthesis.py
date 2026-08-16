@@ -1174,6 +1174,121 @@ def _analyst_first_pass_handles(manifest: ManifestInput) -> list[str]:
     return selected
 
 
+def _analyst_second_pass_handles(
+    manifest: ManifestInput,
+    resolved_evidence: ResolvedEvidence | None,
+) -> list[str]:
+    if resolved_evidence is None:
+        return []
+    references = _provider_evidence_reference_map(manifest)
+    handle_by_evidence_id = {
+        reference.evidence_id: handle for handle, reference in references.items()
+    }
+    if isinstance(manifest, EvidenceCorpus):
+        entries: list[EvidenceEntry | Mapping[object, object]] = list(
+            manifest.entries
+        )
+    else:
+        entries = [
+            cast(Mapping[object, object], entry)
+            for entry in _manifest_entries(manifest.get("entries"))
+            if isinstance(entry, Mapping)
+        ]
+
+    def entry_ref(entry: EvidenceEntry | Mapping[object, object]) -> EvidenceRef:
+        if isinstance(entry, EvidenceEntry):
+            return entry.ref
+        return _mapping_manifest_entry_reference(entry)
+
+    def entry_payload(
+        entry: EvidenceEntry | Mapping[object, object],
+    ) -> Mapping[object, object]:
+        if isinstance(entry, EvidenceEntry):
+            return cast(Mapping[object, object], entry.payload)
+        payload = entry.get("payload")
+        return cast(Mapping[object, object], payload) if isinstance(payload, Mapping) else {}
+
+    friction_by_run: dict[str, float] = {}
+    for entry in resolved_evidence.entries:
+        ref = entry.ref
+        if ref.kind != "metric" or not ref.run_id:
+            continue
+        raw_value = entry.payload.get("value")
+        if not isinstance(raw_value, int | float) or isinstance(raw_value, bool):
+            continue
+        weight = {
+            "wrong-actions": 100.0,
+            "target-discovery-rank": 10.0,
+            "discovery-cost": 1.0,
+        }.get(ref.metric_id or "", 0.0)
+        friction_by_run[ref.run_id] = friction_by_run.get(ref.run_id, 0.0) + (
+            float(raw_value) * weight
+        )
+    run_ids = sorted(friction_by_run, key=lambda run_id: (-friction_by_run[run_id], run_id))
+    selected: list[str] = []
+    for run_id in run_ids:
+        event_candidates: list[
+            tuple[int, EvidenceRef, Mapping[object, object]]
+        ] = []
+        for entry in entries:
+            ref = entry_ref(entry)
+            if ref.kind != "event" or ref.run_id != run_id or not ref.viewport_id:
+                continue
+            payload = entry_payload(entry)
+            raw_action = payload.get("action")
+            if not isinstance(raw_action, Mapping):
+                continue
+            action = cast(Mapping[object, object], raw_action)
+            element_id = action.get("element_id")
+            action_kind = action.get("kind")
+            if (
+                not isinstance(element_id, str)
+                or not element_id
+                or not isinstance(action_kind, str)
+                or "interact" not in action_kind
+                or payload.get("succeeded") is False
+            ):
+                continue
+            event_candidates.append((ref.replay_sequence or 0, ref, payload))
+        if not event_candidates:
+            continue
+        _, event_ref, event_payload = min(event_candidates, key=lambda item: item[0])
+        action = cast(Mapping[object, object], event_payload["action"])
+        element_id = cast(str, action["element_id"])
+        viewport_id = cast(str, event_ref.viewport_id)
+        matching_handles = [
+            handle_by_evidence_id.get(event_ref.evidence_id),
+            next(
+                (
+                    handle
+                    for handle, ref in references.items()
+                    if ref.kind == "viewport"
+                    and ref.run_id == run_id
+                    and ref.viewport_id == viewport_id
+                ),
+                None,
+            ),
+            next(
+                (
+                    handle
+                    for handle, ref in references.items()
+                    if ref.kind == "element"
+                    and ref.run_id == run_id
+                    and ref.viewport_id == viewport_id
+                    and ref.element_id == element_id
+                ),
+                None,
+            ),
+        ]
+        for handle in matching_handles:
+            if handle is None or handle in selected:
+                continue
+            selected.append(handle)
+            if len(selected) == _REPORT_ROLE_MAX_EVIDENCE_REQUESTS:
+                return selected
+    return selected
+
+
 def _expand_provider_handles(
     response: InvestigativeResponse,
     manifest: ManifestInput,
@@ -1604,6 +1719,15 @@ class _ReportRole:
                 message_payload["evidence_request_policy"][
                     "recommended_first_pass_handles"
                 ] = _analyst_first_pass_handles(manifest)
+            if self.role is ModelRole.REPORT_ANALYST and retrieval_round == 2:
+                second_pass_handles = _analyst_second_pass_handles(
+                    manifest,
+                    resolved_evidence,
+                )
+                if second_pass_handles:
+                    message_payload["evidence_request_policy"][
+                        "recommended_second_pass_handles"
+                    ] = second_pass_handles
             if (
                 context_deferred_count
                 or len(context_entries) < len(all_entries)
@@ -2191,7 +2315,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v6"
+    prompt_version = "report-analyst-v7"
     response_schema = AnalystResponse
 
     @property
@@ -2210,10 +2334,15 @@ class ReportAnalyst(_ReportRole):
             "established, inspect behavior and outcome metrics across every run, "
             "including wrong actions, discovery rank and cost, feedback, ambiguity, "
             "hierarchy, and below-fold signals. On the first round, start with the "
-            "recommended_first_pass_handles when present. On later rounds, retrieve "
-            "the event, replay, element, and viewport evidence behind the strongest "
-            "cross-run friction signals. Do not spend a retrieval round only on "
-            "expectations, verification, or visual-disclosure records."
+            "recommended_first_pass_handles when present. On the second round, request "
+            "recommended_second_pass_handles when present; they pair a friction run's "
+            "first interaction with its page and selected element. Do not request both "
+            "event and replay evidence for the same sequence because they duplicate the "
+            "same behavior. On later rounds, retrieve the element and viewport evidence "
+            "behind the strongest cross-run friction signals. Do not spend a retrieval "
+            "round only on expectations, verification, or visual-disclosure records. If "
+            "delivered evidence does not establish a cause, state that plainly instead "
+            "of using causal root-cause language."
         )
 
     async def analyze(

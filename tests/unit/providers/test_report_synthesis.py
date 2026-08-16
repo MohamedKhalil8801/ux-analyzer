@@ -2177,6 +2177,100 @@ async def test_analyst_recommends_balanced_first_pass_behavior_metrics(
     ]
 
 
+@pytest.mark.asyncio
+async def test_analyst_recommends_page_state_for_second_pass(
+    tmp_path: Path,
+) -> None:
+    entries: list[EvidenceEntry] = []
+    metric_ids: list[str] = []
+    for run_id, wrong_actions in (("run-a", 3), ("run-b", 1)):
+        viewport_id = f"{run_id}-viewport-1"
+        element_id = f"{viewport_id}-element-4"
+        metric_id = f"metric:{run_id}:wrong-actions"
+        metric_ids.append(metric_id)
+        entries.extend(
+            (
+                EvidenceEntry(
+                    ref=EvidenceRef(
+                        metric_id,
+                        "metric",
+                        run_id,
+                        metric_id="wrong-actions",
+                    ),
+                    evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                    summary=f"Wrong actions for {run_id}.",
+                    payload={"value": wrong_actions},
+                ),
+                EvidenceEntry(
+                    ref=EvidenceRef(
+                        f"viewport:{run_id}:{viewport_id}",
+                        "viewport",
+                        run_id,
+                        viewport_id=viewport_id,
+                    ),
+                    evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                    summary=f"Initial page for {run_id}.",
+                    payload={"viewport_id": viewport_id},
+                ),
+                EvidenceEntry(
+                    ref=EvidenceRef(
+                        f"element:{run_id}:{viewport_id}:{element_id}",
+                        "element",
+                        run_id,
+                        viewport_id=viewport_id,
+                        element_id=element_id,
+                    ),
+                    evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                    summary=f"First selected element for {run_id}.",
+                    payload={"label": "See the work"},
+                ),
+                EvidenceEntry(
+                    ref=EvidenceRef(
+                        f"event:{run_id}:11",
+                        "event",
+                        run_id,
+                        viewport_id=viewport_id,
+                        replay_sequence=11,
+                    ),
+                    evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                    summary=f"First interaction for {run_id}.",
+                    payload={
+                        "action": {
+                            "kind": "interact-with-element",
+                            "element_id": element_id,
+                        },
+                        "succeeded": True,
+                    },
+                ),
+            )
+        )
+    corpus = EvidenceCorpus(output_root=tmp_path, entries=tuple(entries))
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        metric_ids,
+        max_entries=16,
+        max_attachment_bytes=1024,
+    )
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+        retrieval_round=2,
+    )
+
+    payload = json.loads(client.calls[0][1][1].content)
+    policy = payload["evidence_request_policy"]
+    assert policy["recommended_second_pass_handles"] == [
+        "e3",
+        "e1",
+        "e2",
+        "e7",
+        "e5",
+        "e6",
+    ]
+
+
 def test_investigative_response_requires_retrieval_request_when_incomplete() -> None:
     with pytest.raises(ValidationError, match="evidence_requests"):
         AnalystResponse(complete=False, evidence_requests=[])
@@ -2602,7 +2696,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     )
     assert (
         ReportAnalyst(client, model="gpt-report").manifest.prompt_version
-        == "report-analyst-v6"
+        == "report-analyst-v7"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role
