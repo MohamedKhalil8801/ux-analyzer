@@ -606,6 +606,57 @@ async def test_auditor_rejects_undelivered_citation_on_final_round() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_final_round_retries_once_with_exact_delivered_handle_set() -> None:
+    finding = CandidateFinding(
+        finding_id="invite-control",
+        title="Invite control is hard to find",
+        issue="The invite control was not found in the tested state.",
+        impact="The tested task could not be completed.",
+        root_cause="The primary action lacks sufficient prominence.",
+        fixes=["Increase the primary action prominence."],
+        severity=FindingSeverity.HIGH,
+        confidence=0.9,
+        evidence_refs=[
+            EvidenceReference(
+                evidence_id=EVIDENCE_ID,
+                kind="event",
+                run_id="run-a",
+                replay_sequence=1,
+            )
+        ],
+    )
+    responses = [
+        AnalystResponse(complete=True, candidate_findings=[finding]),
+        AnalystResponse(
+            complete=True,
+            candidate_findings=[],
+            limitations=["The available evidence does not support a finding."],
+        ),
+    ]
+    client = RecordingClient(lambda schema, role: responses.pop(0))
+
+    response = await ReportAnalyst(client, model="gpt-report").analyze(
+        _manifest(),
+        retrieval_round=3,
+        max_retrieval_rounds=3,
+    )
+
+    assert response.complete is True
+    assert response.candidate_findings == []
+    assert len(client.calls) == 2
+    correction = json.loads(client.calls[1][1][1].content)
+    assert correction["final_response_correction"] == {
+        "allowed_evidence_handles": [],
+        "instruction": (
+            "Return complete=true with no evidence requests. Cite only the allowed "
+            "evidence handles. Drop any finding, objection, or resolution that cannot "
+            "be supported exclusively by those handles."
+        ),
+        "reason": "previous response cited evidence outside the delivered context",
+    }
+
+
 def test_initial_manifest_omits_attachment_and_filesystem_path_fields() -> None:
     corpus = EvidenceCorpus(
         output_root=Path.cwd(),

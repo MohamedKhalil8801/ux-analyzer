@@ -1724,6 +1724,55 @@ class _ReportRole:
             response,
             normalized_principles,
         )
+        undelivered_ids = self._referenced_evidence_ids(response) - delivered_ids
+        if retrieval_round == max_retrieval_rounds and undelivered_ids:
+            correction_payload = json.loads(messages[1].content)
+            correction_payload["final_response_correction"] = {
+                "reason": (
+                    "previous response cited evidence outside the delivered context"
+                ),
+                "allowed_evidence_handles": [
+                    handle
+                    for handle, evidence_id in handle_map.items()
+                    if evidence_id in delivered_ids
+                ],
+                "instruction": (
+                    "Return complete=true with no evidence requests. Cite only the "
+                    "allowed evidence handles. Drop any finding, objection, or "
+                    "resolution that cannot be supported exclusively by those handles."
+                ),
+            }
+            correction_messages = (
+                messages[0],
+                ChatMessage(
+                    role="user",
+                    content=_canonical_json(correction_payload),
+                    attachments=messages[1].attachments,
+                ),
+            )
+            if _measured_size(correction_messages) <= _REPORT_REQUEST_MAX_BYTES:
+                response = await self.client.complete(
+                    self.response_schema,
+                    correction_messages,
+                    model=self.model,
+                    role=self.role,
+                )
+                if not isinstance(response, self.response_schema):
+                    try:
+                        response = self.response_schema.model_validate(response)
+                    except ValidationError as error:
+                        raise ModelResponseValidationError(
+                            self.role,
+                            "response schema validation failed",
+                            response_summary={
+                                "schema": self.response_schema.__name__
+                            },
+                        ) from error
+                response = _expand_provider_handles(response, manifest)
+                response = self._normalize_principle_labels(
+                    response,
+                    normalized_principles,
+                )
         response = self._defer_undelivered_claims(
             response,
             manifest,
@@ -1787,28 +1836,7 @@ class _ReportRole:
         if retrieval_round >= max_retrieval_rounds:
             return response
 
-        referenced_ids = {
-            reference.evidence_id
-            for finding in self._findings(response)
-            for reference in (
-                *finding.evidence_refs,
-                *(
-                    item
-                    for item in finding.counterevidence
-                    if isinstance(item, EvidenceReference)
-                ),
-            )
-        }
-        referenced_ids.update(
-            reference.evidence_id
-            for objection in self._objections(response)
-            for reference in objection.evidence_refs
-        )
-        referenced_ids.update(
-            reference.evidence_id
-            for resolution in self._resolutions(response)
-            for reference in resolution.evidence_refs
-        )
+        referenced_ids = self._referenced_evidence_ids(response)
         undelivered_ids = referenced_ids - delivered_ids
         if not undelivered_ids:
             return response
@@ -1852,6 +1880,34 @@ class _ReportRole:
             payload["final_findings"] = []
             payload["objection_resolutions"] = []
         return type(response).model_validate(payload)
+
+    def _referenced_evidence_ids(
+        self,
+        response: InvestigativeResponse,
+    ) -> set[str]:
+        referenced_ids = {
+            reference.evidence_id
+            for finding in self._findings(response)
+            for reference in (
+                *finding.evidence_refs,
+                *(
+                    item
+                    for item in finding.counterevidence
+                    if isinstance(item, EvidenceReference)
+                ),
+            )
+        }
+        referenced_ids.update(
+            reference.evidence_id
+            for objection in self._objections(response)
+            for reference in objection.evidence_refs
+        )
+        referenced_ids.update(
+            reference.evidence_id
+            for resolution in self._resolutions(response)
+            for reference in resolution.evidence_refs
+        )
+        return referenced_ids
 
     @staticmethod
     def _validate_response_bounds(response: InvestigativeResponse) -> None:
