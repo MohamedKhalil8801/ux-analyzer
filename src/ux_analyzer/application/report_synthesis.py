@@ -146,6 +146,18 @@ _REVIEWER_ROLE_ALIASES = {
     "ux-analyst": ModelRole.REPORT_ANALYST,
 }
 
+
+def _scoped_objection_id(role: ModelRole, objection_id: str) -> str:
+    """Make reviewer-local IDs unique without changing their model-authored meaning."""
+
+    prefix = f"{role.value}:"
+    scoped = f"{prefix}{objection_id}"
+    if len(scoped) <= 256:
+        return scoped
+    digest = hashlib.sha256(objection_id.encode("utf-8")).hexdigest()[:16]
+    available = 256 - len(prefix) - len(digest) - 1
+    return f"{prefix}{objection_id[:available]}-{digest}"
+
 _Response = (
     AnalystResponse
     | EvidenceAuditResponse
@@ -1748,6 +1760,7 @@ class ReportSynthesisService:
             seen_ids.add(normalized.objection_id)
             domain = replace(
                 normalized.to_domain(),
+                objection_id=_scoped_objection_id(role, normalized.objection_id),
                 objection_type=normalized.objection_type,
                 resolved=False,
                 resolution=None,
@@ -1810,11 +1823,14 @@ class ReportSynthesisService:
         objections_by_id = {item.objection_id: item for item in objections}
         by_id: dict[str, ObjectionResolution] = {}
         for resolution in resolutions:
-            if resolution.objection_id in by_id:
+            resolution_id = self._resolution_objection_id(
+                objections_by_id, resolution.objection_id
+            )
+            if resolution_id in by_id:
                 raise ValueError(
-                    f"resolution {resolution.objection_id} was provided more than once"
+                    f"resolution {resolution_id} was provided more than once"
                 )
-            objection = objections_by_id.get(resolution.objection_id)
+            objection = objections_by_id.get(resolution_id)
             if objection is None:
                 raise ValueError(
                     f"resolution {resolution.objection_id} references an unknown objection"
@@ -1823,7 +1839,9 @@ class ReportSynthesisService:
                 raise ValueError(
                     f"resolution {resolution.objection_id} finding ID does not match objection"
                 )
-            by_id[resolution.objection_id] = resolution
+            by_id[resolution_id] = resolution.model_copy(
+                update={"objection_id": resolution_id}
+            )
         result: list[SynthesisObjection] = []
         for objection in objections:
             resolution = by_id.get(objection.objection_id)
@@ -1869,6 +1887,20 @@ class ReportSynthesisService:
                 )
             )
         return tuple(result)
+
+    @staticmethod
+    def _resolution_objection_id(
+        objections_by_id: Mapping[str, SynthesisObjection], objection_id: str
+    ) -> str:
+        if objection_id in objections_by_id:
+            return objection_id
+        suffix = f":{objection_id}"
+        matches = tuple(
+            candidate for candidate in objections_by_id if candidate.endswith(suffix)
+        )
+        if len(matches) == 1:
+            return matches[0]
+        return objection_id
 
     def _validated_final_findings(
         self,

@@ -978,7 +978,7 @@ async def test_forged_counterevidence_reference_is_rejected_before_publication(
 
 
 @pytest.mark.asyncio
-async def test_cross_reviewer_duplicate_objection_ids_reject_publication(
+async def test_cross_reviewer_duplicate_objection_ids_are_namespaced(
     tmp_path: Path,
 ) -> None:
     candidate = _candidate()
@@ -993,14 +993,41 @@ async def test_cross_reviewer_duplicate_objection_ids_reject_publication(
         analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
         auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
         pattern=[PatternReviewResponse(complete=True, objections=[objection])],
-        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
+        adjudicator=[
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[candidate],
+                objection_resolutions=[
+                    ObjectionResolution(
+                        objection_id=(
+                            "report-evidence-auditor:shared-objection"
+                        ),
+                        finding_id=candidate.finding_id,
+                        resolved=False,
+                        resolution="The objection remains as a qualification.",
+                    ),
+                    ObjectionResolution(
+                        objection_id=(
+                            "report-pattern-reviewer:shared-objection"
+                        ),
+                        finding_id=candidate.finding_id,
+                        resolved=False,
+                        resolution="The objection remains as a qualification.",
+                    ),
+                ],
+            )
+        ],
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
 
-    assert attempt.status is SynthesisStatus.REJECTED
-    assert not attempt.findings
-    assert any("objection" in item.lower() for item in attempt.limitations)
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert attempt.findings
+    assert len(attempt.objections) == 2
+    assert len({item.objection_id for item in attempt.objections}) == 2
+    assert {
+        item.reviewer_role for item in attempt.objections
+    } == {"report-evidence-auditor", "report-pattern-reviewer"}
 
 
 @pytest.mark.asyncio
