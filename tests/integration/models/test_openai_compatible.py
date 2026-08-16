@@ -1204,6 +1204,86 @@ async def test_report_role_falls_back_after_malformed_tool_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_report_role_falls_back_to_plain_after_json_object_rejection() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "type": "function",
+                                        "function": {
+                                            "name": "uxa_report_analyst",
+                                            "arguments": json.dumps(
+                                                {"candidate_findings": "invalid"}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+        if len(requests) == 2:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "INVALID_REQUEST",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "complete": True,
+                                    "evidence_requests": [],
+                                    "candidate_findings": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 3, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.complete is True
+    assert "tools" in requests[0]
+    assert requests[1]["response_format"] == {"type": "json_object"}
+    assert "tools" not in requests[2]
+    assert "response_format" not in requests[2]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_report_tool_call_retries_transient_invalid_request() -> None:
     attempts = 0
 
