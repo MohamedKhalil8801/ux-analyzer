@@ -1886,6 +1886,25 @@ async def test_reviewer_alias_is_normalized_to_canonical_role(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_spaced_reviewer_alias_is_normalized_to_canonical_role(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    objection = _blocking_objection(candidate.finding_id).model_copy(
+        update={"reviewer_role": "evidence auditor"}
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        adjudicator=[AdjudicationResponse(complete=True)],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.objections[0].reviewer_role == "report-evidence-auditor"
+
+
+@pytest.mark.asyncio
 async def test_unknown_reviewer_alias_rejects_synthesis(tmp_path: Path) -> None:
     candidate = _candidate()
     objection = _blocking_objection(candidate.finding_id).model_copy(

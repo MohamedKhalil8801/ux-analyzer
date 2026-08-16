@@ -140,8 +140,10 @@ _SEVERITY_ORDER = {
 _REVIEWER_ROLE_ALIASES = {
     "report-evidence-auditor": ModelRole.REPORT_EVIDENCE_AUDITOR,
     "evidence-auditor": ModelRole.REPORT_EVIDENCE_AUDITOR,
+    "evidence auditor": ModelRole.REPORT_EVIDENCE_AUDITOR,
     "report-pattern-reviewer": ModelRole.REPORT_PATTERN_REVIEWER,
     "pattern-reviewer": ModelRole.REPORT_PATTERN_REVIEWER,
+    "pattern reviewer": ModelRole.REPORT_PATTERN_REVIEWER,
     "report-analyst": ModelRole.REPORT_ANALYST,
     "ux-analyst": ModelRole.REPORT_ANALYST,
 }
