@@ -1641,6 +1641,8 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 )
                 last_reason = "invalid structured output"
                 if attempts < retry_policy.max_attempts:
+                    if mode == "tool-call":
+                        mode = "json-object"
                     retries.append(
                         self._retry(
                             role_value,
@@ -1669,6 +1671,8 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 )
                 last_reason = "invalid structured output"
                 if attempts < retry_policy.max_attempts:
+                    if mode == "tool-call":
+                        mode = "json-object"
                     retries.append(
                         self._retry(
                             role_value,

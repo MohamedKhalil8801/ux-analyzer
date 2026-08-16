@@ -1135,6 +1135,75 @@ async def test_report_role_uses_tool_call_transport_and_validates_locally() -> N
 
 
 @pytest.mark.asyncio
+async def test_report_role_falls_back_after_malformed_tool_output() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "type": "function",
+                                        "function": {
+                                            "name": "uxa_report_analyst",
+                                            "arguments": json.dumps(
+                                                {"candidate_findings": "invalid"}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "complete": True,
+                                    "evidence_requests": [],
+                                    "candidate_findings": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 2, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.complete is True
+    assert "tools" in requests[0]
+    assert requests[1]["response_format"] == {"type": "json_object"}
+    assert "tools" not in requests[1]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_report_tool_call_retries_transient_invalid_request() -> None:
     attempts = 0
 
@@ -1706,7 +1775,7 @@ async def test_invalid_report_output_records_safe_structural_diagnostics() -> No
     assert response["failure"] == "invalid structured output"
     assert failure.value.diagnostics == {
         "role": "report-analyst",
-        "response_mode": "tool-call",
+        "response_mode": "json-object",
         "attempt_count": 3,
         "stage": "schema_validation",
         "response_content_type": "str",
@@ -1732,7 +1801,7 @@ async def test_invalid_report_output_records_safe_structural_diagnostics() -> No
     diagnostics = response["diagnostics"]
     assert diagnostics == {
         "role": "report-analyst",
-        "response_mode": "tool-call",
+        "response_mode": "json-object",
         "attempt_count": 3,
         "stage": "schema_validation",
         "response_content_type": "str",
