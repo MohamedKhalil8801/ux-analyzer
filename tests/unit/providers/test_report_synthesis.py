@@ -1627,7 +1627,7 @@ async def test_over_budget_visual_attachment_is_deferred_before_model_client(
     payload = json.loads(client.messages[1].content)
     assert payload["resolved_evidence_context"]["visual_attachments"] == [
         {
-            "evidence_id": evidence_id,
+            "evidence_id": "e0",
             "media_type": "image/png",
             "reason": "transport_budget_exceeded",
             "sha256": attachment_digest,
@@ -1717,10 +1717,10 @@ async def test_mixed_visuals_keep_fitting_subset_and_mark_oversized_visual(
         entry["evidence_id"]
         for entry in payload["resolved_evidence"]
         if "evidence_id" in entry
-    } == {entry.ref.evidence_id for entry in entries}
+    } == {"e0", "e1", "e2", "e3"}
     assert payload["resolved_evidence_context"]["visual_attachments"] == [
         {
-            "evidence_id": rejected_id,
+            "evidence_id": "e0",
             "media_type": "image/png",
             "reason": "transport_budget_exceeded",
             "sha256": digest,
@@ -1814,7 +1814,7 @@ async def test_unverified_visual_attachment_is_not_sent_to_model(
     payload = json.loads(message.content)
     assert payload["resolved_evidence_context"]["visual_attachments"] == [
         {
-            "evidence_id": entry.ref.evidence_id,
+            "evidence_id": "e0",
             "media_type": "image/png",
             "reason": "visual_disclosure_unverified",
             "sha256": digest,
@@ -1993,7 +1993,7 @@ async def test_large_metric_continuation_uses_compact_bounded_context() -> None:
     assert len(metric_groups) == 1
     assert len(metric_groups[0]["entries"]) == 150
     assert {item["evidence_id"] for item in metric_groups[0]["entries"]} == {
-        entry.ref.evidence_id for entry in metric_entries
+        f"e{index}" for index in range(len(core_entries), len(corpus.entries))
     }
     assert payload["resolved_evidence_context"] == {
         "requested_count": 160,
@@ -2091,6 +2091,49 @@ async def test_role_calls_use_fresh_isolated_message_tuples() -> None:
         tuple(message.role for message in call[1]) == ("system", "user")
         for call in client.calls
     )
+
+
+@pytest.mark.asyncio
+async def test_model_facing_context_uses_only_opaque_evidence_handles(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus(tmp_path)
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=2,
+        max_attachment_bytes=1024,
+    )
+    candidate = CandidateFinding.model_validate(_finding_payload())
+    previous_output = AnalystResponse(
+        complete=True,
+        candidate_findings=[candidate],
+    )
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+        previous_output=previous_output,
+        retrieval_round=2,
+    )
+    await EvidenceAuditor(client, model="gpt-report").audit(
+        corpus,
+        candidate_findings=[candidate],
+        resolved_evidence=resolved,
+    )
+
+    analyst_payload = json.loads(client.calls[0][1][1].content)
+    auditor_payload = json.loads(client.calls[1][1][1].content)
+    assert analyst_payload["resolved_evidence"][0]["evidence_id"] == "e0"
+    assert analyst_payload["prior_structured_output"]["candidate_findings"][0][
+        "evidence_refs"
+    ][0]["evidence_id"] == "e0"
+    assert auditor_payload["role_input"]["candidate_findings"][0]["evidence_refs"][
+        0
+    ]["evidence_id"] == "e0"
+    assert EVIDENCE_ID not in json.dumps(analyst_payload)
+    assert EVIDENCE_ID not in json.dumps(auditor_payload)
 
 
 def test_investigative_response_requires_retrieval_request_when_incomplete() -> None:

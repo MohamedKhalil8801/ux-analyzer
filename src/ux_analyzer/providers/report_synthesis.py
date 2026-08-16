@@ -1197,6 +1197,29 @@ def _expand_provider_handles(
     return type(response).model_validate(expanded)
 
 
+def _contract_provider_handles(
+    value: object,
+    handle_by_evidence_id: Mapping[str, str],
+) -> object:
+    """Replace canonical evidence IDs with provider-local opaque handles."""
+
+    safe_value = _safe_prompt_value(value)
+
+    def contract(item: object) -> object:
+        if isinstance(item, str):
+            return handle_by_evidence_id.get(item, item)
+        if isinstance(item, Mapping):
+            return {
+                str(key): contract(child)
+                for key, child in cast(Mapping[object, object], item).items()
+            }
+        if isinstance(item, list):
+            return [contract(child) for child in cast(list[object], item)]
+        return item
+
+    return contract(safe_value)
+
+
 def _known_evidence_ids(manifest: ManifestInput) -> frozenset[str]:
     if isinstance(manifest, EvidenceCorpus):
         return frozenset(entry.ref.evidence_id for entry in manifest.entries)
@@ -1440,10 +1463,16 @@ class _ReportRole:
             previous_output, self.response_schema
         ):
             raise ValueError("previous output must belong to this role")
+        handle_map = _provider_evidence_handle_map(manifest)
+        handle_by_evidence_id = {
+            evidence_id: handle for handle, evidence_id in handle_map.items()
+        }
         base_message_payload: dict[str, object] = {
             "corpus_manifest": _initial_manifest_payload(manifest),
             "ux_principle_pack": [asdict(item) for item in normalized_principles],
-            "role_input": dict(role_input or {}),
+            "role_input": _contract_provider_handles(
+                dict(role_input or {}), handle_by_evidence_id
+            ),
             "response_schema": {
                 "role": self.role.value,
                 "schema_version": self.response_schema.schema_version,
@@ -1452,7 +1481,7 @@ class _ReportRole:
         }
         if previous_output is not None:
             base_message_payload["prior_structured_output"] = (
-                previous_output.model_dump(mode="json")
+                _contract_provider_handles(previous_output, handle_by_evidence_id)
             )
         all_entries = (
             tuple(resolved_evidence.entries) if resolved_evidence is not None else ()
@@ -1460,10 +1489,6 @@ class _ReportRole:
         all_attachment_bytes = (
             resolved_evidence.attachment_bytes if resolved_evidence is not None else 0
         )
-        handle_map = _provider_evidence_handle_map(manifest)
-        handle_by_evidence_id = {
-            evidence_id: handle for handle, evidence_id in handle_map.items()
-        }
         resolved_ids = {entry.ref.evidence_id for entry in all_entries}
         already_requested_handles = [
             handle for handle, evidence_id in handle_map.items() if evidence_id in resolved_ids
@@ -1485,6 +1510,13 @@ class _ReportRole:
             context_entries, included_count, _, _ = _safe_context_entries(
                 entries,
                 max_entries=_REPORT_MODEL_CONTEXT_MAX_ENTRIES,
+            )
+            context_entries = cast(
+                list[dict[str, object]],
+                _contract_provider_handles(
+                    context_entries,
+                    handle_by_evidence_id,
+                ),
             )
             context_deferred_count = max(0, len(all_entries) - included_count)
             message_payload = {
@@ -1552,14 +1584,22 @@ class _ReportRole:
                 if unavailable_attachments or blocked_visuals:
                     context["visual_attachments"] = [
                         {
-                            "evidence_id": attachment.evidence_id,
+                            "evidence_id": handle_by_evidence_id[
+                                attachment.evidence_id
+                            ],
                             "media_type": attachment.media_type,
                             "sha256": attachment.sha256,
                             "status": "unavailable",
                             "reason": "transport_budget_exceeded",
                         }
                         for attachment in unavailable_attachments
-                    ] + list(blocked_visuals)
+                    ] + cast(
+                        list[dict[str, object]],
+                        _contract_provider_handles(
+                            list(blocked_visuals),
+                            handle_by_evidence_id,
+                        ),
+                    )
                     context["instruction"] = (
                         "Listed visual attachments are unavailable for this model call. "
                         "Declare their IDs in unavailable_evidence_ids with a limitation; "
