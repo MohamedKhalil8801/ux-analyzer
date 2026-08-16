@@ -1539,6 +1539,25 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             ):
                 mode = "json-object"
                 continue
+            if (
+                response.status_code == 400
+                and mode == "tool-call"
+                and last_provider_metadata.get("error_code") == "INVALID_REQUEST"
+                and attempts < retry_policy.max_attempts
+            ):
+                retries.append(
+                    self._retry(
+                        role_value,
+                        model,
+                        attempts,
+                        "invalid-request",
+                        response.status_code,
+                        retry_policy,
+                        len(retries) + 1,
+                    )
+                )
+                await self._sleep(retries[-1].delay_seconds)
+                continue
             if response.status_code == 429:
                 last_reason = "rate limit"
                 if attempts < retry_policy.max_attempts:

@@ -1134,6 +1134,70 @@ async def test_report_role_uses_tool_call_transport_and_validates_locally() -> N
     await http_client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_report_tool_call_retries_transient_invalid_request() -> None:
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "INVALID_REQUEST",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "uxa_report_analyst",
+                                        "arguments": json.dumps(
+                                            {
+                                                "complete": True,
+                                                "evidence_requests": [],
+                                                "findings": [],
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 2, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.complete is True
+    assert attempts == 2
+    assert [event.reason for event in client.retry_events] == ["invalid-request"]
+    await http_client.aclose()
+
+
 def test_report_role_rejects_multiple_tool_calls() -> None:
     body = {
         "choices": [
