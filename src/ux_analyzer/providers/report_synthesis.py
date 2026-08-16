@@ -1122,11 +1122,29 @@ def _provider_evidence_handle_map(manifest: ManifestInput) -> dict[str, str]:
     return {f"e{index}": evidence_id for index, evidence_id in enumerate(evidence_ids)}
 
 
+def _provider_evidence_reference_map(
+    manifest: ManifestInput,
+) -> dict[str, EvidenceRef]:
+    if isinstance(manifest, EvidenceCorpus):
+        references = [entry.ref for entry in manifest.entries]
+    else:
+        references = [
+            entry.ref
+            if isinstance(entry, EvidenceEntry)
+            else _mapping_manifest_entry_reference(
+                cast(Mapping[object, object], entry)
+            )
+            for entry in _manifest_entries(manifest.get("entries"))
+        ]
+    return {f"e{index}": reference for index, reference in enumerate(references)}
+
+
 def _expand_provider_handles(
     response: InvestigativeResponse,
     manifest: ManifestInput,
 ) -> InvestigativeResponse:
     handles = _provider_evidence_handle_map(manifest)
+    references = _provider_evidence_reference_map(manifest)
     payload = cast(dict[str, object], response.model_dump(mode="python"))
     handle_was_expanded = False
 
@@ -1160,6 +1178,11 @@ def _expand_provider_handles(
                     if key == "evidence_id"
                     else replace_reference_ids(item)
                 )
+            raw_evidence_id = mapping.get("evidence_id")
+            if isinstance(raw_evidence_id, str) and raw_evidence_id in references:
+                for field_name in _EVIDENCE_REFERENCE_FIELDS:
+                    replaced.pop(field_name, None)
+                replaced.update(_safe_evidence_ref(references[raw_evidence_id]))
             return replaced
         if isinstance(value, list):
             values = cast(list[object], value)

@@ -540,6 +540,66 @@ async def test_report_role_defers_expanded_undelivered_claims_for_retrieval() ->
 
 
 @pytest.mark.asyncio
+async def test_report_handle_binds_the_complete_canonical_reference() -> None:
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    EVIDENCE_ID,
+                    "event",
+                    "run-a",
+                    event_id="event-1",
+                    replay_sequence=1,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="The user searched outside the expected task area.",
+                payload={"sequence": 1},
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+    candidate = _finding_payload()
+    candidate["evidence_refs"] = [
+        {
+            "evidence_id": "e0",
+            "kind": "metric",
+            "run_id": "wrong-run",
+            "metric_id": "wrong-metric",
+        }
+    ]
+    client = RecordingClient(
+        lambda schema, role: AnalystResponse.model_validate(
+            {
+                "complete": True,
+                "candidate_findings": [candidate],
+            }
+        )
+    )
+
+    response = await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+        retrieval_round=3,
+        max_retrieval_rounds=3,
+    )
+
+    reference = response.candidate_findings[0].evidence_refs[0]
+    assert reference == EvidenceReference(
+        evidence_id=EVIDENCE_ID,
+        kind="event",
+        run_id="run-a",
+        event_id="event-1",
+        replay_sequence=1,
+    )
+
+
+@pytest.mark.asyncio
 async def test_auditor_defers_known_undelivered_citation_before_final_round() -> None:
     second_evidence_id = "event:run-a:2"
     manifest = _manifest()
