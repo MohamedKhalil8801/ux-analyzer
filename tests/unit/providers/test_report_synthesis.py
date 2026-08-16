@@ -341,6 +341,26 @@ def test_report_output_drops_surface_labels_not_named_by_citations() -> None:
     assert normalized.candidate_findings[0].affected_surfaces == ["settings"]
 
 
+def test_report_output_caps_requests_to_remaining_role_budget() -> None:
+    analyst = ReportAnalyst(RecordingClient(), model="gpt-report")
+    response = AnalystResponse(
+        complete=False,
+        evidence_requests=[f"event:run-a:{index}" for index in range(16)],
+    )
+
+    normalized = analyst._bound_evidence_requests(
+        response,
+        {f"metric:run-a:{index}" for index in range(28)},
+    )
+
+    assert normalized.evidence_requests == [
+        "event:run-a:0",
+        "event:run-a:1",
+        "event:run-a:2",
+        "event:run-a:3",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_final_retrieval_round_allows_only_delivered_evidence() -> None:
     client = RecordingClient()
@@ -356,6 +376,7 @@ async def test_final_retrieval_round_allows_only_delivered_evidence() -> None:
     policy = payload["evidence_request_policy"]
     assert policy["retrieval_round"] == 3
     assert policy["max_retrieval_rounds"] == 3
+    assert policy["remaining_request_capacity"] == 32
     assert policy["final_round"] is True
     assert "Return complete=true" in policy["instruction"]
     assert "cite only already requested handles" in policy["instruction"]

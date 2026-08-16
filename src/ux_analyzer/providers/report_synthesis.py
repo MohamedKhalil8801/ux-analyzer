@@ -96,6 +96,7 @@ _REPORT_RESPONSE_MAX_BYTES = 256_000
 _REPORT_RESPONSE_MAX_TEXT_CHARS = 8_192
 _REPORT_RESPONSE_MAX_SEQUENCE_ITEMS = 128
 _REPORT_ROLE_MAX_EVIDENCE_REQUESTS = 16
+_REPORT_ROLE_MAX_TOTAL_EVIDENCE_REQUESTS = 32
 _INITIAL_MANIFEST_MAX_BYTES = (
     _REPORT_REQUEST_MAX_BYTES - _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
 )
@@ -1767,6 +1768,10 @@ class _ReportRole:
                 "transport_unavailable_handles": unavailable_handles,
                 "retrieval_round": retrieval_round,
                 "max_retrieval_rounds": max_retrieval_rounds,
+                "remaining_request_capacity": max(
+                    0,
+                    _REPORT_ROLE_MAX_TOTAL_EVIDENCE_REQUESTS - len(resolved_ids),
+                ),
                 "final_round": retrieval_round == max_retrieval_rounds,
                 "instruction": (
                     (
@@ -2088,6 +2093,7 @@ class _ReportRole:
             retrieval_round=retrieval_round,
             max_retrieval_rounds=max_retrieval_rounds,
         )
+        response = self._bound_evidence_requests(response, resolved_ids)
         self._validate_response(
             response,
             manifest,
@@ -2188,6 +2194,23 @@ class _ReportRole:
             payload["candidate_findings"] = normalized_findings
         elif isinstance(response, AdjudicationResponse):
             payload["final_findings"] = normalized_findings
+        return type(response).model_validate(payload)
+
+    def _bound_evidence_requests(
+        self,
+        response: InvestigativeResponse,
+        resolved_ids: set[str],
+    ) -> InvestigativeResponse:
+        remaining = max(
+            0,
+            _REPORT_ROLE_MAX_TOTAL_EVIDENCE_REQUESTS - len(resolved_ids),
+        )
+        if len(response.evidence_requests) > _REPORT_ROLE_MAX_EVIDENCE_REQUESTS:
+            return response
+        if len(response.evidence_requests) <= remaining:
+            return response
+        payload = response.model_dump(mode="python")
+        payload["evidence_requests"] = response.evidence_requests[:remaining]
         return type(response).model_validate(payload)
 
     def _defer_undelivered_claims(
