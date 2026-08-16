@@ -312,6 +312,35 @@ async def test_plain_report_request_delivers_role_schema_contract() -> None:
     assert finding_schema["evidence_refs"]["maxItems"] == 12
 
 
+def test_report_output_drops_surface_labels_not_named_by_citations() -> None:
+    manifest = _manifest()
+    entries = list(manifest["entries"])
+    entries[0] = {
+        **entries[0],  # type: ignore[misc]
+        "payload": {"surface": "settings"},
+    }
+    manifest["entries"] = entries
+    response = AnalystResponse(
+        complete=True,
+        candidate_findings=[
+            CandidateFinding.model_validate(
+                {
+                    **_finding_payload(),
+                    "affected_surfaces": ["settings", "admin"],
+                }
+            )
+        ],
+    )
+
+    normalized = ReportAnalyst(RecordingClient(), model="gpt-report")._normalize_affected_surfaces(
+        response,
+        manifest,
+    )
+
+    assert isinstance(normalized, AnalystResponse)
+    assert normalized.candidate_findings[0].affected_surfaces == ["settings"]
+
+
 @pytest.mark.asyncio
 async def test_final_retrieval_round_allows_only_delivered_evidence() -> None:
     client = RecordingClient()

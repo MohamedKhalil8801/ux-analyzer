@@ -1149,6 +1149,54 @@ def _provider_evidence_reference_map(
     return {f"e{index}": reference for index, reference in enumerate(references)}
 
 
+def _provider_surface_tokens(
+    manifest: ManifestInput,
+    evidence_ids: frozenset[str],
+) -> frozenset[str]:
+    """Return surface labels explicitly present on the cited manifest entries."""
+
+    if isinstance(manifest, EvidenceCorpus):
+        entries: Sequence[EvidenceEntry | Mapping[object, object]] = manifest.entries
+    else:
+        entries = cast(
+            Sequence[EvidenceEntry | Mapping[object, object]],
+            _manifest_entries(manifest.get("entries")),
+        )
+
+    tokens: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, EvidenceEntry):
+            if entry.ref.evidence_id not in evidence_ids:
+                continue
+            payload = cast(Mapping[object, object], entry.payload)
+        else:
+            mapping = entry
+            if _mapping_manifest_entry_id(mapping) not in evidence_ids:
+                continue
+            raw_payload = mapping.get("payload")
+            if not isinstance(raw_payload, Mapping):
+                continue
+            payload = cast(Mapping[object, object], raw_payload)
+
+        for key, raw in payload.items():
+            if str(key).casefold() not in {
+                "surface",
+                "surface_id",
+                "surface_ids",
+                "surfaces",
+            }:
+                continue
+            if isinstance(raw, str) and raw.strip():
+                tokens.add(raw.strip().casefold())
+            elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+                tokens.update(
+                    item.strip().casefold()
+                    for item in cast(Sequence[object], raw)
+                    if isinstance(item, str) and item.strip()
+                )
+    return frozenset(tokens)
+
+
 def _provider_evidence_class_map(
     manifest: ManifestInput,
 ) -> dict[str, EvidenceClass]:
@@ -2030,6 +2078,7 @@ class _ReportRole:
                     normalized_principles,
                 )
         response = self._normalize_evidence_classes(response, manifest)
+        response = self._normalize_affected_surfaces(response, manifest)
         response = self._defer_undelivered_claims(
             response,
             manifest,
@@ -2097,6 +2146,42 @@ class _ReportRole:
             for finding in findings
         ]
         if list(findings) == normalized_findings:
+            return response
+        payload = response.model_dump(mode="python")
+        if isinstance(response, AnalystResponse):
+            payload["candidate_findings"] = normalized_findings
+        elif isinstance(response, AdjudicationResponse):
+            payload["final_findings"] = normalized_findings
+        return type(response).model_validate(payload)
+
+    def _normalize_affected_surfaces(
+        self,
+        response: InvestigativeResponse,
+        manifest: ManifestInput,
+    ) -> InvestigativeResponse:
+        """Keep only surface labels explicitly named by each finding's citations."""
+
+        findings = self._findings(response)
+        normalized_findings: list[CandidateFinding] = []
+        changed = False
+        for finding in findings:
+            supported = _provider_surface_tokens(
+                manifest,
+                frozenset(reference.evidence_id for reference in finding.evidence_refs),
+            )
+            surfaces = [
+                surface
+                for surface in finding.affected_surfaces
+                if surface.casefold() in supported
+            ]
+            if surfaces != list(finding.affected_surfaces):
+                changed = True
+                normalized_findings.append(
+                    finding.model_copy(update={"affected_surfaces": surfaces})
+                )
+            else:
+                normalized_findings.append(finding)
+        if not changed:
             return response
         payload = response.model_dump(mode="python")
         if isinstance(response, AnalystResponse):
