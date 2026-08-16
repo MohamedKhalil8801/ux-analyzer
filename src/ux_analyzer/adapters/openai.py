@@ -821,7 +821,7 @@ def _transport_error_category(error: httpx.TransportError) -> str:
 _MISSING_RESPONSE_CONTENT = object()
 
 
-def _response_message_content(body: object) -> object:
+def _response_message(body: object) -> Mapping[object, object]:
     if not isinstance(body, Mapping):
         raise ValueError("response body is not an object")
     response_mapping = cast(Mapping[object, object], body)
@@ -838,7 +838,15 @@ def _response_message_content(body: object) -> object:
     if not isinstance(message, Mapping):
         raise ValueError("response choice has no message")
     message_mapping = cast(Mapping[object, object], message)
-    return message_mapping.get("content", _MISSING_RESPONSE_CONTENT)
+    return message_mapping
+
+
+def _response_message_content(body: object) -> object:
+    return _response_message(body).get("content", _MISSING_RESPONSE_CONTENT)
+
+
+def _response_message_tool_calls(body: object) -> object:
+    return _response_message(body).get("tool_calls", _MISSING_RESPONSE_CONTENT)
 
 
 def _text_content_stream(content: object) -> str | None:
@@ -965,6 +973,32 @@ def _structured_content(
     *,
     role: ModelRole | None = None,
 ) -> object:
+    tool_calls = _response_message_tool_calls(body)
+    if role in _REPORT_ROLES and tool_calls is not _MISSING_RESPONSE_CONTENT:
+        if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
+            raise ValueError("response message tool calls are not a list")
+        calls = cast(Sequence[object], tool_calls)
+        if len(calls) != 1:
+            raise ValueError("response must contain exactly one tool call")
+        call = calls[0]
+        if not isinstance(call, Mapping):
+            raise ValueError("response tool call is not an object")
+        call_mapping = cast(Mapping[object, object], call)
+        if call_mapping.get("type", "function") != "function":
+            raise ValueError("response tool call is not a function call")
+        function = call_mapping.get("function")
+        if not isinstance(function, Mapping):
+            raise ValueError("response tool call has no function")
+        function_mapping = cast(Mapping[object, object], function)
+        arguments = function_mapping.get("arguments")
+        if not isinstance(arguments, str):
+            raise ValueError("response tool call has no JSON arguments")
+        if function_mapping.get("name") != _report_tool_name(cast(ModelRole, role)):
+            raise ValueError("response tool call has an unexpected function name")
+        content = _response_message_content(body)
+        if content not in (_MISSING_RESPONSE_CONTENT, None, "", []):
+            raise ValueError("response contains both tool call and message content")
+        return _strict_json_object(arguments)
     content = _response_message_content(body)
     if isinstance(content, Mapping):
         content_mapping = cast(Mapping[object, object], content)
@@ -1247,13 +1281,16 @@ def _normalize_report_output(role: ModelRole, parsed: object) -> object:
 
 def _response_mode(role: ModelRole) -> str:
     role_value = ModelRole(role)
-    # This provider rejects response_format on the report route. Keep JSON
-    # parsing and Pydantic validation local after receiving plain content.
     if role_value in _REPORT_ROLES:
-        return "plain"
+        return "tool-call"
     if role_value is ModelRole.COGNITIVE:
         return "json-object"
     return "strict"
+
+
+def _report_tool_name(role: ModelRole) -> str:
+    role_name = ModelRole(role).value.replace("report-", "").replace("-", "_")
+    return f"uxa_report_{role_name}"
 
 
 class _StructuredCallSupport:
@@ -1731,6 +1768,23 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             }
         elif mode == "json-object":
             payload["response_format"] = {"type": "json_object"}
+        elif mode == "tool-call":
+            tool_name = _report_tool_name(role)
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "description": "Return the validated report response.",
+                        "strict": True,
+                        "parameters": schema.model_json_schema(),
+                    },
+                }
+            ]
+            payload["tool_choice"] = {
+                "type": "function",
+                "function": {"name": tool_name},
+            }
         return payload
 
     def request_size(

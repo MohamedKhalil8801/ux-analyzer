@@ -1079,7 +1079,7 @@ async def test_cognitive_role_starts_in_json_object_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_report_role_uses_plain_json_transport_and_validates_locally() -> None:
+async def test_report_role_uses_tool_call_transport_and_validates_locally() -> None:
     requests: list[dict[str, object]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1090,14 +1090,23 @@ async def test_report_role_uses_plain_json_transport_and_validates_locally() -> 
                 "choices": [
                     {
                         "message": {
-                            "content": json.dumps(
+                            "content": None,
+                            "tool_calls": [
                                 {
-                                    "complete": False,
-                                    "evidence_requests": ["e0"],
-                                    "findings": [],
+                                    "type": "function",
+                                    "function": {
+                                        "name": "uxa_report_analyst",
+                                        "arguments": json.dumps(
+                                            {
+                                                "complete": False,
+                                                "evidence_requests": ["e0"],
+                                                "findings": [],
+                                            }
+                                        ),
+                                    },
                                 }
-                            )
-                        }
+                            ],
+                        },
                     }
                 ],
             },
@@ -1116,7 +1125,52 @@ async def test_report_role_uses_plain_json_transport_and_validates_locally() -> 
     assert result.candidate_findings == []
     assert result.evidence_requests == ["e0"]
     assert "response_format" not in requests[0]
+    assert requests[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "uxa_report_analyst"},
+    }
+    assert requests[0]["tools"][0]["type"] == "function"  # type: ignore[index]
     await http_client.aclose()
+
+
+def test_report_role_rejects_multiple_tool_calls() -> None:
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {"type": "function", "function": {"arguments": "{}"}},
+                        {"type": "function", "function": {"arguments": "{}"}},
+                    ],
+                }
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="exactly one tool call"):
+        openai_adapter._structured_content(body, role=ModelRole.REPORT_ANALYST)
+
+
+def test_report_role_rejects_unexpected_tool_name() -> None:
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {"name": "other_tool", "arguments": "{}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="unexpected function name"):
+        openai_adapter._structured_content(body, role=ModelRole.REPORT_ANALYST)
 
 
 @pytest.mark.asyncio
@@ -1530,7 +1584,7 @@ async def test_invalid_report_output_records_safe_structural_diagnostics() -> No
     assert response["failure"] == "invalid structured output"
     assert failure.value.diagnostics == {
         "role": "report-analyst",
-        "response_mode": "plain",
+        "response_mode": "tool-call",
         "attempt_count": 3,
         "stage": "schema_validation",
         "response_content_type": "str",
@@ -1556,7 +1610,7 @@ async def test_invalid_report_output_records_safe_structural_diagnostics() -> No
     diagnostics = response["diagnostics"]
     assert diagnostics == {
         "role": "report-analyst",
-        "response_mode": "plain",
+        "response_mode": "tool-call",
         "attempt_count": 3,
         "stage": "schema_validation",
         "response_content_type": "str",
