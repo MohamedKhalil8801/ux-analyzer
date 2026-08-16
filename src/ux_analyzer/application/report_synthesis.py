@@ -2285,6 +2285,26 @@ class ReportSynthesisService:
                 "finding requires severity justification",
             ),
             (
+                "affected surfaces are not named",
+                "affected surfaces are not named by supporting evidence",
+            ),
+            (
+                "ux principles cannot justify severity",
+                "UX principles cannot justify severity",
+            ),
+            (
+                "unsupported human claim",
+                "unsupported human claims cannot support a finding",
+            ),
+            (
+                "finding conflicts with verifier outcome",
+                "finding conflicts with verifier outcome",
+            ),
+            (
+                "finding has no primary observed evidence",
+                "finding has no primary observed evidence",
+            ),
+            (
                 "causal language is not supported",
                 "causal language is not supported by evidence",
             ),
