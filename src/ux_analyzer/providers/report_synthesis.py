@@ -126,6 +126,16 @@ _COMPACT_PROVIDER_MANIFEST_ENTRY_FIELDS = (
     "element_index",
 )
 _PROVIDER_EVIDENCE_HANDLE = re.compile(r"^e[0-9]+$")
+_ANALYST_FIRST_PASS_METRICS = (
+    "wrong-actions",
+    "target-discovery-rank",
+    "discovery-cost",
+    "feedback-observed",
+    "target-below-fold",
+    "ambiguous-target",
+    "unexpected-hierarchy",
+    "verified-completion",
+)
 
 
 class ReportTransportBudgetError(TransportBudgetError):
@@ -1139,6 +1149,31 @@ def _provider_evidence_reference_map(
     return {f"e{index}": reference for index, reference in enumerate(references)}
 
 
+def _analyst_first_pass_handles(manifest: ManifestInput) -> list[str]:
+    references = _provider_evidence_reference_map(manifest)
+    run_ids = list(
+        dict.fromkeys(
+            reference.run_id
+            for reference in references.values()
+            if reference.run_id
+        )
+    )
+    handles_by_metric = {
+        (reference.run_id, reference.metric_id): handle
+        for handle, reference in references.items()
+        if reference.kind == "metric" and reference.metric_id
+    }
+    selected: list[str] = []
+    for metric_id in _ANALYST_FIRST_PASS_METRICS:
+        for run_id in run_ids:
+            handle = handles_by_metric.get((run_id, metric_id))
+            if handle is not None:
+                selected.append(handle)
+                if len(selected) == _REPORT_ROLE_MAX_EVIDENCE_REQUESTS:
+                    return selected
+    return selected
+
+
 def _expand_provider_handles(
     response: InvestigativeResponse,
     manifest: ManifestInput,
@@ -1565,6 +1600,10 @@ class _ReportRole:
                     )
                 ),
             }
+            if self.role is ModelRole.REPORT_ANALYST and retrieval_round == 1:
+                message_payload["evidence_request_policy"][
+                    "recommended_first_pass_handles"
+                ] = _analyst_first_pass_handles(manifest)
             if (
                 context_deferred_count
                 or len(context_entries) < len(all_entries)
@@ -2152,7 +2191,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v5"
+    prompt_version = "report-analyst-v6"
     response_schema = AnalystResponse
 
     @property
@@ -2166,7 +2205,15 @@ class ReportAnalyst(_ReportRole):
             "task impact, not a principle. Leave affected_surfaces empty unless you "
             "copy exact surface or surface_id values from delivered evidence. Causal "
             "root-cause language needs both delivered UI-state evidence and delivered "
-            "behavior or outcome evidence."
+            "behavior or outcome evidence. A verified completion does not prove the "
+            "interface was easy to use. Before concluding that no material issue was "
+            "established, inspect behavior and outcome metrics across every run, "
+            "including wrong actions, discovery rank and cost, feedback, ambiguity, "
+            "hierarchy, and below-fold signals. On the first round, start with the "
+            "recommended_first_pass_handles when present. On later rounds, retrieve "
+            "the event, replay, element, and viewport evidence behind the strongest "
+            "cross-run friction signals. Do not spend a retrieval round only on "
+            "expectations, verification, or visual-disclosure records."
         )
 
     async def analyze(

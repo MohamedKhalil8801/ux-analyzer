@@ -278,6 +278,7 @@ async def test_analyst_prompt_has_boundary_and_excludes_prior_agent_context() ->
         in prompt
     )
     assert "element_index" in prompt
+    assert "A verified completion does not prove the interface was easy to use" in prompt
     assert "element_values" in prompt
     assert "run_ids, viewport_values" in prompt
     assert "At most 8 candidate findings" in prompt
@@ -2136,6 +2137,46 @@ async def test_model_facing_context_uses_only_opaque_evidence_handles(
     assert EVIDENCE_ID not in json.dumps(auditor_payload)
 
 
+@pytest.mark.asyncio
+async def test_analyst_recommends_balanced_first_pass_behavior_metrics(
+    tmp_path: Path,
+) -> None:
+    entries = tuple(
+        EvidenceEntry(
+            ref=EvidenceRef(
+                f"metric:{run_id}:{metric_id}",
+                "metric",
+                run_id,
+                metric_id=metric_id,
+            ),
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"{metric_id} for {run_id}.",
+            payload={"value": value},
+        )
+        for run_id in ("run-a", "run-b")
+        for metric_id, value in (
+            ("wrong-actions", 2),
+            ("target-discovery-rank", 7),
+            ("discovery-cost", 2.5),
+        )
+    )
+    corpus = EvidenceCorpus(output_root=tmp_path, entries=entries)
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(corpus)
+
+    payload = json.loads(client.calls[0][1][1].content)
+    policy = payload["evidence_request_policy"]
+    assert policy["recommended_first_pass_handles"] == [
+        "e0",
+        "e3",
+        "e1",
+        "e4",
+        "e2",
+        "e5",
+    ]
+
+
 def test_investigative_response_requires_retrieval_request_when_incomplete() -> None:
     with pytest.raises(ValidationError, match="evidence_requests"):
         AnalystResponse(complete=False, evidence_requests=[])
@@ -2561,7 +2602,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     )
     assert (
         ReportAnalyst(client, model="gpt-report").manifest.prompt_version
-        == "report-analyst-v5"
+        == "report-analyst-v6"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role
