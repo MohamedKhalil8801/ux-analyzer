@@ -1130,6 +1130,7 @@ async def test_report_role_uses_tool_call_transport_and_validates_locally() -> N
         "function": {"name": "uxa_report_analyst"},
     }
     assert requests[0]["tools"][0]["type"] == "function"  # type: ignore[index]
+    assert "strict" not in requests[0]["tools"][0]["function"]  # type: ignore[index]
     await http_client.aclose()
 
 

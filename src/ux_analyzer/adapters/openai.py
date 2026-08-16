@@ -1776,7 +1776,6 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                     "function": {
                         "name": tool_name,
                         "description": "Return the validated report response.",
-                        "strict": True,
                         "parameters": schema.model_json_schema(),
                     },
                 }
