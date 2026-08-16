@@ -23,13 +23,17 @@ from ux_analyzer.application.evidence_corpus import (
 )
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
 from ux_analyzer.domain.synthesis import EvidenceRef, ObjectionSeverity
-from ux_analyzer.ports.model_transport import TransportBudgetError
+from ux_analyzer.ports.model_transport import (
+    MODEL_REQUEST_MAX_BYTES,
+    TransportBudgetError,
+)
 from ux_analyzer.ports.models import ModelResponseValidationError, ModelRole
 from ux_analyzer.providers.report_synthesis import (
     _INITIAL_MANIFEST_MAX_BYTES,
     _REPORT_MODEL_CONTEXT_MAX_ENTRIES,
     _REPORT_REQUEST_MAX_BYTES,
     _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES,
+    _REPORT_RESOLVED_CONTEXT_MAX_BYTES,
     AdjudicationResponse,
     AnalystResponse,
     CandidateFinding,
@@ -54,6 +58,11 @@ from ux_analyzer.providers.report_synthesis import (
 from ux_analyzer.providers.ux_principles import ux_principles
 
 EVIDENCE_ID = "event:run-a:1"
+
+
+def test_resolved_evidence_budget_stays_below_transport_ceiling() -> None:
+    assert _REPORT_RESOLVED_CONTEXT_MAX_BYTES == 400_000
+    assert _REPORT_RESOLVED_CONTEXT_MAX_BYTES < MODEL_REQUEST_MAX_BYTES
 
 
 @dataclass(frozen=True)
@@ -137,9 +146,9 @@ class AttachmentAwareRecordingClient(RecordingClient):
         has_attachments = any(message.attachments for message in messages)
         resolved_evidence = json.loads(messages[1].content)["resolved_evidence"]
         measured = (
-            _REPORT_REQUEST_MAX_BYTES + 1
+            _REPORT_RESOLVED_CONTEXT_MAX_BYTES + 1
             if has_attachments or len(resolved_evidence) > 1
-            else _REPORT_REQUEST_MAX_BYTES - 1
+            else _REPORT_RESOLVED_CONTEXT_MAX_BYTES - 1
         )
         self.measured_sizes.append(measured)
         return measured
@@ -165,10 +174,10 @@ class SelectiveAttachmentRecordingClient(RecordingClient):
             for attachment in message.attachments
         }
         if self.rejected_evidence_id in attachment_ids and len(attachment_ids) > 1:
-            return _REPORT_REQUEST_MAX_BYTES + 1
+            return _REPORT_RESOLVED_CONTEXT_MAX_BYTES + 1
         if attachment_ids == {self.rejected_evidence_id}:
-            return _REPORT_REQUEST_MAX_BYTES - 1
-        return _REPORT_REQUEST_MAX_BYTES - 100
+            return _REPORT_RESOLVED_CONTEXT_MAX_BYTES - 1
+        return _REPORT_RESOLVED_CONTEXT_MAX_BYTES - 100
 
 
 def _manifest(*, include_sentinels: bool = False) -> dict[str, object]:
@@ -1455,7 +1464,10 @@ async def test_oversized_resolved_context_is_rejected_before_model_client() -> N
 
     assert client.calls == []
     assert failure.value.diagnostics["stage"] == "request_budget"
-    assert failure.value.diagnostics["budget_bytes"] == _REPORT_REQUEST_MAX_BYTES
+    assert (
+        failure.value.diagnostics["budget_bytes"]
+        == _REPORT_RESOLVED_CONTEXT_MAX_BYTES
+    )
 
 
 @pytest.mark.asyncio
@@ -1547,8 +1559,8 @@ async def test_over_budget_visual_attachment_is_deferred_before_model_client(
         )
 
     assert client.measured_sizes == [
-        _REPORT_REQUEST_MAX_BYTES - 1,
-        _REPORT_REQUEST_MAX_BYTES + 1,
+        _REPORT_RESOLVED_CONTEXT_MAX_BYTES - 1,
+        _REPORT_RESOLVED_CONTEXT_MAX_BYTES + 1,
     ]
     assert client.messages[1].attachments == ()
     payload = json.loads(client.messages[1].content)
@@ -1764,9 +1776,9 @@ async def test_over_budget_resolved_entries_are_bounded_before_model_client() ->
             del schema, model, role
             entry_count = len(json.loads(messages[1].content)["resolved_evidence"])
             return (
-                _REPORT_REQUEST_MAX_BYTES - 1
+                _REPORT_RESOLVED_CONTEXT_MAX_BYTES - 1
                 if entry_count <= 1
-                else _REPORT_REQUEST_MAX_BYTES + entry_count
+                else _REPORT_RESOLVED_CONTEXT_MAX_BYTES + entry_count
             )
 
     entries = tuple(
@@ -1940,7 +1952,7 @@ async def test_large_metric_continuation_uses_compact_bounded_context() -> None:
     serialized_size = len(client.calls[0][1][1].content.encode("utf-8"))
     assert (
         serialized_size + _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
-        <= _REPORT_REQUEST_MAX_BYTES
+        <= _REPORT_RESOLVED_CONTEXT_MAX_BYTES
     )
 
 

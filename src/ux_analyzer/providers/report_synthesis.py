@@ -88,6 +88,9 @@ _INITIAL_MANIFEST_SUMMARY_MAX_CHARS = 512
 # Reserve measured room for role prompts, principles, schemas, and transport data.
 _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES = 50_000
 _REPORT_REQUEST_MAX_BYTES = MODEL_REQUEST_MAX_BYTES
+# Resolved viewport payloads can approach the transport ceiling while exceeding
+# the configured model's reliable context window.
+_REPORT_RESOLVED_CONTEXT_MAX_BYTES = min(_REPORT_REQUEST_MAX_BYTES, 400_000)
 _REPORT_MODEL_CONTEXT_MAX_ENTRIES = 32
 _REPORT_RESPONSE_MAX_BYTES = 256_000
 _REPORT_RESPONSE_MAX_TEXT_CHARS = 8_192
@@ -1575,6 +1578,11 @@ class _ReportRole:
             )
 
         entries = all_entries
+        request_budget = (
+            _REPORT_RESOLVED_CONTEXT_MAX_BYTES
+            if all_entries
+            else _REPORT_REQUEST_MAX_BYTES
+        )
         candidate_attachments = _attachment_values(manifest, entries)
         original_attachment_count = len(candidate_attachments)
         attachments: tuple[ModelAttachment, ...] = ()
@@ -1582,7 +1590,7 @@ class _ReportRole:
         measured_size = _measured_size(messages)
         deferred_attachment_bytes = all_attachment_bytes if candidate_attachments else 0
         deferred_entry_count = 0
-        if measured_size > _REPORT_REQUEST_MAX_BYTES and entries:
+        if measured_size > request_budget and entries:
             lower = 1
             upper = len(entries)
             best_entries: tuple[EvidenceEntry, ...] = ()
@@ -1596,7 +1604,7 @@ class _ReportRole:
                     candidate_entries, (), bounded_attachments
                 )
                 candidate_size = _measured_size(candidate_messages)
-                if candidate_size <= _REPORT_REQUEST_MAX_BYTES:
+                if candidate_size <= request_budget:
                     best_entries = candidate_entries
                     best_messages = candidate_messages
                     best_size = candidate_size
@@ -1609,7 +1617,7 @@ class _ReportRole:
                 measured_size = best_size
                 deferred_entry_count = len(all_entries) - len(entries)
                 candidate_attachments = _attachment_values(manifest, entries)
-        if measured_size <= _REPORT_REQUEST_MAX_BYTES:
+        if measured_size <= request_budget:
             ranked_attachments: list[
                 tuple[
                     int,
@@ -1642,18 +1650,18 @@ class _ReportRole:
                 else:
                     candidate_messages = single_messages
                     candidate_size = single_size
-                if candidate_size <= _REPORT_REQUEST_MAX_BYTES:
+                if candidate_size <= request_budget:
                     attachments = candidate_values
                     messages = candidate_messages
                     measured_size = candidate_size
             if len(attachments) == len(candidate_attachments):
                 deferred_attachment_bytes = 0
-        if measured_size > _REPORT_REQUEST_MAX_BYTES:
+        if measured_size > request_budget:
             raise ReportTransportBudgetError(
                 {
                     "stage": "request_budget",
                     "request_bytes": measured_size,
-                    "budget_bytes": _REPORT_REQUEST_MAX_BYTES,
+                    "budget_bytes": request_budget,
                     "attachment_bytes": all_attachment_bytes,
                     "attachment_bytes_deferred": deferred_attachment_bytes,
                     "attachment_count": original_attachment_count,
@@ -1750,7 +1758,7 @@ class _ReportRole:
                     attachments=messages[1].attachments,
                 ),
             )
-            if _measured_size(correction_messages) <= _REPORT_REQUEST_MAX_BYTES:
+            if _measured_size(correction_messages) <= request_budget:
                 response = await self.client.complete(
                     self.response_schema,
                     correction_messages,
