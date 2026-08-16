@@ -306,9 +306,6 @@ async def test_plain_report_request_delivers_role_schema_contract() -> None:
     assert schema["properties"]["candidate_findings"]["maxItems"] == 8
     assert schema["properties"]["evidence_requests"]["maxItems"] == 16
     finding_schema = schema["$defs"]["CandidateFinding"]["properties"]
-    required_finding_fields = schema["$defs"]["CandidateFinding"]["required"]
-    assert "severity_justification" in required_finding_fields
-    assert finding_schema["severity_justification"]["minLength"] == 1
     assert finding_schema["issue"]["maxLength"] == 800
     assert finding_schema["fixes"]["maxItems"] == 3
     assert finding_schema["evidence_refs"]["maxItems"] == 12

@@ -1545,6 +1545,8 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 and last_provider_metadata.get("error_code") == "INVALID_REQUEST"
                 and attempts < retry_policy.max_attempts
             ):
+                if attempts + 1 == retry_policy.max_attempts:
+                    mode = "plain"
                 retries.append(
                     self._retry(
                         role_value,

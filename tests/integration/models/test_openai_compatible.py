@@ -1198,6 +1198,63 @@ async def test_report_tool_call_retries_transient_invalid_request() -> None:
     await http_client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_report_tool_call_falls_back_to_locally_validated_plain_json() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) < 3:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "INVALID_REQUEST",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "complete": True,
+                                    "evidence_requests": [],
+                                    "findings": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 3, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.complete is True
+    assert "tools" in requests[0]
+    assert "tools" in requests[1]
+    assert "tools" not in requests[2]
+    assert "response_format" not in requests[2]
+    await http_client.aclose()
+
+
 def test_report_role_rejects_multiple_tool_calls() -> None:
     body = {
         "choices": [
