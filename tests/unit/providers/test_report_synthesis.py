@@ -2271,6 +2271,61 @@ async def test_analyst_recommends_page_state_for_second_pass(
     ]
 
 
+@pytest.mark.asyncio
+async def test_finding_trust_class_is_conservatively_normalized(
+    tmp_path: Path,
+) -> None:
+    evidence_id = "metric:run-a:target-discovery-rank"
+    corpus = EvidenceCorpus(
+        output_root=tmp_path,
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    evidence_id,
+                    "metric",
+                    "run-a",
+                    metric_id="target-discovery-rank",
+                ),
+                evidence_class=EvidenceClass.MODEL_ESTIMATE,
+                summary="Target discovery rank for run-a.",
+                payload={"value": 7},
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [evidence_id],
+        max_entries=16,
+        max_attachment_bytes=1024,
+    )
+
+    def response_factory(schema: type[Any], role: ModelRole) -> object:
+        del role
+        payload = _finding_payload()
+        payload["evidence_class"] = EvidenceClass.DETERMINISTIC_FACT.value
+        payload["evidence_refs"] = [
+            {"evidence_id": evidence_id, "kind": "metric", "run_id": "run-a"}
+        ]
+        return schema.model_validate(
+            {
+                "complete": True,
+                "evidence_requests": [],
+                "candidate_findings": [payload],
+            }
+        )
+
+    response = await ReportAnalyst(
+        RecordingClient(response_factory),
+        model="gpt-report",
+    ).analyze(
+        corpus,
+        resolved_evidence=resolved,
+        retrieval_round=3,
+    )
+
+    assert response.candidate_findings[0].evidence_class is EvidenceClass.MODEL_ESTIMATE
+
+
 def test_investigative_response_requires_retrieval_request_when_incomplete() -> None:
     with pytest.raises(ValidationError, match="evidence_requests"):
         AnalystResponse(complete=False, evidence_requests=[])
@@ -2696,7 +2751,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     )
     assert (
         ReportAnalyst(client, model="gpt-report").manifest.prompt_version
-        == "report-analyst-v7"
+        == "report-analyst-v8"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role

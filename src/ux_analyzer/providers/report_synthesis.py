@@ -1149,6 +1149,28 @@ def _provider_evidence_reference_map(
     return {f"e{index}": reference for index, reference in enumerate(references)}
 
 
+def _provider_evidence_class_map(
+    manifest: ManifestInput,
+) -> dict[str, EvidenceClass]:
+    if isinstance(manifest, EvidenceCorpus):
+        return {
+            entry.ref.evidence_id: entry.evidence_class for entry in manifest.entries
+        }
+    classes: dict[str, EvidenceClass] = {}
+    for entry in _manifest_entries(manifest.get("entries")):
+        if isinstance(entry, EvidenceEntry):
+            classes[entry.ref.evidence_id] = entry.evidence_class
+            continue
+        if not isinstance(entry, Mapping):
+            continue
+        mapping = cast(Mapping[object, object], entry)
+        evidence_id = _mapping_manifest_entry_id(mapping)
+        raw_class = mapping.get("evidence_class")
+        if isinstance(raw_class, str):
+            classes[evidence_id] = EvidenceClass(raw_class)
+    return classes
+
+
 def _analyst_first_pass_handles(manifest: ManifestInput) -> list[str]:
     references = _provider_evidence_reference_map(manifest)
     run_ids = list(
@@ -2007,6 +2029,7 @@ class _ReportRole:
                     response,
                     normalized_principles,
                 )
+        response = self._normalize_evidence_classes(response, manifest)
         response = self._defer_undelivered_claims(
             response,
             manifest,
@@ -2049,6 +2072,32 @@ class _ReportRole:
             )
             for finding in findings
         ]
+        payload = response.model_dump(mode="python")
+        if isinstance(response, AnalystResponse):
+            payload["candidate_findings"] = normalized_findings
+        elif isinstance(response, AdjudicationResponse):
+            payload["final_findings"] = normalized_findings
+        return type(response).model_validate(payload)
+
+    def _normalize_evidence_classes(
+        self,
+        response: InvestigativeResponse,
+        manifest: ManifestInput,
+    ) -> InvestigativeResponse:
+        classes = _provider_evidence_class_map(manifest)
+        findings = self._findings(response)
+        normalized_findings = [
+            finding.model_copy(update={"evidence_class": EvidenceClass.MODEL_ESTIMATE})
+            if finding.evidence_class is EvidenceClass.DETERMINISTIC_FACT
+            and any(
+                classes.get(reference.evidence_id) is EvidenceClass.MODEL_ESTIMATE
+                for reference in finding.evidence_refs
+            )
+            else finding
+            for finding in findings
+        ]
+        if list(findings) == normalized_findings:
+            return response
         payload = response.model_dump(mode="python")
         if isinstance(response, AnalystResponse):
             payload["candidate_findings"] = normalized_findings
@@ -2315,7 +2364,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v7"
+    prompt_version = "report-analyst-v8"
     response_schema = AnalystResponse
 
     @property
@@ -2342,7 +2391,9 @@ class ReportAnalyst(_ReportRole):
             "behind the strongest cross-run friction signals. Do not spend a retrieval "
             "round only on expectations, verification, or visual-disclosure records. If "
             "delivered evidence does not establish a cause, state that plainly instead "
-            "of using causal root-cause language."
+            "of using causal root-cause language. Set a finding's evidence_class to "
+            "model-estimate whenever any supporting evidence is model-estimate; mixed "
+            "deterministic and model-estimate support is still model-estimate."
         )
 
     async def analyze(
