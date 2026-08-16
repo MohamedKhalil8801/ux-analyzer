@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import re
 from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
@@ -1868,6 +1867,8 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert "Priority findings" not in fallback_html
     assert "Check first" in fallback_html
     assert "What to change" in fallback_html
+    assert "Recorded High" not in fallback_html
+    assert "Recorded Medium" not in fallback_html
     assert "in the linked replay and make its label or nearby cue name the goal" in (
         fallback_html
     )
@@ -1958,7 +1959,7 @@ def test_renderer_fallback_finding_is_self_contained(tmp_path: Path) -> None:
         "goal": "Invite a teammate to the workspace",
         "version": "Defective",
         "target": "target",
-        "action": "interact-with-element target: succeeded",
+        "action": "interact-with-element on target: succeeded",
         "outcome": "verified-success",
         "verification": "verified",
     }
@@ -2017,7 +2018,7 @@ async def test_renderer_browser_fallback_navigation_context_and_evidence_on_mobi
         assert await metric.get_attribute("data-viewing-evidence") == "true"
         assert await metric.evaluate("node => document.activeElement === node")
         assert await page.locator("#evidence-context").text_content() == (
-            "Viewing evidence run-1:discovery-cost"
+            "Evidence opened in the workspace below."
         )
         assert page.url.endswith("#comparison-overview")
 
@@ -2059,7 +2060,7 @@ async def test_renderer_browser_preserves_deep_link_state_on_reload_and_back(
             await page.locator("#playback-position").text_content() or ""
         )
         assert await page.locator("#evidence-context").text_content() == (
-            "Viewing evidence event:run-1:7"
+            "Evidence opened in the workspace below."
         )
         await page.go_back()
         assert page.url.endswith("#analysis-summary")
@@ -2073,7 +2074,7 @@ async def test_renderer_browser_preserves_deep_link_state_on_reload_and_back(
             await page.locator("#playback-position").text_content() or ""
         )
         assert await page.locator("#evidence-context").text_content() == (
-            "Viewing evidence event:run-1:7"
+            "Evidence opened in the workspace below."
         )
         await browser.close()
 
@@ -2150,7 +2151,7 @@ async def test_renderer_browser_keyboard_tabs_rankings_and_table_semantics(
         row = page.locator('tr[data-run-id="run-1"]')
         assert await row.get_attribute("role") is None
         assert await row.get_attribute("tabindex") is None
-        assert await row.get_by_role("link", name="Open run run-1").count() == 1
+        assert await row.get_by_role("link", name="Open replay").count() == 1
 
         tabs = page.get_by_role("tab")
         assert await tabs.count() == 3
@@ -2167,7 +2168,7 @@ async def test_renderer_browser_keyboard_tabs_rankings_and_table_semantics(
         await tabs.nth(1).press("End")
         assert await tabs.nth(2).get_attribute("aria-selected") == "true"
 
-        ranked = page.get_by_role("button", name=re.compile(r"^Inspect ranked element"))
+        ranked = page.locator(".ranked-element-button")
         assert await ranked.count() >= 1
         await ranked.first.focus()
         await ranked.first.press("Space")
@@ -2211,8 +2212,9 @@ async def test_renderer_browser_mobile_workspace_is_reachable_without_overflow(
             assert await page.locator("#selected-element-evidence").evaluate(
                 "node => getComputedStyle(node).overflowY === 'visible'"
             )
-            await page.locator("#report-limitations").scroll_into_view_if_needed()
-            assert await page.locator("#report-limitations").is_visible()
+            assert await page.locator("#report-limitations").count() == 0
+            await page.locator("#playback-workspace").scroll_into_view_if_needed()
+            assert await page.locator("#playback-workspace").is_visible()
         await browser.close()
 
 
@@ -2227,10 +2229,9 @@ def test_renderer_no_issues_lists_named_scope_with_run_links(tmp_path: Path) -> 
         html.index('data-no-issues-scope="true"') : html.index('id="priority-findings"')
     ]
 
-    assert "Invite [invite]" in scope
-    assert "Improved [improved]" in scope
-    assert "Workspace administrator [persona]" in scope
-    assert "run-1" in scope
+    assert "Invite / Improved / Workspace administrator" in scope
+    assert "Invite [invite]" not in scope
+    assert ">run-1<" not in scope
     assert 'href="?run=run-1#playback-workspace"' in scope
 
 
@@ -2319,10 +2320,37 @@ async def test_renderer_split_index_evidence_button_opens_run_page(
         page = await browser.new_page()
         await page.goto(report_path.resolve().as_uri())
         await page.locator("summary", has_text="Verify evidence").first.click()
-        await page.locator('[data-evidence-id="event:run.active:7"]').click()
+        evidence_button = page.locator('[data-evidence-id="event:run.active:7"]')
+        assert await evidence_button.text_content() == "Show on screenshot"
+        await evidence_button.click()
         assert "report-runs" in page.url
         assert "run.active" in page.url or "run.active-" in page.url
         assert "evidence=event%3Arun.active%3A7" in page.url
+        assert page.url.endswith("#playback-workspace")
+        await browser.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_split_index_populates_controls_and_opens_replay(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run.active", version="defective", discovery_cost=8)
+    _write_run(tmp_path, "run_active", version="improved", discovery_cost=3)
+    report_path = render_experiment_report(
+        tmp_path, tmp_path / "report.html", max_single_file_bytes=100
+    )
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri())
+        assert await page.locator("#scenario-select option").count() > 1
+        assert await page.locator("#run-select option").count() == 2
+        run_labels = await page.locator("#run-select option").all_text_contents()
+        assert all("run.active" not in label for label in run_labels)
+        await page.locator("#play-pause").click()
+        assert "report-runs" in page.url
         assert page.url.endswith("#playback-workspace")
         await browser.close()
 
@@ -2346,8 +2374,6 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "deterministic-fact" in html
     assert "model-estimate" in html
     assert "unsupported-human-claim" in html
-    assert "records measured interface, action, geometry, bundle" in html
-    assert "configured heuristic, scent, policy, persona, memory" in html
     assert "Run workspace" in html
     assert "Recorded timeline" in html
     assert "play-pause" in html
@@ -2368,8 +2394,8 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "Sanitized request summary" in html
     assert '"bundle_path":"runs\\u002frun-1"' in html
     assert '"integrity_status":"trusted"' in html
-    assert "Trust boundaries and limitations" in html
-    assert "Seeded discovery cost." in html
+    assert "Trust boundaries and limitations" not in html
+    assert 'href="#report-limitations"' not in html
     assert '"width":800' in html
     assert "secret-token" not in html
     assert "data-testid=secret" not in html
@@ -2492,6 +2518,43 @@ def test_renderer_pairs_provider_heatmaps_and_recorded_action_paths(
     assert "Recorded action path" in html
 
 
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_renderer_split_index_populates_provider_comparison(
+    tmp_path: Path,
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-heuristic",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="heuristic",
+    )
+    _write_run(
+        tmp_path,
+        "run-foveacast",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_saliency_replay_evidence(tmp_path, "run-foveacast")
+    report_path = render_experiment_report(
+        tmp_path, tmp_path / "report.html", max_single_file_bytes=100
+    )
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(report_path.resolve().as_uri())
+        assert await page.locator("#provider-comparison-select option").count() == 1
+        assert await page.locator("#provider-comparison-duration option").count() > 0
+        assert (
+            await page.locator("#provider-comparison-output .provider-card").count()
+            == 2
+        )
+        await browser.close()
+
+
 def test_overview_counts_executed_actions_and_formats_discovery_cost(
     tmp_path: Path,
 ) -> None:
@@ -2533,9 +2596,8 @@ def test_overview_counts_executed_actions_and_formats_discovery_cost(
     assert 'data-metric="model-calls">1</td>' in html
     assert 'data-metric="analysis-latency">125 ms</td>' in html
     assert 'data-metric="analysis-tokens">19</td>' in html
-    assert "simulated-task-time-v1" in html
-    assert "Analysis cost is not user effort" in html
-    assert "Monetary estimate unavailable" in html
+    assert "Estimated task time combines recorded observations and actions" in html
+    assert "Model processing cost is shown separately" in html
 
 
 def test_renderer_replays_saliency_profiles_and_separates_inference_cost(
@@ -3433,11 +3495,9 @@ async def test_renderer_browser_replays_saliency_tabs_and_selected_viewport(
         )
         await tabs.nth(3).click()
         assert await page.locator("#saliency-detail .saliency-heatmap").is_visible()
-        await page.get_by_role(
-            "button", name=re.compile(r"^Inspect ranked element")
-        ).first.click()
-        assert "viewport-2" in (
-            await page.locator("#element-detail").text_content() or ""
+        await page.locator(".ranked-element-button").first.click()
+        assert await page.locator("#selected-element-evidence").get_attribute(
+            "data-selected-element-id"
         )
         await browser.close()
 
@@ -3965,6 +4025,30 @@ def test_renderer_replaces_oversized_run_page_with_bounded_notice(
     )
 
 
+def test_renderer_default_split_keeps_complete_run_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_run(
+        tmp_path,
+        "run-complete",
+        version="defective",
+        discovery_cost=8,
+        screenshot=b"x" * 100_000,
+    )
+    monkeypatch.setattr(
+        renderer,
+        "_estimated_full_report_bytes",
+        lambda _experiment: renderer.DEFAULT_SINGLE_FILE_THRESHOLD + 1,
+    )
+
+    render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    run_page = tmp_path / "report-runs" / "run-complete.html"
+    html = run_page.read_text(encoding="utf-8")
+    assert "Run workspace" in html
+    assert "Detailed replay omitted" not in html
+
+
 def test_renderer_streams_checksum_verification_for_unreferenced_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4112,7 +4196,11 @@ def test_split_report_renders_execution_failure_without_run_bundle(
         },
     )
 
-    monkeypatch.setattr(renderer, "_estimated_full_report_bytes", lambda _: 2_000_001)
+    monkeypatch.setattr(
+        renderer,
+        "_estimated_full_report_bytes",
+        lambda _: renderer.DEFAULT_SINGLE_FILE_THRESHOLD + 1,
+    )
     report = render_experiment_report(tmp_path, tmp_path / "report.html")
 
     html = report.read_text(encoding="utf-8")
@@ -4244,14 +4332,14 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
             await overview_row.locator('[data-metric="discovery-cost"]').text_content()
             == "4.0"
         )
-        await overview_row.get_by_role("link", name="Open run run-evaluation").click()
+        await overview_row.get_by_role("link", name="Open replay").click()
         assert "run=run-evaluation" in page.url
         event_ids = await page.locator(".timeline-event").evaluate_all(
             "nodes => nodes.map(node => node.dataset.eventId)"
         )
         assert event_ids == [f"event-{sequence}" for sequence in range(1, 11)]
         failure = page.locator("#run-status-banner")
-        assert "agent-abandoned" in (await failure.text_content() or "")
+        assert "Agent Abandoned" in (await failure.text_content() or "")
         assert "evaluation" in (await failure.text_content() or "")
         assert "evaluation evidence unavailable: target absent" in (
             await failure.text_content() or ""
@@ -4285,7 +4373,7 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         assert "7200" in panel_text
         assert "0.4" in panel_text
         assert "0.1" in panel_text
-        assert "Occlusion fraction" in panel_text
+        assert "Blocked by other content" in panel_text
         assert "Local contrast" in panel_text
         assert "Linked decisions" in panel_text
         assert "Linked actions and results" in panel_text
@@ -4305,11 +4393,11 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
 
         await (
             page.locator('tr[data-run-id="run-timeout"]')
-            .get_by_role("link", name="Open run run-timeout")
+            .get_by_role("link", name="Open replay")
             .click()
         )
         timeout_text = await page.locator("#run-status-banner").text_content() or ""
-        assert "timed-out" in timeout_text
+        assert "Timed Out" in timeout_text
         assert "run timeout exceeded" in timeout_text
         await page.set_viewport_size({"width": 390, "height": 844})
         dimensions = await page.evaluate(

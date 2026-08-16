@@ -62,7 +62,7 @@ from ux_analyzer.storage.synthesis_artifacts import (
     validate_publishable_synthesis_attempt,
 )
 
-DEFAULT_SINGLE_FILE_THRESHOLD = 2_000_000
+DEFAULT_SINGLE_FILE_THRESHOLD = 4_000_000
 _MAX_REPORT_JSON_BYTES = 8 * 1024 * 1024
 _MAX_REPORT_TIMELINE_BYTES = 16 * 1024 * 1024
 _MAX_SOURCE_SCREENSHOT_BYTES = 16 * 1024 * 1024
@@ -286,6 +286,7 @@ def _estimated_full_report_bytes(experiment: dict[str, Any]) -> int:
             template_root / "templates" / "experiment.html.j2",
             template_root / "static" / "report.css",
             template_root / "static" / "report.js",
+            template_root / "static" / "report-index.js",
         )
     )
     synthesis_bytes = experiment.get("_synthesis_artifact_bytes", 0)
@@ -590,13 +591,23 @@ def _fallback_finding_context(
     run_id: str,
 ) -> dict[str, str]:
     actions = _comparison_action_path(dict(run))
-    action_values = _strings(finding.get("action_sequence"))
+    action_values = [
+        action_text
+        for action in actions
+        if (
+            action_text := _fallback_action_text(
+                {
+                    **action,
+                    "element_label": _fallback_element_label(
+                        run,
+                        _text(action.get("element_id")),
+                    ),
+                }
+            )
+        )
+    ]
     if not action_values:
-        action_values = [
-            action_text
-            for action in actions
-            if (action_text := _fallback_action_text(action))
-        ]
+        action_values = _strings(finding.get("action_sequence"))
     target_ids = _strings(finding.get("element_ids"))
     if not target_ids:
         target_ids = [
@@ -604,7 +615,8 @@ def _fallback_finding_context(
             for action in actions
             if action.get("element_id")
         ]
-    target = target_ids[0] if target_ids else "recorded interaction target"
+    target_id = target_ids[0] if target_ids else ""
+    target = _fallback_element_label(run, target_id)
     return {
         "run_id": run_id,
         "scenario": _text(run.get("scenario_label"), "Scenario unavailable"),
@@ -620,14 +632,38 @@ def _fallback_finding_context(
 
 def _fallback_action_text(action: Mapping[str, Any]) -> str:
     kind = _text(action.get("kind"), "action")
-    element_id = _optional_text(action.get("element_id"))
-    label = f"{kind} {element_id}" if element_id else kind
+    element_label = _optional_text(action.get("element_label"))
+    label = f"{kind} on {element_label}" if element_label else kind
     succeeded = action.get("succeeded")
     if succeeded is True:
         return f"{label}: succeeded"
     if succeeded is False:
         return f"{label}: failed"
     return label
+
+
+def _fallback_element_label(run: Mapping[str, Any], element_id: str) -> str:
+    if element_id:
+        for snapshot in _list_of_mappings(run.get("snapshots")):
+            for element in _list_of_mappings(snapshot.get("elements")):
+                if _text(element.get("id")) == element_id:
+                    label = _text(
+                        element.get("label"), "recorded interaction target"
+                    )
+                    if "<" not in label and ">" not in label:
+                        return label
+                    return (
+                        element_id
+                        if len(element_id) <= 64
+                        else "recorded interaction target"
+                    )
+        for action in _comparison_action_path(dict(run)):
+            if _text(action.get("element_id")) == element_id:
+                return _text(
+                    action.get("element_label"),
+                    "recorded interaction target",
+                )
+    return "recorded interaction target"
 
 
 def _fallback_finding_copy(
@@ -639,12 +675,11 @@ def _fallback_finding_copy(
     scenario = context["scenario"]
     persona = context["persona"]
     goal = context["goal"]
-    run_id = context["run_id"]
     cause = _text(finding.get("cause"), "Recorded cause unavailable")
     if category == "weak-scent":
         title = f"{target} does not clearly signal the task goal"
         issue = (
-            f"Run {run_id} in the {scenario} scenario recorded weak goal cues on "
+            f"The {scenario} scenario recorded weak goal cues on "
             f'"{target}" while {persona} worked toward "{goal}".'
         )
         impact = (
@@ -658,7 +693,7 @@ def _fallback_finding_copy(
     elif category == "missing-feedback":
         title = f"{target} does not confirm the completed result"
         issue = (
-            f'After the recorded action on "{target}" in run {run_id}, no visible '
+            f'After the recorded action on "{target}", no visible '
             f'confirmation for "{goal}" was captured.'
         )
         impact = (
@@ -672,7 +707,7 @@ def _fallback_finding_copy(
     elif category == "poor-recovery":
         title = f"{target} recovery does not restore the task"
         issue = (
-            f'Run {run_id} recorded an error or failed step around "{target}" '
+            f'The recorded task hit an error or failed step around "{target}" '
             f'without restoring progress toward "{goal}".'
         )
         impact = (
@@ -687,7 +722,7 @@ def _fallback_finding_copy(
         category_label = category or "unclassified"
         title = f"Recorded interaction needs review for {target}"
         issue = (
-            f"Run {run_id} in the {scenario} scenario recorded category "
+            f"The {scenario} scenario recorded category "
             f'"{category_label}" for "{target}" while pursuing "{goal}".'
         )
         impact = (
@@ -700,7 +735,7 @@ def _fallback_finding_copy(
         "issue": issue
         + " Model review is unavailable, so this statement uses recorded fallback evidence only.",
         "impact": impact,
-        "root_cause": f"Recorded cause for run {run_id}: {cause}",
+        "root_cause": cause,
         "fix": fix,
     }
 
@@ -2094,10 +2129,14 @@ def _render_html(context: dict[str, Any], title: str) -> str:
     template = environment.get_template("experiment.html.j2")
     css = (template_root / "static" / "report.css").read_text(encoding="utf-8")
     javascript = (template_root / "static" / "report.js").read_text(encoding="utf-8")
+    index_javascript = (template_root / "static" / "report-index.js").read_text(
+        encoding="utf-8"
+    )
     return template.render(
         title=title,
         css=css,
         javascript=javascript,
+        index_javascript=index_javascript,
         **context,
     )
 

@@ -41,6 +41,14 @@
       {%- endif -%}
     {%- endmacro %}
 
+    {% macro evidence_action_label(target) -%}
+      {%- if target.element_id is defined and target.element_id -%}Show on screenshot
+      {%- elif target.viewport_id is defined and target.viewport_id -%}View screenshot
+      {%- elif target.metric_id is defined and target.metric_id -%}View comparison
+      {%- else -%}Open replay
+      {%- endif -%}
+    {%- endmacro %}
+
     {% macro render_evidence_refs(finding) -%}
       <ul class="evidence-ref-list">
       {% for ref in finding.evidence_refs %}
@@ -51,8 +59,8 @@
             type="button"
             data-evidence-id="{{ ref.evidence_id }}"
             data-evidence-target="{{ target | tojson | forceescape }}"
-            aria-label="Open evidence {{ ref.evidence_id }}"
-          >{{ ref.evidence_id }}</button>
+            aria-label="{{ evidence_action_label(target) }}"
+          >{{ evidence_action_label(target) }}</button>
         </li>
       {% else %}
         <li class="empty">No recorded evidence references.</li>
@@ -136,8 +144,8 @@
                     type="button"
                     data-evidence-id="{{ item.reference.evidence_id }}"
                     data-evidence-target="{{ item.target | tojson | forceescape }}"
-                    aria-label="Open counterevidence {{ item.reference.evidence_id }}"
-                  >{{ item.reference.evidence_id }}</button>
+                    aria-label="{{ evidence_action_label(item.target) }}"
+                  >{{ evidence_action_label(item.target) }}</button>
                 </li>
                 {% else %}
                 <li>{{ item }}</li>
@@ -223,8 +231,8 @@
         <ul>
         {% for run in runs %}
           <li>
-            <a href="{{ run.run_page ~ '?' if run.run_page is defined and run.run_page else '?' }}run={{ run.run_id | urlencode }}#playback-workspace">{{ run.run_id }}</a>:
-            {{ run.scenario_label }} [{{ run.scenario_id }}] / {{ run.version_label }} [{{ run.version_id }}] / {{ run.persona_label }} [{{ run.persona_id }}]
+            <a href="{{ run.run_page ~ '?' if run.run_page is defined and run.run_page else '?' }}run={{ run.run_id | urlencode }}#playback-workspace">Open replay</a>:
+            {{ run.scenario_label }} / {{ run.version_label }} / {{ run.persona_label }}
           </li>
         {% endfor %}
         </ul>
@@ -274,7 +282,7 @@
               <div><strong>Scenario</strong><span>{{ finding.fallback_context.scenario }}</span></div>
               <div><strong>Persona</strong><span>{{ finding.fallback_context.persona }}</span></div>
               <div><strong>Goal</strong><span>{{ finding.fallback_context.goal }}</span></div>
-              <div><strong>Run</strong><span>{{ finding.fallback_context.run_id }} / {{ finding.fallback_context.version }}</span></div>
+              <div><strong>Version</strong><span>{{ finding.fallback_context.version }}</span></div>
               <div><strong>Target</strong><span>{{ finding.fallback_context.target }}</span></div>
               <div><strong>Action</strong><span>{{ finding.fallback_context.action }}</span></div>
               <div><strong>Outcome</strong><span>{{ finding.fallback_context.outcome }}</span></div>
@@ -331,10 +339,10 @@
                         type="button"
                         data-evidence-id="{{ evidence_id }}"
                         data-evidence-target="{{ evidence.get("target") | tojson | forceescape }}"
-                        aria-label="Open evidence {{ evidence_id }}"
-                      >{{ evidence_id }}</button>
+                        aria-label="{{ evidence_action_label(evidence.get("target")) }}"
+                      >{{ evidence_action_label(evidence.get("target")) }}</button>
                     {% else %}
-                      <span class="evidence-ref-unavailable">{{ evidence_id }} (target unavailable)</span>
+                      <span class="evidence-ref-unavailable">Evidence unavailable</span>
                     {% endif %}
                     </li>
                   {% else %}
@@ -412,7 +420,7 @@
           {% for finding in synthesis.findings if finding.severity == severity %}
           <li>
             <a href="#finding-{{ finding.finding_id }}">
-              <span class="severity-label severity-{{ finding.severity }}">{{ "Recorded " if using_fallback else "" }}{{ finding.severity | title }}</span>
+              <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }}</span>
               <strong>{{ finding.get("fallback_title", finding.title) }}</strong>
             </a>
                 {% if finding.get("fixes") %}
@@ -464,7 +472,6 @@
         <a href="#provider-comparison-section" aria-controls="provider-comparison-section">Provider methods</a>
         {% endif %}
         <a href="#playback-workspace" aria-controls="playback-workspace">Replay workspace</a>
-        <a href="#report-limitations" aria-controls="report-limitations">Limitations</a>
       </nav>
       <div id="evidence-detail" class="evidence-detail" tabindex="-1" hidden>
         <h3>Evidence detail</h3>
@@ -491,7 +498,7 @@
         <table id="comparison-table">
           <thead>
             <tr>
-              <th>Run</th>
+              <th>Replay</th>
               <th>Model trial</th>
               <th>Prominence provider</th>
               <th>Reproducibility</th>
@@ -517,12 +524,12 @@
           {% for row in run_rows %}
             <tr class="run-row {{ row.status_class }}" data-run-id="{{ row.run_id }}">
               <td>
-                <strong>{{ row.run_id }}</strong><span class="subvalue">{{ row.terminal_state }}</span>
+                <strong>{{ row.scenario_label }} / {{ row.version_label }}</strong><span class="subvalue">{{ row.persona_label }}</span>
                 {% set run_link = namespace(value="") %}
                 {% for run in runs if run.run_id == row.run_id %}
                   {% if run.run_page is defined and run.run_page %}{% set run_link.value = run.run_page %}{% endif %}
                 {% endfor %}
-                <a class="open-run-link" data-open-run="{{ row.run_id }}" href="{{ run_link.value ~ '?' if run_link.value else '?' }}run={{ row.run_id | urlencode }}#playback-workspace">Open run {{ row.run_id }}</a>
+                <a class="open-run-link" data-open-run="{{ row.run_id }}" href="{{ run_link.value ~ '?' if run_link.value else '?' }}run={{ row.run_id | urlencode }}#playback-workspace">Open replay</a>
               </td>
               <td data-metric="model-trial">{{ row.model_trial }}</td>
               <td data-metric="prominence-provider">{{ row.prominence_provider_id }}</td>
@@ -550,7 +557,7 @@
           </tbody>
         </table>
       </div>
-      <p class="method-note"><strong>simulated-task-time-v1:</strong> 1.35 seconds per observation plus 1.1 seconds per executed action. Analysis cost is not user effort. Monetary estimate unavailable unless explicit model pricing is configured.</p>
+      <p class="method-note">Estimated task time combines recorded observations and actions. Model processing cost is shown separately.</p>
 
       <details class="aggregate-details">
         <summary>Aggregate comparison and directional gates</summary>
@@ -732,37 +739,12 @@
       </div>
     </section>
 
-    <details id="report-limitations" class="section evidence-panel limitations">
-      <summary>Trust boundaries and limitations</summary>
-      <ul>
-      {% for limitation in limitations %}
-        <li>{{ limitation }}</li>
-      {% endfor %}
-      </ul>
-      <p class="muted"><strong>deterministic-fact</strong> records measured interface, action, geometry, bundle, or verifier state. <strong>model-estimate</strong> depends on configured heuristic, scent, policy, persona, memory, rule, or model behavior. Unsupported human claims never enter scorecards or findings.</p>
-    </details>
   </main>
 
   <script type="application/json" id="report-data">{{ report_json | safe }}</script>
   <script>
   {% if compact_index %}
-  (function () {
-    document.querySelectorAll(".evidence-ref").forEach(function (control) {
-      control.addEventListener("click", function () {
-        var target = {};
-        try { target = JSON.parse(control.dataset.evidenceTarget || "{}"); }
-        catch (_error) { return; }
-        if (!target.run_page) return;
-        var hash = new URLSearchParams();
-        if (target.run_id) hash.set("run", target.run_id);
-        if (target.event_id) hash.set("event", target.event_id);
-        else if (target.sequence !== undefined) hash.set("event", "event-" + target.sequence);
-        if (target.element_id) hash.set("element", target.element_id);
-        if (control.dataset.evidenceId) hash.set("evidence", control.dataset.evidenceId);
-        window.location.href = target.run_page + "?" + hash.toString() + "#playback-workspace";
-      });
-    });
-  }());
+  {{ index_javascript | safe }}
   {% else %}
   {{ javascript | safe }}
   {% endif %}

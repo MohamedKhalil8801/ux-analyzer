@@ -80,6 +80,27 @@
     return run && run.timeline ? run.timeline[state.eventIndex] || null : null;
   }
 
+  function elementRecord(run, elementId) {
+    var snapshots = run && run.snapshots || [];
+    for (var snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+      var match = (snapshots[snapshotIndex].elements || []).find(function (item) {
+        return item.id === elementId;
+      });
+      if (match) return match;
+    }
+    return null;
+  }
+
+  function elementLabel(run, elementId) {
+    var match = elementRecord(run, elementId);
+    return match ? match.label : "the selected element";
+  }
+
+  function runLabel(run) {
+    if (!run) return "Run unavailable";
+    return run.scenario_label + " | " + run.version_label + " | " + run.persona_label;
+  }
+
   function addField(parent, label, value) {
     var row = element("div", "field-row");
     row.appendChild(element("dt", "field-label", label));
@@ -126,10 +147,10 @@
     parent.appendChild(block);
   }
 
-  function actionText(action) {
+  function actionText(action, run) {
     if (!action) return "Unavailable: no recorded action.";
     var text = titleCase(action.kind || "action");
-    if (action.element_id) text += " on " + action.element_id;
+    if (action.element_id) text += " on " + elementLabel(run, action.element_id);
     if (action.direction) text += " " + action.direction;
     if (action.duration_seconds !== undefined) text += " for " + action.duration_seconds + " seconds";
     return text;
@@ -149,13 +170,13 @@
     return "Recorded event";
   }
 
-  function eventSummary(record) {
+  function eventSummary(record, run) {
     if (!record) return "Unavailable";
     if (record.reason) return String(record.reason);
-    if (record.action) return actionText(record.action);
+    if (record.action) return actionText(record.action, run);
     if (record.outcome) return "Outcome: " + record.outcome;
-    if (record.viewport_id) return "Viewport: " + record.viewport_id;
-    if (record.selected_ids && record.selected_ids.length) return "Selected: " + record.selected_ids.join(", ");
+    if (record.viewport_id) return "Website view recorded";
+    if (record.selected_ids && record.selected_ids.length) return "Selected: " + record.selected_ids.map(function (id) { return elementLabel(run, id); }).join(", ");
     return eventCategory(record.kind);
   }
 
@@ -187,7 +208,7 @@
     visible.forEach(function (run) {
       var option = document.createElement("option");
       option.value = run.run_id;
-      option.textContent = run.run_id + " | " + run.version_label + " | " + run.outcome;
+      option.textContent = runLabel(run) + " | " + run.outcome;
       runSelect.appendChild(option);
     });
     if (!visible.some(function (run) { return run.run_id === state.runId; })) {
@@ -419,7 +440,7 @@
   function showEvidenceContext(evidenceId) {
     if (!evidenceContext || !evidenceId) return;
     evidenceContext.hidden = false;
-    evidenceContext.textContent = "Viewing evidence " + evidenceId;
+    evidenceContext.textContent = "Evidence opened in the workspace below.";
   }
 
   function showEvidenceDetail(evidenceId, target) {
@@ -612,18 +633,15 @@
     var region = (snapshot.regions || []).find(function (item) { return item.id === selected.region_id; });
     var attention = noticedState(run, state.eventIndex);
     addFields(elementDetail, [
-      ["Element ID", selected.id],
-      ["Role", selected.role],
-      ["Viewport", snapshot.id],
-      ["Region", region ? region.label + " [" + region.id + "]" : selected.region_id],
-      ["Actionable", selected.actionable],
+      ["Type", titleCase(selected.role)],
+      ["Section", region ? region.label : "Website section unavailable"],
+      ["Clickable", selected.actionable],
       ["Disabled", selected.disabled],
-      ["Bounds", "x=" + selected.bounds.x + ", y=" + selected.bounds.y + ", width=" + selected.bounds.width + ", height=" + selected.bounds.height],
-      ["Visibility fraction", selected.visibility_fraction],
-      ["Occlusion fraction", selected.occlusion_fraction],
+      ["Visible on screen", selected.visibility_fraction > 0],
+      ["Blocked by other content", selected.occlusion_fraction > 0],
       ["Local contrast", selected.local_contrast],
-      ["Noticed by this step", Boolean(attention.noticed[selected.id])],
-      ["Inspected by this step", Boolean(attention.inspected[selected.id])]
+      ["Noticed before this step", Boolean(attention.noticed[selected.id])],
+      ["Inspected before this step", Boolean(attention.inspected[selected.id])]
     ]);
     var score = scoreAt(run, snapshot.id, selected.id, event ? event.sequence : 0);
     if (score) {
@@ -640,10 +658,10 @@
     }
     addValues(elementDetail, "Scent", scentAt(run, snapshot.id, selected.id, event ? event.sequence : 0), "Unavailable: no scent record at current step.");
     var linked = linkedRecords(run, selected.id);
-    addValues(elementDetail, "Linked decisions", linked.decisions.map(function (record) { return "Step " + record.sequence + ": " + (record.reason || actionText(record.action)); }));
-    addValues(elementDetail, "Linked actions and results", linked.actions.map(function (record) { return "Step " + record.sequence + ": " + actionText(record.action) + " | " + (record.succeeded ? "succeeded" : "failed") + (record.error ? " | " + record.error : ""); }));
+    addValues(elementDetail, "Linked decisions", linked.decisions.map(function (record) { return "Step " + record.sequence + ": " + (record.reason || actionText(record.action, run)); }));
+    addValues(elementDetail, "Linked actions and results", linked.actions.map(function (record) { return "Step " + record.sequence + ": " + actionText(record.action, run) + " | " + (record.succeeded ? "succeeded" : "failed") + (record.error ? " | " + record.error : ""); }));
     addValues(elementDetail, "Linked findings", linked.findings.map(function (record) { return record.title + ": " + record.cause; }));
-    addValues(elementDetail, "Linked evidence", linked.evidence.map(function (record) { return record.evidence_id + ": " + record.description; }));
+    addValues(elementDetail, "Linked evidence", linked.evidence.map(function (record) { return record.description; }));
   }
 
   function saliencyEntries(run) {
@@ -676,7 +694,7 @@
     rankings.forEach(function (item) {
       var row = element("tr", "");
       row.appendChild(element("td", "", item.rank));
-      row.appendChild(element("td", "", (item.label || "Unlabelled element") + " [" + exact(item.element_id) + "]"));
+      row.appendChild(element("td", "", item.label || "Unlabelled element"));
       row.appendChild(element("td", "", item.role));
       row.appendChild(element("td", "", exact(item.adjusted_score !== undefined ? item.adjusted_score : item.score)));
       row.appendChild(element("td", "", exact(item.normalized_probability)));
@@ -856,9 +874,9 @@
       var itemRow = element("tr", "");
       itemRow.appendChild(element("td", "", item.rank));
       var elementCell = element("td", "");
-      var inspect = element("button", "ranked-element-button", item.label + " [" + item.element_id + "]");
+      var inspect = element("button", "ranked-element-button", item.label);
       inspect.type = "button";
-      inspect.setAttribute("aria-label", "Inspect ranked element " + item.label + " [" + item.element_id + "]");
+      inspect.setAttribute("aria-label", "Inspect " + item.label + " on the screenshot");
       var selectRankedElement = function () {
         var snapshot = findSnapshot(run, group && group.viewport_id);
         if (snapshot) selectElement(run, snapshot, currentEvent(run), item.element_id);
@@ -957,11 +975,7 @@
       ["Execution provider", entry.execution_provider || group.execution_provider],
       ["Cache status", group.cache_state],
       ["Inference timing", exact(entry.inference_duration_ms) + " ms"],
-      ["Model", entry.model_id + " / " + entry.model_version],
-      ["Model checksum", entry.model_checksum],
-      ["Model checksums", (group.model_checksums || []).join(", ")],
-      ["Profile event IDs", (group.profile_event_ids || []).join(", ")],
-      ["Operational event IDs", (group.operational_event_ids || []).join(", ")]
+      ["Model", entry.model_id + " / " + entry.model_version]
     ]);
     if (group.overlay_message) saliencyDetail.appendChild(element("p", "saliency-warning", group.overlay_message));
     if (entry.heatmap) {
@@ -1010,7 +1024,7 @@
       renderElementDetail(run, null, event);
       return;
     }
-    viewportMeta.textContent = snapshot.id + " | " + snapshot.viewport.width + " x " + snapshot.viewport.height;
+    viewportMeta.textContent = snapshot.viewport.width + " x " + snapshot.viewport.height + " website view";
     var frame = element("div", "viewport-frame");
     fitFrame(frame, snapshot);
     if (snapshot.screenshot) {
@@ -1084,21 +1098,21 @@
     eventKind.textContent = titleCase(record.kind);
     eventCard.appendChild(element("span", "event-category", eventCategory(record.kind)));
     eventCard.appendChild(element("strong", "event-title", "Step " + record.sequence + " | " + titleCase(record.kind)));
-    addFields(eventCard, [["Event ID", record.event_id], ["Recorded time", recordedTime(record)]]);
+    addFields(eventCard, [["Recorded time", recordedTime(record)]]);
 
     if (record.kind === "viewport-captured") {
       var snapshot = findSnapshot(run, record.viewport_id);
-      addFields(eventCard, [["Viewport", record.viewport_id], ["Elements", snapshot ? snapshot.elements.length : null], ["Regions", snapshot ? snapshot.regions.length : null]]);
+      addFields(eventCard, [["Visible elements", snapshot ? snapshot.elements.length : null], ["Website sections", snapshot ? snapshot.regions.length : null]]);
     } else if (record.kind === "observation-recorded" && record.observation) {
-      addFields(eventCard, [["Viewport", record.observation.viewport_id], ["Region", record.observation.region_context && record.observation.region_context.label]]);
-      addValues(eventCard, "Noticed now", (record.observation.newly_revealed_elements || []).map(function (item) { return item.label + " [" + item.id + "]"; }));
-      addValues(eventCard, "Remembered", (record.observation.remembered_elements || []).map(function (item) { return item.label + " [" + item.id + "]"; }));
+      addFields(eventCard, [["Website section", record.observation.region_context && record.observation.region_context.label]]);
+      addValues(eventCard, "Noticed now", (record.observation.newly_revealed_elements || []).map(function (item) { return item.label; }));
+      addValues(eventCard, "Remembered", (record.observation.remembered_elements || []).map(function (item) { return item.label; }));
     } else if (record.kind.indexOf("prominence") !== -1 || record.kind.indexOf("scent") !== -1) {
-      addValues(eventCard, "Element scores", (record.scores || []).map(function (score) { return score.element_id + ": " + exact(score.raw_score !== undefined ? score.raw_score : score.score); }));
+      addValues(eventCard, "Element scores", (record.scores || []).map(function (score) { return elementLabel(run, score.element_id) + ": " + exact(score.raw_score !== undefined ? score.raw_score : score.score); }));
     } else if (record.kind === "attention-selection-recorded") {
-      addFields(eventCard, [["Viewport", record.viewport_id], ["Mode", record.selection_mode], ["Region", record.region_id]]);
-      addValues(eventCard, "Selected elements", record.selected_ids || []);
-      addValues(eventCard, "Recovery-forced elements", record.recovery_selected_ids || []);
+      addFields(eventCard, [["Selection mode", record.selection_mode]]);
+      addValues(eventCard, "Selected elements", (record.selected_ids || []).map(function (id) { return elementLabel(run, id); }));
+      addValues(eventCard, "Recovery choices", (record.recovery_selected_ids || []).map(function (id) { return elementLabel(run, id); }));
       addMapping(eventCard, "Element probabilities", record.element_probabilities);
       addMapping(eventCard, "Region probabilities", record.region_probabilities);
     } else if (record.kind === "model-call-recorded" && record.record) {
@@ -1107,19 +1121,18 @@
       addFields(eventCard, [["Model role", record.role], ["Failure", record.reason]]);
       addJson(eventCard, "Sanitized response summary", record.response_summary);
     } else if (record.kind === "repeated-fixture-input" || record.kind === "fixture-input-completed") {
-      addFields(eventCard, [["Element", record.element_id], ["Fixture key", record.fixture_key], ["Reason", record.reason]]);
+      addFields(eventCard, [["Element", elementLabel(run, record.element_id)], ["Reason", record.reason]]);
     } else if (record.kind === "repeated-action-detected" || record.kind === "repeated-action-cycle" || record.kind === "no-progress-recovery" || record.kind === "no-progress-detected") {
-      addFields(eventCard, [["Action", record.action ? actionText(record.action) : null], ["Count", record.count], ["Cycle length", record.cycle_length], ["Reason", record.reason]]);
+      addFields(eventCard, [["Action", record.action ? actionText(record.action, run) : null], ["Count", record.count], ["Cycle length", record.cycle_length], ["Reason", record.reason]]);
     } else if (record.kind === "model-call-budget-exhausted") {
       addFields(eventCard, [["Model calls", record.model_calls], ["Limit", record.limit], ["Reason", record.reason]]);
     } else if (record.kind === "verification-recorded" && record.verification) {
       addFields(eventCard, [["Verified", record.verification.verified], ["Details", record.verification.details]]);
-      addValues(eventCard, "Evidence IDs", record.verification.evidence_ids || []);
     } else if (record.kind === "run-terminated") {
       addFields(eventCard, [["Terminal outcome", record.outcome], ["Valid UX sample", run.ux_sample_valid], ["Invalid sample reason", run.ux_sample_invalid_reason], ["Stage", run.stage], ["Terminal reason", run.terminal_reason], ["Evaluation failure", run.evaluation_failure_reason]]);
     } else {
       addFields(eventCard, [
-        ["Action", record.action ? actionText(record.action) : null],
+        ["Action", record.action ? actionText(record.action, run) : null],
         ["Reason", record.reason],
         ["Result", record.succeeded === undefined ? null : record.succeeded ? "succeeded" : "failed"],
         ["Failure", record.error || record.message],
@@ -1142,7 +1155,7 @@
       button.setAttribute("aria-current", index === state.eventIndex ? "true" : "false");
       button.appendChild(element("span", "timeline-step", "Step " + record.sequence));
       button.appendChild(element("span", "timeline-kind", titleCase(record.kind)));
-      button.appendChild(element("span", "timeline-summary", eventSummary(record)));
+      button.appendChild(element("span", "timeline-summary", eventSummary(record, run)));
       button.addEventListener("click", function () { setEventIndex(index, false); });
       item.appendChild(button);
       timelineList.appendChild(item);
@@ -1157,22 +1170,13 @@
       statusBanner.textContent = "Run unavailable: no run matches current selector.";
       return;
     }
-    var parts = [
-      run.run_id,
-      "outcome " + run.outcome,
-      "stage " + run.stage,
-      run.ux_sample_valid ? "valid UX sample" : "invalid UX sample",
-      run.verified ? "verified" : "not verified",
-      "terminal state " + run.terminal_state,
-      "integrity " + run.integrity_status,
-      "bundle " + run.bundle_path
-    ];
-    if (run.terminal_reason) parts.push("terminal reason: " + run.terminal_reason);
-    if (run.evaluation_failure_reason) parts.push("evaluation failure: " + run.evaluation_failure_reason);
-    if (run.ux_sample_invalid_reason) parts.push("invalid sample: " + run.ux_sample_invalid_reason);
-    if (run.user_effort) parts.push("estimated task time " + Number(run.user_effort.estimated_task_seconds || 0).toFixed(1) + " s");
-    if (run.analysis_cost) parts.push("analysis " + run.analysis_cost.model_calls + " model calls, " + run.analysis_cost.latency_ms + " ms, " + run.analysis_cost.total_tokens + " tokens");
-    if (!run.trusted) parts.push("evidence untrusted");
+    var parts = [runLabel(run), "Outcome: " + titleCase(run.outcome)];
+    if (run.stage) parts.push("Stage: " + titleCase(run.stage));
+    parts.push(run.verified ? "Result verified" : "Result not verified");
+    if (run.user_effort) parts.push("Estimated task time " + Number(run.user_effort.estimated_task_seconds || 0).toFixed(1) + " seconds");
+    if (run.evaluation_failure_reason) parts.push("Why: " + run.evaluation_failure_reason);
+    else if (run.terminal_reason) parts.push("Why: " + run.terminal_reason);
+    else if (run.failure_reason) parts.push("Why: " + run.failure_reason);
     statusBanner.textContent = parts.join(" | ");
   }
 
@@ -1250,7 +1254,12 @@
   scenarioSelect.addEventListener("change", function () {
     state.scenarioId = scenarioSelect.value;
     var visible = visibleRuns();
-    selectRun(visible.length ? visible[0].run_id : "", false);
+    state.runId = visible.length ? visible[0].run_id : "";
+    state.eventIndex = 0;
+    state.viewportId = "";
+    state.elementId = "";
+    renderRunOptions();
+    renderWorkspace();
   });
   if (comparisonSelect) {
     comparisonSelect.addEventListener("change", function () {
@@ -1266,7 +1275,14 @@
     });
   }
   runSelect.addEventListener("change", function () { selectRun(runSelect.value, false); });
-  playPause.addEventListener("click", function () { setPlaying(!state.playing); });
+  playPause.addEventListener("click", function () {
+    var run = currentRun();
+    if (run && run.run_page && !(run.timeline || []).length) {
+      selectRun(run.run_id, true);
+      return;
+    }
+    setPlaying(!state.playing);
+  });
   document.getElementById("step-back").addEventListener("click", function () { setEventIndex(state.eventIndex - 1, false); });
   document.getElementById("step-forward").addEventListener("click", function () { setEventIndex(state.eventIndex + 1, false); });
   document.getElementById("restart-playback").addEventListener("click", function () { setEventIndex(0, false); });
