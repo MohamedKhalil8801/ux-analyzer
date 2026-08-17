@@ -71,6 +71,7 @@ MAX_RETRIEVAL_ROUNDS = 3
 DEFAULT_MAX_RETRIEVAL_ENTRIES = 16
 MAX_ROLE_RETRIEVAL_ENTRIES = 32
 DEFAULT_MAX_ATTACHMENT_BYTES = MODEL_ATTACHMENT_MAX_BYTES
+MAX_INVALID_STRUCTURED_ROLE_RETRIES = 1
 
 _PRINCIPLE_AUTHORITY_MARKERS = (
     "principle proves",
@@ -1299,49 +1300,72 @@ class ReportSynthesisService:
         prior = previous_output
         rounds = max_rounds or self.max_retrieval_rounds
         for round_number in range(1, rounds + 1):
-            prior_role_record_count = self._role_record_count(role)
-            try:
-                raw_response = await self._invoke_role(
-                    role,
-                    provider,
-                    corpus,
-                    candidate_findings=candidate_findings,
-                    objections=objections,
-                    resolved_evidence=resolved,
-                    previous_output=prior,
-                    retrieval_round=round_number,
-                    max_retrieval_rounds=rounds,
-                )
-                response = _normalize_response(role, raw_response)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                operational, category = _error_category(error)
-                response_payload: dict[str, object] = {"status": "error"}
-                provider_details = _provider_failure_details(error)
-                if provider_details:
-                    response_payload["provider"] = provider_details
-                logs.append(
-                    {
-                        "role": role.value,
-                        "phase": phase,
-                        "round": round_number,
-                        "request": (),
-                        "response": response_payload,
-                        "error": category,
-                    }
-                )
-                return _RoleRun(
-                    response=None,
-                    retrieval_log=tuple(logs),
-                    unavailable=operational,
-                    invalid=not operational,
-                    limitation=(
-                        _operational_limitation(error, category)
-                        if operational
-                        else "A synthesis role returned invalid structured output."
-                    ),
-                )
+            response: _Response | None = None
+            prior_role_record_count = 0
+            for invalid_retry in range(MAX_INVALID_STRUCTURED_ROLE_RETRIES + 1):
+                prior_role_record_count = self._role_record_count(role)
+                try:
+                    raw_response = await self._invoke_role(
+                        role,
+                        provider,
+                        corpus,
+                        candidate_findings=candidate_findings,
+                        objections=objections,
+                        resolved_evidence=resolved,
+                        previous_output=prior,
+                        retrieval_round=round_number,
+                        max_retrieval_rounds=rounds,
+                    )
+                    response = _normalize_response(role, raw_response)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    operational, category = _error_category(error)
+                    response_payload: dict[str, object] = {"status": "error"}
+                    provider_details = _provider_failure_details(error)
+                    if provider_details:
+                        response_payload["provider"] = provider_details
+                    if (
+                        not operational
+                        and category == "invalid structured synthesis output"
+                        and invalid_retry < MAX_INVALID_STRUCTURED_ROLE_RETRIES
+                    ):
+                        response_payload["retrying"] = True
+                        logs.append(
+                            {
+                                "role": role.value,
+                                "phase": phase,
+                                "round": round_number,
+                                "request": (),
+                                "response": response_payload,
+                                "error": category,
+                            }
+                        )
+                        continue
+                    logs.append(
+                        {
+                            "role": role.value,
+                            "phase": phase,
+                            "round": round_number,
+                            "request": (),
+                            "response": response_payload,
+                            "error": category,
+                        }
+                    )
+                    return _RoleRun(
+                        response=None,
+                        retrieval_log=tuple(logs),
+                        unavailable=operational,
+                        invalid=not operational,
+                        limitation=(
+                            _operational_limitation(error, category)
+                            if operational
+                            else "A synthesis role returned invalid structured output."
+                        ),
+                    )
+                break
+            if response is None:
+                raise RuntimeError("invalid structured-output retry exited without response")
 
             log: dict[str, object] = {
                 "role": role.value,

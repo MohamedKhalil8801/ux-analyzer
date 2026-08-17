@@ -802,7 +802,12 @@ async def test_role_validation_failure_keeps_safe_stage_diagnostics(
                     "top_level_keys": ["private-provider-content-must-not-be-recorded"],
                     "private": "private-provider-content-must-not-be-recorded",
                 },
-            )
+            ),
+            ModelResponseValidationError(
+                ModelRole.REPORT_ANALYST,
+                "unknown evidence ID: private-provider-content-must-not-be-recorded",
+                response_summary={"schema": "AnalystResponse"},
+            ),
         ]
     )
 
@@ -1888,7 +1893,11 @@ async def test_invalid_structured_role_output_is_rejected_not_unavailable(
             ModelResponseValidationError(
                 ModelRole.REPORT_ANALYST,
                 "invalid structured output",
-            )
+            ),
+            ModelResponseValidationError(
+                ModelRole.REPORT_ANALYST,
+                "invalid structured output",
+            ),
         ]
     )
 
@@ -1897,6 +1906,33 @@ async def test_invalid_structured_role_output_is_rejected_not_unavailable(
     assert attempt.status is SynthesisStatus.REJECTED
     assert attempt.status is not SynthesisStatus.UNAVAILABLE
     assert any("invalid" in limitation.lower() for limitation in attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_invalid_structured_role_output_retries_once_without_fallback(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    service, roles = _scripted_service(
+        analyst=[
+            ModelResponseValidationError(
+                ModelRole.REPORT_ANALYST,
+                "invalid structured output",
+            ),
+            AnalystResponse(complete=True, candidate_findings=[candidate]),
+        ],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert len(roles[0].calls) == 2
+    assert any(
+        log["response"].get("retrying") is True
+        for log in attempt.retrieval_log
+        if log["role"] == ModelRole.REPORT_ANALYST.value
+    )
 
 
 @pytest.mark.asyncio
