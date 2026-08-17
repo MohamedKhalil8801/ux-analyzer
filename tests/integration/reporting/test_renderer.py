@@ -2140,6 +2140,9 @@ async def test_renderer_browser_routes_non_replay_evidence_to_exact_detail(
             assert await detail.get_attribute("data-evidence-id") == evidence_id
             assert await detail.evaluate("node => document.activeElement === node")
             assert page.url.endswith("#evidence-detail")
+            detail_text = await detail.text_content() or ""
+            assert "run-1" not in detail_text
+            assert "viewport-1" not in detail_text
 
         await page.locator(
             '[data-evidence-id="model-estimate:run-1:prominence:3:target"]'

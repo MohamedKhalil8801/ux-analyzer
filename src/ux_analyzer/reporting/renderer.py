@@ -1369,11 +1369,57 @@ def _synthesis_navigation_target(
         {
             "kind": "evidence-detail",
             "evidence_kind": reference.kind,
-            "summary": entry.summary,
-            "detail": _safe_value(dict(entry.payload)),
+            "summary": _text(_humanize_evidence_detail(entry.summary)),
+            "detail": _humanize_evidence_detail(dict(entry.payload)),
         }
     )
     return target
+
+
+def _humanize_evidence_detail(value: object) -> object:
+    """Keep evidence-detail panels useful without exposing internal identifiers."""
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        result: dict[str, object] = {}
+        labels = {
+            "run_id": ("Website replay", "Recorded website"),
+            "viewport_id": ("Screenshot", "Selected screenshot"),
+            "element_id": ("Element", "Selected element"),
+            "snapshot_id": ("Screenshot", "Selected screenshot"),
+            "surface_id": ("Website surface", "Recorded website"),
+            "evidence_id": ("Evidence", "Recorded evidence"),
+            "event_id": ("Recorded step", "Selected step"),
+        }
+        for key, item in mapping.items():
+            key_text = str(key)
+            label = labels.get(key_text)
+            if label is not None:
+                result[label[0]] = label[1]
+            elif key_text.endswith("_ids"):
+                values = cast(Sequence[object], item) if isinstance(item, list) else ()
+                result[key_text.removesuffix("_ids") + " count"] = len(values)
+            elif key_text.endswith("_id"):
+                result[key_text.removesuffix("_id") + " reference"] = (
+                    "Recorded reference"
+                )
+            else:
+                result[key_text] = _humanize_evidence_detail(item)
+        return _safe_value(result)
+    if isinstance(value, list):
+        return [
+            _humanize_evidence_detail(item) for item in cast(list[object], value)
+        ]
+    if isinstance(value, tuple):
+        return [
+            _humanize_evidence_detail(item) for item in cast(tuple[object, ...], value)
+        ]
+    if isinstance(value, str):
+        return re.sub(
+            r"\b(?:run|viewport|element)-[A-Za-z0-9-]+\b",
+            "recorded reference",
+            value,
+        )
+    return _safe_value(value)
 
 
 def _event_by_sequence(run: Mapping[str, Any], sequence: int) -> dict[str, Any] | None:

@@ -62,7 +62,7 @@
 
   function percentage(value) {
     if (typeof value !== "number" || !Number.isFinite(value)) return "unavailable";
-    return Number((value * 100).toPrecision(6)) + "%";
+    return String(value * 100) + "%";
   }
 
   function titleCase(value) {
@@ -948,7 +948,9 @@
       body.appendChild(itemRow);
     });
     table.appendChild(body);
-    block.appendChild(table);
+    var tableWrap = element("div", "table-wrap saliency-table-wrap");
+    tableWrap.appendChild(table);
+    block.appendChild(tableWrap);
     parent.appendChild(block);
   }
 
@@ -975,7 +977,9 @@
       body.appendChild(itemRow);
     });
     table.appendChild(body);
-    block.appendChild(table);
+    var tableWrap = element("div", "table-wrap saliency-table-wrap");
+    tableWrap.appendChild(table);
+    block.appendChild(tableWrap);
     parent.appendChild(block);
   }
 
