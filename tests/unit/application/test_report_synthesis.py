@@ -1695,6 +1695,41 @@ async def test_one_adjudication_revision_can_resolve_blocking_objection(
 
 
 @pytest.mark.asyncio
+async def test_one_adjudication_revision_dispositions_material_objection(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    objection = _blocking_objection(candidate.finding_id).model_copy(
+        update={"severity": ObjectionSeverity.MATERIAL}
+    )
+    resolution = ObjectionResolution(
+        objection_id=objection.objection_id,
+        finding_id=candidate.finding_id,
+        resolved=True,
+        resolution="The cited event supports the reviewed claim.",
+        evidence_refs=objection.evidence_refs,
+    )
+    service, roles = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[EvidenceAuditResponse(complete=True, objections=[objection])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate]),
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[candidate],
+                objection_resolutions=[resolution],
+            ),
+        ],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert attempt.objections[0].resolved_by_role == "report-adjudicator"
+    assert len(roles[3].calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_configured_adjudication_revision_limit_is_honored(
     tmp_path: Path,
 ) -> None:

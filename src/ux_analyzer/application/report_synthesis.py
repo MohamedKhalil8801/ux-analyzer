@@ -1091,7 +1091,10 @@ class ReportSynthesisService:
         limitations.extend(final_limitations)
 
         for _revision_number in range(self.max_adjudication_revisions):
-            if not self._has_unresolved_blocking(resolved_objections):
+            if not (
+                self._has_unresolved_blocking(resolved_objections)
+                or self._has_undispositioned(resolved_objections)
+            ):
                 break
             revision_run = await self._run_role(
                 ModelRole.REPORT_ADJUDICATOR,
@@ -2048,6 +2051,14 @@ class ReportSynthesisService:
     def _has_unresolved_blocking(objections: Sequence[SynthesisObjection]) -> bool:
         return any(
             item.severity is ObjectionSeverity.BLOCKING and not item.resolved
+            for item in objections
+        )
+
+    @staticmethod
+    def _has_undispositioned(objections: Sequence[SynthesisObjection]) -> bool:
+        return any(
+            item.resolution is None
+            or item.resolved_by_role != REPORT_ADJUDICATOR_ROLE
             for item in objections
         )
 
