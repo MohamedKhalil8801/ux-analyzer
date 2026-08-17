@@ -361,6 +361,24 @@ def test_report_output_caps_requests_to_remaining_role_budget() -> None:
     ]
 
 
+def test_report_output_drops_repeated_requests_when_evidence_is_delivered() -> None:
+    analyst = ReportAnalyst(RecordingClient(), model="gpt-report")
+    response = AnalystResponse(
+        complete=False,
+        evidence_requests=["event:run-a:1", "event:run-a:2"],
+        candidate_findings=[CandidateFinding.model_validate(_finding_payload())],
+    )
+
+    normalized = analyst._drop_repeated_evidence_requests(
+        response,
+        {EVIDENCE_ID, "event:run-a:2"},
+    )
+
+    assert normalized.complete is True
+    assert normalized.evidence_requests == []
+    assert "already delivered" in normalized.limitations[0]
+
+
 @pytest.mark.asyncio
 async def test_final_retrieval_round_allows_only_delivered_evidence() -> None:
     client = RecordingClient()

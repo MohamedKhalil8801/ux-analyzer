@@ -2094,6 +2094,11 @@ class _ReportRole:
             max_retrieval_rounds=max_retrieval_rounds,
         )
         response = self._bound_evidence_requests(response, resolved_ids)
+        response = self._drop_repeated_evidence_requests(
+            response,
+            resolved_ids,
+            unavailable_attachment_ids=unavailable_attachment_ids,
+        )
         self._validate_response(
             response,
             manifest,
@@ -2211,6 +2216,37 @@ class _ReportRole:
             return response
         payload = response.model_dump(mode="python")
         payload["evidence_requests"] = response.evidence_requests[:remaining]
+        return type(response).model_validate(payload)
+
+    def _drop_repeated_evidence_requests(
+        self,
+        response: InvestigativeResponse,
+        resolved_ids: set[str],
+        *,
+        unavailable_attachment_ids: frozenset[str] = frozenset(),
+    ) -> InvestigativeResponse:
+        requests = [
+            evidence_id
+            for evidence_id in response.evidence_requests
+            if evidence_id not in resolved_ids
+            or evidence_id in unavailable_attachment_ids
+        ]
+        if requests == list(response.evidence_requests):
+            return response
+        payload = response.model_dump(mode="python")
+        payload["evidence_requests"] = requests
+        if not response.complete and not requests:
+            referenced_ids = self._referenced_evidence_ids(response)
+            if referenced_ids.issubset(resolved_ids):
+                payload["complete"] = True
+                limitations = list(response.limitations)
+                limitation = (
+                    "The role requested evidence that was already delivered; no "
+                    "additional retrieval was needed."
+                )
+                if limitation not in limitations:
+                    limitations.append(limitation)
+                payload["limitations"] = limitations
         return type(response).model_validate(payload)
 
     def _defer_undelivered_claims(
