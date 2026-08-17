@@ -303,6 +303,7 @@ def test_final_finding_allows_cited_core_claim_correction() -> None:
     )
     corrected = _finding(
         issue="The control is hard to find in the initial view.",
+        fixes=("Make the complete control visible in the initial view.",),
         severity_justification="The initial view shows material discovery friction.",
         reviewer_state="accepted",
     )

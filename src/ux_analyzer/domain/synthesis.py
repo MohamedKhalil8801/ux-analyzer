@@ -406,7 +406,14 @@ def final_finding_preserves_candidate(
                 "visual-interpretation",
             }
         ),
-        "fixes": frozenset({"fix-leverage"}),
+        "fixes": frozenset(
+            {
+                "citation-accuracy",
+                "factual-support",
+                "fix-leverage",
+                "visual-interpretation",
+            }
+        ),
         "severity": frozenset({"severity"}),
         "confidence": frozenset(
             {
