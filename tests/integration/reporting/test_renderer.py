@@ -1045,6 +1045,7 @@ def test_renderer_missing_or_unavailable_synthesis_uses_deterministic_fallback(
                 "kind": "metric",
                 "run_id": "run-1",
                 "metric_id": "discovery-cost",
+                "surface_label": "Invite",
             },
         }
     ]
@@ -1053,6 +1054,7 @@ def test_renderer_missing_or_unavailable_synthesis_uses_deterministic_fallback(
             "kind": "metric",
             "run_id": "run-1",
             "metric_id": "discovery-cost",
+            "surface_label": "Invite",
         }
     ]
 
@@ -1501,11 +1503,11 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     normalized_html = " ".join(html.split())
 
     assert 'data-synthesis-status="rejected"' in normalized_html
-    assert "Model review rejected; recorded evidence available" in (normalized_html)
+    assert "Recorded evidence available" in normalized_html
     assert "Recorded signals requiring manual review" in normalized_html
     assert "Priority findings" not in normalized_html
     assert "Check first" not in normalized_html
-    assert "Candidate findings are not publishable." in normalized_html
+    assert "no reviewed finding could be published" in normalized_html
     assert "the evidence review is unavailable" not in normalized_html
 
 
@@ -1685,7 +1687,7 @@ def test_renderer_labels_boundary_rejection_separately_from_unavailable(
     )
 
     assert synthesis["model_review_status"] == "rejected"
-    assert "evidence boundary" in synthesis["assessment"]
+    assert "no reviewed finding could be published" in synthesis["assessment"]
     assert "unavailable" not in synthesis["assessment"].casefold()
 
 
@@ -1703,8 +1705,35 @@ def test_renderer_preserves_boundary_limitation_from_rejected_attempt(
         "synthesis"
     ]
 
-    assert "evidence boundary" in synthesis["assessment"]
+    assert "no reviewed finding could be published" in synthesis["assessment"]
     assert "unavailable" not in synthesis["assessment"].casefold()
+
+
+def test_renderer_humanizes_synthesis_copy_without_mutating_artifact() -> None:
+    finding = {
+        "issue": "The visibility_fraction is low in delivered viewport evidence.",
+        "impact": "The pointer targeting is harder.",
+        "root_cause": "The occlusion_fraction is high.",
+        "severity_justification": "Two wrong-action records support friction.",
+        "fixes": ["Raise visibility_fraction and recheck target-discovery-rank."],
+        "limitations": ["Delivered evidence does not establish causation."],
+        "reviewer_notes": [],
+        "principles": [],
+        "evidence_targets": [],
+        "evidence_refs": [],
+    }
+
+    projected = renderer._project_synthesis_finding(finding, run_links=None)
+
+    assert finding["issue"] == (
+        "The visibility_fraction is low in delivered viewport evidence."
+    )
+    assert projected["display_issue"] == (
+        "The visible area is low in recorded screenshots."
+    )
+    assert projected["display_fixes"] == [
+        "Raise visible area and recheck target discovery order."
+    ]
 
 
 def test_render_experiment_report_is_offline_and_does_not_call_model(
@@ -1825,6 +1854,10 @@ def test_renderer_places_conclusions_before_comparison_and_orders_severity(
     assert html.count("Verify evidence") == 3
     assert "Affected surfaces" in html
     assert "mental-models" in html
+    assert "Counterevidence" not in html
+    assert "No counterevidence was recorded." not in html
+    assert "Reviewer status" not in html
+    assert "Why this priority" in html
 
 
 def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
@@ -1862,7 +1895,7 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert "Workspace administrator" in fallback_html
     assert "run-1" in fallback_html
     assert "verified-success" in fallback_html
-    assert "Model review unavailable; recorded evidence available" in fallback_html
+    assert "Recorded evidence available" in fallback_html
     assert "Recorded signals requiring manual review" in fallback_html
     assert "Priority findings" not in fallback_html
     assert "Check first" in fallback_html
@@ -1874,20 +1907,15 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     )
     fallback_copy = " ".join(fallback_html.split()).lower()
     assert (
-        "model review did not complete. recorded deterministic evidence remains available. "
-        "ux principles, counterevidence, and reviewer status are unavailable."
+        "only recorded evidence is shown. verify each linked replay before changing the website."
         in fallback_copy
     )
-    assert "Recorded deterministic evidence only" in fallback_html
+    assert "Recorded evidence only" in fallback_html
     assert "1 recorded" in fallback_html
-    assert (
-        "Unavailable: model review did not complete, so synthesis principles were not recorded."
-        in fallback_html
-    )
-    assert (
-        "Unavailable: model review did not complete, so counterevidence was not recorded."
-        in fallback_html
-    )
+    assert "Principles" not in fallback_html
+    assert "Counterevidence" not in fallback_html
+    assert "Reviewer status" not in fallback_html
+    assert "model review did not complete" not in fallback_copy
     assert 'data-report-navigation="true"' in fallback_html
     assert "max-width: 1440px" in fallback_html
     assert "padding-inline: clamp(" in fallback_html
@@ -1964,7 +1992,7 @@ def test_renderer_fallback_finding_is_self_contained(tmp_path: Path) -> None:
         "verification": "verified",
     }
     assert "does not clearly signal the task goal" in finding["fallback_title"]
-    assert "model review" in finding["fallback_issue"].lower()
+    assert "recorded evidence" in finding["fallback_issue"].lower()
     assert finding["evidence_refs"][0]["available"] is True
 
 
@@ -2003,7 +2031,7 @@ async def test_renderer_browser_fallback_navigation_context_and_evidence_on_mobi
         await page.goto(report_path.resolve().as_uri())
 
         assert await page.locator('[data-report-navigation="true"]').count() == 1
-        assert "Model review unavailable" in (
+        assert "Only recorded evidence is shown" in (
             await page.locator("#analysis-summary").text_content() or ""
         )
         assert "Invite a teammate to the workspace" in (
@@ -2210,7 +2238,7 @@ async def test_renderer_browser_mobile_workspace_is_reachable_without_overflow(
             )
             assert dimensions["scrollWidth"] <= dimensions["innerWidth"], offenders
             assert await page.locator("#selected-element-evidence").evaluate(
-                "node => getComputedStyle(node).overflowY === 'visible'"
+                "node => getComputedStyle(node).overflowX === 'hidden'"
             )
             assert await page.locator("#report-limitations").count() == 0
             await page.locator("#playback-workspace").scroll_into_view_if_needed()
@@ -2321,7 +2349,7 @@ async def test_renderer_split_index_evidence_button_opens_run_page(
         await page.goto(report_path.resolve().as_uri())
         await page.locator("summary", has_text="Verify evidence").first.click()
         evidence_button = page.locator('[data-evidence-id="event:run.active:7"]')
-        assert await evidence_button.text_content() == "Show on screenshot"
+        assert await evidence_button.text_content() == "Show on screenshot: Invite"
         await evidence_button.click()
         assert "report-runs" in page.url
         assert "run.active" in page.url or "run.active-" in page.url
@@ -2337,8 +2365,22 @@ async def test_renderer_split_index_populates_controls_and_opens_replay(
 ) -> None:
     _write_run(tmp_path, "run.active", version="defective", discovery_cost=8)
     _write_run(tmp_path, "run_active", version="improved", discovery_cost=3)
+    result_path = tmp_path / "runs" / "run.active" / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["state"] = {
+        "attention": {
+            "memory": [
+                {
+                    "element_id": "run-abcdef123456-viewport-1-element-2",
+                    "label": "Invite teammate",
+                }
+            ]
+        }
+    }
+    _write_json(result_path, result)
+    _write_checksums(result_path.parent)
     report_path = render_experiment_report(
-        tmp_path, tmp_path / "report.html", max_single_file_bytes=100
+        tmp_path, tmp_path / "report.html", max_single_file_bytes=150_000
     )
 
     async with async_playwright() as playwright:
@@ -2352,6 +2394,14 @@ async def test_renderer_split_index_populates_controls_and_opens_replay(
         await page.locator("#play-pause").click()
         assert "report-runs" in page.url
         assert page.url.endswith("#playback-workspace")
+        await page.wait_for_load_state("load")
+        assert await page.get_by_role("heading", level=1).text_content() == (
+            "Invite | Defective replay"
+        )
+        visible_text = await page.locator("body").inner_text()
+        assert "Invite teammate" in visible_text
+        assert "run.active" not in visible_text
+        assert "run-abcdef123456-viewport-1-element-2" not in visible_text
         await browser.close()
 
 
@@ -2383,10 +2433,10 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert 'data-metric="model-trial">2</td>' in html
     assert "model-dependent (attention seed 7, model trial 2)" in html
     assert "Observation" in html
-    assert "Terminal / failure" in html
-    assert "Scent" in html
-    assert "Model decision and reason" in html
-    assert "Action and result" in html
+    assert "Task completed" in html
+    assert "Element review" in html
+    assert "Website review" in html
+    assert "Interaction" in html
     assert "Verification" in html
     assert "Memory" in html
     assert "Prompt version" in html
@@ -4340,8 +4390,8 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         assert event_ids == [f"event-{sequence}" for sequence in range(1, 11)]
         failure = page.locator("#run-status-banner")
         assert "Agent Abandoned" in (await failure.text_content() or "")
-        assert "evaluation" in (await failure.text_content() or "")
-        assert "evaluation evidence unavailable: target absent" in (
+        assert "evaluation" in (await failure.text_content() or "").lower()
+        assert "evaluation evidence unavailable: target absent" not in (
             await failure.text_content() or ""
         )
 
@@ -4373,11 +4423,16 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         assert "7200" in panel_text
         assert "0.4" in panel_text
         assert "0.1" in panel_text
-        assert "Blocked by other content" in panel_text
+        visible_row = panel.locator(".field-row", has_text="Visible on screen")
+        blocked_row = panel.locator(".field-row", has_text="Blocked by other content")
+        assert "100%" in (await visible_row.text_content() or "")
+        assert "25%" in (await blocked_row.text_content() or "")
         assert "Local contrast" in panel_text
         assert "Linked decisions" in panel_text
         assert "Linked actions and results" in panel_text
-        assert "Linked findings" in panel_text
+        assert "Related findings" in panel_text
+        assert "Related measurements" in panel_text
+        assert "Unavailable: no scent record" not in panel_text
 
         await page.locator('[data-event-kind="action-proposed"]').click()
         event_text = await page.locator("#current-event-card").text_content() or ""
@@ -4398,7 +4453,8 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         )
         timeout_text = await page.locator("#run-status-banner").text_content() or ""
         assert "Timed Out" in timeout_text
-        assert "run timeout exceeded" in timeout_text
+        assert "run timeout exceeded" not in timeout_text
+        assert "Run Timeout Exceeded" in timeout_text
         await page.set_viewport_size({"width": 390, "height": 844})
         dimensions = await page.evaluate(
             "({scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth})"

@@ -236,12 +236,16 @@ def render_experiment_report(
                     run_links={run["run_id"]: ""},
                     run_scope=frozenset({run["run_id"]}),
                 )
+                run_title = (
+                    f"{run.get('scenario_label', 'Website')} | "
+                    f"{run.get('version_label', 'Version')} replay"
+                )
                 run_html = _render_html(
                     run_context,
-                    f"Run replay: {run['run_id']}",
+                    run_title,
                 )
                 if len(run_html.encode("utf-8")) > threshold:
-                    run_html = _oversized_run_html(run["run_id"], threshold)
+                    run_html = _oversized_run_html(run_title, threshold)
                 _publish_report_text(
                     run_parent,
                     run_page_names[run["run_id"]],
@@ -295,12 +299,12 @@ def _estimated_full_report_bytes(experiment: dict[str, Any]) -> int:
     return shell_bytes + len(_safe_json(experiment).encode("utf-8")) + synthesis_bytes
 
 
-def _oversized_run_html(run_id: str, threshold: int) -> str:
-    escaped_run_id = html.escape(run_id)
+def _oversized_run_html(title: str, threshold: int) -> str:
+    escaped_title = html.escape(title)
     detailed = (
         '<!doctype html><html lang="en"><meta charset="utf-8">'
-        f"<title>Run replay omitted: {escaped_run_id}</title>"
-        f"<h1>Run {escaped_run_id}</h1>"
+        f"<title>Replay omitted: {escaped_title}</title>"
+        f"<h1>{escaped_title}</h1>"
         "<p>Detailed replay omitted because run page exceeds configured size limit.</p>"
         "<p>Run remains listed in experiment index with trust and failure details.</p>"
         "</html>"
@@ -485,34 +489,34 @@ def _fallback_synthesis(
     )
     if status in {"missing", "unavailable"}:
         assessment = (
-            "Model review is unavailable. "
+            "Only recorded evidence is shown. "
             f"{len(publishable_findings)} recorded signal"
             f"{'s are' if len(publishable_findings) != 1 else ' is'} linked directly "
-            "to evidence; verify each replay before changing the UI."
+            "to evidence; verify each replay before changing the website."
         )
         model_review_status = "unavailable"
     elif status == "invalid":
         assessment = (
-            "Model review could not be validated. "
+            "Only recorded evidence is shown because the review could not be validated. "
             f"{len(publishable_findings)} recorded signal"
             f"{'s are' if len(publishable_findings) != 1 else ' is'} linked directly "
-            "to evidence; verify each replay before changing the UI."
+            "to evidence; verify each replay before changing the website."
         )
         model_review_status = "invalid"
     elif boundary_rejection:
         assessment = (
-            "Model review was rejected at the bounded evidence boundary. "
+            "Only recorded evidence is shown because no reviewed finding could be published. "
             f"{len(publishable_findings)} recorded signal"
             f"{'s remain' if len(publishable_findings) != 1 else ' remains'} linked "
-            "directly to evidence for manual review."
+            "directly to evidence for review."
         )
         model_review_status = "rejected"
     else:
         assessment = (
-            "Model review was rejected. "
+            "Only recorded evidence is shown because no reviewed finding could be published. "
             f"{len(publishable_findings)} recorded signal"
             f"{'s remain' if len(publishable_findings) != 1 else ' remains'} linked "
-            "directly to evidence for manual review."
+            "directly to evidence for review."
         )
         model_review_status = "rejected"
     limitations = [limitation]
@@ -732,8 +736,7 @@ def _fallback_finding_copy(
         fix = f'Inspect the linked evidence for "{target}" before making a product change.'
     return {
         "title": title,
-        "issue": issue
-        + " Model review is unavailable, so this statement uses recorded fallback evidence only.",
+        "issue": issue + " This statement is based on recorded evidence from the linked replay.",
         "impact": impact,
         "root_cause": cause,
         "fix": fix,
@@ -790,6 +793,9 @@ def _fallback_evidence_target(
                 "kind": "metric",
                 "run_id": run_id,
                 "metric_id": metric_id,
+                "surface_label": _first_string(
+                    run.get("scenario_label"), run.get("scenario_id"), "Recorded website"
+                ),
             }
 
     parts = evidence_id.split(":")
@@ -806,6 +812,9 @@ def _fallback_evidence_target(
             "run_id": run_id,
             "sequence": sequence,
             "event_id": _text(event.get("event_id"), f"event-{sequence}"),
+            "surface_label": _first_string(
+                run.get("scenario_label"), run.get("scenario_id"), "Recorded website"
+            ),
         }
         viewport_id = _recorded_event_viewport_id(run, event)
         if viewport_id is not None:
@@ -1188,6 +1197,9 @@ def _synthesis_navigation_target(
     target: dict[str, Any] = {
         "kind": reference.kind,
         "run_id": reference.run_id,
+        "surface_label": _first_string(
+            run.get("scenario_label"), run.get("scenario_id"), "Recorded website"
+        ),
     }
     if reference.kind in {"event", "replay"}:
         sequence = reference.replay_sequence
@@ -1598,7 +1610,7 @@ def _project_synthesis(
             "limitations": ["No persisted report synthesis is available."],
             "tested_scope": {},
             "assessment": (
-                "Deterministic findings are shown because report synthesis is unavailable."
+                "Only recorded evidence is shown; verify each linked replay before changing the website."
             ),
         }
     projected = dict(synthesis)
@@ -1617,6 +1629,20 @@ def _project_synthesis_finding(
     run_links: Mapping[str, str] | None,
 ) -> dict[str, Any]:
     projected = dict(finding)
+    for field_name in (
+        "issue",
+        "impact",
+        "root_cause",
+        "severity_justification",
+    ):
+        projected[f"display_{field_name}"] = _humanize_synthesis_text(
+            finding.get(field_name)
+        )
+    for field_name in ("fixes", "limitations", "reviewer_notes", "principles"):
+        projected[f"display_{field_name}"] = [
+            _humanize_synthesis_text(value)
+            for value in _strings(finding.get(field_name))
+        ]
     targets: list[dict[str, Any]] = []
     for target in _list_of_mappings(finding.get("evidence_targets")):
         item = dict(target)
@@ -1636,6 +1662,26 @@ def _project_synthesis_finding(
         references.append(item)
     projected["evidence_refs"] = references
     return projected
+
+
+def _humanize_synthesis_text(value: object) -> str:
+    text = _text(value)
+    replacements = (
+        ("visibility_fraction", "visible area"),
+        ("occlusion_fraction", "covered area"),
+        ("first-view element records", "first-view screenshots"),
+        ("delivered element records", "recorded screenshots"),
+        ("delivered viewport evidence", "recorded screenshots"),
+        ("delivered evidence", "recorded evidence"),
+        ("delivered record", "recorded screenshot"),
+        ("pointer targeting", "click targeting"),
+        ("wrong-action", "wrong-interaction"),
+        ("target-discovery-rank", "target discovery order"),
+        ("model-estimated", "estimated"),
+    )
+    for technical, friendly in replacements:
+        text = text.replace(technical, friendly)
+    return text
 
 
 def _finding_targets_run(finding: Mapping[str, Any], run_scope: frozenset[str]) -> bool:

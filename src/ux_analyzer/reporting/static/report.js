@@ -60,6 +60,11 @@
     return String(value);
   }
 
+  function percentage(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "unavailable";
+    return Number((value * 100).toPrecision(6)) + "%";
+  }
+
   function titleCase(value) {
     return String(value || "record").replace(/[-_]/g, " ").replace(/\b\w/g, function (letter) {
       return letter.toUpperCase();
@@ -126,7 +131,24 @@
     parent.appendChild(block);
   }
 
-  function addMapping(parent, label, mapping) {
+  function regionLabel(run, regionId) {
+    var snapshots = run && run.snapshots || [];
+    for (var snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+      var match = (snapshots[snapshotIndex].regions || []).find(function (item) {
+        return item.id === regionId;
+      });
+      if (match) return match.label || "Website section";
+    }
+    return "Website section";
+  }
+
+  function mappingKeyLabel(run, label, key) {
+    if (label === "Element probabilities") return elementLabel(run, key);
+    if (label === "Region probabilities") return regionLabel(run, key);
+    return titleCase(key);
+  }
+
+  function addMapping(parent, label, mapping, run) {
     var entries = Object.keys(mapping || {}).sort();
     var block = element("div", "value-block");
     block.appendChild(element("strong", "", label));
@@ -134,7 +156,7 @@
       block.appendChild(element("p", "empty", "Unavailable: no recorded values."));
     } else {
       var list = element("dl", "field-list");
-      entries.forEach(function (key) { addField(list, titleCase(key), mapping[key]); });
+      entries.forEach(function (key) { addField(list, mappingKeyLabel(run, label, key), mapping[key]); });
       block.appendChild(list);
     }
     parent.appendChild(block);
@@ -157,17 +179,30 @@
   }
 
   function eventCategory(kind) {
-    if (kind === "viewport-captured" || kind === "observation-recorded") return "Observation";
-    if (kind.indexOf("prominence") !== -1) return "Prominence";
-    if (kind.indexOf("scent") !== -1) return "Scent";
-    if (kind === "attention-selection-recorded") return "Attention selection";
-    if (kind === "model-call-recorded") return "Model request / response";
-    if (kind === "decision-recorded" || kind === "action-proposed" || kind === "agent-claim") return "Model decision and reason";
-    if (kind === "action-executed" || kind === "action-rejected") return "Action and result";
-    if (kind === "verification-recorded") return "Verification";
-    if (kind.indexOf("memory") !== -1 || kind.indexOf("state") !== -1) return "Memory / state";
-    if (kind === "run-terminated" || kind.indexOf("failure") !== -1) return "Terminal / failure";
-    return "Recorded event";
+    if (kind === "viewport-captured" || kind === "observation-recorded") return "Page observation";
+    if (kind.indexOf("prominence") !== -1 || kind.indexOf("scent") !== -1) return "Element review";
+    if (kind === "attention-selection-recorded") return "Next step selected";
+    if (kind === "model-call-recorded" || kind === "decision-recorded" || kind === "agent-claim") return "Website review";
+    if (kind === "action-proposed" || kind === "action-executed" || kind === "action-rejected") return "Interaction";
+    if (kind === "verification-recorded") return "Task result";
+    if (kind === "run-terminated") return "Task completed";
+    if (kind.indexOf("failure") !== -1) return "Recorded issue";
+    return "Recorded step";
+  }
+
+  function eventTitle(kind) {
+    if (kind === "viewport-captured") return "Page viewed";
+    if (kind === "observation-recorded") return "Page inspected";
+    if (kind.indexOf("prominence") !== -1 || kind.indexOf("scent") !== -1) return "Elements reviewed";
+    if (kind === "attention-selection-recorded") return "Next interaction selected";
+    if (kind === "model-call-recorded" || kind === "decision-recorded" || kind === "agent-claim") return "Website review recorded";
+    if (kind === "action-executed") return "Interaction completed";
+    if (kind === "action-proposed") return "Next interaction planned";
+    if (kind === "action-rejected") return "Interaction not completed";
+    if (kind === "verification-recorded") return "Task result checked";
+    if (kind === "run-terminated") return "Task completed";
+    if (kind.indexOf("failure") !== -1) return "Issue recorded";
+    return "Recorded step";
   }
 
   function eventSummary(record, run) {
@@ -178,6 +213,16 @@
     if (record.viewport_id) return "Website view recorded";
     if (record.selected_ids && record.selected_ids.length) return "Selected: " + record.selected_ids.map(function (id) { return elementLabel(run, id); }).join(", ");
     return eventCategory(record.kind);
+  }
+
+  function memoryLabel(item, run) {
+    var key = String(item && item.key || "");
+    var value = String(item && item.value || "");
+    if (key.indexOf("-element-") !== -1) {
+      var label = elementLabel(run, key);
+      return label === "the selected element" ? (value || "Recorded element") : label;
+    }
+    return key + (value ? ": " + value : "");
   }
 
   function scenarioValues() {
@@ -620,6 +665,18 @@
     return { decisions: decisions, actions: actions, findings: findings, evidence: evidence };
   }
 
+  function linkedEvidenceText(record) {
+    var description = String(record && record.description || "");
+    var normalized = description.toLowerCase();
+    if (normalized.indexOf("unique element ids") !== -1) return "Recorded elements inspected during discovery.";
+    if (normalized.indexOf("unique region ids") !== -1) return "Website sections observed during discovery.";
+    if (normalized.indexOf("executed scroll") !== -1) return "Scrolls used while finding the target.";
+    if (normalized.indexOf("failed or non-target") !== -1) return "Wrong or unsuccessful interactions recorded.";
+    if (normalized.indexOf("executed back") !== -1) return "Back actions used during discovery.";
+    if (normalized.indexOf("model review unavailable") !== -1) return "Recorded fallback signal attached to this element.";
+    return description;
+  }
+
   function renderElementDetail(run, snapshot, event) {
     while (elementDetail.firstChild) elementDetail.removeChild(elementDetail.firstChild);
     var selected = findElement(snapshot, state.elementId);
@@ -637,8 +694,8 @@
       ["Section", region ? region.label : "Website section unavailable"],
       ["Clickable", selected.actionable],
       ["Disabled", selected.disabled],
-      ["Visible on screen", selected.visibility_fraction > 0],
-      ["Blocked by other content", selected.occlusion_fraction > 0],
+      ["Visible on screen", percentage(selected.visibility_fraction)],
+      ["Blocked by other content", percentage(selected.occlusion_fraction)],
       ["Local contrast", selected.local_contrast],
       ["Noticed before this step", Boolean(attention.noticed[selected.id])],
       ["Inspected before this step", Boolean(attention.inspected[selected.id])]
@@ -653,15 +710,14 @@
         ["Notice within budget probability", score.notice_within_budget_probability]
       ]);
       elementDetail.appendChild(featureTable(score));
-    } else {
-      elementDetail.appendChild(element("p", "empty", "Unavailable: no prominence record for this element at current step."));
     }
-    addValues(elementDetail, "Scent", scentAt(run, snapshot.id, selected.id, event ? event.sequence : 0), "Unavailable: no scent record at current step.");
+    var scentValues = scentAt(run, snapshot.id, selected.id, event ? event.sequence : 0);
+    if (scentValues.length) addValues(elementDetail, "Scent", scentValues);
     var linked = linkedRecords(run, selected.id);
-    addValues(elementDetail, "Linked decisions", linked.decisions.map(function (record) { return "Step " + record.sequence + ": " + (record.reason || actionText(record.action, run)); }));
-    addValues(elementDetail, "Linked actions and results", linked.actions.map(function (record) { return "Step " + record.sequence + ": " + actionText(record.action, run) + " | " + (record.succeeded ? "succeeded" : "failed") + (record.error ? " | " + record.error : ""); }));
-    addValues(elementDetail, "Linked findings", linked.findings.map(function (record) { return record.title + ": " + record.cause; }));
-    addValues(elementDetail, "Linked evidence", linked.evidence.map(function (record) { return record.description; }));
+    if (linked.decisions.length) addValues(elementDetail, "Linked decisions", linked.decisions.map(function (record) { return "Step " + record.sequence + ": " + (record.reason || actionText(record.action, run)); }));
+    if (linked.actions.length) addValues(elementDetail, "Linked actions and results", linked.actions.map(function (record) { return "Step " + record.sequence + ": " + actionText(record.action, run) + " | " + (record.succeeded ? "succeeded" : "failed") + (record.error ? " | " + record.error : ""); }));
+    if (linked.findings.length) addValues(elementDetail, "Related findings", linked.findings.map(function (record) { return record.title + ": " + record.cause; }));
+    if (linked.evidence.length) addValues(elementDetail, "Related measurements", linked.evidence.map(linkedEvidenceText));
   }
 
   function saliencyEntries(run) {
@@ -729,8 +785,8 @@
     link.textContent = "Open exact generated heatmap";
     block.appendChild(link);
     addFields(block, [
-      ["Artifact path", heatmap.heatmap_path],
-      ["Viewport", heatmap.viewport_id],
+      ["Artifact", "Recorded heatmap available"],
+      ["Captured page", "Recorded website view"],
       ["Inference timing", exact(heatmap.inference_duration_ms) + " ms"],
       ["Execution provider", heatmap.execution_provider],
       ["Cache status", heatmap.cache_state]
@@ -896,7 +952,7 @@
     parent.appendChild(block);
   }
 
-  function appendAggregationComponents(parent, aggregates) {
+  function appendAggregationComponents(parent, aggregates, run) {
     var block = element("details", "value-block");
     block.appendChild(element("summary", "", "Aggregation components"));
     var table = element("table", "feature-table saliency-table");
@@ -910,7 +966,7 @@
     var body = element("tbody", "");
     (aggregates || []).forEach(function (item) {
       var itemRow = element("tr", "");
-      itemRow.appendChild(element("td", "", item.element_id));
+      itemRow.appendChild(element("td", "", elementLabel(run, item.element_id)));
       itemRow.appendChild(element("td", "", exact(item.density)));
       itemRow.appendChild(element("td", "", exact(item.robust_peak)));
       itemRow.appendChild(element("td", "", exact(item.mass_share)));
@@ -968,7 +1024,7 @@
     var group = selected.group;
     var entry = selected.entry;
     addFields(saliencyDetail, [
-      ["Viewport", group.viewport_id],
+      ["Captured page", "Recorded website view"],
       ["Duration", entry.duration],
       ["Search stage", group.search_stage],
       ["Provider", entry.provider_id || group.provider_id],
@@ -988,7 +1044,7 @@
       saliencyDetail.appendChild(element("p", "empty", "Unavailable: heatmap-only artifact was not recorded."));
     }
     appendRankedElements(saliencyDetail, entry.ranked_elements, run, group);
-    appendAggregationComponents(saliencyDetail, entry.aggregation_components);
+    appendAggregationComponents(saliencyDetail, entry.aggregation_components, run);
     addValues(saliencyDetail, "Selected mixture", (group.selected_mixture || []).map(function (item) { return item[0] + ": " + item[1]; }));
     addValues(saliencyDetail, "Stage history", (group.stage_history || []).map(function (item) {
       return item.event_id + ": " + item.kind + " | " + item.search_stage + " | cache " + item.cache_state;
@@ -1006,6 +1062,10 @@
     });
     renderElementDetail(run, snapshot, event);
     updateUrl(run, event, null, false);
+    var evidencePane = document.getElementById("selected-element-evidence");
+    if (evidencePane && window.matchMedia && window.matchMedia("(max-width: 760px)").matches) {
+      evidencePane.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
   }
 
   function fitFrame(frame, snapshot) {
@@ -1030,7 +1090,7 @@
     if (snapshot.screenshot) {
       var image = document.createElement("img");
       image.src = snapshot.screenshot;
-      image.alt = "Recorded screenshot for " + snapshot.id;
+      image.alt = "Recorded website screenshot";
       frame.appendChild(image);
     } else {
       frame.appendChild(element("span", "empty", snapshot.screenshot_redacted ? "Overlay unavailable due redaction. Heatmap-only artifact retained." : "Unavailable: screenshot artifact was not recorded."));
@@ -1038,13 +1098,14 @@
     var attention = noticedState(run, state.eventIndex);
     (snapshot.elements || []).filter(function (item) { return item.visibility_fraction > 0; }).forEach(function (item) {
       var overlayClass = "viewport-overlay";
+      if (state.elementId === item.id) overlayClass += " selected-evidence";
       if (attention.inspected[item.id]) overlayClass += " inspected";
       else if (attention.noticed[item.id]) overlayClass += " noticed";
       var overlay = element("button", overlayClass);
       overlay.type = "button";
       overlay.dataset.elementId = item.id;
       overlay.dataset.viewportId = snapshot.id;
-      overlay.setAttribute("aria-label", "Inspect recorded evidence for " + item.label);
+      overlay.setAttribute("aria-label", "Show evidence for " + item.label);
       overlay.setAttribute("aria-pressed", state.elementId === item.id ? "true" : "false");
       overlay.style.left = (item.bounds.x / snapshot.viewport.width * 100) + "%";
       overlay.style.top = (item.bounds.y / snapshot.viewport.height * 100) + "%";
@@ -1095,9 +1156,9 @@
       eventCard.appendChild(element("p", "empty", "Unavailable: no timeline events recorded."));
       return;
     }
-    eventKind.textContent = titleCase(record.kind);
+    eventKind.textContent = eventCategory(record.kind);
     eventCard.appendChild(element("span", "event-category", eventCategory(record.kind)));
-    eventCard.appendChild(element("strong", "event-title", "Step " + record.sequence + " | " + titleCase(record.kind)));
+    eventCard.appendChild(element("strong", "event-title", "Step " + record.sequence + " | " + eventTitle(record.kind)));
     addFields(eventCard, [["Recorded time", recordedTime(record)]]);
 
     if (record.kind === "viewport-captured") {
@@ -1113,8 +1174,8 @@
       addFields(eventCard, [["Selection mode", record.selection_mode]]);
       addValues(eventCard, "Selected elements", (record.selected_ids || []).map(function (id) { return elementLabel(run, id); }));
       addValues(eventCard, "Recovery choices", (record.recovery_selected_ids || []).map(function (id) { return elementLabel(run, id); }));
-      addMapping(eventCard, "Element probabilities", record.element_probabilities);
-      addMapping(eventCard, "Region probabilities", record.region_probabilities);
+      addMapping(eventCard, "Element probabilities", record.element_probabilities, run);
+      addMapping(eventCard, "Region probabilities", record.region_probabilities, run);
     } else if (record.kind === "model-call-recorded" && record.record) {
       renderModelCall(eventCard, run, record.record);
     } else if (record.kind === "model-failure") {
@@ -1139,7 +1200,7 @@
         ["Claimed success", record.claimed_success]
       ]);
     }
-    addValues(eventCard, "Memory / state", (run.memory || []).map(function (item) { return item.key + ": " + item.value + " | strength " + item.strength; }), "Unavailable: no public memory state recorded.");
+    addValues(eventCard, "Memory / state", (run.memory || []).map(function (item) { return memoryLabel(item, run) + " | strength " + item.strength; }), "Unavailable: no public memory state recorded.");
   }
 
   function renderTimeline(run) {
@@ -1154,7 +1215,7 @@
       button.dataset.eventId = record.event_id || "";
       button.setAttribute("aria-current", index === state.eventIndex ? "true" : "false");
       button.appendChild(element("span", "timeline-step", "Step " + record.sequence));
-      button.appendChild(element("span", "timeline-kind", titleCase(record.kind)));
+      button.appendChild(element("span", "timeline-kind", eventTitle(record.kind)));
       button.appendChild(element("span", "timeline-summary", eventSummary(record, run)));
       button.addEventListener("click", function () { setEventIndex(index, false); });
       item.appendChild(button);
@@ -1174,8 +1235,13 @@
     if (run.stage) parts.push("Stage: " + titleCase(run.stage));
     parts.push(run.verified ? "Result verified" : "Result not verified");
     if (run.user_effort) parts.push("Estimated task time " + Number(run.user_effort.estimated_task_seconds || 0).toFixed(1) + " seconds");
-    if (run.evaluation_failure_reason) parts.push("Why: " + run.evaluation_failure_reason);
-    else if (run.terminal_reason) parts.push("Why: " + run.terminal_reason);
+    if (run.evaluation_failure_reason) {
+      parts.push(run.evaluation_failure_reason.indexOf("saliency-replay-unavailable") !== -1
+        ? "Attention replay unavailable for this run"
+        : "Evaluation check unavailable for this run");
+    } else if (run.terminal_reason) {
+      parts.push("Completion note: " + titleCase(run.terminal_reason));
+    }
     else if (run.failure_reason) parts.push("Why: " + run.failure_reason);
     statusBanner.textContent = parts.join(" | ");
   }
