@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypeVar, cast
@@ -391,8 +390,8 @@ async def test_every_published_finding_opens_independently_verifiable_playback(
             ("event:run-1:8", "Event 8 /"),
             ("event:run-1:9", "Event 9 /"),
         ):
-            open_evidence = page.get_by_label(
-                re.compile(rf"^Open evidence {re.escape(evidence_id)}$")
+            open_evidence = page.locator(
+                f'[data-evidence-id="{evidence_id}"]'
             )
             assert await open_evidence.count() == 1
             await open_evidence.scroll_into_view_if_needed()

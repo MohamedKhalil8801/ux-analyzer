@@ -444,7 +444,7 @@ async def test_production_cli_report_is_interactive_and_causal(
         assert await page.locator("#analysis-summary").evaluate(
             "node => node.compareDocumentPosition(document.querySelector('#comparison-table')) & Node.DOCUMENT_POSITION_FOLLOWING"
         )
-        assert "Model review unavailable" in (
+        assert "Only recorded evidence is shown" in (
             await page.locator("#analysis-summary").text_content() or ""
         )
         assert await page.locator("#priority-findings .finding").count() >= 1
@@ -468,9 +468,7 @@ async def test_production_cli_report_is_interactive_and_causal(
         assert await page.get_by_text("Current event").count() == 1
         assert await page.get_by_text("Element evidence").count() == 1
         assert await page.locator("#run-status-banner").count() == 1
-        assert await panel.get_by_text("Linked findings").count() == 1
-        assert await panel.get_by_text("Linked decisions").count() == 1
-        assert await panel.get_by_text("Linked actions and results").count() == 1
+        assert await panel.get_by_text("Prominence contributions").count() == 1
         report_payload = await page.locator("#report-data").text_content() or ""
         assert '"selector"' not in report_payload
         assert '"execution_reference"' not in report_payload
