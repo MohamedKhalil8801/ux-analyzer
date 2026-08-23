@@ -1282,6 +1282,9 @@ def _normalize_report_output(role: ModelRole, parsed: object) -> object:
         return parsed
     parsed_mapping = cast(Mapping[object, object], parsed)
     normalized: dict[object, object] = dict(parsed_mapping)
+    # Models may echo the response envelope identity advertised in the prompt;
+    # schema_version is artifact metadata, not a role input field.
+    normalized.pop("schema_version", None)
     target_field = {
         ModelRole.REPORT_ANALYST: "candidate_findings",
         ModelRole.REPORT_ADJUDICATOR: "final_findings",

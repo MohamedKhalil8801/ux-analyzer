@@ -226,9 +226,10 @@ class FindingRuleSet:
                 ),
                 FindingRule(
                     FindingCategory.MISSING_FEEDBACK,
-                    FindingSeverity.HIGH,
+                    FindingSeverity.LOW,
                     model,
-                    lambda item: item.feedback_observed is False,
+                    lambda item: item.feedback_observed is False
+                    and not item.verified_completion,
                 ),
                 FindingRule(
                     FindingCategory.WRONG_ACTION_BURDEN,
@@ -240,7 +241,7 @@ class FindingRuleSet:
                 ),
                 FindingRule(
                     FindingCategory.POOR_RECOVERY,
-                    FindingSeverity.HIGH,
+                    FindingSeverity.LOW,
                     model,
                     lambda item: (
                         item.recovery_success is False
@@ -248,6 +249,7 @@ class FindingRuleSet:
                             item.recovery_success is None
                             and item.recovery_actions == 0
                             and item.wrong_actions > 0
+                            and not item.verified_completion
                         )
                     ),
                 ),

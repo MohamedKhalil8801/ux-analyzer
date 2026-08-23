@@ -5,10 +5,32 @@ from __future__ import annotations
 import json
 import math
 
+def _configured_request_max_bytes() -> int:
+    """Return transport ceiling, honoring UXA_LLM_REQUEST_MAX_BYTES when set."""
+
+    import os
+
+    raw = os.environ.get("UXA_LLM_REQUEST_MAX_BYTES", "").strip()
+    if not raw:
+        return 750_000
+    try:
+        value = int(raw)
+    except ValueError:
+        return 750_000
+    return max(100_000, value)
+
+
 MODEL_REQUEST_MAX_BYTES = 750_000
-# Evidence may be resolved above one request's encoded budget so the provider can
-# select a fitting subset and report omitted attachments explicitly.
+# Backwards-compat alias used by import-time constants in report_synthesis;
+# callers that need the live configured value must call
+# _configured_request_max_bytes() or model_request_max_bytes().
 MODEL_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
+
+
+def model_request_max_bytes() -> int:
+    """Return the live configured transport ceiling."""
+
+    return _configured_request_max_bytes()
 
 
 class TransportBudgetError(ValueError):
@@ -53,7 +75,7 @@ def enforce_transport_size(*parts: bytes) -> int:
     """Reject an outbound request above the hard transport ceiling."""
 
     size = transport_size(*parts)
-    if size > MODEL_REQUEST_MAX_BYTES:
+    if size > _configured_request_max_bytes():
         raise TransportBudgetError(
             "report synthesis request exceeds transport-safe byte budget"
         )

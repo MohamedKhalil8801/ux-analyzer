@@ -87,9 +87,25 @@ _MANIFEST_REFERENCE_FIELDS = tuple(
 _INITIAL_MANIFEST_SUMMARY_MAX_CHARS = 512
 # Reserve measured room for role prompts, principles, schemas, and transport data.
 _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES = 50_000
+
+
+def _report_request_max_bytes() -> int:
+    from ux_analyzer.ports.model_transport import model_request_max_bytes
+
+    return model_request_max_bytes()
+
+
+def _report_resolved_context_max_bytes() -> int:
+    return min(_report_request_max_bytes(), 400_000)
+
+
+def _initial_manifest_max_bytes() -> int:
+    return _report_request_max_bytes() - _REPORT_REQUEST_RESERVED_OVERHEAD_BYTES
+
+
+# Backwards-compat module-level aliases evaluated at import time; live code must
+# call the helpers above.
 _REPORT_REQUEST_MAX_BYTES = MODEL_REQUEST_MAX_BYTES
-# Resolved viewport payloads can approach the transport ceiling while exceeding
-# the configured model's reliable context window.
 _REPORT_RESOLVED_CONTEXT_MAX_BYTES = min(_REPORT_REQUEST_MAX_BYTES, 400_000)
 _REPORT_MODEL_CONTEXT_MAX_ENTRIES = 32
 _REPORT_RESPONSE_MAX_BYTES = 256_000
@@ -968,6 +984,77 @@ def _domain_objection_payload(objection: SynthesisObjection) -> dict[str, object
     }
 
 
+_BULK_MANIFEST_KINDS = frozenset(
+    {
+        "element",
+        "ranked-element",
+        "model-estimate",
+        "heatmap",
+        "native-map",
+        "saliency-metadata",
+    }
+)
+
+
+def _truncate_bulk_entries_for_budget(
+    entries: Sequence[object],
+    max_bytes: int,
+    payload: Mapping[str, object],
+) -> Sequence[object]:
+    """Cap bulk per-viewport kinds to fit the transport ceiling."""
+
+    # Keep all non-bulk entries; cap bulk kinds progressively.
+    from collections import Counter
+
+    def kind_of(entry: object) -> str | None:
+        if hasattr(entry, "ref"):
+            ref = getattr(entry, "ref", None)
+            if ref is not None and hasattr(ref, "kind"):
+                return getattr(ref, "kind")
+        if isinstance(entry, Mapping):
+            value = cast(Mapping[str, object], entry).get("kind")
+            return str(value) if isinstance(value, str) else None
+        return getattr(entry, "kind", None)
+
+    bulk_kinds = _BULK_MANIFEST_KINDS
+    # Try caps of 100, 50, 20 bulk entries per kind; pick first that may fit.
+    for cap in (100, 50, 20):
+        counts: Counter[str] = Counter()
+        kept: list[object] = []
+        for entry in entries:
+            kind = str(kind_of(entry) or "")
+            if kind in bulk_kinds:
+                if counts[kind] >= cap:
+                    continue
+                counts[kind] += 1
+            kept.append(entry)
+
+        # Estimate by compacting truncated set and measuring.
+        test_compact = _compact_manifest_candidate(
+            payload,
+            [
+                _bounded_manifest_entry_with_summary_limit(
+                    entry, _INITIAL_MANIFEST_SUMMARY_MAX_CHARS
+                )
+                for entry in kept
+            ],
+        )
+        if len(_canonical_json(test_compact).encode("utf-8")) <= max_bytes:
+            return kept
+
+    # Last resort: cap bulk to 20 and also cap any remaining bulk-kind total.
+    counts = Counter()
+    kept = []
+    for entry in entries:
+        kind = str(kind_of(entry) or "")
+        if kind in bulk_kinds and counts[kind] >= 20:
+            continue
+        if kind in bulk_kinds:
+            counts[kind] += 1
+        kept.append(entry)
+    return kept
+
+
 def _manifest_payload(manifest: object) -> dict[str, object]:
     if isinstance(manifest, EvidenceCorpus):
         payload = {
@@ -1007,7 +1094,7 @@ def _manifest_payload(manifest: object) -> dict[str, object]:
         return len(_canonical_json(value).encode("utf-8"))
 
     full = candidate(_INITIAL_MANIFEST_SUMMARY_MAX_CHARS)
-    if size(full) <= _INITIAL_MANIFEST_MAX_BYTES:
+    if size(full) <= _initial_manifest_max_bytes():
         return full
 
     compact = _compact_manifest_candidate(
@@ -1020,11 +1107,30 @@ def _manifest_payload(manifest: object) -> dict[str, object]:
             for entry in entries
         ],
     )
-    if size(compact) > _INITIAL_MANIFEST_MAX_BYTES:
+    if size(compact) <= _initial_manifest_max_bytes():
+        return compact
+
+    # Large corpora from verbose agents can still exceed the transport ceiling
+    # even in compact form. Keep a budget-aware truncated view that preserves
+    # all high-signal kinds and caps bulk per-viewport kinds, then re-compact.
+    truncated_entries = _truncate_bulk_entries_for_budget(
+        entries, _initial_manifest_max_bytes(), payload
+    )
+    truncated_compact = _compact_manifest_candidate(
+        payload,
+        [
+            _bounded_manifest_entry_with_summary_limit(
+                entry,
+                _INITIAL_MANIFEST_SUMMARY_MAX_CHARS,
+            )
+            for entry in truncated_entries
+        ],
+    )
+    if size(truncated_compact) > _initial_manifest_max_bytes():
         raise ValueError(
             "initial evidence manifest identifiers exceed hard byte budget"
         )
-    return compact
+    return truncated_compact
 
 
 def _initial_manifest_payload(manifest: ManifestInput) -> dict[str, object]:
@@ -1880,9 +1986,9 @@ class _ReportRole:
 
         entries = all_entries
         request_budget = (
-            _REPORT_RESOLVED_CONTEXT_MAX_BYTES
+            _report_resolved_context_max_bytes()
             if all_entries
-            else _REPORT_REQUEST_MAX_BYTES
+            else _report_request_max_bytes()
         )
         candidate_attachments = _attachment_values(manifest, entries)
         original_attachment_count = len(candidate_attachments)

@@ -263,6 +263,8 @@
       </div>
       {% if synthesis.findings %}
         {% if using_fallback %}
+          <details class="fallback-details">
+            <summary>Show {{ synthesis.findings | length }} recorded signals — hidden by default. Expand to verify each replay. Low confidence, requires human check.</summary>
           {% for finding in synthesis.findings %}
           {% set fallback_viewport_ids = finding.get("viewport_ids", []) %}
           {% set fallback_element_ids = finding.get("element_ids", []) %}
@@ -364,6 +366,7 @@
             </details>
           </article>
           {% endfor %}
+          </details>
         {% else %}
           {% for severity in ("critical", "high", "medium", "low") %}
             {% for finding in synthesis.findings if finding.severity == severity %}
@@ -394,7 +397,7 @@
           <h2 id="fix-first-title">{{ "Check first" if using_fallback else "Fix first" }}</h2>
         </div>
       </div>
-      {% if synthesis.findings %}
+      {% if synthesis.findings and not using_fallback %}
       <ol class="fix-first-list">
         {% for severity in ("critical", "high", "medium", "low") %}
           {% for finding in synthesis.findings if finding.severity == severity %}

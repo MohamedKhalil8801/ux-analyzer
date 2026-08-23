@@ -468,10 +468,18 @@ EVALUATION_PAYLOAD = r"""
     }
     return {bounds: original, visibleBounds: visible};
   };
-  const probePoints = (rect) => {
+  const probePoints = (rect, node) => {
     if (!rect) return [];
-    const insetX = Math.min(rect.width / 4, 1);
-    const insetY = Math.min(rect.height / 4, 1);
+    let cornerRadius = 0;
+    if (node instanceof Element) {
+      const s = getComputedStyle(node);
+      const radii = [s.borderTopLeftRadius, s.borderTopRightRadius, s.borderBottomRightRadius, s.borderBottomLeftRadius]
+        .flatMap((value) => String(value).split(' ').map(Number.parseFloat))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      cornerRadius = radii.length ? Math.min(...radii) : 0;
+    }
+    const insetX = Math.min(rect.width / 4, Math.max(1, cornerRadius));
+    const insetY = Math.min(rect.height / 4, Math.max(1, cornerRadius));
     const left = rect.x + insetX;
     const right = rect.x + rect.width - insetX;
     const top = rect.y + insetY;
@@ -484,14 +492,14 @@ EVALUATION_PAYLOAD = r"""
     return style.display !== 'none' && style.visibility !== 'hidden' && Number.parseFloat(style.opacity) > 0.02;
   };
   const occlusionFraction = (node, visibleBounds) => {
-    const points = probePoints(visibleBounds);
+    const points = probePoints(visibleBounds, node);
     if (!points.length) return 1;
     let blocked = 0;
     for (const [x, y] of points) {
       const stack = document.elementsFromPoint(x, y);
       const visibleAtPoint = stack.some((candidate) => candidate === node || node.contains(candidate));
       const firstOpaque = stack.find((candidate) => isOpaqueBlocker(candidate));
-      const blocker = firstOpaque && firstOpaque !== node && !node.contains(firstOpaque);
+      const blocker = firstOpaque && firstOpaque !== node && !node.contains(firstOpaque) && !firstOpaque.contains(node);
       if (!visibleAtPoint || blocker) blocked += 1;
     }
     return blocked / points.length;
