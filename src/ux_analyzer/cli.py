@@ -1592,6 +1592,14 @@ async def _explore_run_synthesizer(
             client=client, model=settings.cognitive_model
         )
         result = await synthesizer.suggest(corpus, max_scenarios=max_scenarios)
+        # Bubble operational failures instead of silently returning 0.
+        # The synthesizer distinguishes "ok with zero" (rare but valid)
+        # from "unavailable/invalid with zero" (provider 500, schema drift).
+        # Only the latter must be surfaced as an error so the user sees why
+        # the review would be empty.
+        if not result.suggestions and result.status != "ok":
+            reason = "; ".join(result.limitations) if result.limitations else result.status
+            raise RuntimeError(reason)
         return tuple(result.suggestions)
     finally:
         await http_client.aclose()
