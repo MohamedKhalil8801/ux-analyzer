@@ -89,6 +89,17 @@
       }
       if (saved.personaSelection && typeof saved.personaSelection === "object") {
         state.personaSelection = saved.personaSelection;
+        if (!state.personaSelection.mode) {
+          state.personaSelection.mode = "existing";
+        }
+        if (
+          state.personaSelection.mode !== "custom" &&
+          state.personaSelection.custom_persona
+        ) {
+          // Stale blobs from earlier sessions can carry custom_persona outside
+          // custom mode; the server rejects that shape, so drop it here too.
+          delete state.personaSelection.custom_persona;
+        }
       }
       if (dropped > 0) {
         announceStatus(dropped + (dropped === 1 ? " stale entry discarded" : " stale entries discarded"));
@@ -306,7 +317,10 @@
         radio.setAttribute("data-focus-key", "persona:" + mode + ":" + value);
         radio.addEventListener("change", function () {
           state.personaSelection.mode = mode;
-          if (mode === "existing" || mode === "suggested") state.personaSelection.persona_ids = [value];
+          if (mode === "existing" || mode === "suggested") {
+            state.personaSelection.persona_ids = [value];
+            delete state.personaSelection.custom_persona;
+          }
           persistCuration();
           renderPersonaPanel();
         });
@@ -753,11 +767,21 @@
       claimed[key] = true;
       added.push(editsMap[key] || item);
     });
+    var selection = s.personaSelection || { mode: "existing" };
+    var personaSelection;
+    if (selection.mode === "custom" && selection.custom_persona) {
+      personaSelection = { mode: "custom", custom_persona: selection.custom_persona };
+    } else {
+      personaSelection = {
+        mode: selection.mode === "suggested" ? "suggested" : "existing",
+        persona_ids: Array.isArray(selection.persona_ids) ? selection.persona_ids : []
+      };
+    }
     return {
       accepted_ids: acceptedIds,
       edited: edited,
       added: added,
-      persona_selection: s.personaSelection || null,
+      persona_selection: personaSelection,
       auto_accept_flag: !!s.autoAccept,
       suggestions_signature: typeof s.suggestionsSignature === "string" ? s.suggestionsSignature : null
     };

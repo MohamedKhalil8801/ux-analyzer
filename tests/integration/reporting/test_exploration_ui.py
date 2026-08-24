@@ -562,6 +562,85 @@ async def test_curate_payload_builder_js_contract_end_to_end() -> None:
     assert "duplicate scenario id" in r2.text.lower()
 
 
+async def test_persona_selection_payload_matches_selected_mode() -> None:
+    """Execute the REAL buildCuratePayload in Chromium and pin persona_selection
+    normalization for every mode.
+
+    Regression: touching the custom-persona form (or an older localStorage
+    blob) left custom_persona on the state even after switching back to the
+    existing/suggested radio, so Save & Continue sent a payload the server
+    rejects with "custom_persona is only allowed with mode 'custom'".
+    """
+    js_source = EXPLORE_JS_PATH.read_text(encoding="utf-8")
+    base_state = _ui_state_after_custom_add()
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto("about:blank")
+        await page.add_script_tag(content=js_source)
+
+        async def build(persona_selection: dict[str, object]) -> dict[str, object]:
+            state = {**base_state, "personaSelection": persona_selection}
+            payload = await page.evaluate(
+                "(s) => window.buildCuratePayload(s)", state
+            )
+            return payload["persona_selection"]
+
+        existing = await build(
+            {
+                "mode": "existing",
+                "persona_ids": ["p1"],
+                "custom_persona": {"id": "custom-persona", "name": "Leftover"},
+            }
+        )
+        suggested = await build({"mode": "suggested", "persona_ids": ["p2"]})
+        custom = await build(
+            {
+                "mode": "custom",
+                "custom_persona": {"id": "custom-persona", "name": "Mine"},
+                "persona_ids": ["p1"],
+            }
+        )
+        default_mode = await build({})
+        await browser.close()
+
+    # stale custom_persona is stripped outside custom mode
+    assert existing == {"mode": "existing", "persona_ids": ["p1"]}
+    assert suggested == {"mode": "suggested", "persona_ids": ["p2"]}
+    # custom mode carries ONLY the persona; persona_ids are dropped
+    assert custom == {
+        "mode": "custom",
+        "custom_persona": {"id": "custom-persona", "name": "Mine"},
+    }
+    # missing selection normalizes to existing with empty ids
+    assert default_mode == {"mode": "existing", "persona_ids": []}
+
+    # end-to-end: the previously-failing shape now saves through the API
+    app, *_ = _app()
+    ui_state = {
+        **_ui_state_after_custom_add(),
+        "personaSelection": {
+            "mode": "existing",
+            "persona_ids": ["p1"],
+            "custom_persona": {"id": "custom-persona", "name": "Leftover"},
+        },
+        "suggestionsSignature": app.state.suggestions_signature,
+    }
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto("about:blank")
+        await page.add_script_tag(content=EXPLORE_JS_PATH.read_text(encoding="utf-8"))
+        payload = await page.evaluate(
+            "(s) => window.buildCuratePayload(s)", ui_state
+        )
+        await browser.close()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        r = await ac.post("/__explore/api/curate", json=payload)
+    assert r.status_code == 200, r.text
+
+
 def test_review_page_single_source_with_unified_a11y_and_no_inline_styles() -> None:
     app, *_ = _app()
     client = TestClient(app)
