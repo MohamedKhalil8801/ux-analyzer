@@ -40,6 +40,7 @@ from ux_analyzer.domain.benchmark import (
     VerifierOperator,
     VerifierSpec,
     VisibleResultVerifierSpec,
+    normalize_crawl_url,
     resolve_prominence_provider_id,
 )
 from ux_analyzer.domain.expectations import ExpectationKey, FrozenExpectation
@@ -127,6 +128,7 @@ class LoadedProject:
     config_digest: str
     runtime: RuntimeConfig
     experiment_digests: Mapping[str, str]
+    exploration: object | None = None
 
     @property
     def digest(self) -> str:
@@ -183,6 +185,7 @@ def load_project(path: Path) -> LoadedProject:
         config_digest=digest,
         runtime=runtime,
         experiment_digests=experiment_digests,
+        exploration=config.exploration,
     )
 
 
@@ -352,6 +355,23 @@ def _reject_unsupported_verifier_types(raw_config: dict[object, object]) -> None
 
 
 def _validate_references(config: ProjectModel) -> None:
+    if config.exploration is not None:
+        normalized_starts: list[str] = []
+        for raw in config.exploration.start_urls:
+            n = normalize_crawl_url(raw)
+            if not n.startswith("https://"):
+                raise ProjectConfigError("exploration start URL must use HTTPS")
+            normalized_starts.append(n)
+        if len(normalized_starts) != len(set(normalized_starts)):
+            raise ProjectConfigError(
+                "exploration start_urls must be unique after normalization"
+            )
+        if config.exploration.depth == 0 and config.exploration.max_pages < len(
+            normalized_starts
+        ):
+            raise ProjectConfigError(
+                "exploration max_pages must be >= number of start URLs when depth is 0"
+            )
     _assert_unique_ids(
         "application", (application.id for application in config.applications)
     )
@@ -766,4 +786,12 @@ def _digest_compatibility_payload(payload: dict[str, object]) -> dict[str, objec
             else:
                 experiments.append(item)
         normalized["experiments"] = experiments
+    if normalized.get("exploration") is None:
+        normalized.pop("exploration", None)
+    # Handle alias compatibility: ensure page_settle_ms never leaks into digest
+    exploration_value = normalized.get("exploration")
+    if isinstance(exploration_value, dict):
+        exploration = dict(cast(dict[str, object], exploration_value))
+        exploration.pop("page_settle_ms", None)
+        normalized["exploration"] = exploration
     return normalized

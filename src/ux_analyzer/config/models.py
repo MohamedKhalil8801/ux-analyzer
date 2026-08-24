@@ -16,6 +16,7 @@ from pydantic import (
 from ux_analyzer.domain.benchmark import (
     canonicalize_http_origin,
     canonicalize_https_url,
+    normalize_crawl_url,
 )
 
 
@@ -370,6 +371,47 @@ class EvaluationModel(_ConfigModel):
     report_synthesis: ReportSynthesisModel = Field(default_factory=ReportSynthesisModel)
 
 
+class ExplorationModel(_ConfigModel):
+    """Operator-supplied crawl boundary for exploration mode."""
+
+    start_urls: list[str] = Field(min_length=1)
+    depth: int = Field(default=2, ge=0, le=5)
+    max_pages: int = Field(default=50, ge=1, le=200)
+    max_scenarios: int = Field(default=8, ge=1, le=20)
+    settle_ms: int = Field(
+        default=10000,
+        ge=0,
+        le=15000,
+        validation_alias=AliasChoices("settle_ms", "page_settle_ms"),
+    )
+    respect_robots: bool = Field(default=False)
+
+    @field_validator("start_urls", mode="after")
+    @classmethod
+    def _validate_start_urls(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in values:
+            if type(raw) is not str:
+                raise TypeError("start_url must be a string")
+            # Reuse canonicalize_https_url as primary HTTPS validation (stdlib urllib.parse)
+            canonicalize_https_url(raw)
+            n = normalize_crawl_url(raw)
+            if not n.startswith("https://"):
+                raise ValueError("exploration start URL must use HTTPS")
+            normalized.append(n)
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("exploration start_urls must be unique after normalization")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_depth_pages(self) -> ExplorationModel:
+        if self.depth == 0 and self.max_pages < len(self.start_urls):
+            raise ValueError(
+                "exploration max_pages must be >= number of start_urls when depth is 0"
+            )
+        return self
+
+
 class ProjectModel(_ConfigModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -379,3 +421,4 @@ class ProjectModel(_ConfigModel):
     experiments: list[ExperimentModel] = Field(min_length=1)
     providers: ProvidersModel = Field(default_factory=ProvidersModel)
     evaluation: EvaluationModel = Field(default_factory=EvaluationModel)
+    exploration: ExplorationModel | None = Field(default=None)
