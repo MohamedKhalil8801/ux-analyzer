@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="uxa-suggestions-signature" content="{{ suggestions_signature }}">
+  <title>Exploration Review — UX Analyzer</title>
+  <link rel="stylesheet" href="./explore.css">
+</head>
+<body>
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">UX Analyzer</p>
+      <h1>Exploration Review</h1>
+    </div>
+    <p class="lede">Review crawl coverage and curate visible-result scenarios. No external requests — offline, deterministic.</p>
+  </header>
+
+  <div class="top-bar">
+    <div class="top-bar-left">
+      <span id="auto-accept-badge" class="badge badge-auto hidden">Auto-accept enabled</span>
+      <span id="scenario-count" class="badge badge-count">0 scenarios selected</span>
+      <!-- Single live announcement region: every message the page speaks
+           goes through this span. Errors interrupt as assertive alerts;
+           success and cleanup notes are retuned in place to polite status. -->
+      <span id="validation-error" class="validation-error hidden" role="alert" aria-live="assertive"></span>
+    </div>
+    <div class="top-actions">
+      <button id="accept-all" class="btn" type="button" disabled>Accept All</button>
+      <button id="reset-curation" class="btn" type="button">Reset</button>
+      <button id="save-continue" class="btn btn-primary" type="button" disabled>Save & Continue</button>
+    </div>
+  </div>
+
+  <main class="explore-layout">
+    <section class="panel" aria-labelledby="crawl-summary-title">
+      <div class="panel-header">
+        <h2 id="crawl-summary-title">Crawl Summary</h2>
+        <p>Same-origin BFS crawl, dedup via normalized URL</p>
+      </div>
+      <div class="panel-body">
+        <div id="crawl-summary"></div>
+        <details class="add-custom">
+          <summary>Add custom scenario form</summary>
+          <div id="add-custom-form" class="add-custom-form-grid">
+            <label>ID<input id="custom-id" type="text" placeholder="custom-1"></label>
+            <label>Name<input id="custom-name" type="text" placeholder="My scenario"></label>
+            <label>Goal<textarea id="custom-goal" placeholder="Describe user goal"></textarea></label>
+            <label>Start URL<select id="custom-url"></select></label>
+            <label>Verifier text<input id="custom-verifier" type="text" placeholder="Visible success text"></label>
+            <label>Evaluation target<input id="custom-target" type="text" placeholder="Target label"></label>
+            <div id="custom-error" class="inline-error hidden"></div>
+            <button id="custom-save" class="btn btn-primary" type="button">Add custom scenario</button>
+          </div>
+        </details>
+        <button id="add-custom-btn" class="btn add-custom-toggle" type="button">Add custom scenario</button>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="suggestions-title">
+      <div class="panel-header">
+        <h2 id="suggestions-title">Suggested Scenarios</h2>
+        <p id="suggestion-title" class="muted">Loading suggestions…</p>
+      </div>
+      <div class="panel-body">
+        <div id="suggestion-list" class="suggestion-list"></div>
+        <div id="success-banner" class="success-banner hidden">Curated</div>
+        <div id="curated-info" class="muted hidden"></div>
+        <h3 id="preview-heading" class="preview-heading hidden">project.fragment.yaml preview</h3>
+        <pre id="fragment-preview" class="fragment-preview hidden"></pre>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="persona-title">
+      <div class="panel-header">
+        <h2 id="persona-title">Persona Selection</h2>
+        <p>Choose existing, model-suggested, or create custom persona</p>
+      </div>
+      <div class="panel-body">
+        <div id="persona-panel" class="persona-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="./explore.js"></script>
+</body>
+</html>
