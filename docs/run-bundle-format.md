@@ -241,6 +241,69 @@ while retaining the newly published attempt for audit.
 no-issues attempt and never initiates a model call; missing, rejected,
 unavailable, or invalid synthesis falls back to deterministic run findings.
 
+## Exploration Artifacts
+
+`uxa explore` stores one immutable attempt per exploration in a dedicated
+exploration tree beside any later experiment output. It does not add files to,
+rewrite, or change checksums in any existing run bundle or synthesis attempt.
+
+```text
+<output>/
+  exploration/
+    index.json
+    project.yaml
+    generated.yaml
+    project.fragment.yaml
+    attempts/
+      <attempt-id>/
+        corpus.json
+        suggestions.json
+        curated.json
+        project.fragment.yaml
+        manifest.json
+  project.yaml
+```
+
+Published attempt IDs use the same collision-safe form as report synthesis:
+`<created-at-utc>-<first12(corpus_digest)>-<sequence>`. An existing attempt
+directory is immutable and is never overwritten; a rerun publishes a new
+sequence. Attempt files are written to a same-parent hidden staging directory,
+fsynced, validated against manifest digests, and atomically renamed into
+`attempts/`. The index is written through a temporary file and atomically
+replaced under an inter-process publication lock.
+
+`corpus.json`, `suggestions.json`, `curated.json`, and `manifest.json` use the
+same canonical JSON rule as synthesis: ASCII, sorted by key, compact, and
+terminated by one newline. `project.fragment.yaml` is YAML.
+
+`corpus.json` is the canonical serialized `CrawlCorpus`: per-page snapshots
+(normalized URL, origin, depth, title, headings, persona-visible element
+labels/roles/bounds, screenshot digest reference) plus link graph, start time,
+and corpus digest. It contains no raw DOM, selectors, hidden labels, or private
+fixture values.
+
+`suggestions.json` holds the synthesizer's `visible-result` scenario proposals;
+`curated.json` holds the accepted/edited set (identical to suggestions under
+`--auto-accept`).
+
+`manifest.json` records the artifact schema version (`exploration-artifact-v1`),
+attempt identity and creation time, corpus digest, SHA-256 digests of corpus,
+suggestions, curated set, and fragment, the resolved `ExplorationSpec`, model ID,
+prompt version, status, page count, and scenario count. Digest mismatches make
+an attempt unreadable rather than silently trusted.
+
+`index.json` contains `schema_version: "exploration-index-v1"` and an `attempts`
+list. Each record contains `attempt_id`, `created_at`, `status`,
+`corpus_digest`, `page_count`, `scenario_count`, and `manifest_digest`. The
+index references only attempt directories that exist on disk.
+
+Beside the attempt, `uxa explore` materializes runnable project files: a full
+`project.yaml` at the output root (merged with the base project when one was
+provided), copies under `exploration/` (`project.yaml`, `generated.yaml`), and
+the standalone `project.fragment.yaml`. Each defines one experiment
+`exploration-run` covering curated scenarios x selected personas x default
+policies, consumable by `uxa run PROJECT --experiment exploration-run`.
+
 ## Redaction and Retention
 
 `RedactionPolicy` redacts configured exact values and configured mapping keys

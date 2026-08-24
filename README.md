@@ -107,6 +107,9 @@ uv run pytest tests/live/test_openai_endpoint.py -m live -q
 | `uxa run PROJECT --no-synthesis` | Execute runs without the automatic report-synthesis attempt. |
 | `uxa ablate PROJECT --experiment ID --policy POLICY` | Execute selected ablation policies. Repeat `--policy`; default experiment is `ablations`. |
 | `uxa synthesize PROJECT --experiment ID --output DIR` | Synthesize a new immutable report attempt from finalized evidence. |
+| `uxa explore [PROJECT] --starting-url URL` | Discover scenarios: same-origin smart crawl + cognitive synthesis + review UI. Repeat `--starting-url`; defaults: depth 2, 50 pages, 8 scenarios, `.uxa-output`. |
+| `uxa explore [PROJECT] --auto-accept --output DIR` | Explore without the review UI; accepts all suggestions and writes immutable artifacts plus a runnable generated project. |
+| `uxa explore [PROJECT] --dry-run` | Print crawl matrix estimate (starts/depth/pages/scenarios) and synthesis token estimate without browser or model. |
 | `uxa report BUNDLE_ROOT --output FILE` | Render finalized bundles into static HTML. |
 | `uxa inspect-run RUN_DIR` | Print terminal outcome, verification, claim, and artifact paths. |
 

@@ -82,6 +82,46 @@ gates, writes `experiment.json` with safe runner/evaluator failure records, and
 renders `<output>/report.html` from finalized, staging, and available experiment
 evidence. Report projections keep private execution fields out.
 
+## Exploration Flow
+
+`uxa explore` is a separate discovery command that feeds the existing run
+pipeline. It sits before classic benchmark execution and never mutates the
+`uxa run/ablate/report/synthesize` contracts:
+
+```text
+uxa explore [PROJECT] --starting-url URL ...
+    -> load base project (personas/providers) or bootstrap live applications
+    -> ExplorationSpec (flags win over YAML; depth 0-5, max_pages 1-200, scenarios 1-20)
+    -> ExplorationCrawler (same-origin BFS, dedup via normalized URLs,
+       networkidle + scroll-sweep page settlement)  ->  CrawlCorpus
+    -> ExplorationSynthesizer (cognitive role, compressed per-page evidence)
+       -> ScenarioSuggestion set (visible-result only)
+    -> human curation: local review UI  |  --auto-accept accepts all suggestions
+    -> ExplorationArtifactStore (immutable checksummed attempt + index)
+    -> generated project.yaml / project.fragment.yaml (experiment exploration-run)
+    -> ExperimentRunner pipeline unchanged  (uxa run --experiment exploration-run)
+```
+
+Boundary rules match the rest of the system. `domain/exploration.py` stays
+stdlib-only and holds `ExplorationSpec`, `CrawlPage`, `CrawlCorpus`,
+`ScenarioSuggestion`, and digest helpers. Playwright settlement lives in the
+crawler application module over observation adapters; same-origin enforcement
+reuses URL canonicalization plus the browser network allowlist. Synthesis sends
+only redacted per-page evidence (titles, headings, visible labels/bounds) to the
+model; selectors, hidden DOM facts, destination URLs, and fixture keys never
+enter prompts or review-UI payloads.
+
+`--dry-run` prints the crawl matrix estimate (starts, depth, page cap,
+scenario cap, estimated pages, synthesis token estimate) without launching a
+browser or model client. The local review UI is loopback-only FastAPI with no
+external requests; `--auto-accept` produces the same curated set as manual
+accept-all. Artifacts are immutable, canonical-JSON checksummed, atomically
+published attempts indexed under `<output>/exploration/index.json`
+(see [run bundle format](run-bundle-format.md)). The generated project merges
+base scenarios when a base project is provided (append strategy), so accepted
+exploration scenarios run through the unchanged runner, evaluation, and report
+path.
+
 ## Current POC Choices
 
 - Web platform: Playwright Chromium only.
