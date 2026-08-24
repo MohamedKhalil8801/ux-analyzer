@@ -6,8 +6,9 @@ import asyncio
 import json
 import math
 import os
+import shutil
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -19,9 +20,15 @@ from uuid import uuid4
 
 import httpx
 import typer
+import yaml
 from pydantic import TypeAdapter
 
 from ux_analyzer import __version__
+from ux_analyzer.adapters.exploration_server import (
+    ExplorationReviewServer,
+    PersonaSelectionPayload,
+    _suggestion_to_dict,
+)
 from ux_analyzer.adapters.openai import (
     ModelConfigurationError,
     OpenAICompatibleSettings,
@@ -63,6 +70,12 @@ from ux_analyzer.application.experiment import (
     ExperimentRunner,
     expand_experiment,
 )
+from ux_analyzer.application.exploration_crawler import (
+    CrawlFrontier,
+    ExplorationCrawler,
+    PageSettlementPolicy,
+)
+from ux_analyzer.application.exploration_synthesizer import ExplorationSynthesizer
 from ux_analyzer.application.report_synthesis import ReportSynthesisService
 from ux_analyzer.application.run_agent import (
     AttentionPolicy,
@@ -82,10 +95,28 @@ from ux_analyzer.config.loader import (
 from ux_analyzer.domain.attention import CompleteObservation, ProgressiveObservation
 from ux_analyzer.domain.benchmark import (
     PROMINENCE_PROVIDER_REGISTRY,
+    Application,
+    ApplicationVersion,
     ApplicationVersionKind,
+    Budget,
     ExperimentDefinition,
     ExperimentPolicy,
+    Persona,
+    ScenarioEvaluationTarget,
+    VisibleResultVerifierSpec,
     resolve_prominence_provider_id,
+)
+from ux_analyzer.domain.benchmark import (
+    normalize_crawl_url as benchmark_normalize_crawl_url,
+)
+from ux_analyzer.domain.exploration import (
+    CrawlCorpus,
+    CrawlPage,
+    ExplorationSpec,
+    ScenarioSuggestion,
+)
+from ux_analyzer.domain.exploration import (
+    normalize_crawl_url as exploration_normalize_crawl_url,
 )
 from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
@@ -138,6 +169,11 @@ from ux_analyzer.saliency.model_registry import (
     ModelRegistry,
     ModelRegistryError,
     load_manifest,
+)
+from ux_analyzer.storage.exploration_artifacts import (
+    ExplorationArtifactError,
+    ExplorationArtifactStore,
+    exploration_digest,
 )
 from ux_analyzer.storage.run_bundle import (
     FilesystemRunBundleWriter,
@@ -501,6 +537,1520 @@ def synthesize(
         _exit_with_error(f"synthesis failed: {type(error).__name__}: {error}")
     typer.echo(f"synthesis attempt: {attempt_path}")
     typer.echo(f"report generated: {report_path}")
+
+
+@app.command()
+def explore(
+    project: Path | None = typer.Argument(
+        None,
+        help="Base project YAML (optional positional). Provides personas/providers.",
+    ),
+    starting_url: list[str] = typer.Option(
+        [],
+        "--starting-url",
+        help="Starting URL (repeatable, HTTPS required). Flag wins over YAML exploration section.",
+        show_default=False,
+    ),
+    depth: int | None = typer.Option(
+        None, "--depth", help="Crawl depth 0-5 (flag wins over YAML)"
+    ),
+    max_pages: int | None = typer.Option(None, "--max-pages", help="Max pages 1-200"),
+    max_scenarios: int | None = typer.Option(
+        None, "--max-scenarios", help="Max scenarios 1-20"
+    ),
+    auto_accept: bool = typer.Option(
+        False, "--auto-accept", help="Skip UI and accept all suggestions"
+    ),
+    review_port: int | None = typer.Option(
+        None, "--review-port", help="Review UI port 1-65535"
+    ),
+    output: Path = typer.Option(
+        Path(".uxa-output"), "--output", help="Output directory"
+    ),
+    project_opt: Path | None = typer.Option(
+        None, "--project", help="Base project YAML (alternative to positional)"
+    ),
+    run: bool = typer.Option(
+        False, "--run", help="Immediately run generated experiment"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Preview crawl matrix and token estimate without browser/model",
+    ),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Do not auto-open browser for review UI"
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Reuse checkpointed crawl corpus and suggestions from an interrupted run",
+    ),
+) -> None:
+    """Discover scenarios via smart crawl + cognitive synthesis + human curation.
+
+    Loads base project to reuse personas/providers if --project given or positional project supplied,
+    else bootstraps minimal BenchmarkProject with one Application(live) per unique start origin.
+    Builds ExplorationSpec from flags (flag wins over YAML exploration section), runs
+    ExplorationCrawler -> CrawlCorpus, runs ExplorationSynthesizer -> suggestions,
+    then either auto-accepts or launches ExplorationReviewServer until curated.
+    Persists via ExplorationArtifactStore and materializes project.fragment.yaml / full project.yaml
+    with new scenarios+experiments (one experiment exploration-run covering curated scenarios x selected personas x default policies).
+    """
+    # Resolve base project path: --project wins, else positional
+    base_path: Path | None = project_opt if project_opt is not None else project
+    loaded: LoadedProject | None = None
+    if base_path is not None:
+        # Use _load_project_or_exit to validate and provide actionable error
+        loaded = _load_project_or_exit(base_path)
+    # Determine raw starting URLs: flag wins, else YAML exploration section, else error
+    raw_starts: list[str] = []
+    if starting_url:
+        raw_starts = list(starting_url)
+    elif loaded is not None and getattr(loaded, "exploration", None) is not None:
+        expl = loaded.exploration  # type: ignore[union-attr]
+        # expl may be ExplorationModel
+        try:
+            raw_starts = list(expl.start_urls)  # type: ignore[union-attr]
+        except Exception:
+            raw_starts = []
+    # Validate starting URLs presence
+    if not raw_starts:
+        _exit_with_error(
+            "starting-url is required (provide --starting-url or set exploration.start_urls in project)"
+        )
+    # Flag validation: depth, max_pages, max_scenarios, review_port
+    # Use explicit validation for helpful messages; also rely on ExplorationSpec for duplicate etc.
+    # Depth bounds
+    depth_val: int | None = depth
+    if depth_val is not None and not (0 <= depth_val <= 5):
+        _exit_with_error("depth must be between 0 and 5")
+    max_pages_val: int | None = max_pages
+    if max_pages_val is not None and not (1 <= max_pages_val <= 200):
+        _exit_with_error("max_pages must be between 1 and 200")
+    max_scenarios_val: int | None = max_scenarios
+    if max_scenarios_val is not None and not (1 <= max_scenarios_val <= 20):
+        _exit_with_error("max_scenarios must be between 1 and 20")
+    if review_port is not None and not (1 <= review_port <= 65535):
+        _exit_with_error("review-port must be between 1 and 65535")
+    # Resolve effective values: flag wins over YAML else defaults
+    # For depth/max_pages/max_scenarios we need to consider YAML defaults
+    yaml_depth = None
+    yaml_max_pages = None
+    yaml_max_scenarios = None
+    yaml_settle_ms = None
+    if loaded is not None and getattr(loaded, "exploration", None) is not None:
+        expl = loaded.exploration  # type: ignore[union-attr]
+        try:
+            yaml_depth = int(getattr(expl, "depth"))  # type: ignore[union-attr]
+        except Exception:
+            yaml_depth = None
+        try:
+            yaml_max_pages = int(getattr(expl, "max_pages"))  # type: ignore[union-attr]
+        except Exception:
+            yaml_max_pages = None
+        try:
+            yaml_max_scenarios = int(getattr(expl, "max_scenarios"))  # type: ignore[union-attr]
+        except Exception:
+            yaml_max_scenarios = None
+        try:
+            yaml_settle_ms = int(getattr(expl, "settle_ms"))  # type: ignore[union-attr]
+        except Exception:
+            yaml_settle_ms = None
+    effective_depth = (
+        depth_val
+        if depth_val is not None
+        else (yaml_depth if yaml_depth is not None else 2)
+    )
+    effective_max_pages = (
+        max_pages_val
+        if max_pages_val is not None
+        else (yaml_max_pages if yaml_max_pages is not None else 50)
+    )
+    effective_max_scenarios = (
+        max_scenarios_val
+        if max_scenarios_val is not None
+        else (yaml_max_scenarios if yaml_max_scenarios is not None else 8)
+    )
+    effective_settle_ms = yaml_settle_ms if yaml_settle_ms is not None else 10000
+    # Validate effective bounds (already did flag, but also ensure final)
+    if not (0 <= effective_depth <= 5):
+        _exit_with_error("depth must be between 0 and 5")
+    if not (1 <= effective_max_pages <= 200):
+        _exit_with_error("max_pages must be between 1 and 200")
+    if not (1 <= effective_max_scenarios <= 20):
+        _exit_with_error("max_scenarios must be between 1 and 20")
+    # Normalize and validate starting URLs (HTTPS, duplicate, etc.)
+    # Use exploration_normalize_crawl_url for HTTPS enforcement
+    normalized_starts: list[str] = []
+    for raw in raw_starts:
+        try:
+            n = exploration_normalize_crawl_url(raw)
+        except ValueError as ve:
+            _exit_with_error(f"invalid starting-url {raw!r}: {ve}")
+        except Exception as ve:
+            _exit_with_error(f"invalid starting-url {raw!r}: {ve}")
+        normalized_starts.append(n)
+    if len(normalized_starts) != len(set(normalized_starts)):
+        _exit_with_error(
+            "starting-url must be unique after normalization (duplicate detected)"
+        )
+    if effective_depth == 0 and effective_max_pages < len(normalized_starts):
+        _exit_with_error("max_pages must be >= number of start URLs when depth is 0")
+    # Dry-run: print crawl matrix + synthesis token estimate without browser/model
+    if dry_run:
+        # Validate model not required, just print
+        typer.echo("explore matrix:")
+        typer.echo(f" starts: {len(normalized_starts)}")
+        for u in normalized_starts:
+            typer.echo(f"  - {u}")
+        typer.echo(f" depth: {effective_depth}")
+        typer.echo(f" max_pages: {effective_max_pages}")
+        typer.echo(f" max_scenarios: {effective_max_scenarios}")
+        typer.echo(f" settle_ms: {effective_settle_ms}")
+        # Estimates below are heuristic bounds derived from configuration,
+        # not measurements; the real page count and token usage depend on
+        # the crawled site and the model.
+        est_pages = min(
+            effective_max_pages,
+            max(1, len(normalized_starts) * (effective_depth + 1) * 3),
+        )
+        typer.echo(f" estimated_pages: {est_pages} (upper-bound estimate)")
+        # Rough synthesis prompt size: ~800 tokens per page plus fixed overhead.
+        est_tokens = est_pages * 800 + 500
+        typer.echo(
+            f" synthesis token estimate: ~{est_tokens} tokens (rough estimate,"
+            " not a measurement)"
+        )
+        # A corpus digest can only exist after a real crawl; dry-run exposes
+        # only a config fingerprint derived from these settings.
+        config_fingerprint = exploration_digest(
+            {
+                "starts": normalized_starts,
+                "depth": effective_depth,
+                "max_pages": effective_max_pages,
+            }
+        )
+        typer.echo(
+            f" config fingerprint: {config_fingerprint[:12]} (settings hash,"
+            " not a corpus digest)"
+        )
+        typer.echo(f" output: {output}")
+        if auto_accept:
+            typer.echo(" auto_accept: enabled (UI skipped)")
+        else:
+            typer.echo(" auto_accept: disabled (would launch review UI)")
+        return
+    # Non-dry-run requires model env
+    try:
+        settings = _model_settings_or_exit(report_synthesis_enabled=False)
+    except SystemExit:
+        raise
+    except Exception as error:
+        _exit_with_error(f"model environment error: {error}")
+    # Prepare output directory early for validation
+    try:
+        output.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        _exit_with_error(f"cannot create output directory {output}: {error}")
+
+    # Async orchestration: crawl -> synthesize -> curate -> persist -> materialize -> optionally run
+    async def _explore_async() -> None:
+        # Bootstrap or reuse personas/applications
+        # Determine existing personas and applications
+        # Always compute bootstrap live apps for exploration origins to guarantee live target
+        bootstrap_live_apps = _explore_bootstrap_applications(tuple(normalized_starts))
+        if loaded is not None:
+            existing_personas = tuple(loaded.project.personas)
+            # Combine existing + bootstrap live apps (avoid id collision)
+            existing_app_ids = {a.id for a in loaded.project.applications}
+            merged_apps: list[Application] = list(loaded.project.applications)
+            for b_app in bootstrap_live_apps:
+                if b_app.id not in existing_app_ids:
+                    merged_apps.append(b_app)
+                else:
+                    # collide -> create variant id
+                    variant_id = f"{b_app.id}-explore"
+                    if variant_id not in existing_app_ids:
+                        variant = Application(
+                            id=variant_id,
+                            name=b_app.name,
+                            versions=tuple(
+                                ApplicationVersion(
+                                    id=f"{variant_id}-live",
+                                    kind=ApplicationVersionKind.LIVE,
+                                    label=v.label,
+                                    start_url=v.start_url,
+                                    allowed_origins=tuple(v.allowed_origins),
+                                )
+                                for v in b_app.versions
+                            ),
+                        )
+                        merged_apps.append(variant)
+            existing_applications = tuple(merged_apps)
+            # Collect existing application_version_ids for live versions
+            persona_ids_for_exp = (
+                [p.id for p in existing_personas] if existing_personas else []
+            )
+            if not persona_ids_for_exp:
+                # fallback if project has no personas (should not happen)
+                persona_ids_for_exp = ["default-explorer"]
+        else:
+            # Bootstrap minimal
+            existing_applications = bootstrap_live_apps
+            # default persona
+            default_persona = Persona(
+                id="default-explorer",
+                name="Default Explorer",
+                working_memory_capacity=4,
+                initial_confidence=0.55,
+                initial_frustration=0.10,
+                abandonment_threshold=0.75,
+                attention_temperature=1.0,
+            )
+            existing_personas = (default_persona,)
+            persona_ids_for_exp = ["default-explorer"]
+        # Build ExplorationSpec
+        # Derive allowed origins from normalized starts (unique origins)
+        allowed_origins_set: set[str] = set()
+        for nurl in normalized_starts:
+            try:
+                origin = _explore_origin_from_url(nurl)
+                allowed_origins_set.add(origin)
+            except Exception:
+                continue
+        allowed_origins_tuple = tuple(sorted(allowed_origins_set))
+        try:
+            spec = ExplorationSpec(
+                start_urls=tuple(normalized_starts),
+                depth=effective_depth,
+                max_pages=effective_max_pages,
+                max_scenarios=effective_max_scenarios,
+                settle_ms=effective_settle_ms,
+                allowed_origins=allowed_origins_tuple,
+            )
+        except Exception as ve:
+            _exit_with_error(f"invalid exploration spec: {ve}")
+        # Print crawl matrix
+        typer.echo("explore matrix:")
+        typer.echo(
+            f" starts: {len(normalized_starts)} depth={spec.depth} max_pages={spec.max_pages} max_scenarios={spec.max_scenarios}"
+        )
+        for u in spec.start_urls:
+            typer.echo(f"  - {u}")
+        # Run crawler / synthesizer with checkpoint-resume support.
+        # A matching checkpoint (interrupted previous run) skips the expensive
+        # crawl and, when present, the synthesis step too.
+        checkpoint = _explore_checkpoint_load(output, spec)
+        if checkpoint is None and resume:
+            if _explore_checkpoint_exists(output):
+                _exit_with_error(
+                    "resume requested but the existing checkpoint does not match "
+                    "current exploration settings (starting URLs, depth, "
+                    "max-pages, max-scenarios, or settle-ms)"
+                )
+        policy = PageSettlementPolicy(settle_ms=spec.settle_ms)
+        corpus: CrawlCorpus
+        suggestions: tuple[ScenarioSuggestion, ...] | None
+
+        async def _save_frontier_progress(frontier: CrawlFrontier) -> None:
+            # Per-page crash-recovery: each completed page is persisted
+            # before the next one starts. Failures are swallowed inside
+            # the checkpoint writer so a flaky disk cannot kill the crawl.
+            _explore_checkpoint_save_progress(output, spec, frontier)
+
+        if checkpoint is not None and (
+            checkpoint.crawl_complete or checkpoint.suggestions is not None
+        ):
+            corpus = checkpoint.corpus
+            suggestions = checkpoint.suggestions
+            typer.echo(
+                f"resume: reusing checkpointed crawl corpus ({len(corpus.pages)} pages); crawl skipped"
+            )
+            if suggestions is not None:
+                typer.echo(
+                    f"resume: reusing checkpointed suggestions ({len(suggestions)} scenarios); synthesis skipped"
+                )
+        elif checkpoint is not None and checkpoint.frontier is not None:
+            saved_frontier = checkpoint.frontier
+            typer.echo(
+                f"crawling: resuming interrupted crawl "
+                f"({len(saved_frontier.pages)} pages done,"
+                f" {len(saved_frontier.queued)} queued)"
+            )
+            try:
+                corpus = await _explore_run_crawler(
+                    spec,
+                    policy,
+                    on_frontier=_save_frontier_progress,
+                    resume_from=saved_frontier,
+                )
+            except Exception as error:
+                _exit_with_error(f"crawl failed: {type(error).__name__}: {error}")
+            _explore_checkpoint_save(output, spec, corpus, None, crawl_complete=True)
+            suggestions = None
+        else:
+            typer.echo(f"crawling: depth={spec.depth} max_pages={spec.max_pages}")
+            try:
+                corpus = await _explore_run_crawler(
+                    spec, policy, on_frontier=_save_frontier_progress
+                )
+            except Exception as error:
+                _exit_with_error(f"crawl failed: {type(error).__name__}: {error}")
+            _explore_checkpoint_save(output, spec, corpus, None, crawl_complete=True)
+            suggestions = None
+        typer.echo(
+            f" crawl corpus: {len(corpus.pages)} pages digest={corpus.corpus_digest[:12]}"
+        )
+        # Run synthesizer
+        if suggestions is None:
+            typer.echo(f"synthesizing: max_scenarios={spec.max_scenarios}")
+            try:
+                suggestions = await _explore_run_synthesizer(
+                    corpus, spec.max_scenarios, settings
+                )
+            except Exception as error:
+                # Persist real evidence with an unavailable status; never fake
+                # suggestions to keep the pipeline moving.
+                _persist_unavailable_exploration_attempt(
+                    output=output,
+                    corpus=corpus,
+                    personas=existing_personas,
+                    spec=spec,
+                    model=settings.cognitive_model,
+                    reason=f"{type(error).__name__}: {error}",
+                )
+                _exit_with_error(f"synthesis failed: {type(error).__name__}: {error}")
+            _explore_checkpoint_save(output, spec, corpus, suggestions)
+        assert suggestions is not None
+        typer.echo(f" suggestions: {len(suggestions)} scenarios")
+        for s in suggestions:
+            typer.echo(f"  - {s.id}: {s.goal[:60]}")
+        # Determine curated set
+        curated: tuple[ScenarioSuggestion | dict[str, Any], ...]
+        persona_selection_result: PersonaSelectionPayload | None = None
+        if auto_accept:
+            curated = suggestions
+            typer.echo(" auto_accept: using all suggestions as curated")
+            # Build persona selection for auto_accept: use existing personas
+            persona_selection_result = PersonaSelectionPayload(
+                mode="existing",
+                persona_ids=persona_ids_for_exp,
+            )
+        else:
+            typer.echo(
+                f" launching review UI on port {review_port or 'auto'} (no_browser={no_browser})"
+            )
+            # Existing personas for UI
+            suggested_personas: tuple[Any, ...] = ()
+            # If synthesizer produced persona suggestions, they'd be here; currently empty
+            server = ExplorationReviewServer(
+                corpus=corpus,
+                suggestions=suggestions,
+                existing_personas=existing_personas,
+                suggested_personas=suggested_personas,
+                host="127.0.0.1",
+                port=review_port or 0,
+                auto_accept=False,
+                no_browser=no_browser,
+            )
+            # Serve until curated
+            result = await server.serve_forever()
+            if result is None or "curated" not in result:
+                _exit_with_error("review UI did not return curated set (aborted)")
+            curated = tuple(result.get("curated", ()))
+            raw_persona_selection = result.get("persona_selection")
+            persona_selection_result = (
+                PersonaSelectionPayload.model_validate(raw_persona_selection)
+                if isinstance(raw_persona_selection, dict)
+                else None
+            )
+            typer.echo(f" curated: {len(curated)} scenarios via review UI")
+        # Normalize curated to list for store (handle both ScenarioSuggestion and dict)
+        if not curated:
+            _exit_with_error(
+                "curated set is empty; nothing to materialize or run "
+                "(accept at least one scenario in the review UI or via --auto-accept)"
+            )
+        # Persist via store
+        store = ExplorationArtifactStore(output)
+        try:
+            attempt_path = store.write_attempt(
+                corpus,
+                suggestions,
+                curated,
+                persona_set=existing_personas,
+                spec=spec,
+                model=settings.cognitive_model,
+                prompt_version="exploration-synthesis-v1",
+                status="succeeded",
+            )
+        except FileExistsError as fe:
+            _exit_with_error(f"exploration attempt already exists: {fe}")
+        except ExplorationArtifactError as e:
+            _exit_with_error(f"exploration artifact error: {e}")
+        except Exception as e:
+            _exit_with_error(f"exploration persist failed: {e}")
+        typer.echo(f" exploration artifact: {attempt_path}")
+        # Verify the published attempt is discoverable through the index.
+        try:
+            published_index = store.get_index()
+        except ExplorationArtifactError as error:
+            _exit_with_error(f"exploration index verification failed: {error}")
+        raw_attempts = published_index.get("attempts", [])
+        attempt_records: list[object] = (
+            cast("list[object]", raw_attempts) if isinstance(raw_attempts, list) else []
+        )
+        listed_attempt_ids: set[str] = set()
+        for attempt_entry in attempt_records:
+            if not isinstance(attempt_entry, dict):
+                continue
+            record = cast(dict[str, object], attempt_entry)
+            listed_attempt_ids.add(str(record.get("attempt_id")))
+        if attempt_path.name not in listed_attempt_ids:
+            _exit_with_error(
+                "exploration index verification failed: published attempt "
+                f"{attempt_path.name} is missing from the exploration index"
+            )
+        # Materialize project files
+        try:
+            generated_paths = _explore_materialize_project(
+                output=output,
+                base_path=base_path,
+                loaded=loaded,
+                corpus=corpus,
+                suggestions=suggestions,
+                curated=curated,
+                existing_personas=existing_personas,
+                existing_applications=existing_applications,
+                persona_selection=persona_selection_result,
+                spec=spec,
+                attempt_path=attempt_path,
+            )
+        except Exception as e:
+            _exit_with_error(f"materialize project failed: {type(e).__name__}: {e}")
+        for p in generated_paths:
+            typer.echo(f" generated: {p}")
+        # The run completed curation, persistence, and materialization; the
+        # crash-recovery checkpoint has served its purpose.
+        _explore_checkpoint_clear(output)
+        # Digest stability check (for tests): print digest
+        typer.echo(
+            f" digest stable: {corpus.corpus_digest[:12]} corpus {exploration_digest(corpus)[:12]}"
+        )
+        # Optionally run
+        if run:
+            if not generated_paths:
+                _exit_with_error("no generated project to run")
+            # Prefer the full project.yaml for run
+            full_project = None
+            for cand in generated_paths:
+                if cand.name == "project.yaml" and cand.parent == output:
+                    full_project = cand
+                    break
+            if full_project is None:
+                full_project = generated_paths[0]
+            typer.echo(
+                f" running generated experiment: {full_project} --experiment exploration-run"
+            )
+            # Invoke experiment runner synchronously (reuse _run_experiment_command)
+            _run_experiment_command(
+                project=full_project,
+                experiment_id="exploration-run",
+                output=output / "exploration-run-output",
+                workers=1,
+                run_count=None,
+                policies=(),
+                dry_run=False,
+                check_env=False,
+                fixture_origin="http://127.0.0.1:8000",
+                resume=False,
+                profile_output=None,
+                no_synthesis=False,
+            )
+        else:
+            # Print next step
+            # Prefer full project path
+            hint_path = None
+            for cand in generated_paths:
+                if cand.name == "project.yaml":
+                    hint_path = cand
+                    break
+            if hint_path is None and generated_paths:
+                hint_path = generated_paths[0]
+            if hint_path is not None:
+                typer.echo(
+                    f"next step: uxa run {hint_path} --experiment exploration-run"
+                )
+
+    try:
+        asyncio.run(_explore_async())
+    except SystemExit:
+        raise
+    except typer.Exit:
+        raise
+    except KeyboardInterrupt:
+        typer.echo(
+            "explore interrupted; crawl checkpoint retained for resume "
+            "(rerun the same command to continue)"
+        )
+        raise typer.Exit(130) from None
+    except Exception as error:
+        _exit_with_error(f"explore failed: {type(error).__name__}: {error}")
+
+
+def _explore_origin_from_url(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    host = parsed.hostname.lower() if parsed.hostname else ""  # type: ignore[union-attr]
+    port = parsed.port
+    if port is None or port == 443:
+        return f"https://{host}"
+    return f"https://{host}:{port}"
+
+
+def _explore_bootstrap_applications(
+    start_urls: tuple[str, ...],
+) -> tuple[Application, ...]:
+    origin_to_first_url: dict[str, str] = {}
+    for url in start_urls:
+        origin = _explore_origin_from_url(url)
+        if origin not in origin_to_first_url:
+            origin_to_first_url[origin] = url
+    apps: list[Application] = []
+    sorted_origins = sorted(origin_to_first_url.items())
+    for idx, (origin, first_url) in enumerate(sorted_origins):
+        app_id = (
+            "exploration-app"
+            if len(sorted_origins) == 1
+            else f"exploration-app-{idx + 1}"
+        )
+        version = ApplicationVersion(
+            id=f"{app_id}-live",
+            kind=ApplicationVersionKind.LIVE,
+            label="Live",
+            start_url=first_url,
+            allowed_origins=(),
+        )
+        app = Application(
+            id=app_id, name=f"Exploration App {idx + 1}", versions=(version,)
+        )
+        apps.append(app)
+    return tuple(apps)
+
+
+_EXPLORATION_CHECKPOINT_SCHEMA_VERSION = "exploration-checkpoint-v1"
+
+
+@dataclass(frozen=True)
+class _ExplorationCheckpoint:
+    """Recovered crawl/synthesis progress from an interrupted explore run.
+
+    ``crawl_complete`` is False when the crawl itself was interrupted; in
+    that case ``frontier`` carries the saved position (completed pages,
+    visited set, pending queue) to continue from.
+    """
+
+    corpus: CrawlCorpus
+    suggestions: tuple[ScenarioSuggestion, ...] | None
+    crawl_complete: bool = True
+    frontier: CrawlFrontier | None = None
+
+
+def _explore_checkpoint_root(output: Path) -> Path:
+    return Path(output) / "exploration" / "checkpoint"
+
+
+def _explore_spec_fingerprint(spec: ExplorationSpec) -> str:
+    payload = {
+        "start_urls": list(spec.start_urls),
+        "depth": spec.depth,
+        "max_pages": spec.max_pages,
+        "max_scenarios": spec.max_scenarios,
+        "settle_ms": spec.settle_ms,
+        "allowed_origins": list(spec.allowed_origins),
+    }
+    return exploration_digest(payload)
+
+
+def _explore_checkpoint_exists(output: Path) -> bool:
+    root = _explore_checkpoint_root(output)
+    return (root / "state.json").is_file() and (root / "payload.json").is_file()
+
+
+def _atomic_json_write(path: Path, value: object) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _explore_checkpoint_save(
+    output: Path,
+    spec: ExplorationSpec,
+    corpus: CrawlCorpus,
+    suggestions: tuple[ScenarioSuggestion, ...] | None,
+    *,
+    frontier: CrawlFrontier | None = None,
+    crawl_complete: bool = True,
+) -> None:
+    """Persist crawl/synthesis progress as pending state for resume.
+
+    Best-effort: checkpoint failures never fail an otherwise healthy run.
+    Payload is written before state so a crash mid-write leaves no valid
+    checkpoint. Called once per completed page during the crawl (with
+    ``crawl_complete=False`` and the live frontier) and again after the
+    full crawl / synthesis completes.
+    """
+
+    root = _explore_checkpoint_root(output)
+    state = {
+        "schema_version": _EXPLORATION_CHECKPOINT_SCHEMA_VERSION,
+        "status": "pending",
+        "fingerprint": _explore_spec_fingerprint(spec),
+        "has_suggestions": suggestions is not None,
+        "crawl_complete": crawl_complete,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    payload: dict[str, object] = {
+        "corpus": {
+            "pages": [_json_data(page) for page in corpus.pages],
+            "link_graph": {
+                key: list(targets) for key, targets in corpus.link_graph.items()
+            },
+            "started_at": corpus.started_at,
+            "corpus_digest": corpus.corpus_digest,
+        },
+        "suggestions": (
+            [_json_data(suggestion) for suggestion in suggestions]
+            if suggestions is not None
+            else []
+        ),
+    }
+    if frontier is not None:
+        payload["frontier"] = {
+            "queued": [[url, depth] for url, depth in frontier.queued],
+            "visited": sorted(frontier.visited),
+        }
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        _atomic_json_write(root / "payload.json", payload)
+        _atomic_json_write(root / "state.json", state)
+    except (OSError, TypeError, ValueError):
+        return
+
+
+def _explore_checkpoint_save_progress(
+    output: Path, spec: ExplorationSpec, frontier: CrawlFrontier
+) -> None:
+    """Persist one completed crawl page incrementally (best-effort)."""
+
+    try:
+        corpus = CrawlCorpus(
+            pages=frontier.pages,
+            link_graph=dict(frontier.link_graph),
+            started_at=frontier.started_at,
+        )
+    except (TypeError, ValueError):
+        return
+    _explore_checkpoint_save(
+        output, spec, corpus, None, frontier=frontier, crawl_complete=False
+    )
+
+
+def _frontier_from_checkpoint(
+    value: object, corpus: CrawlCorpus
+) -> CrawlFrontier | None:
+    """Rebuild a saved frontier; None when absent or malformed."""
+
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return None
+    payload = cast(dict[str, object], value)
+    queued_raw = payload.get("queued")
+    visited_raw = payload.get("visited")
+    if not isinstance(queued_raw, list) or not isinstance(visited_raw, list):
+        return None
+    queued: list[tuple[str, int]] = []
+    for entry in cast(list[object], queued_raw):
+        if not isinstance(entry, (list, tuple)):
+            return None
+        pair = cast("list[object] | tuple[object, ...]", entry)
+        if len(pair) != 2:
+            return None
+        url, depth = pair[0], pair[1]
+        if not isinstance(url, str) or not isinstance(depth, int):
+            return None
+        queued.append((url, depth))
+    visited: list[str] = []
+    for item in cast(list[object], visited_raw):
+        if not isinstance(item, str):
+            return None
+        visited.append(item)
+    try:
+        return CrawlFrontier(
+            pages=corpus.pages,
+            link_graph=dict(corpus.link_graph),
+            visited=tuple(visited),
+            queued=tuple(queued),
+            started_at=corpus.started_at,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _explore_checkpoint_load(
+    output: Path, spec: ExplorationSpec
+) -> _ExplorationCheckpoint | None:
+    """Return the checkpointed progress when it matches this spec exactly."""
+
+    root = _explore_checkpoint_root(output)
+    if not _explore_checkpoint_exists(output):
+        return None
+    try:
+        state_value: object = json.loads(
+            (root / "state.json").read_text(encoding="utf-8")
+        )
+        payload_value: object = json.loads(
+            (root / "payload.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(state_value, dict) or not isinstance(payload_value, dict):
+        return None
+    state = cast(dict[str, object], state_value)
+    payload = cast(dict[str, object], payload_value)
+    if state.get("schema_version") != _EXPLORATION_CHECKPOINT_SCHEMA_VERSION:
+        return None
+    if state.get("fingerprint") != _explore_spec_fingerprint(spec):
+        return None
+    # Checkpoints written before per-page checkpointing lack crawl_complete;
+    # they were only saved after a finished crawl, so default to complete.
+    crawl_complete = state.get("crawl_complete") is not False
+    corpus = _corpus_from_checkpoint(payload.get("corpus"))
+    if corpus is None:
+        return None
+    frontier: CrawlFrontier | None = None
+    if not crawl_complete and payload.get("frontier") is not None:
+        frontier = _frontier_from_checkpoint(payload.get("frontier"), corpus)
+    restored_suggestions: tuple[ScenarioSuggestion, ...] | None = None
+    if state.get("has_suggestions") is True:
+        raw_suggestions = payload.get("suggestions")
+        if not isinstance(raw_suggestions, list):
+            return None
+        suggestion_entries = cast(list[object], raw_suggestions)
+        rebuilt = [_suggestion_from_checkpoint(item) for item in suggestion_entries]
+        if any(item is None for item in rebuilt):
+            return None
+        restored_suggestions = tuple(item for item in rebuilt if item is not None)
+    return _ExplorationCheckpoint(
+        corpus=corpus,
+        suggestions=restored_suggestions,
+        crawl_complete=crawl_complete,
+        frontier=frontier,
+    )
+
+
+def _corpus_from_checkpoint(value: object) -> CrawlCorpus | None:
+    if not isinstance(value, dict):
+        return None
+    payload = cast(dict[str, object], value)
+    pages_raw = payload.get("pages")
+    link_graph_raw = payload.get("link_graph")
+    started_at = payload.get("started_at")
+    if not isinstance(pages_raw, list) or not isinstance(link_graph_raw, dict):
+        return None
+    if not isinstance(started_at, str):
+        return None
+    pages: list[CrawlPage] = []
+    for entry in cast(list[object], pages_raw):
+        if not isinstance(entry, dict):
+            return None
+        page_payload = cast(dict[str, object], entry)
+        viewport_id = page_payload.get("viewport_id")
+        screenshot_digest = page_payload.get("screenshot_digest")
+        headings_raw = page_payload.get("headings", ())
+        links_raw = page_payload.get("discovered_links", ())
+        elements_raw = page_payload.get("visible_elements", ())
+        if not isinstance(headings_raw, list) or not isinstance(links_raw, list):
+            return None
+        if not isinstance(elements_raw, list):
+            return None
+        try:
+            pages.append(
+                CrawlPage(
+                    url=str(page_payload["url"]),
+                    normalized_url=str(page_payload["normalized_url"]),
+                    origin=str(page_payload["origin"]),
+                    depth=int(cast(int, page_payload["depth"])),
+                    title=str(page_payload["title"]),
+                    headings=tuple(str(h) for h in cast(list[object], headings_raw)),
+                    viewport_id=None if viewport_id is None else str(viewport_id),
+                    screenshot_digest=(
+                        None if screenshot_digest is None else str(screenshot_digest)
+                    ),
+                    discovered_links=tuple(
+                        str(link) for link in cast(list[object], links_raw)
+                    ),
+                    visible_elements=tuple(
+                        str(item) for item in cast(list[object], elements_raw)
+                    ),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+    graph: dict[str, tuple[str, ...]] = {}
+    for key, targets in cast(dict[object, object], link_graph_raw).items():
+        if not isinstance(key, str) or not isinstance(targets, list):
+            return None
+        graph[key] = tuple(str(target) for target in cast(list[object], targets))
+    declared_digest = payload.get("corpus_digest")
+    try:
+        return CrawlCorpus(
+            pages=tuple(pages),
+            link_graph=graph,
+            started_at=started_at,
+            corpus_digest=declared_digest if isinstance(declared_digest, str) else "",
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _suggestion_from_checkpoint(value: object) -> ScenarioSuggestion | None:
+    if not isinstance(value, dict):
+        return None
+    payload = cast(dict[str, object], value)
+    verifier_raw = payload.get("verifier")
+    target_raw = payload.get("evaluation_target")
+    budget_raw = payload.get("budget")
+    if not all(
+        isinstance(part, dict) for part in (verifier_raw, target_raw, budget_raw)
+    ):
+        return None
+    verifier = cast(dict[str, object], verifier_raw)
+    target = cast(dict[str, object], target_raw)
+    budget = cast(dict[str, object], budget_raw)
+    labels_raw = target.get("labels_by_version")
+    coverage_raw = payload.get("coverage", ())
+    if not isinstance(labels_raw, dict):
+        return None
+    if coverage_raw is not None and not isinstance(coverage_raw, list):
+        return None
+    timeout_raw = budget.get("timeout_seconds")
+    verifier_role = verifier.get("role")
+    target_role = target.get("role")
+    region_label = target.get("region_label")
+    all_of_raw = verifier.get("all_of", ())
+    try:
+        built_budget = Budget(
+            max_steps=int(cast(int, budget["max_steps"])),
+            max_observations=int(cast(int, budget["max_observations"])),
+            max_interactions=int(cast(int, budget["max_interactions"])),
+            timeout_seconds=(
+                None
+                if timeout_raw is None
+                else float(cast("int | float | str", timeout_raw))
+            ),
+            max_model_calls=int(cast(int, budget.get("max_model_calls", 64))),
+        )
+        built_verifier = VisibleResultVerifierSpec(
+            type=str(verifier.get("type", "visible-result")),
+            text=str(verifier.get("text", "")),
+            role=None if verifier_role is None else str(verifier_role),
+            all_of=tuple(str(item) for item in cast(list[object], all_of_raw or ())),
+        )
+        built_target = ScenarioEvaluationTarget(
+            labels_by_version={
+                str(version): str(label)
+                for version, label in cast(dict[object, object], labels_raw).items()
+            },
+            role=None if target_role is None else str(target_role),
+            region_label=None if region_label is None else str(region_label),
+        )
+        return ScenarioSuggestion(
+            id=str(payload["id"]),
+            name=str(payload["name"]),
+            goal=str(payload["goal"]),
+            start_url=str(payload["start_url"]),
+            verifier=built_verifier,
+            evaluation_target=built_target,
+            budget=built_budget,
+            rationale=str(payload["rationale"]),
+            coverage=tuple(
+                str(item) for item in cast(list[object], coverage_raw or ())
+            ),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _explore_checkpoint_clear(output: Path) -> None:
+    shutil.rmtree(_explore_checkpoint_root(output), ignore_errors=True)
+
+
+def _persist_unavailable_exploration_attempt(
+    *,
+    output: Path,
+    corpus: CrawlCorpus,
+    personas: tuple[Any, ...],
+    spec: ExplorationSpec,
+    model: str,
+    reason: str,
+) -> None:
+    """Best-effort record that synthesis could not produce suggestions.
+
+    Persists the real crawl evidence with status ``unavailable`` plus a
+    limitation note; persistence failures are swallowed so the loud exit
+    reason below always reaches the operator.
+    """
+
+    try:
+        store = ExplorationArtifactStore(output)
+        store.write_attempt(
+            corpus,
+            suggestions=(),
+            curated=(),
+            persona_set=personas,
+            spec=spec,
+            model=model,
+            prompt_version="exploration-synthesis-v1",
+            status="unavailable",
+            limitation=f"scenario synthesis unavailable: {reason}",
+        )
+    except Exception:
+        return
+
+
+async def _explore_run_crawler(
+    spec: ExplorationSpec,
+    policy: PageSettlementPolicy,
+    *,
+    on_frontier: Callable[[CrawlFrontier], Awaitable[None]] | None = None,
+    resume_from: CrawlFrontier | None = None,
+) -> CrawlCorpus:
+    """Crawl via Playwright; any failure propagates (no fabricated corpus).
+
+    ``on_frontier`` fires after every completed page so the caller can
+    persist crash-recovery checkpoints incrementally; ``resume_from``
+    continues an interrupted crawl from its saved position.
+    """
+
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        try:
+            context = await browser.new_context()
+            page = await context.new_page()
+            crawler = ExplorationCrawler(page=page, policy=policy)
+            corpus = await crawler.crawl(
+                spec, on_frontier=on_frontier, resume_from=resume_from
+            )
+            await page.close()
+            await context.close()
+            return corpus
+        finally:
+            await browser.close()
+
+
+async def _explore_run_synthesizer(
+    corpus: CrawlCorpus, max_scenarios: int, settings: OpenAICompatibleSettings
+) -> tuple[ScenarioSuggestion, ...]:
+    """Synthesize suggestions via the model client; failures propagate.
+
+    An empty suggestion list from the model is a valid outcome; missing
+    model connectivity or schema failures raise so the caller can persist
+    an ``unavailable`` attempt instead of fabricating scenarios.
+    """
+
+    import httpx as _httpx
+
+    http_client = _httpx.AsyncClient(timeout=settings.timeout_seconds)
+    try:
+        client = create_structured_model_client(
+            settings,
+            http_client=http_client,
+            call_limiter=asyncio.Semaphore(settings.max_concurrent_calls),
+        )
+        synthesizer = ExplorationSynthesizer(
+            client=client, model=settings.cognitive_model
+        )
+        result = await synthesizer.suggest(corpus, max_scenarios=max_scenarios)
+        return tuple(result.suggestions)
+    finally:
+        await http_client.aclose()
+
+
+def _write_yaml_document(path: Path, payload: object, *, sort_keys: bool) -> Path:
+    """Canonical YAML writer for materialized exploration project files.
+
+    Single serialization path (safe_dump, explicit key order policy) so all
+    generated YAML files share one format; write errors propagate to the
+    caller instead of being swallowed by fallback chains.
+    """
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump(payload, sort_keys=sort_keys, allow_unicode=False),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        raise OSError(f"cannot write {path}: {error}") from error
+    return path
+
+
+def _explore_materialize_project(
+    *,
+    output: Path,
+    base_path: Path | None,
+    loaded: LoadedProject | None,
+    corpus: CrawlCorpus,
+    suggestions: tuple[ScenarioSuggestion, ...],
+    curated: Sequence[ScenarioSuggestion | dict[str, Any]],
+    existing_personas: tuple[Persona, ...],
+    existing_applications: tuple[Application, ...],
+    persona_selection: PersonaSelectionPayload | None,
+    spec: ExplorationSpec,
+    attempt_path: Path,
+) -> list[Path]:
+    # Normalize curated to the canonical scenario-dict shape (the review
+    # server's ScenarioPayload dump); model suggestions convert through the
+    # same canonical schema. This is the single boundary conversion.
+    curated_list: list[dict[str, Any]] = [
+        _suggestion_to_dict(item) if isinstance(item, ScenarioSuggestion) else item
+        for item in curated
+    ]
+    # Determine persona ids for experiment and custom personas
+    persona_ids_for_exp: list[str] = []
+    custom_personas_to_add: list[dict[str, Any]] = []
+    if persona_selection is not None:
+        if persona_selection.mode == "custom":
+            custom_persona = persona_selection.custom_persona
+            if custom_persona is not None:
+                custom_dict = custom_persona.model_dump()
+                custom_personas_to_add = [custom_dict]
+                persona_ids_for_exp = [
+                    str(custom_dict["id"]).strip() or "custom-persona"
+                ]
+        elif persona_selection.mode in {"existing", "suggested"}:
+            persona_ids_for_exp = [
+                pid.strip()
+                for pid in persona_selection.persona_ids
+                if pid.strip()
+            ]
+            if not persona_ids_for_exp:
+                persona_ids_for_exp = [p.id for p in existing_personas]
+    else:
+        # auto_accept or no selection: use existing personas
+        for p in existing_personas:
+            pid = p.id.strip()
+            if pid:
+                persona_ids_for_exp.append(pid)
+        if not persona_ids_for_exp and existing_personas:
+            persona_ids_for_exp = [existing_personas[0].id]
+        if not persona_ids_for_exp:
+            persona_ids_for_exp = ["default-explorer"]
+            custom_personas_to_add = [
+                {
+                    "id": "default-explorer",
+                    "name": "Default Explorer",
+                    "working_memory_capacity": 4,
+                    "initial_confidence": 0.55,
+                    "initial_frustration": 0.10,
+                    "abandonment_threshold": 0.75,
+                    "attention_temperature": 1.0,
+                }
+            ]
+    # Resolve applications mapping for each curated scenario: find app version id by origin
+    # Build origin -> app version id map
+    app_version_by_origin: dict[str, str] = {}
+    app_version_ids_all: set[str] = set()
+    for app in existing_applications:
+        for ver in app.versions:
+            if not ver.id or ver.start_url is None:
+                continue
+            try:
+                origin = _explore_origin_from_url(
+                    benchmark_normalize_crawl_url(ver.start_url)
+                )
+            except ValueError:
+                continue
+            app_version_by_origin[origin] = ver.id
+            app_version_ids_all.add(ver.id)
+    # Fallback if no mapping: use first app's first version with a start URL
+    if not app_version_by_origin and existing_applications:
+        first_ver = existing_applications[0].versions[0]
+        if first_ver.start_url is not None:
+            origin = _explore_origin_from_url(
+                benchmark_normalize_crawl_url(first_ver.start_url)
+            )
+            app_version_by_origin[origin] = first_ver.id
+            app_version_ids_all.add(first_ver.id)
+    # For each curated, determine app_version_id
+    curated_full_scenarios: list[dict[str, Any]] = []
+    used_app_version_ids: set[str] = set()
+    for item in curated_list:
+        start_url = str(item.get("start_url", "")).strip()
+        # Resolve origin
+        try:
+            origin = _explore_origin_from_url(
+                exploration_normalize_crawl_url(start_url)
+            )
+        except ValueError:
+            try:
+                origin = _explore_origin_from_url(
+                    benchmark_normalize_crawl_url(start_url)
+                )
+            except ValueError:
+                origin = ""
+        app_ver_id = app_version_by_origin.get(origin)
+        if app_ver_id is None:
+            # fallback to first available
+            if app_version_ids_all:
+                app_ver_id = min(app_version_ids_all)
+            elif existing_applications:
+                app_ver_id = existing_applications[0].versions[0].id
+            else:
+                app_ver_id = "exploration-app-live"
+        used_app_version_ids.add(app_ver_id)
+        # Convert to full scenario dict
+        full = _explore_curated_to_full_scenario(
+            item, app_ver_id, tuple(persona_ids_for_exp)
+        )
+        curated_full_scenarios.append(full)
+    # Build experiment
+    experiment: dict[str, Any] = {
+        "id": "exploration-run",
+        "name": "Exploration Run",
+        "scenario_ids": [s["id"] for s in curated_full_scenarios],
+        "application_version_ids": sorted(used_app_version_ids)
+        if used_app_version_ids
+        else [
+            next(iter(sorted(app_version_ids_all)))
+            if app_version_ids_all
+            else "exploration-app-live"
+        ],
+        "persona_ids": persona_ids_for_exp,
+        "policies": ["full-list"],
+        "run_count": 1,
+    }
+    generated_paths: list[Path] = []
+    # Ensure exploration directory exists
+    exploration_dir = output / "exploration"
+    exploration_dir.mkdir(parents=True, exist_ok=True)
+    # Write fragment file at exploration/project.fragment.yaml (top-level fragment) and at attempt dir already exists
+    fragment_payload: dict[str, Any] = {
+        "id": "exploration-fragment",
+        "scenarios": curated_full_scenarios,
+        "experiments": [experiment],
+    }
+    if custom_personas_to_add:
+        fragment_payload["personas"] = custom_personas_to_add
+    # Write top-level fragment
+    fragment_path = _write_yaml_document(
+        exploration_dir / "project.fragment.yaml", fragment_payload, sort_keys=True
+    )
+    generated_paths.append(fragment_path)
+    # Also write exploration/generated.yaml for compatibility
+    # For generated.yaml, produce full project if bootstrap else merged
+    if loaded is not None and base_path is not None:
+        # Merge with base project: read base YAML and append. The project was
+        # already parsed and validated by the loader at command start, so a
+        # failure here is an I/O or encoding problem and must be loud.
+        try:
+            base_raw_value: object = yaml.safe_load(
+                base_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, yaml.YAMLError):
+            _exit_with_error(f"cannot re-read base project {base_path} for merge")
+        base_raw: dict[str, Any] = (
+            cast("dict[str, Any]", base_raw_value)
+            if isinstance(base_raw_value, dict)
+            else {}
+        )
+        # Ensure lists
+        base_scenarios: list[Any] = list(base_raw.get("scenarios", []) or [])
+        base_experiments: list[Any] = list(base_raw.get("experiments", []) or [])
+        base_personas: list[Any] = list(base_raw.get("personas", []) or [])
+        # Append new scenarios (keep original)
+        merged_scenarios: list[Any] = base_scenarios + curated_full_scenarios
+        # Append experiment (avoid duplicate id)
+        existing_exp_ids: set[Any] = {
+            cast("dict[str, Any]", e).get("id")
+            for e in base_experiments
+            if isinstance(e, dict)
+        }
+        merged_experiments: list[Any]
+        if experiment["id"] not in existing_exp_ids:
+            merged_experiments = base_experiments + [experiment]
+        else:
+            merged_experiments = base_experiments
+            # replace? keep existing and add with new id variant
+            experiment_alt = dict(experiment)
+            experiment_alt["id"] = "exploration-run-2"
+            merged_experiments = base_experiments + [experiment_alt]
+            experiment = experiment_alt
+            # Update fragment to reflect id?
+            fragment_payload["experiments"] = [experiment]
+            _write_yaml_document(fragment_path, fragment_payload, sort_keys=True)
+        # Append custom personas if any not already present
+        existing_persona_ids: set[Any] = {
+            cast("dict[str, Any]", p).get("id")
+            for p in base_personas
+            if isinstance(p, dict)
+        }
+        for cp in custom_personas_to_add:
+            if cp.get("id") not in existing_persona_ids:
+                base_personas.append(cp)
+        merged: dict[str, Any] = dict(base_raw)
+        merged["scenarios"] = merged_scenarios
+        merged["experiments"] = merged_experiments
+        if custom_personas_to_add:
+            merged["personas"] = base_personas
+        # Append exploration live applications missing from base so new scenarios resolve
+        raw_apps_value: Any = base_raw.get("applications", []) or []
+        base_apps_raw: list[dict[str, Any]] = [
+            cast("dict[str, Any]", entry)
+            for entry in raw_apps_value
+            if isinstance(entry, dict)
+        ]
+        base_app_ids: set[Any] = {a.get("id") for a in base_apps_raw}
+        extra_apps: list[dict[str, Any]] = []
+        for app in existing_applications:
+            app_id = app.id.strip()
+            if not app_id or app_id in base_app_ids:
+                continue
+            vers_payload_extra: list[dict[str, Any]] = []
+            for ver in app.versions:
+                version_entry: dict[str, Any] = {
+                    "id": ver.id,
+                    "kind": ver.kind.value,
+                    "label": ver.label,
+                    "start_url": ver.start_url,
+                }
+                if ver.allowed_origins:
+                    version_entry["allowed_origins"] = list(ver.allowed_origins)
+                vers_payload_extra.append(version_entry)
+            extra_apps.append(
+                {
+                    "id": app_id,
+                    "name": app.name,
+                    "versions": vers_payload_extra,
+                }
+            )
+        if extra_apps:
+            merged["applications"] = base_apps_raw + extra_apps
+        # Write full project.yaml at output/project.yaml plus compatibility
+        # copies (exploration/generated.yaml, exploration/project.yaml).
+        full_project_path = _write_yaml_document(
+            output / "project.yaml", merged, sort_keys=False
+        )
+        generated_paths.append(full_project_path)
+        generated_paths.append(
+            _write_yaml_document(
+                exploration_dir / "generated.yaml", merged, sort_keys=False
+            )
+        )
+        generated_paths.append(
+            _write_yaml_document(
+                exploration_dir / "project.yaml", merged, sort_keys=False
+            )
+        )
+    else:
+        # Bootstrap: create full project from scratch
+        # Build applications payload for YAML
+        apps_payload: list[dict[str, Any]] = []
+        for app in existing_applications:
+            vers_payload: list[dict[str, Any]] = []
+            for ver in app.versions:
+                vers_payload.append(
+                    {
+                        "id": ver.id,
+                        "kind": ver.kind.value,
+                        "label": ver.label,
+                        "start_url": ver.start_url,
+                    }
+                )
+            apps_payload.append(
+                {
+                    "id": app.id,
+                    "name": app.name,
+                    "versions": vers_payload,
+                }
+            )
+        personas_payload: list[dict[str, Any]] = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "working_memory_capacity": p.working_memory_capacity,
+                "initial_confidence": p.initial_confidence,
+                "initial_frustration": p.initial_frustration,
+                "abandonment_threshold": p.abandonment_threshold,
+                "attention_temperature": p.attention_temperature,
+            }
+            for p in existing_personas
+        ]
+        # Include custom personas if any
+        for cp in custom_personas_to_add:
+            if cp["id"] not in {pp["id"] for pp in personas_payload}:
+                personas_payload.append(cp)
+        full_project = {
+            "id": "exploration-generated",
+            "name": "Exploration Generated",
+            "applications": apps_payload,
+            "scenarios": curated_full_scenarios,
+            "personas": personas_payload,
+            "experiments": [experiment],
+        }
+        generated_paths.append(
+            _write_yaml_document(output / "project.yaml", full_project, sort_keys=False)
+        )
+        generated_paths.append(
+            _write_yaml_document(
+                exploration_dir / "generated.yaml", full_project, sort_keys=False
+            )
+        )
+        generated_paths.append(
+            _write_yaml_document(
+                exploration_dir / "project.yaml", full_project, sort_keys=False
+            )
+        )
+        # Also write generated.yaml at output root for convenience
+        generated_paths.append(
+            _write_yaml_document(
+                output / "generated.yaml", full_project, sort_keys=False
+            )
+        )
+    # Materialize fragment at output root as well; failures are loud.
+    root_fragment_path = _write_yaml_document(
+        output / "project.fragment.yaml", fragment_payload, sort_keys=True
+    )
+    if root_fragment_path not in generated_paths:
+        generated_paths.append(root_fragment_path)
+    return generated_paths
+
+
+def _budget_int_from_text(value: Any, default: int) -> int:
+    """``int(v) if str(v).strip() else default`` (blank/missing falls back)."""
+
+    return int(value) if str(value).strip() else default
+
+
+def _budget_int_if_set(value: Any, default: int) -> int:
+    """``int(v) if v else default`` (falsy values, including 0, fall back)."""
+
+    return int(value) if value else default
+
+
+def _budget_float_seconds(value: Any, default: float) -> float:
+    """``float(v) if v not in (None, '') else default``, mapping 0 to default."""
+
+    if value is None or value == "":
+        return default
+    seconds = float(value)
+    return default if seconds == 0 else seconds
+
+
+def _explore_curated_to_full_scenario(
+    item: dict[str, Any], app_version_id: str, eligible_personas: tuple[str, ...]
+) -> dict[str, Any]:
+    sc_id = str(item.get("id", "")).strip() or f"explore-{uuid4().hex[:6]}"
+    name = str(item.get("name", sc_id)).strip() or sc_id
+    goal = str(item.get("goal", "")).strip() or name
+    raw_verifier = item.get("verifier", {})
+    verifier: dict[str, Any]
+    if isinstance(raw_verifier, dict):
+        verifier = cast("dict[str, Any]", raw_verifier)
+    else:
+        verifier = {"type": "visible-result", "text": str(raw_verifier)}
+    if verifier.get("type") != "visible-result":
+        verifier["type"] = "visible-result"
+    if not str(verifier.get("text", "")).strip():
+        verifier["text"] = name or "visible result"
+    if "all_of" not in verifier or verifier["all_of"] is None:
+        verifier["all_of"] = []
+    # evaluation_target
+    et_raw = item.get("evaluation_target", {})
+    et: dict[str, Any] = (
+        cast("dict[str, Any]", et_raw) if isinstance(et_raw, dict) else {}
+    )
+    labels_by_version: dict[str, str] = {}
+    role_val: str | None = None
+    region_label: str | None = None
+    if isinstance(et.get("labels_by_version"), dict) and et["labels_by_version"]:
+        labels_by_version = {
+            str(k): str(v)
+            for k, v in cast("dict[Any, Any]", et["labels_by_version"]).items()
+            if str(v).strip()
+        }
+    elif isinstance(et.get("label"), str) and et["label"].strip():
+        labels_by_version = {
+            app_version_id: et["label"].strip(),
+            "live": et["label"].strip(),
+        }
+    elif isinstance(et.get("labels"), dict):
+        labels_by_version = {
+            str(k): str(v) for k, v in cast("dict[Any, Any]", et["labels"]).items()
+        }
+    # role
+    if isinstance(et.get("role"), str) and et["role"].strip():
+        role_val = et["role"].strip()
+    if isinstance(et.get("region_label"), str) and et["region_label"].strip():
+        region_label = et["region_label"].strip()
+    if not labels_by_version:
+        labels_by_version = {app_version_id: name, "live": name}
+    if app_version_id not in labels_by_version:
+        first = next(iter(labels_by_version.values()))
+        labels_by_version[app_version_id] = first
+    if "live" not in labels_by_version:
+        labels_by_version["live"] = next(iter(labels_by_version.values()))
+    evaluation_target: dict[str, Any] = {"labels_by_version": labels_by_version}
+    if role_val:
+        evaluation_target["role"] = role_val
+    if region_label:
+        evaluation_target["region_label"] = region_label
+    # budget
+    budget_raw = item.get("budget", {})
+    budget: dict[str, Any] = (
+        cast("dict[str, Any]", budget_raw) if isinstance(budget_raw, dict) else {}
+    )
+    budget_norm: dict[str, Any] = {
+        "max_steps": _budget_int_from_text(budget.get("max_steps", ""), 20),
+        "max_observations": _budget_int_if_set(budget.get("max_observations"), 12),
+        "max_interactions": _budget_int_if_set(budget.get("max_interactions"), 8),
+        "timeout_seconds": _budget_float_seconds(budget.get("timeout_seconds"), 120),
+        "max_model_calls": _budget_int_if_set(budget.get("max_model_calls"), 32),
+    }
+    return {
+        "id": sc_id,
+        "name": name,
+        "goal": goal,
+        "application_version_ids": [app_version_id],
+        "start_state": "dashboard",
+        "fixture_inputs": {},
+        "budget": budget_norm,
+        "verifier": verifier,
+        "safeguards": [
+            "fixture-only",
+            "test-account-only",
+            "no-outbound-communication",
+        ],
+        "eligible_persona_ids": list(eligible_personas)
+        if eligible_personas
+        else ["default-explorer"],
+        "expected_evidence": ["target-discovery", "verified-completion"],
+        "evaluation_target": evaluation_target,
+        "viewport": {"width": 1280, "height": 800},
+    }
 
 
 @app.command("inspect-run")
@@ -1552,9 +3102,7 @@ class _BoundedCanonicalJson:
 
     def _reserve(self, length: int) -> None:
         if self._size + length > self._content_limit:
-            raise ValueError(
-                f"experiment summary exceeds {self._max_bytes} bytes"
-            )
+            raise ValueError(f"experiment summary exceeds {self._max_bytes} bytes")
         self._size += length
 
     def _emit_ascii(self, value: str) -> None:
@@ -1674,9 +3222,7 @@ def _atomic_write_experiment_json(path: Path, value: object) -> None:
                 offset = 0
                 for chunk in chunks:
                     while offset < len(chunk):
-                        written = os.write(
-                            temporary.descriptor, chunk[offset:]
-                        )
+                        written = os.write(temporary.descriptor, chunk[offset:])
                         if written <= 0:
                             raise OSError("failed to write experiment summary")
                         offset += written
