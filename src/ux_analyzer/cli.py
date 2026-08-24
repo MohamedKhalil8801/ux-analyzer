@@ -1139,7 +1139,7 @@ def _explore_bootstrap_applications(
             kind=ApplicationVersionKind.LIVE,
             label="Live",
             start_url=first_url,
-            allowed_origins=(),
+            allowed_origins=(origin,),
         )
         app = Application(
             id=app_id, name=f"Exploration App {idx + 1}", versions=(version,)
@@ -1888,14 +1888,23 @@ def _explore_materialize_project(
         for app in existing_applications:
             vers_payload: list[dict[str, Any]] = []
             for ver in app.versions:
-                vers_payload.append(
-                    {
-                        "id": ver.id,
-                        "kind": ver.kind.value,
-                        "label": ver.label,
-                        "start_url": ver.start_url,
-                    }
-                )
+                origin = None
+                try:
+                    if ver.start_url:
+                        origin = _explore_origin_from_url(
+                            benchmark_normalize_crawl_url(ver.start_url)
+                        )
+                except Exception:
+                    origin = None
+                payload: dict[str, Any] = {
+                    "id": ver.id,
+                    "kind": ver.kind.value,
+                    "label": ver.label,
+                    "start_url": ver.start_url,
+                }
+                if origin:
+                    payload["allowed_origins"] = [origin]
+                vers_payload.append(payload)
             apps_payload.append(
                 {
                     "id": app.id,
@@ -2055,11 +2064,7 @@ def _explore_curated_to_full_scenario(
         "fixture_inputs": {},
         "budget": budget_norm,
         "verifier": verifier,
-        "safeguards": [
-            "fixture-only",
-            "test-account-only",
-            "no-outbound-communication",
-        ],
+        "safeguards": [],
         "eligible_persona_ids": list(eligible_personas)
         if eligible_personas
         else ["default-explorer"],
