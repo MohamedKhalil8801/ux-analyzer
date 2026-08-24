@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from urllib.parse import SplitResult, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 def canonicalize_https_url(value: str) -> str:
@@ -80,6 +81,107 @@ def _canonical_netloc(parsed: SplitResult, *, default_port: int) -> str:
     if port is None or port == default_port:
         return canonical_host
     return f"{canonical_host}:{port}"
+
+
+_TRACKING_EXACT = {"fbclid", "gclid", "gbraid", "wbraid", "msclkid"}
+
+
+def _is_tracking_param(key: str) -> bool:
+    lower = key.lower()
+    return lower.startswith("utm_") or lower in _TRACKING_EXACT
+
+
+def normalize_crawl_url(value: str) -> str:
+    """Normalize a crawl URL: lowercase host, default-port strip, collapse //,
+    strip fragment, sort query, remove tracking params (utm_*, fbclid, gclid, ...).
+
+    Supports http and https, uses stdlib urllib.parse only.
+    """
+
+    if type(value) is not str or not value or value != value.strip():
+        raise ValueError("URL must be a non-empty URL")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("URL must have a valid host and port") from error
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("URL must use HTTP or HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL must not include credentials")
+    if (
+        hostname is None
+        or not hostname
+        or not hostname.isascii()
+        or any(char.isspace() for char in hostname)
+    ):
+        raise ValueError("URL must include a valid host")
+    if parsed.netloc.endswith(":"):
+        raise ValueError("URL must have a valid port")
+    if port is not None and port <= 0:
+        raise ValueError("URL must have a valid port")
+
+    scheme = parsed.scheme.lower()
+    canonical_host = hostname.lower()
+    if ":" in canonical_host and not canonical_host.startswith("["):
+        canonical_host = f"[{canonical_host}]"
+    default_port = 443 if scheme == "https" else 80
+    if port is None or port == default_port:
+        netloc = canonical_host
+    else:
+        netloc = f"{canonical_host}:{port}"
+
+    path = parsed.path
+    if not path:
+        path = "/"
+    else:
+        path = re.sub(r"/{2,}", "/", path)
+        if not path.startswith("/"):
+            path = "/" + path
+
+    raw_query = parsed.query
+    if raw_query:
+        pairs = parse_qsl(raw_query, keep_blank_values=True, strict_parsing=False)
+        filtered = [(k, v) for k, v in pairs if not _is_tracking_param(k)]
+        filtered.sort(key=lambda kv: (kv[0], kv[1]))
+        query = urlencode(filtered, doseq=True)
+    else:
+        query = ""
+
+    return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def _origin_tuple(url: str) -> tuple[str, str, int | None]:
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    hostname = parsed.hostname
+    if hostname is None or not hostname:
+        raise ValueError("URL must have a valid host")
+    host = hostname.lower()
+    if not host.isascii() or any(char.isspace() for char in host):
+        raise ValueError("URL must have a valid host")
+    if parsed.netloc.endswith(":"):
+        raise ValueError("URL must have a valid host")
+    port = parsed.port
+    if port is not None and port <= 0:
+        raise ValueError("URL must have a valid host")
+    if scheme == "https" and port == 443:
+        port = None
+    if scheme == "http" and port == 80:
+        port = None
+    return (scheme, host, port)
+
+
+def same_origin(a: str, b: str) -> bool:
+    """Return True if two URLs share scheme+host+port (default ports collapsed)."""
+
+    if type(a) is not str or type(b) is not str or not a.strip() or not b.strip():
+        raise ValueError("origin URLs must be non-empty strings")
+    try:
+        return _origin_tuple(a) == _origin_tuple(b)
+    except ValueError as error:
+        raise ValueError("URL must have a valid host and port") from error
 
 
 class ApplicationVersionKind(StrEnum):
