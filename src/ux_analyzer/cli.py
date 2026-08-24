@@ -1134,12 +1134,23 @@ def _explore_bootstrap_applications(
             if len(sorted_origins) == 1
             else f"exploration-app-{idx + 1}"
         )
+        # Live vercel/next.js sites commonly load fonts and scripts from CDNs.
+        # Include the start origin plus a minimal resource allowlist so the
+        # run is not safety-blocked on the first external stylesheet.
+        _default_resource_origins = (
+            "https://fonts.googleapis.com",
+            "https://fonts.gstatic.com",
+        )
+        # Keep origin first for determinism; dedup via dict preserves order.
+        resource_origins = tuple(
+            dict.fromkeys((origin, *_default_resource_origins))
+        )
         version = ApplicationVersion(
             id=f"{app_id}-live",
             kind=ApplicationVersionKind.LIVE,
             label="Live",
             start_url=first_url,
-            allowed_origins=(origin,),
+            allowed_origins=resource_origins,
         )
         app = Application(
             id=app_id, name=f"Exploration App {idx + 1}", versions=(version,)
