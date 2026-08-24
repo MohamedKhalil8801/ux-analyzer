@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 
+
 def _configured_request_max_bytes() -> int:
     """Return transport ceiling, honoring UXA_LLM_REQUEST_MAX_BYTES when set."""
 
