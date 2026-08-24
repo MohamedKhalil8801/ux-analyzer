@@ -267,14 +267,16 @@ class ExplorationCrawler:
                 title: str
                 headings: tuple[str, ...]
                 screenshot_digest: str | None
+                visible_elements: tuple[str, ...] = ()
                 try:
-                    title, headings, screenshot_digest = await self._capture_page(
+                    title, headings, screenshot_digest, visible_elements = await self._capture_page(
                         page, viewport_id
                     )
                 except Exception:
                     title = "Untitled"
                     headings = ()
                     screenshot_digest = None
+                    visible_elements = ()
 
                 # Guarantee non-empty title for domain validation
                 if not title.strip():  # pyright: ignore[reportUnknownMemberType]
@@ -283,6 +285,8 @@ class ExplorationCrawler:
                     title = title.strip()  # pyright: ignore[reportUnknownMemberType]
                 if not isinstance(headings, tuple):  # pyright: ignore[reportUnnecessaryIsInstance]
                     headings = tuple(headings) if headings else ()  # type: ignore[assignment]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+                if not isinstance(visible_elements, tuple):  # pyright: ignore[reportUnnecessaryIsInstance]
+                    visible_elements = tuple(visible_elements) if visible_elements else ()  # type: ignore[assignment]
 
                 # --- link extraction (same-origin <a href> absolute links) ---
                 raw_links: list[str]
@@ -327,6 +331,7 @@ class ExplorationCrawler:
                         viewport_id=viewport_id,
                         screenshot_digest=screenshot_digest,
                         discovered_links=discovered_tuple,
+                        visible_elements=visible_elements,
                     )
                 except Exception:
                     # Fallback for edge title/heading validation
@@ -340,6 +345,7 @@ class ExplorationCrawler:
                         viewport_id=viewport_id,
                         screenshot_digest=screenshot_digest,
                         discovered_links=discovered_tuple,
+                        visible_elements=tuple(x for x in visible_elements if isinstance(x, str)),  # pyright: ignore[reportUnknownVariableType,reportUnnecessaryIsInstance]
                     )
                 pages.append(crawl_page)
 
@@ -495,7 +501,9 @@ class ExplorationCrawler:
 
     async def _capture_page(
         self, page: Any, viewport_id: str
-    ) -> tuple[str, tuple[str, ...], str | None]:
+    ) -> tuple[str, tuple[str, ...], str | None, tuple[str, ...]]:
+        # Returns (title, headings, screenshot_digest, visible_elements)
+        # visible_elements are up to 30 persona-visible labels/roles for synthesis.
         # If overridden capture_fn supplied, delegate.
         if self._capture_fn is not None:
             result = await self._capture_fn(page, viewport_id)  # type: ignore[no-untyped-call]
@@ -504,17 +512,22 @@ class ExplorationCrawler:
                 title_any: Any = result.get("title", "Untitled")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
                 headings_any: Any = result.get("headings", ())  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
                 digest_any: Any = result.get("screenshot_digest")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+                visible_any: Any = result.get("visible_elements", ())  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
                 if isinstance(headings_any, list):
                     headings_any = tuple(headings_any)  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+                if isinstance(visible_any, list):
+                    visible_any = tuple(str(x) for x in visible_any if isinstance(x, str) and str(x).strip())  # pyright: ignore[reportUnknownVariableType]
                 return (
                     str(title_any) if title_any else "Untitled",  # type: ignore[reportUnknownArgumentType]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
                     tuple(headings_any) if headings_any else (),  # type: ignore[reportUnknownArgumentType,reportUnknownVariableType]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
                     digest_any,  # pyright: ignore[reportUnknownVariableType]
+                    tuple(visible_any) if visible_any else (),  # type: ignore[reportUnknownVariableType]
                 )  # type: ignore[return-value]
             if hasattr(result, "snapshot") and hasattr(result, "screenshot"):
                 # ExtractionResult-like
                 title = await self._safe_title(page)
                 headings = await self._safe_headings(page)
+                ves = await self._safe_visible_elements(page, getattr(result, "snapshot", None))
                 screenshot = getattr(result, "screenshot", b"")  # pyright: ignore[reportUnknownArgumentType,reportAny]
                 digest = (
                     hashlib.sha256(screenshot).hexdigest()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType,reportAny]
@@ -522,9 +535,12 @@ class ExplorationCrawler:
                     else None
                 )
                 # Validate digest is hex; if not, keep None
-                return title, headings, digest
+                return title, headings, digest, ves
             # Fallback: assume tuple
-            if isinstance(result, tuple) and len(result) == 3:  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+            if isinstance(result, tuple) and len(result) in (3, 4):  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+                if len(result) == 3:  # type: ignore[reportUnknownVariableType]
+                    t, h, d = result  # type: ignore[misc]
+                    return t, h, d, ()  # type: ignore[return-value]
                 return result  # type: ignore[return-value]
             # Single object with attributes
             title_obj = getattr(result, "title", None) or await self._safe_title(page)  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType,reportAny]
@@ -533,12 +549,16 @@ class ExplorationCrawler:
                 headings_attr if headings_attr else await self._safe_headings(page)
             )  # pyright: ignore[reportUnknownArgumentType]
             digest_obj = getattr(result, "screenshot_digest", None)  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType,reportAny]
+            visible_attr = getattr(result, "visible_elements", ())  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType,reportUnknownVariableType,reportAny]
             if isinstance(headings_obj, list):  # pyright: ignore[reportUnknownVariableType]
                 headings_obj = tuple(headings_obj)  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType,reportAny]
+            if isinstance(visible_attr, list):
+                visible_attr = tuple(str(x) for x in visible_attr if isinstance(x, str) and str(x).strip())  # pyright: ignore[reportUnknownVariableType]
             return (
                 str(title_obj),
                 tuple(headings_obj) if headings_obj else (),  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportAny]
                 digest_obj,
+                tuple(visible_attr) if visible_attr else (),  # type: ignore[reportUnknownVariableType]
             )  # type: ignore[return-value]
 
         # Default path: try extractor capture_with_diagnostics, fallback to lightweight evaluate
@@ -548,24 +568,28 @@ class ExplorationCrawler:
             result = await capture_with_diagnostics(page, viewport_id)
             title = await self._safe_title(page)
             headings = await self._safe_headings(page)
+            ves2 = await self._safe_visible_elements(page, result.snapshot)
             screenshot = result.screenshot
             digest2: str | None = (
                 hashlib.sha256(screenshot).hexdigest()  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType,reportUnknownVariableType,reportAny]
                 if isinstance(screenshot, (bytes, bytearray)) and screenshot  # pyright: ignore[reportUnnecessaryIsInstance]
                 else None
             )
-            return title, headings, digest2
+            return title, headings, digest2, ves2
         except Exception:
             title = await self._safe_title(page)
             headings = await self._safe_headings(page)
+            ves_fallback: tuple[str, ...] = ()
+            with suppress(Exception):
+                ves_fallback = await self._safe_visible_elements(page, None)
             # Best-effort screenshot digest without extractor
             try:
                 png = await page.screenshot(type="png")  # type: ignore[call-arg,reportUnknownMemberType,reportUnknownVariableType]
                 if isinstance(png, (bytes, bytearray)) and png:  # pyright: ignore[reportUnnecessaryIsInstance]
-                    return title, headings, hashlib.sha256(bytes(png)).hexdigest()  # pyright: ignore[reportUnknownArgumentType]
+                    return title, headings, hashlib.sha256(bytes(png)).hexdigest(), ves_fallback  # pyright: ignore[reportUnknownArgumentType]
             except Exception:
                 pass
-            return title, headings, None
+            return title, headings, None, ves_fallback
 
     async def _safe_title(self, page: Any) -> str:
         try:
@@ -585,6 +609,78 @@ class ExplorationCrawler:
         with suppress(Exception):
             raw = await page.evaluate(  # type: ignore[no-untyped-call,reportUnknownMemberType,reportUnknownVariableType]
                 "() => Array.from(document.querySelectorAll('h1,h2,h3')).map(e => e.innerText.trim()).filter(Boolean).slice(0,3)"
+            )
+            if isinstance(raw, list):
+                cleaned = tuple(
+                    str(x).strip()
+                    for x in raw  # pyright: ignore[reportUnknownVariableType]
+                    if isinstance(x, str) and str(x).strip()
+                )
+                if cleaned:
+                    return cleaned
+        return ()
+
+    async def _safe_visible_elements(
+        self, page: Any, snapshot: Any | None = None
+    ) -> tuple[str, ...]:
+        # Prefer deterministic snapshot when available (already filtered for visibility).
+        if snapshot is not None:
+            try:
+                elements = getattr(snapshot, "elements", None)
+                if elements is not None:
+                    labels: list[str] = []
+                    for el in elements:  # type: ignore[unknownMemberType]
+                        vis = getattr(el, "visibility_fraction", 0)
+                        label = getattr(el, "label", "") or getattr(el, "rendered_text", "")
+                        if not isinstance(label, str) or not label.strip():
+                            continue
+                        # Keep prominent/visible or actionable controls.
+                        try:
+                            if float(vis) < 0.05 and not bool(getattr(el, "actionable", False)):
+                                continue
+                        except Exception:
+                            continue
+                        # Strip private-ish labels, keep persona-visible wording.
+                        lab = " ".join(str(label).split())[:80]
+                        if "<" in lab or ">" in lab:
+                            continue
+                        labels.append(lab)
+                        if len(labels) >= 30:
+                            break
+                    if labels:
+                        return tuple(labels)
+            except Exception:
+                pass
+        # Fallback: JS DOM collection of visible, actionable/textual nodes.
+        with suppress(Exception):
+            raw = await page.evaluate(  # type: ignore[no-untyped-call,reportUnknownMemberType,reportUnknownVariableType]
+                """() => {
+                  const v = (n) => {
+                    const s = getComputedStyle(n);
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                      && Number.parseFloat(s.opacity) > 0.05
+                      && n.getBoundingClientRect().height > 0;
+                  };
+                  const nodes = Array.from(document.querySelectorAll('a[href], button, [role=button], [role=link], input, select, textarea, h1, h2, h3, h4, [data-testid]'));
+                  const out = [];
+                  for (const n of nodes) {
+                    if (!v(n)) continue;
+                    const t = (n.innerText || n.getAttribute('aria-label') || n.textContent || '').trim().replace(/\\s+/g,' ');
+                    if (!t || t.length > 80) continue;
+                    if (t.match(/^\\s*(\\{|\\}|<)/)) continue;
+                    out.push(t);
+                    if (out.length >= 30) break;
+                  }
+                  if (out.length < 8) {
+                    // Fill with headings if actionable set sparse (e.g., portfolio marketing page).
+                    for (const h of Array.from(document.querySelectorAll('h1,h2,h3,h4')).slice(0,6)) {
+                      const t = (h.innerText || '').trim().replace(/\\s+/g,' ');
+                      if (t && !out.includes(t) && t.length <= 80) out.push(t);
+                      if (out.length >= 30) break;
+                    }
+                  }
+                  return out;
+                }"""
             )
             if isinstance(raw, list):
                 cleaned = tuple(

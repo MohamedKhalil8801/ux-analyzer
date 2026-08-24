@@ -232,7 +232,15 @@
         restoreCuration();
         state.loadFailed = false;
         setReviewActionsEnabled(true);
-        announceValidation("");
+        if (state.suggestions.length === 0) {
+          announceStatus(
+            "No scenarios were suggested — the crawl captured only " +
+            ((state.corpus_summary && state.corpus_summary.pages_count) || 0) +
+            " page(s) with sparse visible labels. Add a custom scenario below or try a deeper crawl (--depth 1)."
+          );
+        } else {
+          announceValidation("");
+        }
         render();
         populateCustomUrls((state.corpus_summary && state.corpus_summary.urls) || []);
       })

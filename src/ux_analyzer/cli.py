@@ -926,6 +926,14 @@ def explore(
         typer.echo(f" suggestions: {len(suggestions)} scenarios")
         for s in suggestions:
             typer.echo(f"  - {s.id}: {s.goal[:60]}")
+        if not suggestions:
+            typer.echo(
+                " warning: synthesis produced 0 scenarios — the crawl had "
+                f"{len(corpus.pages)} page(s) with sparse visible labels; "
+                "try --depth 1 for broader coverage or add a custom scenario "
+                "in the review UI.",
+                err=True,
+            )
         # Determine curated set
         curated: tuple[ScenarioSuggestion | dict[str, Any], ...]
         persona_selection_result: PersonaSelectionPayload | None = None
