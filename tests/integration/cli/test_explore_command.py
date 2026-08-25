@@ -231,6 +231,40 @@ def test_explore_bootstrap_project_is_runnable(tmp_path, monkeypatch) -> None:
     assert run_result.exit_code == 0, run_result.output
 
 
+def test_explore_bootstrap_preserves_resource_origins(tmp_path, monkeypatch) -> None:
+    for name, value in MODEL_ENV.items():
+        monkeypatch.setenv(name, value)
+    _install_fakes(monkeypatch)
+    output = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "explore",
+            "--starting-url",
+            "https://a.test/",
+            "--depth",
+            "0",
+            "--max-pages",
+            "1",
+            "--max-scenarios",
+            "1",
+            "--auto-accept",
+            "--output",
+            str(output),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    generated = yaml.safe_load((output / "project.yaml").read_text(encoding="utf-8"))
+    version = generated["applications"][0]["versions"][0]
+    allowed = set(version["allowed_origins"])
+    # Start origin must stay first-class and the crawl-time CDN allowlist
+    # must survive materialization; otherwise `uxa run` safety-blocks on the
+    # first Google Fonts subresource.
+    assert "https://a.test" in allowed
+    assert "https://fonts.googleapis.com" in allowed
+    assert "https://fonts.gstatic.com" in allowed
+
+
 def test_explore_rejects_invalid_depth(monkeypatch) -> None:
     result = runner.invoke(
         app,

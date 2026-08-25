@@ -1913,7 +1913,12 @@ def _explore_materialize_project(
                     "label": ver.label,
                     "start_url": ver.start_url,
                 }
-                if origin:
+                if ver.allowed_origins:
+                    # Preserve the bootstrap resource allowlist (start origin
+                    # plus CDN resources the crawl itself relied on). Dropping
+                    # these makes every run safety-block on first subresource.
+                    payload["allowed_origins"] = list(ver.allowed_origins)
+                elif origin:
                     payload["allowed_origins"] = [origin]
                 vers_payload.append(payload)
             apps_payload.append(
