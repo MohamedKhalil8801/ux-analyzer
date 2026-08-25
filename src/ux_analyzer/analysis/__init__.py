@@ -6,6 +6,11 @@ from ux_analyzer.analysis.accessibility import (
     analyze_accessibility_sync,
 )
 from ux_analyzer.analysis.geo import GeoIssue, analyze_geo, analyze_geo_sync
+from ux_analyzer.analysis.imagery import (
+    ImageryIssue,
+    analyze_imagery,
+    analyze_imagery_sync,
+)
 from ux_analyzer.analysis.meta_semantic import (
     MetaSemanticIssue,
     analyze_meta_semantic,
@@ -20,12 +25,15 @@ from ux_analyzer.analysis.performance import (
 __all__ = [
     "AccessibilityIssue",
     "GeoIssue",
+    "ImageryIssue",
     "MetaSemanticIssue",
     "PerformanceIssue",
     "analyze_accessibility",
     "analyze_accessibility_sync",
     "analyze_geo",
     "analyze_geo_sync",
+    "analyze_imagery",
+    "analyze_imagery_sync",
     "analyze_meta_semantic",
     "analyze_meta_semantic_sync",
     "analyze_performance",
