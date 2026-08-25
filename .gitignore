@@ -188,3 +188,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 /reports
+/.uxa-explore
