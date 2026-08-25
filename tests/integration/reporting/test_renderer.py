@@ -3913,6 +3913,74 @@ def test_renderer_reports_missing_required_bundle_file_as_untrusted(
     assert "run-missing" in html
 
 
+def test_renderer_renders_ux_audit_section_from_persisted_file(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-audit", version="live", discovery_cost=5)
+    audit_payload = {
+        "schema_version": "ux-audit-v1",
+        "total_issues": 2,
+        "urls": [
+            {
+                "url": "https://app.example.test/",
+                "total": 2,
+                "issues": [
+                    {
+                        "category": "GEO",
+                        "check_id": "robots_txt",
+                        "title": "robots.txt not found",
+                        "severity": "critical",
+                        "evidence": {"status_code": 404},
+                    },
+                    {
+                        "category": "performance",
+                        "check_id": "render_blocking",
+                        "title": "Render-blocking resources slow page display",
+                        "severity": "critical",
+                        "evidence": {"total_blocking": 3},
+                    },
+                ],
+            }
+        ],
+        "errors": [],
+    }
+    (tmp_path / "ux-audit.json").write_text(
+        json.dumps(audit_payload), encoding="utf-8"
+    )
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="ux-audit"' in html
+    assert "robots.txt not found" in html
+    assert "Render-blocking resources slow page display" in html
+    assert "https://app.example.test/" in html
+    assert "Static page findings" in html
+
+
+def test_renderer_omits_ux_audit_section_without_file(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-noaudit", version="live", discovery_cost=5)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="ux-audit"' not in html
+
+
+def test_renderer_ignores_malformed_ux_audit_file(tmp_path: Path) -> None:
+    _write_run(tmp_path, "run-badaudit", version="live", discovery_cost=5)
+    (tmp_path / "ux-audit.json").write_text("{not json", encoding="utf-8")
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="ux-audit"' not in html
+    assert "run-badaudit" in html
+
+
 def test_renderer_never_embeds_sensitive_fixture_artifacts(tmp_path: Path) -> None:
     invite_email = "invitee@example.test"
     totp_code = "246810"

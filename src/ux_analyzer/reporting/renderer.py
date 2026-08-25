@@ -350,6 +350,89 @@ def _load_experiment(root: Path) -> dict[str, Any]:
         ),
         "synthesis": synthesis,
         "_synthesis_artifact_bytes": synthesis_artifact_bytes,
+        "ux_audit": _load_ux_audit(root),
+    }
+
+
+_UX_AUDIT_MAX_BYTES = 2 * 1024 * 1024
+_UX_AUDIT_SCHEMA = "ux-audit-v1"
+_UX_AUDIT_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info"})
+_UX_AUDIT_CATEGORIES = frozenset(
+    {"GEO", "meta-semantic", "performance", "accessibility", "imagery"}
+)
+
+
+def _load_ux_audit(root: Path) -> dict[str, Any] | None:
+    """Load the persisted live-page audit; malformed files stay omitted."""
+
+    path = root / "ux-audit.json"
+    if not path.is_file() or secure_is_link_or_reparse(path):
+        return None
+    try:
+        raw = secure_read_bytes(
+            path,
+            "live-page audit",
+            max_bytes=_UX_AUDIT_MAX_BYTES,
+        )
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, RuntimeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    payload = cast(dict[str, object], value)
+    if payload.get("schema_version") != _UX_AUDIT_SCHEMA:
+        return None
+    url_reports: list[dict[str, Any]] = []
+    raw_urls = payload.get("urls")
+    if not isinstance(raw_urls, list):
+        return None
+    for raw_report in cast(list[object], raw_urls):
+        if not isinstance(raw_report, Mapping):
+            continue
+        report = cast(dict[str, object], raw_report)
+        url = report.get("url")
+        issues_value = report.get("issues")
+        if not isinstance(url, str) or not isinstance(issues_value, list):
+            continue
+        issues: list[dict[str, Any]] = []
+        for raw_issue in cast(list[object], issues_value):
+            if not isinstance(raw_issue, Mapping):
+                continue
+            issue = cast(dict[str, object], raw_issue)
+            title = issue.get("title")
+            severity = issue.get("severity")
+            category = issue.get("category")
+            if (
+                not isinstance(title, str)
+                or not title.strip()
+                or not isinstance(severity, str)
+                or severity not in _UX_AUDIT_SEVERITIES
+                or not isinstance(category, str)
+                or category not in _UX_AUDIT_CATEGORIES
+            ):
+                continue
+            evidence = issue.get("evidence")
+            issues.append(
+                {
+                    "category": category,
+                    "check_id": _text(issue.get("check_id")),
+                    "title": title,
+                    "severity": severity,
+                    "evidence": evidence if isinstance(evidence, Mapping) else {},
+                }
+            )
+        url_reports.append(
+            {
+                "url": url,
+                "total": len(issues),
+                "issues": issues,
+            }
+        )
+    if not url_reports:
+        return None
+    return {
+        "url_reports": url_reports,
+        "total_issues": sum(report["total"] for report in url_reports),
     }
 
 
@@ -2133,6 +2216,8 @@ def _report_context(
         run_links=run_links,
         run_scope=run_scope,
     )
+    ux_audit = experiment.get("ux_audit")
+    ux_audit = ux_audit if isinstance(ux_audit, Mapping) else None
     if synthesis.get("using_fallback"):
         runs = _project_fallback_run_findings(runs, synthesis.get("findings"))
     concise_index_fallback = (
@@ -2167,6 +2252,7 @@ def _report_context(
         "initial_viewport_width": initial_width,
         "synthesis": synthesis,
         "synthesis_status": synthesis["synthesis_status"],
+        "ux_audit": ux_audit,
         "report_json": _safe_json(report_payload),
     }
 

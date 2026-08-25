@@ -291,3 +291,14 @@ select { min-height: 34px; max-width: 360px; border: 1px solid var(--line); bord
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
 }
+
+/* Live page audit (ux-audit.json) */
+.ux-audit-url { margin-top: 18px; }
+.ux-audit-url-label { font-family: var(--mono, monospace); font-size: .85rem; word-break: break-all; }
+.ux-audit-issues { list-style: none; padding: 0; display: grid; gap: 10px; }
+.ux-audit-issue { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel, transparent); }
+.ux-audit-issue-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ux-audit-category { color: var(--muted, #667); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+.ux-audit-evidence { margin-top: 8px; }
+.ux-audit-evidence-data { margin: 6px 0 0; padding: 10px; background: var(--bg-alt, rgba(127,127,127,.08)); border-radius: 6px; overflow-x: auto; font-size: .78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.ux-audit-clean { color: var(--muted, #667); font-style: italic; }

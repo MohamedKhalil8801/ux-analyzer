@@ -180,6 +180,51 @@
       </article>
     {%- endmacro %}
 
+    {% if ux_audit %}
+    <section
+      id="ux-audit"
+      class="report-section ux-audit"
+      aria-labelledby="ux-audit-title"
+    >
+      <div class="report-section-heading">
+        <div>
+          <p class="eyebrow">Live page audit</p>
+          <h2 id="ux-audit-title">Static page findings</h2>
+        </div>
+        <span class="finding-count">{{ ux_audit.total_issues }} issue{{ "s" if ux_audit.total_issues != 1 else "" }}</span>
+      </div>
+      <p class="summary-assessment">
+        Deterministic checks (GEO, meta/semantic HTML, performance, accessibility,
+        imagery) run against each application start URL. These are recorded page
+        facts, not simulated-user findings.
+      </p>
+      {% for url_report in ux_audit.url_reports %}
+      <div class="ux-audit-url">
+        <h3 class="ux-audit-url-label">{{ url_report.url }}</h3>
+        {% if url_report.issues %}
+        <ul class="ux-audit-issues">
+          {% for issue in url_report.issues %}
+          <li class="ux-audit-issue severity-{{ issue.severity }}">
+            <div class="ux-audit-issue-header">
+              <span class="severity-label severity-{{ issue.severity }}">{{ issue.severity | title }}</span>
+              <strong>{{ issue.title }}</strong>
+              <span class="ux-audit-category">{{ issue.category }}</span>
+            </div>
+            <details class="ux-audit-evidence">
+              <summary>Evidence</summary>
+              <pre class="ux-audit-evidence-data">{{ issue.evidence | tojson(indent=2) }}</pre>
+            </details>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="ux-audit-clean">No static page issues found for this URL.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
     <section
       id="analysis-summary"
       class="report-section analysis-summary"
