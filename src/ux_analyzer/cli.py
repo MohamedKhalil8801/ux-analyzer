@@ -2196,6 +2196,7 @@ def _run_experiment_command(
         output=output,
         selected_specs=selected_specs,
     )
+    _write_ux_audit(output=output, results=result.results)
     if matrix.loaded.runtime.report_synthesis.enabled and not no_synthesis:
         synthesis_result = result
         try:
@@ -3458,10 +3459,69 @@ def _complete_experiment(
         output=output,
         selected_specs=selected_specs,
     )
+    _write_ux_audit(output=output, results=result.results)
     report_path = output / "report.html"
     if render_report:
         report_path = _render_completed_report(output=output)
     return summary_path, report_path
+
+
+def _ux_audit_start_urls(results: Sequence[object]) -> tuple[str, ...]:
+    """Collect unique application start URLs from closed run results."""
+
+    urls: list[str] = []
+    for result in results:
+        try:
+            url = result.state.spec.application_version.start_url  # type: ignore[attr-defined]
+        except AttributeError:
+            continue
+        if isinstance(url, str) and url:
+            urls.append(url)
+    return tuple(dict.fromkeys(urls))
+
+
+def _ux_audit_sync(urls: Sequence[str]) -> dict[str, Any]:
+    """Indirection so tests can stub the live audit without network."""
+
+    from ux_analyzer.analysis.project_audit import audit_urls_sync
+
+    return audit_urls_sync(urls)
+
+
+def _write_ux_audit(output: Path, results: Sequence[object]) -> Path | None:
+    """Persist the live-page UX audit beside experiment evidence.
+
+    Best-effort: audit failures never fail an otherwise healthy run; they are
+    recorded inside ``ux-audit.json`` as bounded error entries instead.
+    """
+
+    from ux_analyzer.analysis.project_audit import AUDIT_FILENAME
+
+    urls = _ux_audit_start_urls(results)
+    if not urls:
+        return None
+    try:
+        report = _ux_audit_sync(urls)
+    except Exception as error:  # noqa: BLE001 - audit must not fail a run
+        typer.echo(
+            f"warning: live-page audit unavailable: {type(error).__name__}: {error}",
+            err=True,
+        )
+        return None
+    destination = output / AUDIT_FILENAME
+    try:
+        output.mkdir(parents=True, exist_ok=True)
+        _atomic_json_write(destination, report)
+    except (OSError, TypeError, ValueError) as error:
+        typer.echo(f"warning: could not persist {AUDIT_FILENAME}: {error}", err=True)
+        return None
+    total = report.get("total_issues", 0)
+    audited_urls = len(report.get("urls", ()))
+    typer.echo(
+        f"live-page audit: {total} issue(s) across {audited_urls} URL(s); "
+        f"see {AUDIT_FILENAME} and report.html"
+    )
+    return destination
 
 
 def complete_experiment(
