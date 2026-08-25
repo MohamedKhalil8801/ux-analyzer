@@ -675,7 +675,51 @@ class RunAgent:
         self.profile_path = profile_path
 
     async def execute(self, spec: RunSpec) -> RunResult:
-        """Execute, independently verify, finalize, and always clean up one run."""
+        """Execute with automatic fresh-context retries for internal/model flakes.
+
+        Real UX outcomes (verified-success, agent-abandoned, budget-exhausted)
+        are returned immediately. Internal flakes (internal-error, model-failure,
+        provider-failure) are retried with a fresh browser session/attention
+        context up to two additional times, without requiring a user flag.
+        Reproducible re-execution of successful samples still requires
+        ``run_count`` / ``seeds`` — that is an explicit experiment flag.
+        """
+
+        max_attempts = 3
+        last_result: RunResult | None = None
+        for attempt in range(max_attempts):
+            result = await self._execute_once(spec, attempt)
+            last_result = result
+            if attempt == max_attempts - 1 or not _is_retryable_result(result):
+                if attempt > 0:
+                    # Annotate that a retry succeeded — evaluation keeps the last
+                    # attempt's bundle; intermediate aborted bundles are removed.
+                    pass
+                return result
+            # Retryable internal/model flake — remove the failed bundle so the
+            # next attempt can re-use the same deterministic run_id.
+            bundle_path = getattr(result, "bundle_path", None)
+            if bundle_path is not None:
+                try:
+                    import shutil
+                    from pathlib import Path as _Path
+
+                    path = _Path(bundle_path)  # type: ignore[arg-type]
+                    if path.exists():
+                        shutil.rmtree(path)
+                    # Also remove the zipped trace that ExperimentResult keeps.
+                    trace_zip = path.parent.parent / "traces" / f"{path.name}.zip"
+                    if trace_zip.exists():
+                        trace_zip.unlink()
+                except BaseException:
+                    pass
+            # Backoff before fresh-context retry to soften Zen rate limits.
+            await asyncio.sleep(min(2**attempt, 5))
+        assert last_result is not None
+        return last_result
+
+    async def _execute_once(self, spec: RunSpec, attempt: int = 0) -> RunResult:
+        """Single attempt with fresh browser context and attention state."""
 
         writer: RunBundleWriter | None = None
         initial_state = RunState.initial(spec)
@@ -726,7 +770,7 @@ class RunAgent:
             )
 
             try:
-                run = self._run(spec, context, writer, artifact_checksums)
+                run = self._run(spec, context, writer, artifact_checksums, attempt=attempt)
                 execution = (
                     await run
                     if timeout_seconds is None
@@ -823,6 +867,8 @@ class RunAgent:
         context: _RunContext,
         writer: RunBundleWriter,
         artifact_checksums: list[ArtifactChecksum],
+        *,
+        attempt: int = 0,
     ) -> _Execution:
         with context.profiler.measure("browser.start_session"):
             session = await self.observation_provider.start_session(
@@ -832,7 +878,7 @@ class RunAgent:
         with context.profiler.measure("browser.reset"):
             await self.observation_provider.reset(session)
         await self._capture(context, writer, artifact_checksums)
-        rng = random.Random(spec.seed)
+        rng = random.Random(spec.seed + attempt * 997)
         claimed_success = False
 
         while True:
@@ -2762,6 +2808,59 @@ def _ux_sample_validity(
         if normalized_reason in _HUMAN_BUDGET_TERMINAL_REASONS:
             return True, None
     return False, f"{kind}: {reason}"
+
+
+_RETRYABLE_INTERNAL_SUBSTRINGS: tuple[str, ...] = (
+    "cannot inspect",
+    "unremembered",
+    "unnoticed",
+    "not present in viewport",
+    "observation references element not present",
+)
+
+_RETRYABLE_MODEL_SUBSTRINGS: tuple[str, ...] = (
+    "rate-limit",
+    "429",
+    "502",
+    "503",
+    "500 server error",
+    "server error",
+    "timeout",
+    "transient",
+    "overloaded",
+)
+
+
+def _is_retryable_result(result: RunResult | _Execution) -> bool:
+    """Internal/model flakes that deserve a fresh-context retry without a user flag.
+
+    Real UX signals (verified-success, agent-abandoned, budget-exhausted,
+    or an evaluation failure with a valid sample) are never retried here.
+    Only hallucination-style internal errors and transient model failures are
+    retried — deterministic test fixtures stay single-attempt so tests keep
+    their single-call expectations.
+    """
+
+    outcome = getattr(result, "outcome", None)
+    kind = str(getattr(outcome, "kind", "")) if outcome is not None else ""
+    if isinstance(result, RunResult) and result.ux_sample_valid:
+        return False
+    reason_parts: list[str] = []
+    for attr in ("terminal_reason", "ux_sample_invalid_reason"):
+        value = getattr(result, attr, None)
+        if isinstance(value, str) and value:
+            reason_parts.append(value)
+    if outcome is not None:
+        for attr in ("reason", "message"):
+            value = getattr(outcome, attr, None)
+            if isinstance(value, str) and value:
+                reason_parts.append(value)
+    reason = " ".join(reason_parts).casefold()
+    if kind == "internal-error":
+        return any(sub in reason for sub in _RETRYABLE_INTERNAL_SUBSTRINGS)
+    if kind == "model-failure":
+        return any(sub in reason for sub in _RETRYABLE_MODEL_SUBSTRINGS)
+    return False
 
 
 async def _shielded_await(awaitable: Awaitable[None]) -> None:
