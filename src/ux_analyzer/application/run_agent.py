@@ -1210,28 +1210,113 @@ class RunAgent:
                         fixture_inputs=spec.scenario.fixture_inputs,
                     )
             except ActionValidationError as error:
-                writer.append_event({"kind": "action-rejected", "reason": str(error)})
-                context.application_state = _require_application_state(
-                    apply_failure(
-                        context.application_state,
-                        reason="invalid-action",
-                        config=self.state_update_config,
-                        memory_policy=self.memory_policy,
-                    )
+                # Hallucinated element ids are the most common fixable failure:
+                # the model invents an id not in the current snapshot. Give it
+                # one bounded correction listing the exact valid ids/labels and
+                # retry the same step before counting it as a failure.
+                is_hallucination = (
+                    "cannot inspect" in str(error)
+                    or "unremembered" in str(error)
+                    or "unnoticed" in str(error)
+                    or "unsupported action" in str(error)
                 )
-                _sync_run_attention(context)
-                if context.application_state.abandoned:
-                    return _Execution(
-                        state=context.state,
-                        outcome=AgentAbandoned(
-                            reason=context.application_state.abandonment_reason
-                            or "invalid action threshold crossed"
-                        ),
-                        verification=None,
-                        agent_claimed_success=claimed_success,
-                        terminal_reason=context.application_state.abandonment_reason,
+                if is_hallucination and context.model_call_count < spec.scenario.budget.max_model_calls:
+                    correction = _hallucination_correction(snapshot, error)
+                    writer.append_event(
+                        {"kind": "action-rejected", "reason": str(error), "correction": correction}
                     )
-                continue
+                    # One retry with explicit correction appended to the goal.
+                    try:
+                        context.model_call_count += 1
+                        with context.profiler.measure("model.cognitive"):
+                            corrected_goal = f"{spec.scenario.goal}\n\nCorrection: {correction}"
+                            retry_decision = await self.cognitive_agent.decide(
+                                corrected_goal, observation
+                            )
+                    except ModelResponseValidationError as retry_error:
+                        return self._model_failure(
+                            context, writer, retry_error, claimed_success=claimed_success
+                        )
+                    finally:
+                        self._record_model_calls(context, writer, ordered_roles=())
+                    # Record retry decision and re-validate.
+                    retry_sequence = writer.append_event(
+                        {
+                            "kind": "decision-recorded",
+                            "viewport_id": snapshot.id,
+                            "decision": retry_decision,
+                            "reason": getattr(retry_decision, "reason", None),
+                            "action": getattr(retry_decision, "action", None),
+                            "claimed_success": _agent_claim(retry_decision),
+                            "correction_retry": True,
+                        }
+                    )
+                    context.decisions.append(
+                        DecisionEvidence(
+                            snapshot.id,
+                            retry_decision,
+                            source_event_id=_event_id(retry_sequence),
+                        )
+                    )
+                    claim_retry = _agent_claim(retry_decision)
+                    claimed_success = claimed_success or claim_retry
+                    if claim_retry:
+                        writer.append_event({"kind": "agent-claim", "claimed_success": True})
+                    try:
+                        with context.profiler.measure("action.validate"):
+                            validated = validate_action(
+                                retry_decision,
+                                context.application_state.attention,
+                                snapshot,
+                                fixture_inputs=spec.scenario.fixture_inputs,
+                            )
+                        # Retry succeeded — fall through to execution with validated.
+                    except ActionValidationError as retry_error:
+                        writer.append_event({"kind": "action-rejected", "reason": str(retry_error), "correction_retry": True})
+                        context.application_state = _require_application_state(
+                            apply_failure(
+                                context.application_state,
+                                reason="invalid-action",
+                                config=self.state_update_config,
+                                memory_policy=self.memory_policy,
+                            )
+                        )
+                        _sync_run_attention(context)
+                        if context.application_state.abandoned:
+                            return _Execution(
+                                state=context.state,
+                                outcome=AgentAbandoned(
+                                    reason=context.application_state.abandonment_reason
+                                    or "invalid action threshold crossed"
+                                ),
+                                verification=None,
+                                agent_claimed_success=claimed_success,
+                                terminal_reason=context.application_state.abandonment_reason,
+                            )
+                        continue
+                else:
+                    writer.append_event({"kind": "action-rejected", "reason": str(error)})
+                    context.application_state = _require_application_state(
+                        apply_failure(
+                            context.application_state,
+                            reason="invalid-action",
+                            config=self.state_update_config,
+                            memory_policy=self.memory_policy,
+                        )
+                    )
+                    _sync_run_attention(context)
+                    if context.application_state.abandoned:
+                        return _Execution(
+                            state=context.state,
+                            outcome=AgentAbandoned(
+                                reason=context.application_state.abandonment_reason
+                                or "invalid action threshold crossed"
+                            ),
+                            verification=None,
+                            agent_claimed_success=claimed_success,
+                            terminal_reason=context.application_state.abandonment_reason,
+                        )
+                    continue
 
             action_fingerprint = _action_fingerprint(validated, snapshot)
             fixture_identity = _fixture_identity(validated, snapshot)
@@ -2604,6 +2689,36 @@ def _fixture_identity(
 def _interaction_element_id(validated: ValidatedAction) -> str | None:
     action = validated.domain_action
     return action.element_id if isinstance(action, InteractWithElement) else None
+
+
+def _hallucination_correction(snapshot: ViewportSnapshot, error: Exception) -> str:
+    """Build a correction listing exact valid element ids and their labels."""
+
+    # Show up to 30 actionable/visible elements to keep prompt bounded.
+    items: list[str] = []
+    for element in snapshot.elements:
+        if not getattr(element, "label", None):
+            continue
+        # Keep visible or actionable elements; skip fully hidden.
+        try:
+            vis = float(getattr(element, "visibility_fraction", 0) or 0)
+        except Exception:
+            vis = 0
+        actionable = bool(getattr(element, "actionable", False))
+        if vis < 0.05 and not actionable:
+            continue
+        label = " ".join(str(element.label).split())[:80]
+        if "<" in label or ">" in label:
+            continue
+        items.append(f"{element.id}: {label} ({getattr(element.role, 'value', element.role)})")
+        if len(items) >= 30:
+            break
+    valid_list = "; ".join(items) if items else "no actionable elements in this viewport"
+    return (
+        f"Your last action failed: {error}. "
+        f"Valid element ids for this viewport are: {valid_list}. "
+        f"You must pick an exact id from this list and use the exact label as shown."
+    )
 
 
 def _action_fingerprint(
