@@ -1897,7 +1897,13 @@ def _matches_target(
     expected_label: str,
     expected_role: str | None,
 ) -> bool:
-    if element.label.strip().casefold() != expected_label.strip().casefold():
+    def _norm(value: str) -> str:
+        return " ".join(value.strip().split()).casefold()
+
+    # Substring match so "Cairo, Egypt" finds "محمد خليل Cairo, Egypt · Open to remote"
+    # and whitespace differences (newlines, multiple spaces, NBSP) do not break it.
+    # The Arabic prefix and middle-dot suffix are preserved in the element label.
+    if _norm(expected_label) not in _norm(element.label):
         return False
     if (
         expected_role is not None
