@@ -1,5 +1,10 @@
 """Analysis package."""
 
+from ux_analyzer.analysis.accessibility import (
+    AccessibilityIssue,
+    analyze_accessibility,
+    analyze_accessibility_sync,
+)
 from ux_analyzer.analysis.geo import GeoIssue, analyze_geo, analyze_geo_sync
 from ux_analyzer.analysis.meta_semantic import (
     MetaSemanticIssue,
@@ -13,9 +18,12 @@ from ux_analyzer.analysis.performance import (
 )
 
 __all__ = [
+    "AccessibilityIssue",
     "GeoIssue",
     "MetaSemanticIssue",
     "PerformanceIssue",
+    "analyze_accessibility",
+    "analyze_accessibility_sync",
     "analyze_geo",
     "analyze_geo_sync",
     "analyze_meta_semantic",
