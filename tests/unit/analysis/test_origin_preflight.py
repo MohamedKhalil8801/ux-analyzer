@@ -78,3 +78,188 @@ async def test_referenced_origins_ignores_non_html_and_errors() -> None:
 
 def test_referenced_origins_sync_outside_loop() -> None:
     assert referenced_origins_sync("not-a-url") == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# CLI negotiation helpers
+# ---------------------------------------------------------------------------
+def _loaded_with_live_version(
+    tmp_path: Any, *, start_url: str, allowed: list[str]
+) -> Any:
+    version = SimpleNamespace(
+        id="app-live",
+        kind=cli.ApplicationVersionKind.LIVE,
+        start_url=start_url,
+        allowed_origins=tuple(allowed),
+    )
+    application = SimpleNamespace(versions=(version,))
+    return SimpleNamespace(project=SimpleNamespace(applications=(application,)))
+
+
+def test_collect_origin_gaps_reports_missing_only(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loaded = _loaded_with_live_version(
+        tmp_path,
+        start_url="https://site.test/",
+        allowed=["https://fonts.googleapis.com"],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_referenced_origins_sync_cli",
+        lambda url: frozenset(
+            {"https://site.test", "https://fonts.googleapis.com", "https://cdn.test"}
+        ),
+    )
+    gaps = cli._collect_origin_gaps(loaded)
+    assert gaps == {"app-live": frozenset({"https://cdn.test"})}
+
+
+def test_select_extra_origins_auto_yes(tmp_path: Any) -> None:
+    grants = cli._select_extra_origins(
+        {"v1": frozenset({"https://a.test", "https://b.test"})},
+        auto_yes=True,
+    )
+    assert grants == {"v1": {"https://a.test", "https://b.test"}}
+
+
+def test_select_extra_origins_interactive_selection() -> None:
+    answers = iter(["s", "2"])
+    grants = cli._select_extra_origins(
+        {"v1": frozenset({"https://a.test", "https://b.test"})},
+        auto_yes=False,
+        prompt=lambda _: next(answers),
+        echo=lambda *_: None,
+    )
+    assert grants == {"v1": {"https://b.test"}}
+
+
+def test_select_extra_origins_rejects_then_none() -> None:
+    answers = iter(["banana", "n"])
+    grants = cli._select_extra_origins(
+        {"v1": frozenset({"https://a.test"})},
+        auto_yes=False,
+        prompt=lambda _: next(answers),
+        echo=lambda *_: None,
+    )
+    assert grants == {}
+
+
+def test_negotiate_non_interactive_grants_nothing(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = _loaded_with_live_version(
+        tmp_path,
+        start_url="https://site.test/",
+        allowed=[],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_referenced_origins_sync_cli",
+        lambda url: frozenset({"https://cdn.test"}),
+    )
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    grants = cli._negotiate_live_origin_gaps(loaded, allow_origin=(), yes=False)
+    assert grants == {}
+
+
+def test_negotiate_yes_grants_all(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loaded = _loaded_with_live_version(
+        tmp_path,
+        start_url="https://site.test/",
+        allowed=[],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_referenced_origins_sync_cli",
+        lambda url: frozenset({"https://cdn.test", "https://fonts.test"}),
+    )
+    grants = cli._negotiate_live_origin_gaps(
+        loaded, allow_origin=("https://fonts.test",), yes=True
+    )
+    # flag-granted origin applies to every live version and --yes absorbs the
+    # remaining referenced gaps without prompting.
+    assert grants == {"app-live": {"https://fonts.test", "https://cdn.test"}}
+
+
+def test_negotiate_allow_origin_flag_applies_without_gap(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loaded = _loaded_with_live_version(
+        tmp_path,
+        start_url="https://site.test/",
+        allowed=[],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_referenced_origins_sync_cli",
+        lambda url: frozenset({"https://site.test"}),
+    )
+    grants = cli._negotiate_live_origin_gaps(
+        loaded, allow_origin=("https://extra.test",), yes=False
+    )
+    assert grants == {"app-live": {"https://extra.test"}}
+
+
+# ---------------------------------------------------------------------------
+# spec patching
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class _Version:
+    id: str
+    allowed_origins: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Spec:
+    application_version: _Version
+
+
+def test_with_extra_resource_origins_patches_matching_specs() -> None:
+    specs = (
+        _Spec(_Version("v1", ("https://a.test",))),
+        _Spec(_Version("v2", ("https://a.test",))),
+    )
+    patched = cli._with_extra_resource_origins(
+        specs, {"v1": ["https://b.test"]}  # type: ignore[arg-type]
+    )
+    assert patched[0].application_version.allowed_origins == (
+        "https://a.test",
+        "https://b.test",
+    )
+    assert patched[1].application_version.allowed_origins == ("https://a.test",)
+    # originals untouched (immutability preserved via replace semantics)
+    assert specs[0].application_version.allowed_origins == ("https://a.test",)
+
+
+# ---------------------------------------------------------------------------
+# command surface
+# ---------------------------------------------------------------------------
+def test_run_command_passes_allow_origin_flags(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_command(**kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "_run_experiment_command", fake_command)
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "project.yaml",
+            "--allow-origin",
+            "https://cdn.test",
+            "--yes",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["allow_origin"] == ["https://cdn.test"]
+    assert captured["yes"] is True
+
+

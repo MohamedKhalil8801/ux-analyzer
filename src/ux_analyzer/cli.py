@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import sys
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
@@ -358,6 +359,16 @@ def run(
         "--profile-output",
         help="Write per-run stage timings as JSON files under this directory.",
     ),
+    allow_origin: list[str] = typer.Option(
+        [],
+        "--allow-origin",
+        help="Grant one extra browser resource origin (repeatable); skips the prompt.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Accept all referenced non-allowlisted origins without prompting.",
+    ),
 ) -> None:
     """Expand and execute one benchmark experiment."""
     _run_experiment_command(
@@ -373,6 +384,8 @@ def run(
         resume=resume,
         profile_output=profile_output,
         no_synthesis=no_synthesis,
+        allow_origin=allow_origin,
+        yes=yes,
     )
 
 
@@ -470,6 +483,16 @@ def ablate(
         "--profile-output",
         help="Write per-run stage timings as JSON files under this directory.",
     ),
+    allow_origin: list[str] = typer.Option(
+        [],
+        "--allow-origin",
+        help="Grant one extra browser resource origin (repeatable); skips the prompt.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Accept all referenced non-allowlisted origins without prompting.",
+    ),
 ) -> None:
     """Execute selected attention policy ablations."""
     _run_experiment_command(
@@ -485,6 +508,8 @@ def ablate(
         resume=resume,
         profile_output=profile_output,
         no_synthesis=False,
+        allow_origin=allow_origin,
+        yes=yes,
     )
 
 
@@ -2113,6 +2138,69 @@ def inspect_run(run_path: Path) -> None:
         typer.echo(f"- {artifact}")
 
 
+def _referenced_origins_sync_cli(url: str) -> frozenset[str]:
+    from ux_analyzer.analysis.referenced_origins import referenced_origins_sync
+
+    return referenced_origins_sync(url)
+
+
+def _negotiate_live_origin_gaps(
+    loaded: LoadedProject,
+    *,
+    allow_origin: Sequence[str],
+    yes: bool,
+) -> dict[str, frozenset[str]]:
+    """Discover referenced foreign origins and ask once before runs start.
+
+    Non-interactive sessions (piped stdio, CI, ``--workers`` batches) keep the
+    fail-closed default: gaps are reported but nothing is granted implicitly.
+    """
+
+    gaps = _collect_origin_gaps(loaded)
+    if not allow_origin and not gaps:
+        return {}
+    if allow_origin:
+        live_version_ids = {
+            version.id
+            for application in loaded.project.applications
+            for version in application.versions
+            if version.kind is ApplicationVersionKind.LIVE
+        }
+        flagged: dict[str, frozenset[str]] = {
+            version_id: frozenset(allow_origin)
+            for version_id in sorted(live_version_ids)
+        }
+        if not gaps:
+            return flagged
+        merged_gaps = {
+            version_id: gap - set(allow_origin)
+            for version_id, gap in gaps.items()
+        }
+        selected = _select_extra_origins(
+            {key: value for key, value in merged_gaps.items() if value},
+            auto_yes=yes,
+            prompt=input,
+            echo=typer.echo,
+        )
+        merged: dict[str, frozenset[str]] = dict(flagged)
+        for version_id, origins in selected.items():
+            merged[version_id] = frozenset(
+                {*merged.get(version_id, frozenset()), *origins}
+            )
+        return merged
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive:
+        blocked = sorted({origin for gap in gaps.values() for origin in gap})
+        typer.echo(
+            "warning: live targets reference non-allowlisted origins "
+            f"({', '.join(blocked)}); these requests will safety-block. "
+            "Re-run interactively or pass --yes / --allow-origin.",
+            err=True,
+        )
+        return {}
+    return _select_extra_origins(gaps, auto_yes=yes, prompt=input, echo=typer.echo)
+
+
 def _run_experiment_command(
     *,
     project: Path,
@@ -2127,14 +2215,25 @@ def _run_experiment_command(
     resume: bool,
     profile_output: Path | None,
     no_synthesis: bool,
+    allow_origin: Sequence[str] = (),
+    yes: bool = False,
 ) -> None:
     if workers <= 0:
         _exit_with_error("workers must be greater than zero")
+    extra_resource_origins: Mapping[str, Sequence[str]] = {}
+    if not dry_run:
+        preflight_loaded = _load_project_or_exit(project)
+        extra_resource_origins = _negotiate_live_origin_gaps(
+            preflight_loaded,
+            allow_origin=allow_origin,
+            yes=yes,
+        )
     matrix = _resolve_matrix_or_exit(
         project,
         experiment_id,
         run_count=run_count,
         policies=policies,
+        extra_resource_origins=extra_resource_origins or None,
     )
     settings: OpenAICompatibleSettings | None = None
     if check_env or not dry_run:
@@ -2274,6 +2373,7 @@ def _resolve_matrix_or_exit(
     *,
     run_count: int | None,
     policies: Sequence[str],
+    extra_resource_origins: Mapping[str, Sequence[str]] | None = None,
 ) -> _ResolvedMatrix:
     loaded = _load_project_or_exit(project_path)
     definition = next(
@@ -2310,7 +2410,118 @@ def _resolve_matrix_or_exit(
         )
     except ValueError as error:
         _exit_with_error(f"cannot expand experiment {experiment_id!r}: {error}")
+    if extra_resource_origins:
+        specs = _with_extra_resource_origins(specs, extra_resource_origins)
     return _ResolvedMatrix(loaded=loaded, definition=definition, specs=specs)
+
+
+def _with_extra_resource_origins(
+    specs: Sequence[RunSpec],
+    grants: Mapping[str, Sequence[str]],
+) -> tuple[RunSpec, ...]:
+    """Grant session-only resource origins without changing the YAML digest."""
+
+    patched: list[RunSpec] = []
+    for spec in specs:
+        grant = grants.get(spec.application_version.id)
+        if not grant:
+            patched.append(spec)
+            continue
+        merged = tuple(
+            dict.fromkeys((*spec.application_version.allowed_origins, *grant))
+        )
+        if merged == spec.application_version.allowed_origins:
+            patched.append(spec)
+            continue
+        patched.append(
+            replace(
+                spec,
+                application_version=replace(
+                    spec.application_version, allowed_origins=merged
+                ),
+            )
+        )
+    return tuple(patched)
+
+
+def _collect_origin_gaps(
+    loaded: LoadedProject,
+    *,
+    fetcher: Callable[[str], frozenset[str]] | None = None,
+) -> dict[str, frozenset[str]]:
+    """Map live version IDs to referenced origins their allowlist would block."""
+
+    resolve = fetcher or _referenced_origins_sync_cli
+    fetched_by_url: dict[str, frozenset[str]] = {}
+    gaps: dict[str, frozenset[str]] = {}
+    for application in loaded.project.applications:
+        for version in application.versions:
+            if version.kind is not ApplicationVersionKind.LIVE:
+                continue
+            if version.start_url is None:
+                continue
+            start_origin = _explore_origin_from_url(version.start_url)
+            if version.start_url not in fetched_by_url:
+                fetched_by_url[version.start_url] = resolve(version.start_url)
+            allowed = {start_origin, *version.allowed_origins}
+            missing = fetched_by_url[version.start_url] - allowed
+            if missing:
+                gaps[version.id] = frozenset(sorted(missing))
+    return gaps
+
+
+def _select_extra_origins(
+    gaps: Mapping[str, frozenset[str]],
+    *,
+    auto_yes: bool,
+    prompt: Callable[[str], str] = input,
+    echo: Callable[[object], None] = print,
+) -> dict[str, frozenset[str]]:
+    """Ask the operator once which referenced origins the browser may load."""
+
+    if auto_yes:
+        return {version_id: set(gap) for version_id, gap in gaps.items()}
+    echo("live targets reference origins outside the configured allowlist:")
+    ordered: dict[str, list[str]] = {}
+    for version_id in sorted(gaps):
+        ordered[version_id] = sorted(gaps[version_id])
+        for origin in ordered[version_id]:
+            echo(f"  [{version_id}] {origin}")
+    echo("blocked requests abort runs with outcome 'safety-blocked'.")
+    for _attempt in range(3):
+        answer = prompt(
+            "allow these origins for this run? "
+            "[a]ll / [s]elect numbers / [n]one: "
+        ).strip().casefold()
+        if answer in {"a", "all", "y", "yes"}:
+            return {version_id: set(gap) for version_id, gap in gaps.items()}
+        if answer in {"n", "none", ""}:
+            return {}
+        tokens = answer.replace(",", " ").split()
+        try:
+            indexes = {int(token) for token in tokens}
+        except ValueError:
+            echo("enter 'a', 's', 'n', or space-separated numbers.")
+            continue
+        selected: dict[str, frozenset[str]] = {}
+        flat: list[tuple[str, str]] = [
+            (version_id, origin)
+            for version_id in sorted(gaps)
+            for origin in sorted(gaps[version_id])
+        ]
+        for index in indexes:
+            if 1 <= index <= len(flat):
+                version_id, origin = flat[index - 1]
+                selected.setdefault(version_id, set()).add(origin)
+        if indexes and len(selected) == 0:
+            echo(f"numbers must be between 1 and {len(flat)}.")
+            continue
+        return {
+            version_id: frozenset(origins)
+            for version_id, origins in selected.items()
+        }
+    echo("no selection after three attempts; continuing without extra origins.")
+    return {}
 
 
 def _resolve_single_run(
