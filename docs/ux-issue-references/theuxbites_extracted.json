@@ -1,0 +1,440 @@
+[
+  {
+    "title": "Main thread is overloaded",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Elements with visible text labels do not have matching accessible names.",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Render-blocking resources slow page display",
+    "desc": "",
+    "cat": "Performance",
+    "time": "75min"
+  },
+  {
+    "title": "Unused JavaScript slows page load",
+    "desc": "",
+    "cat": "Performance",
+    "time": "90min"
+  },
+  {
+    "title": "Forced reflow",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Network dependency tree",
+    "desc": "",
+    "cat": "Performance",
+    "time": "12h"
+  },
+  {
+    "title": "Render-blocking resources delay page load",
+    "desc": "",
+    "cat": "Performance",
+    "time": "12h"
+  },
+  {
+    "title": "Main thread blocks user interaction",
+    "desc": "",
+    "cat": "Performance",
+    "time": "90min"
+  },
+  {
+    "title": "No JSON-LD structured data found",
+    "desc": "",
+    "cat": "GEO",
+    "time": "90min"
+  },
+  {
+    "title": "No XML sitemap found",
+    "desc": "",
+    "cat": "GEO",
+    "time": "90min"
+  },
+  {
+    "title": "No llms.txt file",
+    "desc": "Simple improvements that immediately boost clarity &amp; trust.",
+    "cat": "GEO",
+    "time": "90min"
+  },
+  {
+    "title": "Long input delay potential",
+    "desc": "",
+    "cat": "Performance",
+    "time": "90min"
+  },
+  {
+    "title": "Page takes too long to become interactive",
+    "desc": "",
+    "cat": "Performance",
+    "time": "2h"
+  },
+  {
+    "title": "Page loads visually slowly",
+    "desc": "",
+    "cat": "Performance",
+    "time": "75min"
+  },
+  {
+    "title": "robots.txt not found",
+    "desc": "",
+    "cat": "GEO",
+    "time": "30min"
+  },
+  {
+    "title": "Meta tags incomplete (4/6)",
+    "desc": "Gaps that reduce reach or make tasks harder on phones.",
+    "cat": "GEO",
+    "time": "30min"
+  },
+  {
+    "title": "Slow first content paint",
+    "desc": "",
+    "cat": "Performance",
+    "time": "90min"
+  },
+  {
+    "title": "Slow largest content paint",
+    "desc": "",
+    "cat": "Performance",
+    "time": "2h"
+  },
+  {
+    "title": "First Meaningful Paint",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "User Timing marks and measures",
+    "desc": "",
+    "cat": "Performance",
+    "time": "12h"
+  },
+  {
+    "title": "Lazy load third-party resources with facades",
+    "desc": "",
+    "cat": "UX",
+    "time": "60min"
+  },
+  {
+    "title": "Largest image is unnecessarily lazy-loaded",
+    "desc": "",
+    "cat": "Performance",
+    "time": "12h"
+  },
+  {
+    "title": "Preload Largest Contentful Paint image",
+    "desc": "",
+    "cat": "Performance",
+    "time": "12h"
+  },
+  {
+    "title": "No duplicate keyboard shortcuts",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Buttons and links have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Deprecated ARIA roles were not used",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Dialogs have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Form inputs have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Meter elements have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Progress bars have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Required ARIA attributes are present",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "ARIA parent roles include required child roles",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "ARIA roles are inside required parent elements",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "ARIA role values are valid",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Elements with the role=text attribute do not have focusable descendents.",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "45min"
+  },
+  {
+    "title": "Toggle controls have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Tooltips have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Tree items have accessible names",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Page has a skip link or landmark region",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "ARIA IDs are unique across the page",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "All heading elements contain content.",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Form fields don't have duplicate labels",
+    "desc": "",
+    "cat": "UX",
+    "time": "30min"
+  },
+  {
+    "title": "Frames have accessible titles",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "&lt;html&gt; element has an [xml:lang] attribute with the same base language as the [lang] attribute.",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Input buttons have accessible labels",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Image buttons have alt text",
+    "desc": "",
+    "cat": "Accessibility",
+    "time": "51h"
+  },
+  {
+    "title": "Form inputs have visible labels",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Page has a main content area",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Links are distinguishable without relying on color.",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "The document does not use &lt;meta http-equiv=\"refresh\"&gt;",
+    "desc": "",
+    "cat": "UX",
+    "time": "15min"
+  },
+  {
+    "title": "Embedded objects have alt text",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Dropdown menus have accessible names",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Tables have different content in the summary attribute and &lt;caption&gt;.",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Tables use &lt;caption&gt; instead of cells with the [colspan] attribute to indicate a caption.",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "&lt;td&gt; elements in a large &lt;table&gt; have one or more table headers.",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Table cells reference valid header cells",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Table headers describe their data cells",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Videos have captions",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Custom controls have associated labels",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Custom controls have ARIA roles",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "User focus is not accidentally trapped in a region",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Interactive controls are keyboard focusable",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Interactive elements indicate their purpose and state",
+    "desc": "",
+    "cat": "Performance",
+    "time": "12h"
+  },
+  {
+    "title": "The page has a logical tab order",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "The user's focus is directed to new content added to the page",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Offscreen content is hidden from assistive technology",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "HTML5 landmark elements are used to improve navigation",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Visual order on the page follows DOM order",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "robots.txt file has errors",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "Page is missing a canonical URL",
+    "desc": "",
+    "cat": "UNKNOWN",
+    "time": "15min"
+  },
+  {
+    "title": "Structured data is valid",
+    "desc": "",
+    "cat": "UX",
+    "time": "12h"
+  },
+  {
+    "title": "INP breakdown",
+    "desc": "",
+    "cat": "Performance",
+    "time": "12h"
+  },
+  {
+    "title": "LCP request discovery",
+    "desc": "Start with critical. Then apply quick wins. Track progress in the tabs.",
+    "cat": "Performance",
+    "time": "12h"
+  }
+]
