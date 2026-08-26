@@ -70,11 +70,14 @@ _SNAPSHOT_JS = """
   const root = document.querySelector('[data-uxa-snapshot-root]') || document.body;
   const nodes = [];
   const walk = (el, parentIdx, depth) => {
+    // Record every element (visible or not): the reference detector reads the
+    // visible list for text/color scans but queries the LIVE DOM for icon
+    // lookups (icon_card_grid, letter avatars), and those icons are often
+    // zero-size or below-fold lazy images. Visibility filtering happens on the
+    // analysis side. The cap bounds payload size on gigantic pages.
+    if (nodes.length > 8000) return;
     const r = el.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0 && el !== root) return;
-    if (depth > 24 || nodes.length > 4000) return;
     const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden') return;
     const idx = nodes.length;
     const styles = {};
     for (const p of props) { styles[p] = cs.getPropertyValue(p); }
@@ -154,17 +157,24 @@ _META_JS = """
 }
 """
 
+_SLOP_UA = "Mozilla/5.0 SlopDetector/1.0 (+https://github.com/ravidsrk/slop-detect)"
+
+_DISABLE_JS = bool(os.environ.get("UXA_SLOP_DISABLE_JS"))
+
 
 def extract_snapshot(
     source: str,
-    viewport_width: int = 1440,
-    viewport_height: int = 900,
+    viewport_width: int = 1280,
+    viewport_height: int = 800,
 ) -> dict[str, Any]:
     """Render `source` (URL or file path) and return the snapshot dict.
 
     The dict carries ``rootBox``, ``nodes``, and page ``meta`` (viewport
     geometry, html-surface colors, and the extracted text context) consumed
-    by the slop detector.
+    by the slop detector. Wait strategy and user agent mirror the reference
+    slop-detect CLI (domcontentloaded + networkidle bounded + settle delay),
+    so bot-gated pages resolve the same way. Set ``UXA_SLOP_DISABLE_JS=1`` to
+    pin the DOM for deterministic benchmark comparisons against a frozen file.
     """
     path = Path(source)
     url = (
@@ -174,10 +184,19 @@ def extract_snapshot(
     )
     with sync_playwright() as p:
         b = p.chromium.launch()
-        pg = b.new_page(viewport={"width": viewport_width, "height": viewport_height})
+        ctx = b.new_context(
+            viewport={"width": viewport_width, "height": viewport_height},
+            user_agent=_SLOP_UA,
+            java_script_enabled=not _DISABLE_JS,
+        )
+        pg = ctx.new_page()
         try:
             pg.goto(url, wait_until="domcontentloaded", timeout=45000)
-            pg.wait_for_timeout(1200)
+            try:
+                pg.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            pg.wait_for_timeout(500)
             raw = pg.evaluate(_SNAPSHOT_JS, _STYLE_PROPS)
             rb = pg.evaluate(
                 """() => {
