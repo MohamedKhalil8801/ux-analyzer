@@ -299,6 +299,19 @@ select { min-height: 34px; max-width: 360px; border: 1px solid var(--line); bord
 .ux-audit-issue { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel, transparent); }
 .ux-audit-issue-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .ux-audit-category { color: var(--muted, #667); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+.ux-audit-elements-hint { margin-left: auto; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; }
 .ux-audit-evidence { margin-top: 8px; }
 .ux-audit-evidence-data { margin: 6px 0 0; padding: 10px; background: var(--bg-alt, rgba(127,127,127,.08)); border-radius: 6px; overflow-x: auto; font-size: .78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.ux-audit-element-info { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.ux-audit-element-info h4 { margin: 0 0 8px; color: var(--muted); font-size: .7rem; letter-spacing: .05em; text-transform: uppercase; }
+.ux-audit-selector-row, .ux-audit-xpath-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; margin: 4px 0; }
+.ux-audit-label { flex: 0 0 auto; color: var(--muted); font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.ux-audit-selector, .ux-audit-xpath, .ux-audit-box { display: inline-block; max-width: 100%; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .7rem; overflow-wrap: anywhere; word-break: break-all; }
+.ux-audit-selector { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+.ux-audit-boxes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ux-audit-screenshots { display: grid; gap: 12px; margin: 12px 0; }
+.ux-audit-figure { margin: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #fff; }
+.ux-audit-figure img.ux-audit-screenshot { display: block; width: 100%; height: auto; max-height: 420px; object-fit: contain; background: #f8fafb; }
+.ux-audit-figure figcaption { padding: 6px 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: .68rem; line-height: 1.4; overflow-wrap: anywhere; }
+.ux-audit-figure figcaption code { font-size: .68rem; }
 .ux-audit-clean { color: var(--muted, #667); font-style: italic; }
