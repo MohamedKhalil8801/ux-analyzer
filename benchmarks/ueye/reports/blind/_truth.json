@@ -1,0 +1,54 @@
+{
+ "activity-feed": {
+  "A": "UEYE",
+  "B": "OURS"
+ },
+ "food-ingredients": {
+  "A": "UEYE",
+  "B": "OURS"
+ },
+ "mobile-app-onboarding": {
+  "A": "OURS",
+  "B": "UEYE"
+ },
+ "user-testimonials": {
+  "A": "OURS",
+  "B": "UEYE"
+ },
+ "dropdown-menu": {
+  "A": "OURS",
+  "B": "UEYE"
+ },
+ "feature-blip": {
+  "A": "OURS",
+  "B": "UEYE"
+ },
+ "sports-stats": {
+  "A": "UEYE",
+  "B": "OURS"
+ },
+ "url-shortener": {
+  "A": "UEYE",
+  "B": "OURS"
+ },
+ "user-support-popup": {
+  "A": "UEYE",
+  "B": "OURS"
+ },
+ "pricing-comparison": {
+  "A": "OURS",
+  "B": "UEYE"
+ },
+ "simple-login-form": {
+  "A": "OURS",
+  "B": "UEYE"
+ },
+ "ueye-footer-design": {
+  "A": "OURS",
+  "B": "UEYE"
+ },
+ "toggle-settings": {
+  "A": "UEYE",
+  "B": "OURS"
+ }
+}
