@@ -421,18 +421,80 @@ def _load_ux_audit(root: Path) -> dict[str, Any] | None:
                     "evidence": evidence if isinstance(evidence, Mapping) else {},
                 }
             )
-        url_reports.append(
-            {
-                "url": url,
-                "total": len(issues),
-                "issues": issues,
-            }
-        )
+        slop = report.get("slop")
+        url_entry: dict[str, Any] = {
+            "url": url,
+            "total": len(issues),
+            "issues": issues,
+            "slop": None,
+        }
+        if isinstance(slop, Mapping):
+            score = slop.get("score")
+            if isinstance(score, int) and 0 <= score <= 100:
+                url_entry["slop"] = {
+                    "score": score,
+                    "tier": _text(slop.get("tier"), "Clean"),
+                    "grade": _text(slop.get("grade"), "F"),
+                    "verdict": _text(slop.get("verdict")),
+                    "patternsFlagged": slop.get("patternsFlagged")
+                    if isinstance(slop.get("patternsFlagged"), int)
+                    else 0,
+                    "patternsTotal": slop.get("patternsTotal")
+                    if isinstance(slop.get("patternsTotal"), int)
+                    else 27,
+                    "patterns": [
+                        _slop_pattern_row(p)
+                        for p in slop.get("patterns", [])
+                        if isinstance(p, Mapping)
+                    ],
+                    "copy": _slop_copy_block(slop.get("copy")),
+                    "unifiedScore": slop.get("unifiedScore")
+                    if isinstance(slop.get("unifiedScore"), int)
+                    else None,
+                    "unifiedTier": _text(slop.get("unifiedTier"), ""),
+                }
+        url_reports.append(url_entry)
     if not url_reports:
         return None
     return {
         "url_reports": url_reports,
         "total_issues": sum(report["total"] for report in url_reports),
+    }
+
+
+def _slop_pattern_row(p: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize one slop pattern row for template consumption."""
+    evidence = p.get("evidence")
+    return {
+        "id": _text(p.get("id")),
+        "label": _text(p.get("label")),
+        "short": _text(p.get("short")),
+        "category": _text(p.get("category")),
+        "weight": p.get("weight") if isinstance(p.get("weight"), int) else 0,
+        "triggered": bool(p.get("triggered")),
+        "evidence": evidence if isinstance(evidence, Mapping) else {},
+    }
+
+
+def _slop_copy_block(copy: object) -> dict[str, Any]:
+    if not isinstance(copy, Mapping):
+        return {}
+    patterns = copy.get("patterns")
+    return {
+        "score": copy.get("score") if isinstance(copy.get("score"), int) else None,
+        "tier": _text(copy.get("tier")),
+        "grade": _text(copy.get("grade")),
+        "patternsFlagged": copy.get("patternsFlagged")
+        if isinstance(copy.get("patternsFlagged"), int)
+        else 0,
+        "patternsTotal": copy.get("patternsTotal")
+        if isinstance(copy.get("patternsTotal"), int)
+        else 9,
+        "patterns": [
+            _slop_pattern_row(p)
+            for p in patterns
+            if isinstance(p, Mapping)
+        ],
     }
 
 
