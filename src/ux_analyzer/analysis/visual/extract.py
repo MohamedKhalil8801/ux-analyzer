@@ -7,7 +7,9 @@ arbitrary sites. The snapshot format matches `benchmarks/ueye/evidence`.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import sync_playwright
 
@@ -32,6 +34,11 @@ _STYLE_PROPS = [
     "text-decoration-line",
     "color",
     "background-color",
+    "background-image",
+    "background-clip",
+    "backdrop-filter",
+    "-webkit-backdrop-filter",
+    "filter",
     "margin-top",
     "margin-right",
     "margin-bottom",
@@ -45,11 +52,17 @@ _STYLE_PROPS = [
     "border-bottom-width",
     "border-left-width",
     "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
     "border-radius",
     "opacity",
     "width",
     "height",
     "box-shadow",
+    "grid-column",
+    "transform",
+    "perspective",
 ]
 
 _SNAPSHOT_JS = """
@@ -92,13 +105,67 @@ _SNAPSHOT_JS = """
 }
 """
 
+_META_JS = """
+() => {
+  function visibleText(root) {
+    if (!root) return '';
+    var t = root.innerText != null ? root.innerText : root.textContent;
+    return (t || '').replace(/\\u00AD/g, '');
+  }
+  var main = document.querySelector('main, article, [role="main"]') || document.body;
+  var clone = main.cloneNode(true);
+  var strip = clone.querySelectorAll(
+    'nav, footer, header, script, style, noscript, svg, code, pre, [aria-hidden="true"]'
+  );
+  for (var i = 0; i < strip.length; i++) {
+    if (strip[i].parentNode) strip[i].parentNode.removeChild(strip[i]);
+  }
+  var text = visibleText(clone).trim();
+  var headings = [];
+  var hs = clone.querySelectorAll('h1, h2, h3, h4, li, dt');
+  for (var j = 0; j < hs.length && headings.length < 200; j++) {
+    var ht = (hs[j].innerText || hs[j].textContent || '').trim();
+    if (ht) headings.push(ht.slice(0, 200));
+  }
+  var paragraphs = [];
+  var ps = clone.querySelectorAll('p');
+  for (var k = 0; k < ps.length && paragraphs.length < 200; k++) {
+    var pt = (ps[k].innerText || ps[k].textContent || '').trim();
+    if (pt) paragraphs.push(pt.slice(0, 400));
+  }
+  var words = text ? text.split(/\\s+/).filter(Boolean) : [];
+  var centerEl = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+  return {
+    viewport: { w: window.innerWidth, h: window.innerHeight },
+    docHeight: document.documentElement.scrollHeight,
+    scrollY: window.scrollY,
+    surface: {
+      htmlBg: getComputedStyle(document.documentElement).backgroundColor,
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      centerBg: centerEl ? getComputedStyle(centerEl).backgroundColor : ''
+    },
+    textContext: {
+      text: text.slice(0, 200000),
+      headings: headings,
+      paragraphs: paragraphs,
+      wordCount: words.length
+    }
+  };
+}
+"""
+
 
 def extract_snapshot(
     source: str,
     viewport_width: int = 1440,
     viewport_height: int = 900,
-) -> dict:
-    """Render `source` (URL or file path) and return the snapshot dict."""
+) -> dict[str, Any]:
+    """Render `source` (URL or file path) and return the snapshot dict.
+
+    The dict carries ``rootBox``, ``nodes``, and page ``meta`` (viewport
+    geometry, html-surface colors, and the extracted text context) consumed
+    by the slop detector.
+    """
     path = Path(source)
     url = (
         "file:///" + str(path.resolve()).replace("\\", "/")
@@ -119,9 +186,10 @@ def extract_snapshot(
                   return {x: r.x, y: r.y, w: r.width, h: r.height};
                 }"""
             )
+            meta = pg.evaluate(_META_JS)
         finally:
             b.close()
-    return {"rootBox": rb, **raw}
+    return {"rootBox": rb, "meta": meta, **raw}
 
 
 def extract_snapshot_to_file(source: str, out_path: str | Path) -> None:
