@@ -254,9 +254,15 @@
                 {% endif %}
               </div>
               {% endif %}
-              {% if issue.evidence.get('combined_screenshot') or issue.evidence.get('element_screenshots') %}
+              {% if issue.evidence.get('combined_screenshots') or issue.evidence.get('combined_screenshot') or issue.evidence.get('element_screenshots') %}
               <div class="ux-audit-screenshots">
-                {% if issue.evidence.get('combined_screenshot') %}
+                {% for cshot in issue.evidence.get('combined_screenshots', []) %}
+                  <figure class="ux-audit-figure">
+                    <img src="{{ cshot }}" alt="Annotated elements — red outlines show offending element(s)" class="ux-audit-screenshot" loading="lazy">
+                    <figcaption>Annotated view {{ loop.index }} — red outlines mark the offending element(s) in context</figcaption>
+                  </figure>
+                {% endfor %}
+                {% if issue.evidence.get('combined_screenshot') and not issue.evidence.get('combined_screenshots') %}
                   <figure class="ux-audit-figure">
                     <img src="{{ issue.evidence.get('combined_screenshot') }}" alt="Annotated elements — red outlines show offending element(s)" class="ux-audit-screenshot" loading="lazy">
                     <figcaption>Annotated view — red outlines mark the offending element(s) in context</figcaption>
