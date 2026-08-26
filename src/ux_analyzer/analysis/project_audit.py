@@ -30,7 +30,12 @@ async def _visual_analyze(url: str) -> list[Any]:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 browser = p.chromium.launch()
-                page = browser.new_page(viewport={"width": 1280, "height": 800}, device_scale_factor=1)
+                ctx = browser.new_context(
+                    viewport={"width": 1280, "height": 800},
+                    device_scale_factor=1,
+                    user_agent="Mozilla/5.0 SlopDetector/1.0 (+https://github.com/ravidsrk/slop-detect)",
+                )
+                page = ctx.new_page()
                 try:
                     page.goto(url, wait_until="networkidle", timeout=60000)
                     page.wait_for_timeout(2000)
@@ -47,17 +52,15 @@ async def _visual_analyze(url: str) -> list[Any]:
                     except Exception:
                         pass
                     page.wait_for_timeout(1000)
-                    style_props = ["display","position","flex-direction","justify-content","align-items","gap","row-gap","column-gap","grid-template-columns","font-family","font-size","font-weight","font-style","line-height","letter-spacing","text-transform","text-align","text-decoration-line","color","background-color","margin-top","margin-right","margin-bottom","margin-left","padding-top","padding-right","padding-bottom","padding-left","border-top-width","border-right-width","border-bottom-width","border-left-width","border-top-color","border-radius","opacity","width","height","box-shadow"]
+                    style_props = ["display","position","flex-direction","justify-content","align-items","gap","row-gap","column-gap","grid-template-columns","font-family","font-size","font-weight","font-style","line-height","letter-spacing","text-transform","text-align","text-decoration-line","color","background-color","background-image","background-clip","backdrop-filter","-webkit-backdrop-filter","filter","margin-top","margin-right","margin-bottom","margin-left","padding-top","padding-right","padding-bottom","padding-left","border-top-width","border-right-width","border-bottom-width","border-left-width","border-top-color","border-right-color","border-bottom-color","border-left-color","border-radius","opacity","width","height","box-shadow","grid-column","transform","perspective"]
                     snapshot_js = """
                     (props) => {
                       const root = document.querySelector('[data-uxa-snapshot-root]') || document.body;
                       const nodes = [];
                       const walk = (el, parentIdx, depth) => {
+                        if (nodes.length > 8000) return;
                         const r = el.getBoundingClientRect();
-                        if (r.width === 0 && r.height === 0 && el !== root) return;
-                        if (depth > 24 || nodes.length > 4000) return;
                         const cs = getComputedStyle(el);
-                        if (cs.display === 'none' || cs.visibility === 'hidden') return;
                         const idx = nodes.length;
                         const styles = {};
                         for (const p of props) { styles[p] = cs.getPropertyValue(p); }
@@ -77,6 +80,25 @@ async def _visual_analyze(url: str) -> list[Any]:
                     if "rootBox" not in raw:
                         rb = page.evaluate("() => { const r=document.body.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; }")
                         raw["rootBox"] = rb
+                    meta = page.evaluate(
+                        "() => {"
+                        " function vt(root){ if(!root) return ''; var t = root.innerText != null ? root.innerText : root.textContent; return (t||'').replace(/\\u00AD/g,''); }"
+                        " var main = document.querySelector('main, article, [role=\"main\"]') || document.body;"
+                        " var clone = main.cloneNode(true);"
+                        " var strip = clone.querySelectorAll('nav, footer, header, script, style, noscript, svg, code, pre, [aria-hidden=\"true\"]');"
+                        " for (var i=0;i<strip.length;i++){ if (strip[i].parentNode) strip[i].parentNode.removeChild(strip[i]); }"
+                        " var text = vt(clone).trim();"
+                        " var headings=[]; var hs=clone.querySelectorAll('h1,h2,h3,h4,li,dt');"
+                        " for (var j=0;j<hs.length && headings.length<200;j++){ var ht=(hs[j].innerText||hs[j].textContent||'').trim(); if (ht) headings.push(ht.slice(0,200)); }"
+                        " var paragraphs=[]; var ps=clone.querySelectorAll('p');"
+                        " for (var k=0;k<ps.length && paragraphs.length<200;k++){ var pt=(ps[k].innerText||ps[k].textContent||'').trim(); if (pt) paragraphs.push(pt.slice(0,400)); }"
+                        " var words = text ? text.split(/\\s+/).filter(Boolean) : [];"
+                        " var centerEl = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);"
+                        " return { viewport:{w:window.innerWidth,h:window.innerHeight}, docHeight:document.documentElement.scrollHeight, scrollY:window.scrollY,"
+                        "   surface:{ htmlBg:getComputedStyle(document.documentElement).backgroundColor, bodyBg:getComputedStyle(document.body).backgroundColor, centerBg:centerEl ? getComputedStyle(centerEl).backgroundColor : '' },"
+                        "   textContext:{ text:text.slice(0,200000), headings:headings, paragraphs:paragraphs, wordCount:words.length } };"
+                        " }"
+                    )
                     snap = snapshot_from_dict(raw)
                     issues = list(analyze_snapshot(snap))
                     try:
