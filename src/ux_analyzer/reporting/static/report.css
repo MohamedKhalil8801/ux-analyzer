@@ -315,3 +315,65 @@ select { min-height: 34px; max-width: 360px; border: 1px solid var(--line); bord
 .ux-audit-figure figcaption { padding: 6px 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: .68rem; line-height: 1.4; overflow-wrap: anywhere; }
 .ux-audit-figure figcaption code { font-size: .68rem; }
 .ux-audit-clean { color: var(--muted, #667); font-style: italic; }
+
+/* -- AI-slop scorecard (live-page audit) ------------------------------- */
+.slop-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 10px 0 16px;
+  background: var(--panel);
+}
+.slop-card.slop-clean { border-left: 4px solid var(--success); }
+.slop-card.slop-mild { border-left: 4px solid var(--warning); }
+.slop-card.slop-heavy { border-left: 4px solid var(--danger); }
+.slop-card-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.slop-score { display: flex; align-items: baseline; gap: 2px; }
+.slop-score-number { font-size: 30px; font-weight: 700; line-height: 1; }
+.slop-score-max { color: var(--muted); font-size: 14px; }
+.slop-meta { display: flex; flex-direction: column; gap: 2px; }
+.slop-tier { font-weight: 700; text-transform: uppercase; font-size: 12px; letter-spacing: .08em; }
+.slop-tier-clean { color: var(--success); }
+.slop-tier-mild { color: var(--warning); }
+.slop-tier-heavy { color: var(--danger); }
+.slop-grade, .slop-count, .slop-unified { color: var(--muted); font-size: 12.5px; }
+.slop-verdict { margin: 8px 0 0; font-style: italic; color: var(--ink); font-size: 13.5px; }
+.slop-patterns { margin-top: 10px; }
+.slop-patterns > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--accent); }
+.slop-pattern-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.slop-pattern {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.slop-pattern-weight {
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+}
+.slop-pattern-id { color: var(--muted); font-size: 11.5px; }
+.slop-evidence { margin-left: auto; }
+.slop-evidence > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.slop-evidence-data {
+  width: 100%;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11.5px;
+  margin: 6px 0 0;
+}
+.slop-copy { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.slop-copy h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+.slop-copy .slop-pattern-weight { background: var(--evaluation-soft); color: var(--evaluation); }

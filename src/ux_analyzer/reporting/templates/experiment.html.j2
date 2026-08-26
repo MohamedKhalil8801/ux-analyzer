@@ -195,12 +195,75 @@
       </div>
       <p class="summary-assessment">
         Deterministic checks (GEO, meta/semantic HTML, performance, accessibility,
-        imagery, visual UI fundamentals) run against each application start URL. These are recorded page
+        imagery, visual UI fundamentals, and the 27-rule AI-slop fingerprint with
+        the 9 copy-axis tells) run against each application start URL. These are recorded page
         facts, not simulated-user findings.
       </p>
       {% for url_report in ux_audit.url_reports %}
       <div class="ux-audit-url">
         <h3 class="ux-audit-url-label">{{ url_report.url }}</h3>
+        {% if url_report.slop %}
+        <div class="slop-card slop-{{ url_report.slop.tier | lower }}">
+          <div class="slop-card-head">
+            <div class="slop-score">
+              <span class="slop-score-number">{{ url_report.slop.score }}</span>
+              <span class="slop-score-max">/100</span>
+            </div>
+            <div class="slop-meta">
+              <span class="slop-tier slop-tier-{{ url_report.slop.tier | lower }}">{{ url_report.slop.tier }}</span>
+              <span class="slop-grade">Grade {{ url_report.slop.grade }}</span>
+              <span class="slop-count">{{ url_report.slop.patternsFlagged }}/{{ url_report.slop.patternsTotal }} design patterns triggered</span>
+              {% if url_report.slop.unifiedScore is not none %}
+              <span class="slop-unified">Unified (design + copy): {{ url_report.slop.unifiedScore }}/100 · {{ url_report.slop.unifiedTier }}</span>
+              {% endif %}
+            </div>
+            {% if url_report.slop.verdict %}
+            <p class="slop-verdict">{{ url_report.slop.verdict }}</p>
+            {% endif %}
+          </div>
+          <details class="slop-patterns">
+            <summary>Triggered patterns ({{ url_report.slop.patternsFlagged }})</summary>
+            <ul class="slop-pattern-list">
+              {% for pattern in url_report.slop.patterns %}
+              {% if pattern.triggered %}
+              <li class="slop-pattern slop-pattern-{{ pattern.category }}">
+                <span class="slop-pattern-weight">+{{ pattern.weight }}</span>
+                <strong>{{ pattern.label }}</strong>
+                <code class="slop-pattern-id">{{ pattern.id }}</code>
+                {% if pattern.evidence %}
+                <details class="slop-evidence">
+                  <summary>Evidence</summary>
+                  <pre class="slop-evidence-data">{{ pattern.evidence | tojson(indent=2) }}</pre>
+                </details>
+                {% endif %}
+              </li>
+              {% endif %}
+              {% endfor %}
+            </ul>
+            {% if url_report.slop['copy'] and url_report.slop['copy'].score is not none %}
+            <div class="slop-copy">
+              <h4>Copy axis · {{ url_report.slop['copy'].tier }} · {{ url_report.slop['copy'].score }}/100 ({{ url_report.slop['copy'].patternsFlagged }}/{{ url_report.slop['copy'].patternsTotal }})</h4>
+              <ul class="slop-pattern-list">
+                {% for pattern in url_report.slop['copy'].patterns %}
+                {% if pattern.triggered %}
+                <li class="slop-pattern slop-pattern-copy">
+                  <span class="slop-pattern-weight">+{{ pattern.weight }}</span>
+                  <strong>{{ pattern.label }}</strong>
+                  {% if pattern.evidence %}
+                  <details class="slop-evidence">
+                    <summary>Evidence</summary>
+                    <pre class="slop-evidence-data">{{ pattern.evidence | tojson(indent=2) }}</pre>
+                  </details>
+                  {% endif %}
+                </li>
+                {% endif %}
+                {% endfor %}
+              </ul>
+            </div>
+            {% endif %}
+          </details>
+        </div>
+        {% endif %}
         {% if url_report.issues %}
         <ul class="ux-audit-issues">
           {% for issue in url_report.issues %}
