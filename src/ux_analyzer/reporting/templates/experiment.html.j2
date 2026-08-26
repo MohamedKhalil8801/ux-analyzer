@@ -189,13 +189,13 @@
       <div class="report-section-heading">
         <div>
           <p class="eyebrow">Live page audit</p>
-          <h2 id="ux-audit-title">Static page findings</h2>
+          <h2 id="ux-audit-title">Static &amp; visual page findings</h2>
         </div>
         <span class="finding-count">{{ ux_audit.total_issues }} issue{{ "s" if ux_audit.total_issues != 1 else "" }}</span>
       </div>
       <p class="summary-assessment">
         Deterministic checks (GEO, meta/semantic HTML, performance, accessibility,
-        imagery) run against each application start URL. These are recorded page
+        imagery, visual UI fundamentals) run against each application start URL. These are recorded page
         facts, not simulated-user findings.
       </p>
       {% for url_report in ux_audit.url_reports %}
@@ -209,9 +209,69 @@
               <span class="severity-label severity-{{ issue.severity }}">{{ issue.severity | title }}</span>
               <strong>{{ issue.title }}</strong>
               <span class="ux-audit-category">{{ issue.category }}</span>
+              {% if issue.evidence.get('element_selector') or issue.evidence.get('element_selectors') %}
+              <span class="ux-audit-elements-hint" title="{{ ((issue.evidence.get('element_selectors') or []) | join(', ')) if issue.evidence.get('element_selectors') else issue.evidence.get('element_selector') }}">{{ (issue.evidence.get('element_selectors')[0] if issue.evidence.get('element_selectors') else issue.evidence.get('element_selector')) | truncate(48) }}</span>
+              {% endif %}
             </div>
             <details class="ux-audit-evidence">
               <summary>Evidence</summary>
+              {% if issue.evidence.get('element_selectors') or issue.evidence.get('element_selector') or issue.evidence.get('element_xpaths') or issue.evidence.get('element_xpath') %}
+              <div class="ux-audit-element-info">
+                <h4>Offending element(s)</h4>
+                {% if issue.evidence.get('element_selectors') %}
+                  {% for sel in issue.evidence.get('element_selectors') %}
+                  <div class="ux-audit-selector-row">
+                    <span class="ux-audit-label">Selector:</span>
+                    <code class="ux-audit-selector" title="{{ sel }}">{{ sel }}</code>
+                  </div>
+                  {% endfor %}
+                {% elif issue.evidence.get('element_selector') %}
+                  <div class="ux-audit-selector-row">
+                    <span class="ux-audit-label">Selector:</span>
+                    <code class="ux-audit-selector">{{ issue.evidence.get('element_selector') }}</code>
+                  </div>
+                {% endif %}
+                {% if issue.evidence.get('element_xpaths') %}
+                  {% for xp in issue.evidence.get('element_xpaths') %}
+                  <div class="ux-audit-xpath-row">
+                    <span class="ux-audit-label">XPath:</span>
+                    <code class="ux-audit-xpath" title="{{ xp }}">{{ xp }}</code>
+                  </div>
+                  {% endfor %}
+                {% elif issue.evidence.get('element_xpath') %}
+                  <div class="ux-audit-xpath-row">
+                    <span class="ux-audit-label">XPath:</span>
+                    <code class="ux-audit-xpath">{{ issue.evidence.get('element_xpath') }}</code>
+                  </div>
+                {% endif %}
+                {% if issue.evidence.get('element_boxes') %}
+                <div class="ux-audit-boxes">
+                  <span class="ux-audit-label">Bounding boxes:</span>
+                  {% for box in issue.evidence.get('element_boxes') %}
+                    <code class="ux-audit-box">[x:{{ box.x }}, y:{{ box.y }}, w:{{ box.w }}, h:{{ box.h }}]</code>
+                  {% endfor %}
+                </div>
+                {% endif %}
+              </div>
+              {% endif %}
+              {% if issue.evidence.get('combined_screenshot') or issue.evidence.get('element_screenshots') %}
+              <div class="ux-audit-screenshots">
+                {% if issue.evidence.get('combined_screenshot') %}
+                  <figure class="ux-audit-figure">
+                    <img src="{{ issue.evidence.get('combined_screenshot') }}" alt="Annotated elements — red outlines show offending element(s)" class="ux-audit-screenshot" loading="lazy">
+                    <figcaption>Annotated view — red outlines mark the offending element(s) in context</figcaption>
+                  </figure>
+                {% endif %}
+                {% if issue.evidence.get('element_screenshots') %}
+                  {% for shot in issue.evidence.get('element_screenshots') %}
+                  <figure class="ux-audit-figure">
+                    <img src="{{ shot }}" alt="Cropped view of offending element with red outline" class="ux-audit-screenshot" loading="lazy">
+                    <figcaption>Cropped element {{ loop.index }}{% if issue.evidence.get('element_selectors') and loop.index0 < issue.evidence.get('element_selectors')|length %} — <code>{{ issue.evidence.get('element_selectors')[loop.index0] }}</code>{% endif %} — red outline marks exact bounds</figcaption>
+                  </figure>
+                  {% endfor %}
+                {% endif %}
+              </div>
+              {% endif %}
               <pre class="ux-audit-evidence-data">{{ issue.evidence | tojson(indent=2) }}</pre>
             </details>
           </li>
