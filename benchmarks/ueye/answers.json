@@ -1,0 +1,133 @@
+{
+  "activity-feed": {
+    "alignment": true,
+    "color": false,
+    "contrast": true,
+    "scale": false,
+    "typography": false,
+    "visual-hierarchy": false,
+    "white-space": true
+  },
+  "dropdown-menu": {
+    "alignment": false,
+    "color": false,
+    "contrast": true,
+    "scale": true,
+    "typography": true,
+    "white-space": false
+  },
+  "feature-blip": {
+    "alignment": false,
+    "color": true,
+    "scale": false,
+    "typography": true,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "food-ingredients": {
+    "color": false,
+    "contrast": false,
+    "scale": false,
+    "typography": false,
+    "visual-hierarchy": false,
+    "white-space": true
+  },
+  "mobile-app-onboarding": {
+    "alignment": false,
+    "color": false,
+    "contrast": false,
+    "scale": false,
+    "typography": true,
+    "visual-hierarchy": false,
+    "white-space": true
+  },
+  "news-listings": {
+    "alignment": false,
+    "color": false,
+    "contrast": false,
+    "nothing-wrong": true,
+    "scale": false,
+    "typography": false,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "pricing-comparison": {
+    "alignment": true,
+    "color": true,
+    "contrast": false,
+    "scale": false,
+    "typography": false,
+    "visual-hierarchy": false
+  },
+  "reporting-statistics": {
+    "alignment": false,
+    "color": false,
+    "contrast": false,
+    "nothing-wrong": true,
+    "scale": false,
+    "typography": false,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "simple-login-form": {
+    "alignment": true,
+    "color": false,
+    "contrast": true,
+    "scale": false,
+    "typography": false,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "sports-stats": {
+    "alignment": false,
+    "color": false,
+    "contrast": false,
+    "nothing-wrong": false,
+    "scale": true,
+    "typography": false,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "toggle-settings": {
+    "alignment": false,
+    "color": false,
+    "contrast": false,
+    "typography": false,
+    "visual-hierarchy": true,
+    "white-space": false
+  },
+  "ueye-footer-design": {
+    "alignment": true,
+    "color": true,
+    "contrast": false,
+    "scale": false,
+    "typography": false,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "url-shortener": {
+    "alignment": false,
+    "color": false,
+    "contrast": true,
+    "scale": false,
+    "typography": true,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "user-support-popup": {
+    "alignment": false,
+    "color": true,
+    "nothing-wrong": false,
+    "scale": true,
+    "visual-hierarchy": false,
+    "white-space": false
+  },
+  "user-testimonials": {
+    "alignment": false,
+    "color": false,
+    "contrast": true,
+    "scale": false,
+    "visual-hierarchy": true,
+    "white-space": true
+  }
+}

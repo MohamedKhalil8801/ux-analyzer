@@ -1,0 +1,922 @@
+{
+ "ueye_points": 28,
+ "max_points": 28,
+ "micro": {
+  "tp": 26,
+  "fp": 0,
+  "fn": 0,
+  "tn": 79,
+  "precision": 1.0,
+  "recall": 1.0,
+  "f1": 1.0
+ },
+ "per_fundamental": {
+  "white-space": {
+   "tp": 4,
+   "fp": 0,
+   "fn": 0,
+   "tn": 11
+  },
+  "contrast": {
+   "tp": 5,
+   "fp": 0,
+   "fn": 0,
+   "tn": 10
+  },
+  "color": {
+   "tp": 4,
+   "fp": 0,
+   "fn": 0,
+   "tn": 11
+  },
+  "typography": {
+   "tp": 4,
+   "fp": 0,
+   "fn": 0,
+   "tn": 11
+  },
+  "scale": {
+   "tp": 3,
+   "fp": 0,
+   "fn": 0,
+   "tn": 12
+  },
+  "alignment": {
+   "tp": 4,
+   "fp": 0,
+   "fn": 0,
+   "tn": 11
+  },
+  "visual-hierarchy": {
+   "tp": 2,
+   "fp": 0,
+   "fn": 0,
+   "tn": 13
+  }
+ },
+ "per_fixture": {
+  "activity-feed": {
+   "expected": [
+    "alignment",
+    "contrast",
+    "white-space"
+   ],
+   "flagged": [
+    "alignment",
+    "contrast",
+    "white-space"
+   ],
+   "hit": [
+    "alignment",
+    "contrast",
+    "white-space"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 3,
+   "issues": [
+    {
+     "fundamental": "alignment",
+     "check_id": "alignment.cross-tag-drift",
+     "title": "Stacked blocks lose their shared left edge",
+     "severity": "low",
+     "elements": [
+      "main.activity > ul"
+     ],
+     "evidence": {
+      "max_offset_px": 16.0
+     }
+    },
+    {
+     "fundamental": "contrast",
+     "check_id": "contrast.below-threshold",
+     "title": "Text fails WCAG contrast against its background",
+     "severity": "critical",
+     "elements": [
+      "main.activity > ul > li.green:nth-of-type(1) > span",
+      "main.activity > ul > li.green:nth-of-type(2) > span",
+      "main.activity > ul > li.red:nth-of-type(3) > span",
+      "main.activity > ul > li.yellow:nth-of-type(4) > span",
+      "main.activity > ul > li.green:nth-of-type(5) > span"
+     ],
+     "evidence": {
+      "min_ratio": 2.46,
+      "pairs": [
+       {
+        "ratio": 2.46,
+        "required": 4.5,
+        "foreground": "rgb(165, 165, 165)",
+        "background": "rgb(255, 255, 255)",
+        "text": "opened up a new app"
+       },
+       {
+        "ratio": 2.46,
+        "required": 4.5,
+        "foreground": "rgb(165, 165, 165)",
+        "background": "rgb(255, 255, 255)",
+        "text": "created a new milestone"
+       },
+       {
+        "ratio": 2.46,
+        "required": 4.5,
+        "foreground": "rgb(165, 165, 165)",
+        "background": "rgb(255, 255, 255)",
+        "text": "canceled their membership"
+       },
+       {
+        "ratio": 2.46,
+        "required": 4.5,
+        "foreground": "rgb(165, 165, 165)",
+        "background": "rgb(255, 255, 255)",
+        "text": "failed to check-in today"
+       },
+       {
+        "ratio": 2.46,
+        "required": 4.5,
+        "foreground": "rgb(165, 165, 165)",
+        "background": "rgb(255, 255, 255)",
+        "text": "reached a new milestone"
+       }
+      ],
+      "hit_count": 5
+     }
+    },
+    {
+     "fundamental": "white-space",
+     "check_id": "spacing.tight-record-rhythm",
+     "title": "Rows packed tighter than their own text can breathe",
+     "severity": "medium",
+     "elements": [
+      "main.activity > ul > li.green:nth-of-type(1)",
+      "main.activity > ul > li.green:nth-of-type(2)",
+      "main.activity > ul > li.red:nth-of-type(3)",
+      "main.activity > ul > li.yellow:nth-of-type(4)",
+      "main.activity > ul > li.green:nth-of-type(5)"
+     ],
+     "evidence": {
+      "rows": 5,
+      "maxGapPx": 8.0,
+      "lineHeightPx": 24.0
+     }
+    }
+   ]
+  },
+  "dropdown-menu": {
+   "expected": [
+    "contrast",
+    "scale",
+    "typography"
+   ],
+   "flagged": [
+    "contrast",
+    "scale",
+    "typography"
+   ],
+   "hit": [
+    "contrast",
+    "scale",
+    "typography"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 3,
+   "issues": [
+    {
+     "fundamental": "contrast",
+     "check_id": "contrast.below-threshold",
+     "title": "Text fails WCAG contrast against its background",
+     "severity": "medium",
+     "elements": [
+      "header.dd > div.navbar > a.logo",
+      "header.dd > div.navbar > nav > ul > li.active:nth-of-type(2) > ul > li.hover:nth-of-type(2) > a"
+     ],
+     "evidence": {
+      "min_ratio": 3.66,
+      "pairs": [
+       {
+        "ratio": 4.04,
+        "required": 4.5,
+        "foreground": "rgb(0, 139, 160)",
+        "background": "rgb(255, 255, 255)",
+        "text": "CryptoCompany"
+       },
+       {
+        "ratio": 3.66,
+        "required": 4.5,
+        "foreground": "rgb(0, 0, 0)",
+        "background": "rgb(102, 102, 102)",
+        "text": "Risk Management"
+       }
+      ],
+      "hit_count": 2
+     }
+    },
+    {
+     "fundamental": "scale",
+     "check_id": "scale-brand-shrunk",
+     "title": "Brand mark rendered far below surrounding controls",
+     "severity": "medium",
+     "elements": [
+      "header.dd > div.navbar > a.logo"
+     ],
+     "evidence": {
+      "brand_sizes_px": [
+       11.2
+      ],
+      "control_median_px": 16.0,
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "scale",
+     "check_id": "scale-tiny-control",
+     "title": "Action control labeled far below body size",
+     "severity": "medium",
+     "elements": [
+      "header.dd > div.navbar > a.logo"
+     ],
+     "evidence": {
+      "control_sizes_px": [
+       11.2
+      ],
+      "body_px": 16.0,
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "typography",
+     "check_id": "typography-mixed-control-families",
+     "title": "Controls mix font families at the same role",
+     "severity": "medium",
+     "elements": [
+      "header.dd > div.navbar > a.logo",
+      "header.dd > div.navbar > nav > ul > li.active:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+      "header.dd > div.navbar > nav > ul > li.active:nth-of-type(2) > ul > li.hover:nth-of-type(2) > a",
+      "header.dd > div.navbar > nav > ul > li.active:nth-of-type(2) > ul > li:nth-of-type(3) > a",
+      "header.dd > div.navbar > nav > ul > li.active:nth-of-type(2) > ul > li:nth-of-type(4) > a",
+      "header.dd > div.navbar > nav > ul > li:nth-of-type(1) > a"
+     ],
+     "evidence": {
+      "control_family_counts": {
+       "montserrat": 5,
+       "open sans condensed": 3
+      },
+      "hit_count": 8
+     }
+    }
+   ]
+  },
+  "feature-blip": {
+   "expected": [
+    "color",
+    "typography"
+   ],
+   "flagged": [
+    "color",
+    "typography"
+   ],
+   "hit": [
+    "color",
+    "typography"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 2,
+   "issues": [
+    {
+     "fundamental": "color",
+     "check_id": "color.near-duplicate-grays",
+     "title": "Same-role elements use near-identical grays",
+     "severity": "low",
+     "elements": [
+      "section.fb > div > p.subtitle:nth-of-type(1)",
+      "section.fb > div > p.desc:nth-of-type(2)"
+     ],
+     "evidence": {
+      "luminances": [
+       0.651,
+       0.68
+      ],
+      "hit_count": 2
+     }
+    },
+    {
+     "fundamental": "typography",
+     "check_id": "typography-letter-spacing",
+     "title": "Excessive letter spacing on body text",
+     "severity": "low",
+     "elements": [
+      "section.fb > div > p.desc:nth-of-type(2)"
+     ],
+     "evidence": {
+      "em_ratios": [
+       0.2
+      ],
+      "hit_count": 1
+     }
+    }
+   ]
+  },
+  "food-ingredients": {
+   "expected": [
+    "white-space"
+   ],
+   "flagged": [
+    "white-space"
+   ],
+   "hit": [
+    "white-space"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 1,
+   "issues": [
+    {
+     "fundamental": "white-space",
+     "check_id": "spacing.tight-record-rhythm",
+     "title": "Rows packed tighter than their own text can breathe",
+     "severity": "medium",
+     "elements": [
+      "section.ing > div.content > ul > li:nth-of-type(1)",
+      "section.ing > div.content > ul > li:nth-of-type(2)",
+      "section.ing > div.content > ul > li:nth-of-type(3)",
+      "section.ing > div.content > ul > li:nth-of-type(4)",
+      "section.ing > div.content > ul > li:nth-of-type(5)"
+     ],
+     "evidence": {
+      "rows": 5,
+      "maxGapPx": 0.0,
+      "lineHeightPx": 24.0
+     }
+    }
+   ]
+  },
+  "mobile-app-onboarding": {
+   "expected": [
+    "typography",
+    "white-space"
+   ],
+   "flagged": [
+    "typography",
+    "white-space"
+   ],
+   "hit": [
+    "typography",
+    "white-space"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 2,
+   "issues": [
+    {
+     "fundamental": "typography",
+     "check_id": "typography-display-tracking",
+     "title": "Heading letter spacing is unusually wide",
+     "severity": "low",
+     "elements": [
+      "div.fab > div.inner > h1"
+     ],
+     "evidence": {
+      "em_ratios": [
+       0.15
+      ],
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "typography",
+     "check_id": "typography-light-body",
+     "title": "Body copy set in a lighter weight than regular",
+     "severity": "low",
+     "elements": [
+      "div.fab > div.inner > p"
+     ],
+     "evidence": {
+      "weights": [
+       300
+      ],
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "white-space",
+     "check_id": "spacing.flush-top-dead-bottom",
+     "title": "Content pinned to the top with dead space below",
+     "severity": "medium",
+     "elements": [
+      "div.fab > div.inner"
+     ],
+     "evidence": {
+      "container": "div.fab > div.inner",
+      "flushTopPx": 0.0,
+      "deadBottomPx": 63.2
+     }
+    }
+   ]
+  },
+  "news-listings": {
+   "expected": [],
+   "flagged": [],
+   "hit": [],
+   "missed": [],
+   "false_alarms": [],
+   "points": 1,
+   "issues": []
+  },
+  "pricing-comparison": {
+   "expected": [
+    "alignment",
+    "color"
+   ],
+   "flagged": [
+    "alignment",
+    "color"
+   ],
+   "hit": [
+    "alignment",
+    "color"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 2,
+   "issues": [
+    {
+     "fundamental": "alignment",
+     "check_id": "alignment.card-bottom-drift",
+     "title": "Sibling cards bottoms don't line up",
+     "severity": "medium",
+     "elements": [
+      "section.pricing > div.card:nth-of-type(1)",
+      "section.pricing > div.card:nth-of-type(2)",
+      "section.pricing > div.card:nth-of-type(3)"
+     ],
+     "evidence": {
+      "max_offset_px": 57.2
+     }
+    },
+    {
+     "fundamental": "color",
+     "check_id": "color.lonely-accent",
+     "title": "One-off accent hue breaks palette cohesion",
+     "severity": "medium",
+     "elements": [
+      "section.pricing > div.card:nth-of-type(2)"
+     ],
+     "evidence": {
+      "hue_centers": [
+       8.9,
+       266.4
+      ],
+      "lonely": [
+       8.9
+      ],
+      "hit_count": 1
+     }
+    }
+   ]
+  },
+  "reporting-statistics": {
+   "expected": [],
+   "flagged": [],
+   "hit": [],
+   "missed": [],
+   "false_alarms": [],
+   "points": 1,
+   "issues": []
+  },
+  "simple-login-form": {
+   "expected": [
+    "alignment",
+    "contrast"
+   ],
+   "flagged": [
+    "alignment",
+    "contrast"
+   ],
+   "hit": [
+    "alignment",
+    "contrast"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 2,
+   "issues": [
+    {
+     "fundamental": "alignment",
+     "check_id": "alignment.cross-tag-drift",
+     "title": "Stacked blocks lose their shared left edge",
+     "severity": "critical",
+     "elements": [
+      "div.dclogin > div > div.form-el:nth-of-type(1) > label"
+     ],
+     "evidence": {
+      "max_offset_px": 102.4
+     }
+    },
+    {
+     "fundamental": "alignment",
+     "check_id": "alignment.cross-tag-drift",
+     "title": "Stacked blocks lose their shared left edge",
+     "severity": "critical",
+     "elements": [
+      "div.dclogin > div > div.form-el:nth-of-type(2) > label"
+     ],
+     "evidence": {
+      "max_offset_px": 102.4
+     }
+    },
+    {
+     "fundamental": "contrast",
+     "check_id": "contrast.component-below-threshold",
+     "title": "Form field fill nearly invisible against its container",
+     "severity": "medium",
+     "elements": [
+      "div.dclogin > div > div.form-el:nth-of-type(1) > input",
+      "div.dclogin > div > div.form-el:nth-of-type(2) > input"
+     ],
+     "evidence": {
+      "pairs": [
+       {
+        "fill": "rgb(45, 45, 45)",
+        "backdrop": "rgb(40, 40, 40)",
+        "ratio": 1.07
+       },
+       {
+        "fill": "rgb(45, 45, 45)",
+        "backdrop": "rgb(40, 40, 40)",
+        "ratio": 1.07
+       }
+      ],
+      "hit_count": 2
+     }
+    }
+   ]
+  },
+  "sports-stats": {
+   "expected": [
+    "scale"
+   ],
+   "flagged": [
+    "scale"
+   ],
+   "hit": [
+    "scale"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 1,
+   "issues": [
+    {
+     "fundamental": "scale",
+     "check_id": "scale-size-disparity",
+     "title": "Extreme size gap between smallest and largest text",
+     "severity": "medium",
+     "elements": [
+      "section.stats > div.card:nth-of-type(1) > p.label",
+      "section.stats > div.card:nth-of-type(2) > p.label",
+      "section.stats > div.card:nth-of-type(3) > p.label",
+      "section.stats > div.card:nth-of-type(4) > p.label",
+      "section.stats > div.card:nth-of-type(1) > h3.bask"
+     ],
+     "evidence": {
+      "min_px": 10.4,
+      "max_px": 56.0,
+      "ratio": 5.38,
+      "smallest_count": 4,
+      "hit_count": 5
+     }
+    }
+   ]
+  },
+  "toggle-settings": {
+   "expected": [
+    "visual-hierarchy"
+   ],
+   "flagged": [
+    "visual-hierarchy"
+   ],
+   "hit": [
+    "visual-hierarchy"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 1,
+   "issues": [
+    {
+     "fundamental": "visual-hierarchy",
+     "check_id": "visual-hierarchy.flat-title",
+     "title": "Page lacks a clear focal point (flat title)",
+     "severity": "medium",
+     "elements": [
+      "section.form > header > h1"
+     ],
+     "evidence": {
+      "max_font_px": 19.2,
+      "body_font_px": 19.2,
+      "ratio": 1.0
+     }
+    }
+   ]
+  },
+  "ueye-footer-design": {
+   "expected": [
+    "alignment",
+    "color"
+   ],
+   "flagged": [
+    "alignment",
+    "color"
+   ],
+   "hit": [
+    "alignment",
+    "color"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 2,
+   "issues": [
+    {
+     "fundamental": "alignment",
+     "check_id": "alignment.column-inset-drift",
+     "title": "Footer columns indent their items inconsistently",
+     "severity": "medium",
+     "elements": [
+      "footer.foot > div.container > ul.foot-nav:nth-of-type(1)",
+      "footer.foot > div.container > ul.foot-nav:nth-of-type(2)",
+      "footer.foot > div.container > ul.foot-nav:nth-of-type(3)"
+     ],
+     "evidence": {
+      "insets_px": [
+       0.0,
+       32.0,
+       32.0
+      ]
+     }
+    },
+    {
+     "fundamental": "color",
+     "check_id": "color.two-tone-sections",
+     "title": "Adjacent sections use clashing muted hues",
+     "severity": "medium",
+     "elements": [
+      "footer.foot",
+      "footer.foot > div.container > div.footer-left"
+     ],
+     "evidence": {
+      "hues": [
+       218.6,
+       297.6
+      ],
+      "hit_count": 2
+     }
+    }
+   ]
+  },
+  "url-shortener": {
+   "expected": [
+    "contrast",
+    "typography"
+   ],
+   "flagged": [
+    "contrast",
+    "typography"
+   ],
+   "hit": [
+    "contrast",
+    "typography"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 2,
+   "issues": [
+    {
+     "fundamental": "contrast",
+     "check_id": "contrast.below-threshold",
+     "title": "Text fails WCAG contrast against its background",
+     "severity": "critical",
+     "elements": [
+      "section.urls > label"
+     ],
+     "evidence": {
+      "min_ratio": 1.0,
+      "pairs": [
+       {
+        "ratio": 1.0,
+        "required": 3.0,
+        "foreground": "rgb(255, 255, 255)",
+        "background": "rgb(255, 255, 255)",
+        "text": "Shorten your URL"
+       }
+      ],
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "contrast",
+     "check_id": "contrast.below-threshold",
+     "title": "Text fails WCAG contrast against its background",
+     "severity": "medium",
+     "elements": [
+      "section.urls > p"
+     ],
+     "evidence": {
+      "min_ratio": 3.2,
+      "pairs": [
+       {
+        "ratio": 3.2,
+        "required": 4.5,
+        "foreground": "rgb(117, 149, 160)",
+        "background": "rgb(255, 255, 255)",
+        "text": "Maximum of 15 URL's per day."
+       }
+      ],
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "contrast",
+     "check_id": "contrast.component-below-threshold",
+     "title": "Form field fill nearly invisible against its container",
+     "severity": "medium",
+     "elements": [
+      "section.urls > div.col > input.url:nth-of-type(1)"
+     ],
+     "evidence": {
+      "pairs": [
+       {
+        "fill": "rgb(255, 255, 255)",
+        "backdrop": "rgb(255, 255, 255)",
+        "ratio": 1.0
+       }
+      ],
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "typography",
+     "check_id": "typography-family-one-off",
+     "title": "Single text run breaks the font palette",
+     "severity": "medium",
+     "elements": [
+      "section.urls > label",
+      "section.urls > p"
+     ],
+     "evidence": {
+      "family_counts": {
+       "changa": 1,
+       "nunito": 1
+      },
+      "hit_count": 2
+     }
+    }
+   ]
+  },
+  "user-support-popup": {
+   "expected": [
+    "color",
+    "scale"
+   ],
+   "flagged": [
+    "color",
+    "scale"
+   ],
+   "hit": [
+    "color",
+    "scale"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 2,
+   "issues": [
+    {
+     "fundamental": "color",
+     "check_id": "color.lonely-accent",
+     "title": "One-off accent hue breaks palette cohesion",
+     "severity": "medium",
+     "elements": [
+      "section.chatpop > div.chat-container > a.cta"
+     ],
+     "evidence": {
+      "hue_centers": [
+       184.9
+      ],
+      "hit_count": 1
+     }
+    },
+    {
+     "fundamental": "scale",
+     "check_id": "scale-tiny-control",
+     "title": "Action control labeled far below body size",
+     "severity": "medium",
+     "elements": [
+      "section.chatpop > div.chat-container > a.cta"
+     ],
+     "evidence": {
+      "control_sizes_px": [
+       12.0
+      ],
+      "body_px": 16.0,
+      "hit_count": 1
+     }
+    }
+   ]
+  },
+  "user-testimonials": {
+   "expected": [
+    "contrast",
+    "visual-hierarchy",
+    "white-space"
+   ],
+   "flagged": [
+    "contrast",
+    "visual-hierarchy",
+    "white-space"
+   ],
+   "hit": [
+    "contrast",
+    "visual-hierarchy",
+    "white-space"
+   ],
+   "missed": [],
+   "false_alarms": [],
+   "points": 3,
+   "issues": [
+    {
+     "fundamental": "contrast",
+     "check_id": "contrast.card-on-card",
+     "title": "Cards indistinguishable from the page background",
+     "severity": "medium",
+     "elements": [
+      "section.test > div.card:nth-of-type(1)",
+      "section.test > div.card:nth-of-type(2)",
+      "section.test > div.card:nth-of-type(3)"
+     ],
+     "evidence": {
+      "cards": 3,
+      "hit_count": 3
+     }
+    },
+    {
+     "fundamental": "visual-hierarchy",
+     "check_id": "visual-hierarchy.deck-uniform",
+     "title": "Card deck text carries equal weight throughout",
+     "severity": "medium",
+     "elements": [
+      "section.test > div.card:nth-of-type(1)",
+      "section.test > div.card:nth-of-type(2)",
+      "section.test > div.card:nth-of-type(3)"
+     ],
+     "evidence": {
+      "cards": 3,
+      "font_px": 16.0
+     }
+    },
+    {
+     "fundamental": "white-space",
+     "check_id": "spacing.child-overflow",
+     "title": "Avatar escapes its card's bounds",
+     "severity": "critical",
+     "elements": [
+      "section.test > div.card:nth-of-type(1) > img",
+      "section.test > div.card:nth-of-type(1)"
+     ],
+     "evidence": {
+      "overflowPx": 40.0,
+      "side": "top",
+      "parent": "section.test > div.card:nth-of-type(1)"
+     }
+    },
+    {
+     "fundamental": "white-space",
+     "check_id": "spacing.child-overflow",
+     "title": "Avatar escapes its card's bounds",
+     "severity": "critical",
+     "elements": [
+      "section.test > div.card:nth-of-type(2) > img",
+      "section.test > div.card:nth-of-type(2)"
+     ],
+     "evidence": {
+      "overflowPx": 40.0,
+      "side": "top",
+      "parent": "section.test > div.card:nth-of-type(2)"
+     }
+    },
+    {
+     "fundamental": "white-space",
+     "check_id": "spacing.child-overflow",
+     "title": "Avatar escapes its card's bounds",
+     "severity": "critical",
+     "elements": [
+      "section.test > div.card:nth-of-type(3) > img",
+      "section.test > div.card:nth-of-type(3)"
+     ],
+     "evidence": {
+      "overflowPx": 40.0,
+      "side": "top",
+      "parent": "section.test > div.card:nth-of-type(3)"
+     }
+    }
+   ]
+  }
+ }
+}
