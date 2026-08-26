@@ -358,7 +358,7 @@ _UX_AUDIT_MAX_BYTES = 2 * 1024 * 1024
 _UX_AUDIT_SCHEMA = "ux-audit-v1"
 _UX_AUDIT_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info"})
 _UX_AUDIT_CATEGORIES = frozenset(
-    {"GEO", "meta-semantic", "performance", "accessibility", "imagery"}
+    {"GEO", "meta-semantic", "performance", "accessibility", "imagery", "visual"}
 )
 
 
