@@ -1,0 +1,9 @@
+# Generated artifacts — never commit captured data
+oracle/
+ours/
+oracle_frozen/
+ours_frozen/
+frozen/
+compare/
+ref_runner/node_modules/
+__pycache__/
