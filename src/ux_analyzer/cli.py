@@ -527,6 +527,95 @@ def report(
 
 
 @app.command()
+def slop(
+    source: str = typer.Argument(..., help="URL or local HTML file to score"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of pretty output"),
+    copy: bool = typer.Option(False, "--copy", help="Also score the copy axis (9 patterns)"),
+) -> None:
+    """Score any page against the 27-rule AI-design-slop fingerprint.
+
+    Renders the page in a headless browser, extracts a computed-style
+    snapshot plus page text, then reports the 0-100 score, tier
+    (Clean / Mild / Heavy), and every triggered pattern with its evidence.
+    """
+    from ux_analyzer.analysis.slop.pipeline import analyze_slop
+    from ux_analyzer.analysis.visual.extract import extract_snapshot
+    from ux_analyzer.analysis.visual.snapshot import snapshot_from_dict
+
+    try:
+        raw = extract_snapshot(source)
+        meta = raw.get("meta", {})
+        report = analyze_slop(
+            snapshot_from_dict(raw),
+            viewport_w=int(meta.get("viewport", {}).get("w", 1280)),
+            viewport_h=int(meta.get("viewport", {}).get("h", 800)),
+            doc_height=int(meta.get("docHeight", 0) or 0),
+            scroll_y=int(meta.get("scrollY", 0) or 0),
+            text_context=meta.get("textContext"),
+            surface=meta.get("surface"),
+        )
+    except Exception as error:
+        _exit_with_error(f"slop scan failed: {type(error).__name__}: {error}")
+    report = {**report, "url": source}
+    if json_output:
+        typer.echo(json.dumps(report, indent=2))
+        return
+    tier_color = {"Clean": "green", "Mild": "yellow", "Heavy": "red"}.get(
+        report["tier"], "white"
+    )
+    typer.secho(f"{source}", bold=True)
+    typer.secho(
+        f"{report['tier']}  ·  score {report['score']}/100  ·  "
+        f"{report['patternsFlagged']}/{report['patternsTotal']} patterns triggered"
+        f"  ·  grade {report['grade']}",
+        fg=tier_color,
+        bold=True,
+    )
+    typer.echo("Triggered:")
+    for p in report["patterns"]:
+        if not p["triggered"]:
+            continue
+        typer.secho(f"  x {_ascii(p['label'])}  (+{p['weight']})", fg="red")
+        _print_slop_evidence(p["evidence"])
+    if copy and report.get("copy"):
+        copy_summary = report["copy"]
+        typer.echo("")
+        typer.secho(
+            f"copy: {copy_summary['tier']}  score {copy_summary['score']}/100  ·  "
+            f"{copy_summary['patternsFlagged']}/{copy_summary['patternsTotal']} flagged",
+            bold=True,
+        )
+        for p in copy_summary.get("patterns", []):
+            if not p["triggered"]:
+                continue
+            typer.secho(f"  x {_ascii(p['label'])}  (+{p['weight']})", fg="red")
+            _print_slop_evidence(p["evidence"])
+    if report.get("axesScored") and len(report["axesScored"]) > 1:
+        typer.echo(
+            f"unified: {report.get('unifiedScore')}/100 · {report.get('unifiedTier')}"
+        )
+
+
+def _ascii(text: str) -> str:
+    """Console-safe text for legacy code pages (cp1252 etc.)."""
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
+def _print_slop_evidence(evidence: object) -> None:
+    if not isinstance(evidence, dict):
+        return
+    for key, value in evidence.items():
+        if key in ("triggered", "error"):
+            continue
+        if isinstance(value, str) and value:
+            typer.echo(f"      {key}: {_ascii(value[:160])}")
+        elif isinstance(value, (int, float, bool)):
+            typer.echo(f"      {key}: {value}")
+        elif isinstance(value, list) and value:
+            typer.echo(f"      {key}: {_ascii(json.dumps(value, ensure_ascii=False)[:220])}")
+
+
+@app.command()
 def synthesize(
     project: Path,
     experiment: str = typer.Option(..., "--experiment"),
