@@ -19,7 +19,14 @@ AUDIT_FILENAME = "ux-audit.json"
 
 
 async def _visual_analyze(url: str) -> list[Any]:
+    """Visual UI-fundamental analysis: snapshot + visual pipeline + slop.
+
+    Returns ``[visual_issues, slop_report]`` where ``slop_report`` is the
+    full 27-pattern + 9-copy slop scorecard for the page (or None when the
+    capture fails). The two share one browser pass so live audits stay cheap.
+    """
     try:
+        from ux_analyzer.analysis.slop.pipeline import analyze_slop
         from ux_analyzer.analysis.visual.pipeline import analyze_snapshot
         from ux_analyzer.analysis.visual.snapshot import snapshot_from_dict
     except Exception:
@@ -101,6 +108,19 @@ async def _visual_analyze(url: str) -> list[Any]:
                     )
                     snap = snapshot_from_dict(raw)
                     issues = list(analyze_snapshot(snap))
+                    slop_report = None
+                    try:
+                        slop_report = analyze_slop(
+                            snap,
+                            viewport_w=int(meta.get("viewport", {}).get("w", 1280)),
+                            viewport_h=int(meta.get("viewport", {}).get("h", 800)),
+                            doc_height=int(meta.get("docHeight", 0) or 0),
+                            scroll_y=int(meta.get("scrollY", 0) or 0),
+                            text_context=meta.get("textContext"),
+                            surface=meta.get("surface"),
+                        )
+                    except Exception:
+                        slop_report = None
                     try:
                         png_bytes = page.screenshot(full_page=True, type="png")
                         full_img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
@@ -326,7 +346,7 @@ async def _visual_analyze(url: str) -> list[Any]:
                             object.__setattr__(issue, "evidence", ev)
                         except Exception:
                             pass
-                    return issues
+                    return [issues, slop_report]
                 finally:
                     browser.close()
         except Exception:
@@ -351,11 +371,20 @@ async def audit_url(url: str) -> dict[str, Any]:
     results = await asyncio.gather(*(analyze(url) for _, analyze in _CATEGORIES))
     issues: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
+    slop: dict[str, Any] | None = None
     for (category, _), category_issues in zip(_CATEGORIES, results, strict=True):
+        if category == "visual":
+            # _visual_analyze returns [issues, slop_report]
+            visual_issues = category_issues[0] if category_issues else []
+            slop = category_issues[1] if len(category_issues) > 1 else None
+            category_issues = visual_issues
         counts[category] = len(category_issues)
         for issue in category_issues:
             issues.append({"category": category, "check_id": issue.check_id, "title": issue.title, "severity": issue.severity, "evidence": issue.evidence})
-    return {"url": url, "counts": counts, "total": len(issues), "issues": issues}
+    report: dict[str, Any] = {"url": url, "counts": counts, "total": len(issues), "issues": issues}
+    if slop is not None:
+        report["slop"] = slop
+    return report
 
 
 async def audit_urls(urls: Sequence[str]) -> dict[str, Any]:
