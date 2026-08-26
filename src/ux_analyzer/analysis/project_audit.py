@@ -193,48 +193,59 @@ async def _visual_analyze(url: str) -> list[Any]:
                                         screenshot_b64 = None
                             if screenshot_b64:
                                 screenshots.append(screenshot_b64)
-                        combined_screenshot: str | None = None
+                        # Combined annotated views grouped by common parent, so
+                        # scattered elements never produce a huge mostly-empty
+                        # union crop.
+                        combined_screenshots: list[str] = []
                         if len(element_nodes) > 1:
-                            try:
-                                parents = {n.parent for n in element_nodes}
-                                if len(parents) == 1:
-                                    parent_idx = next(iter(parents))
-                                    parent_node = next((n for n in snap.nodes if n.i == parent_idx), None)
-                                    if parent_node is not None:
-                                        parent_css = snap.css_selector(parent_node)
-                                        parent_loc = page.locator(parent_css)
-                                        try:
-                                            parent_loc.wait_for(state="attached", timeout=1500)
-                                        except Exception:
-                                            pass
-                                        png = parent_loc.screenshot(type="png")
-                                        parent_img = Image.open(io.BytesIO(png)).convert("RGB")
-                                        draw = ImageDraw.Draw(parent_img)
-                                        for node in element_nodes:
-                                            rel_x = node.box.x - parent_node.box.x
-                                            rel_y = node.box.y - parent_node.box.y
-                                            ex0 = int(rel_x)
-                                            ey0 = int(rel_y)
-                                            ex1 = int(rel_x + node.box.w)
-                                            ey1 = int(rel_y + node.box.h)
-                                            ex0 = max(0, min(ex0, parent_img.width - 1))
-                                            ey0 = max(0, min(ey0, parent_img.height - 1))
-                                            ex1 = max(0, min(ex1, parent_img.width))
-                                            ey1 = max(0, min(ey1, parent_img.height))
-                                            for w in range(3):
-                                                draw.rectangle([ex0 - w, ey0 - w, ex1 + w, ey1 + w], outline=(220, 30, 30))
-                                            draw.rectangle([ex0 - 1, ey0 - 1, ex1 + 1, ey1 + 1], outline=(255, 255, 255))
-                                        if parent_img.width > 720 or parent_img.height > 540:
-                                            parent_img.thumbnail((720, 540), Image.LANCZOS)
-                                        buf = io.BytesIO()
-                                        parent_img.save(buf, format="JPEG", quality=82, optimize=True)
-                                        combined_screenshot = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
-                                        raise StopIteration("done via parent")
-                            except StopIteration:
-                                pass
-                            except Exception:
-                                pass
-                            if combined_screenshot is None and full_img is not None:
+                            by_parent: dict[int, list[Any]] = {}
+                            for n in element_nodes:
+                                by_parent.setdefault(n.parent, []).append(n)
+                            for parent_idx, members in by_parent.items():
+                                if len(members) < 2 or len(combined_screenshots) >= 3:
+                                    continue
+                                try:
+                                    parent_node = next(
+                                        (n for n in snap.nodes if n.i == parent_idx), None
+                                    )
+                                    if parent_node is None:
+                                        continue
+                                    parent_css = snap.css_selector(parent_node)
+                                    parent_loc = page.locator(parent_css)
+                                    try:
+                                        parent_loc.wait_for(state="attached", timeout=1500)
+                                    except Exception:
+                                        pass
+                                    png = parent_loc.screenshot(type="png")
+                                    parent_img = Image.open(io.BytesIO(png)).convert("RGB")
+                                    # Skip enormous containers (near whole-page sections).
+                                    if parent_img.width * parent_img.height > 1200000:
+                                        continue
+                                    draw = ImageDraw.Draw(parent_img)
+                                    for node in members:
+                                        ex0 = int(node.box.x - parent_node.box.x)
+                                        ey0 = int(node.box.y - parent_node.box.y)
+                                        ex1 = int(node.box.x + node.box.w - parent_node.box.x)
+                                        ey1 = int(node.box.y + node.box.h - parent_node.box.y)
+                                        ex0 = max(0, min(ex0, parent_img.width - 1))
+                                        ey0 = max(0, min(ey0, parent_img.height - 1))
+                                        ex1 = max(0, min(ex1, parent_img.width))
+                                        ey1 = max(0, min(ey1, parent_img.height))
+                                        for w in range(3):
+                                            draw.rectangle([ex0 - w, ey0 - w, ex1 + w, ey1 + w], outline=(220, 30, 30))
+                                        draw.rectangle([ex0 - 1, ey0 - 1, ex1 + 1, ey1 + 1], outline=(255, 255, 255))
+                                    if parent_img.width > 720 or parent_img.height > 540:
+                                        parent_img.thumbnail((720, 540), Image.LANCZOS)
+                                    buf = io.BytesIO()
+                                    parent_img.save(buf, format="JPEG", quality=82, optimize=True)
+                                    combined_screenshots.append(
+                                        f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+                                    )
+                                except Exception:
+                                    continue
+                            # Union-crop fallback only when the elements actually
+                            # fill the union (no scattered empty space).
+                            if not combined_screenshots and full_img is not None:
                                 try:
                                     min_x = min(n.box.x for n in element_nodes)
                                     min_y = min(n.box.y for n in element_nodes)
@@ -244,6 +255,9 @@ async def _visual_analyze(url: str) -> list[Any]:
                                     union_h = max_y - min_y
                                     if union_w * union_h > 2500000 or max(union_w, union_h) > 2000:
                                         raise ValueError("union too large, skip combined")
+                                    element_area = sum(n.box.w * n.box.h for n in element_nodes)
+                                    if element_area / max(union_w * union_h, 1) < 0.2:
+                                        raise ValueError("elements too scattered for a useful union")
                                     pad = 32
                                     x0 = max(0, int(min_x - pad))
                                     y0 = max(0, int(min_y - pad))
@@ -265,9 +279,10 @@ async def _visual_analyze(url: str) -> list[Any]:
                                         buf = io.BytesIO()
                                         crop.save(buf, format="JPEG", quality=76, optimize=True)
                                         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                                        combined_screenshot = f"data:image/jpeg;base64,{b64}"
+                                        combined_screenshots.append(f"data:image/jpeg;base64,{b64}")
                                 except Exception:
-                                    combined_screenshot = None
+                                    pass
+                        combined_screenshot = combined_screenshots[0] if combined_screenshots else None
                         try:
                             ev = dict(issue.evidence) if isinstance(issue.evidence, dict) else {}
                             if selectors:
@@ -278,6 +293,8 @@ async def _visual_analyze(url: str) -> list[Any]:
                                 ev["element_boxes"] = boxes
                             if screenshots:
                                 ev["element_screenshots"] = screenshots[:3]
+                            if combined_screenshots:
+                                ev["combined_screenshots"] = combined_screenshots
                             if combined_screenshot:
                                 ev["combined_screenshot"] = combined_screenshot
                             if selectors:
