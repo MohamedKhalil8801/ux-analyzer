@@ -401,6 +401,9 @@ def _operational_limitation(error: BaseException, category: str) -> str:
     status_code = getattr(error, "status_code", None)
     if type(status_code) is int:
         limitation += f" HTTP {status_code}."
+    error_code = getattr(error, "error_code", None)
+    if isinstance(error_code, str) and error_code.strip():
+        limitation += f" Provider error code: {error_code}."
     request_id = getattr(error, "request_id", None)
     if (
         isinstance(request_id, str)
