@@ -527,6 +527,110 @@ def report(
 
 
 @app.command()
+def pagespeed(
+    url: str = typer.Argument(..., help="URL to run PageSpeed Insights on"),
+    strategy: list[str] = typer.Option(
+        ["mobile", "desktop"], "--strategy", help="Lighthouse strategy (repeatable)"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the derived report JSON instead of summary"
+    ),
+    cache_root: Path | None = typer.Option(
+        None, "--cache-root", help="Directory for the raw-response disk cache"
+    ),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Ignore and do not update the disk cache"
+    ),
+    web_ui: bool = typer.Option(
+        True,
+        "--web-ui/--no-web-ui",
+        help="Run one pagespeed.web.dev analysis per URL to capture the saved-report link",
+    ),
+) -> None:
+    """Fetch the complete PageSpeed Insights report for any URL.
+
+    Calls the same API behind pagespeed.web.dev
+    (https://www.googleapis.com/pagespeedonline/v5/runPagespeed), matching
+    its Lighthouse category scores, per-audit pass/fail results, and
+    opportunity savings. Uses PSI_API_Key / GOOGLE_API_KEY from .env or the
+    environment when present. With --web-ui (default) each URL is analyzed
+    once in a headless pagespeed.web.dev session to capture the stable
+    saved-report link (cached per URL; set UXA_SKIP_PAGESPEED_WEB=1 to
+    disable).
+    """
+    from ux_analyzer.analysis.pagespeed import (
+        enrich_pagespeed_web_links,
+        pagespeed_api_key,
+        pagespeed_report_sync,
+    )
+
+    try:
+        report = pagespeed_report_sync(
+            (url,),
+            key=pagespeed_api_key(),
+            cache_root=cache_root,
+            strategies=tuple(dict.fromkeys(strategy)),
+            use_cache=not no_cache,
+            store_cache=not no_cache,
+        )
+        report = enrich_pagespeed_web_links(
+            report,
+            cache_root=cache_root,
+            resolve=web_ui,
+        )
+    except Exception as error:
+        _exit_with_error(f"pagespeed failed: {type(error).__name__}: {error}")
+    if json_output:
+        typer.echo(json.dumps(report, indent=2))
+        return
+    for url_report in report["urls"]:
+        typer.echo(f"{url_report['url']}")
+        web_link = url_report.get("pagespeed_web_url")
+        saved = bool(url_report.get("pagespeed_web_saved"))
+        if web_link:
+            typer.echo(
+                f"  pagespeed.web.dev: {web_link}"
+                + (" (saved report)" if saved else " (runs a fresh analysis)")
+            )
+        for strategy_name in url_report["strategies"]:
+            entry = url_report["strategies"][strategy_name]
+            if entry.get("status") != "ok":
+                typer.secho(
+                    f"  {strategy_name}: unavailable ({entry.get('error', 'unknown')})",
+                    fg="red",
+                )
+                continue
+            categories = ", ".join(
+                f"{c['title']} {c['score_percent']}" for c in entry["categories"]
+            )
+            failed = entry["audits"]["totals"]["failed"]
+            opportunities = entry["opportunities"]
+            total_savings_ms = sum(
+                o["savings_ms"] or 0 for o in opportunities
+            )
+            total_savings_bytes = sum(
+                o["savings_bytes"] or 0 for o in opportunities
+            )
+            typer.secho(
+                f"  {strategy_name}: {categories}",
+                fg="green" if all(c["score_percent"] and c["score_percent"] >= 90 for c in entry["categories"]) else "yellow",
+            )
+            typer.echo(
+                f"    audits: {failed} failed, {entry['audits']['totals']['passed']} passed; "
+                f"{len(opportunities)} opportunity(ies) "
+                f"(~{total_savings_ms} ms / {total_savings_bytes} bytes est. savings)"
+            )
+            for opportunity in opportunities:
+                typer.echo(
+                    f"      - {opportunity['title']}: "
+                    f"{opportunity['display_value'] or 'n/a'} "
+                    f"(~{opportunity['savings_ms'] or 0} ms, "
+                    f"{opportunity['savings_bytes'] or 0} bytes, "
+                    f"{len(opportunity['items'])} item(s))"
+                )
+
+
+@app.command()
 def slop(
     source: str = typer.Argument(..., help="URL or local HTML file to score"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of pretty output"),
