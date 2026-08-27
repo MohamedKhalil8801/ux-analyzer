@@ -2390,6 +2390,7 @@ def _run_experiment_command(
         selected_specs=selected_specs,
     )
     _write_ux_audit(output=output, results=result.results)
+    _write_pagespeed(output=output, results=result.results)
     if matrix.loaded.runtime.report_synthesis.enabled and not no_synthesis:
         synthesis_result = result
         try:
@@ -3765,6 +3766,7 @@ def _complete_experiment(
         selected_specs=selected_specs,
     )
     _write_ux_audit(output=output, results=result.results)
+    _write_pagespeed(output=output, results=result.results)
     report_path = output / "report.html"
     if render_report:
         report_path = _render_completed_report(output=output)
@@ -3825,6 +3827,59 @@ def _write_ux_audit(output: Path, results: Sequence[object]) -> Path | None:
     typer.echo(
         f"live-page audit: {total} issue(s) across {audited_urls} URL(s); "
         f"see {AUDIT_FILENAME} and report.html"
+    )
+    return destination
+
+
+def _write_pagespeed(output: Path, results: Sequence[object]) -> Path | None:
+    """Persist PageSpeed Insights reports beside experiment evidence.
+
+    Best-effort like the live-page audit: the API's own JSON is cached
+    under ``<output>/pagespeed-cache`` and the derived, bounded report goes
+    to ``pagespeed.json`` so ``report.html`` can render the complete
+    pagespeed.web.dev-style result. Failures are recorded as error entries
+    or a warning; they never fail an otherwise healthy run.
+    """
+    if os.environ.get("UXA_SKIP_PAGESPEED", "") not in {"", "0", "false", "False"}:
+        return None
+    from ux_analyzer.analysis.pagespeed import (
+        PAGESPEED_FILENAME,
+        enrich_pagespeed_web_links,
+        pagespeed_api_key,
+        pagespeed_report_sync,
+    )
+
+    urls = _ux_audit_start_urls(results)
+    if not urls:
+        return None
+    try:
+        report = pagespeed_report_sync(
+            urls,
+            key=pagespeed_api_key(),
+            cache_root=output,
+        )
+        report = enrich_pagespeed_web_links(
+            report,
+            cache_root=output,
+            resolve=os.environ.get("UXA_SKIP_PAGESPEED_WEB", "")
+            not in {"1", "true", "True"},
+        )
+    except Exception as error:  # noqa: BLE001 - pagespeed must not fail a run
+        typer.echo(
+            f"warning: PageSpeed Insights unavailable: {type(error).__name__}: {error}",
+            err=True,
+        )
+        return None
+    destination = output / PAGESPEED_FILENAME
+    try:
+        output.mkdir(parents=True, exist_ok=True)
+        _atomic_json_write(destination, report)
+    except (OSError, TypeError, ValueError) as error:
+        typer.echo(f"warning: could not persist {PAGESPEED_FILENAME}: {error}", err=True)
+        return None
+    typer.echo(
+        f"pagespeed: {report.get('ok_strategy_count', 0)} report(s) for "
+        f"{report.get('url_count', 0)} URL(s); see {PAGESPEED_FILENAME} and report.html"
     )
     return destination
 
