@@ -205,6 +205,7 @@ def test_env_example_contains_placeholder_values_only() -> None:
         "UXA_LLM_MODE": "api",
         "UXA_LLM_BASE_URL": "https://<provider-host>/v1",
         "UXA_LLM_API_KEY": "<api-key>",
+        "PSI_API_Key": "<google-api-key>",
         "UXA_SCENT_MODEL": "<scent-model-id>",
         "UXA_COGNITIVE_MODEL": "<cognitive-model-id>",
         "UXA_LLM_SCENT_REASONING_EFFORT": "",
