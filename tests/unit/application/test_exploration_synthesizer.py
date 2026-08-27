@@ -1371,3 +1371,33 @@ def test_tldr_pack_shape_enforced() -> None:
     polluted["selector"] = "#x"
     with pytest.raises(ValueError):
         exploration_synthesizer._validate_tldr_pack(polluted)
+
+def test_operational_limitation_includes_provider_error_code() -> None:
+    from ux_analyzer.adapters.openai import ModelFailureError
+
+    error = ModelFailureError(
+        "model unavailable",
+        status_code=400,
+        error_code="content-blocked",
+        error_type="agent_router_api_error",
+        request_id="req123",
+    )
+    limitation = exploration_synthesizer._operational_limitation(
+        error, "model-provider-unavailable"
+    )
+    assert "model is unavailable" in limitation
+    assert "HTTP 400" in limitation
+    assert "Provider error code: content-blocked" in limitation
+    assert "Request ID: req123" in limitation
+
+
+def test_operational_limitation_without_provider_details() -> None:
+    from ux_analyzer.adapters.openai import ModelFailureError
+
+    error = ModelFailureError("model unavailable")
+    limitation = exploration_synthesizer._operational_limitation(
+        error, "model-provider-unavailable"
+    )
+    assert "HTTP" not in limitation
+    assert "Provider error code" not in limitation
+    assert "Request ID" not in limitation
