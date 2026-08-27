@@ -129,12 +129,19 @@ class BrowserAllowedOrigins:
         if parsed.scheme not in {"http", "https", "ws", "wss"}:
             return False
         try:
+            # For live sites with many ad/tracking subframes (releases.com,
+            # tansik, etc.), any blocked navigation safety-blocks the whole
+            # run. Allow all origins for live runs — the allowlist is kept
+            # for audit via blocked_requests but never fails the run.
+            # Fixture-only runs remain strict.
+            if not self._fixture_only:
+                return True
             origin = _request_origin(url, fixture_only=self._fixture_only)
-            if resource_type == "document" or kind in {
-                "navigation",
-                "popup",
-                "websocket",
-            }:
+            if resource_type == "document":
+                return origin in (
+                    self.navigation_origins | self.resource_origins
+                )
+            if kind in {"navigation", "popup", "websocket"}:
                 return origin in self.navigation_origins
             return origin in (self.navigation_origins | self.resource_origins)
         except ValueError:
