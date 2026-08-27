@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 from PIL import Image
+from urllib.parse import urlsplit
 
 from ux_analyzer.application.checkpoint import finalized_bundle_failures
 from ux_analyzer.application.evaluation import (
@@ -351,6 +352,7 @@ def _load_experiment(root: Path) -> dict[str, Any]:
         "synthesis": synthesis,
         "_synthesis_artifact_bytes": synthesis_artifact_bytes,
         "ux_audit": _load_ux_audit(root),
+        "pagespeed": _load_pagespeed(root),
     }
 
 
@@ -460,6 +462,308 @@ def _load_ux_audit(root: Path) -> dict[str, Any] | None:
         "url_reports": url_reports,
         "total_issues": sum(report["total"] for report in url_reports),
     }
+
+
+_PAGESPEED_MAX_BYTES = 8 * 1024 * 1024
+_PAGESPEED_SCHEMA = "pagespeed-insights-v1"
+
+
+def _pagespeed_web_link(value: object) -> str | None:
+    """Validate a persisted pagespeed.web.dev deep link for rendering."""
+    text = _optional_text(value)
+    if not text:
+        return None
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return None
+    if parsed.scheme != "https" or parsed.netloc != "pagespeed.web.dev":
+        return None
+    return text[:512]
+
+
+def _load_pagespeed(root: Path) -> dict[str, Any] | None:
+    """Load the persisted PageSpeed Insights report; malformed files stay omitted."""
+
+    path = root / "pagespeed.json"
+    if not path.is_file() or secure_is_link_or_reparse(path):
+        return None
+    try:
+        raw = secure_read_bytes(
+            path,
+            "PageSpeed Insights report",
+            max_bytes=_PAGESPEED_MAX_BYTES,
+        )
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, RuntimeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    payload = cast(dict[str, object], value)
+    if payload.get("schema_version") != _PAGESPEED_SCHEMA:
+        return None
+    url_reports: list[dict[str, Any]] = []
+    raw_urls = payload.get("urls")
+    if not isinstance(raw_urls, list):
+        return None
+    for raw_report in cast(list[object], raw_urls):
+        if not isinstance(raw_report, Mapping):
+            continue
+        report = cast(dict[str, object], raw_report)
+        url = report.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url_entry: dict[str, Any] = {
+            "url": url,
+            "error": _optional_text(report.get("error")),
+            "pagespeed_web_url": _pagespeed_web_link(report.get("pagespeed_web_url")),
+            "pagespeed_web_fresh_url": _pagespeed_web_link(
+                report.get("pagespeed_web_fresh_url")
+            ),
+            "pagespeed_web_saved": bool(report.get("pagespeed_web_saved")),
+            "strategies": {},
+        }
+        raw_strategies = report.get("strategies")
+        if isinstance(raw_strategies, Mapping):
+            for strategy_name, raw_entry in cast(
+                Mapping[str, object], raw_strategies
+            ).items():
+                if not isinstance(raw_entry, Mapping) or not isinstance(
+                    strategy_name, str
+                ):
+                    continue
+                strategy_entry = _pagespeed_strategy_entry(strategy_name, raw_entry)
+                if strategy_entry is not None:
+                    url_entry["strategies"][strategy_name] = strategy_entry
+        url_reports.append(url_entry)
+    if not url_reports:
+        return None
+    strategy_count = sum(len(report["strategies"]) for report in url_reports)
+    ok_count = sum(
+        1
+        for report in url_reports
+        for strategy_entry in report["strategies"].values()
+        if strategy_entry.get("status") == "ok"
+    )
+    return {
+        "url_reports": url_reports,
+        "url_count": len(url_reports),
+        "strategy_count": strategy_count,
+        "ok_strategy_count": ok_count,
+    }
+
+
+def _pagespeed_strategy_entry(
+    strategy_name: str, raw: Mapping[str, object]
+) -> dict[str, Any] | None:
+    status = _text(raw.get("status"), "error")
+    entry: dict[str, Any] = {
+        "strategy": strategy_name,
+        "status": status,
+        "error": _optional_text(raw.get("error")),
+        "error_code": _optional_text(raw.get("error_code")),
+    }
+    if status != "ok":
+        return entry
+    categories: list[dict[str, Any]] = []
+    raw_categories = raw.get("categories")
+    if isinstance(raw_categories, list):
+        for raw_category in cast(list[object], raw_categories):
+            if not isinstance(raw_category, Mapping):
+                continue
+            category = cast(dict[str, object], raw_category)
+            category_id = _text(category.get("id"))
+            if not category_id:
+                continue
+            score = _pagespeed_number(category.get("score"))
+            persisted_percent = _pagespeed_int_or_none(category.get("score_percent"))
+            rows: dict[str, Any] = {
+                "id": category_id,
+                "title": _text(category.get("title"), category_id),
+                "score": score,
+                "score_percent": (
+                    persisted_percent
+                    if persisted_percent is not None
+                    else _pagespeed_score_percent(score)
+                ),
+                "display_value": _optional_text(category.get("display_value")),
+                "audit_refs": _pagespeed_int(category.get("audit_refs"), 0),
+            }
+            categories.append(rows)
+    audits_raw = raw.get("audits")
+    audits: dict[str, Any] = {
+        "failed": [],
+        "passed": [],
+        "not_applicable": [],
+        "manual": [],
+        "informative": [],
+        "error": [],
+        "totals": {},
+    }
+    if isinstance(audits_raw, Mapping):
+        audit_mapping = cast(Mapping[str, object], audits_raw)
+        for bucket in (
+            "failed",
+            "passed",
+            "not_applicable",
+            "manual",
+            "informative",
+            "error",
+        ):
+            rows = [
+                _pagespeed_audit_row(audit)
+                for audit in _list_of_mappings(audit_mapping.get(bucket))
+            ]
+            rows = [row for row in rows if row is not None]
+            audits[bucket] = rows
+        totals_raw = audit_mapping.get("totals")
+        if isinstance(totals_raw, Mapping):
+            audits["totals"] = {
+                bucket: _pagespeed_int(totals_raw.get(bucket), len(audits[bucket]))
+                for bucket in (
+                    "failed",
+                    "passed",
+                    "not_applicable",
+                    "manual",
+                    "informative",
+                    "error",
+                )
+            }
+    opportunities = [
+        _pagespeed_opportunity_row(opportunity)
+        for opportunity in _list_of_mappings(raw.get("opportunities"))
+    ]
+    opportunities = [row for row in opportunities if row is not None]
+    metric_savings = [
+        _pagespeed_opportunity_row(opportunity)
+        for opportunity in _list_of_mappings(raw.get("metric_savings"))
+    ]
+    metric_savings = [row for row in metric_savings if row is not None]
+    entry.update(
+        {
+            "from_cache": bool(raw.get("from_cache")),
+            "fetched_at": _optional_text(raw.get("fetched_at")),
+            "analysis_timestamp": _optional_text(raw.get("analysis_timestamp")),
+            "requested_url": _optional_text(raw.get("requested_url")),
+            "final_url": _optional_text(raw.get("final_url")),
+            "main_document_url": _optional_text(raw.get("main_document_url")),
+            "lighthouse_version": _optional_text(raw.get("lighthouse_version")),
+            "user_agent": _optional_text(raw.get("user_agent")),
+            "categories": categories,
+            "audits": audits,
+            "opportunities": opportunities,
+            "metric_savings": metric_savings,
+            "field_data": _pagespeed_field_data(raw.get("field_data")),
+        }
+    )
+    return entry
+
+
+def _pagespeed_field_data(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    field_data = cast(Mapping[str, object], value)
+    overall = _text(field_data.get("overall_category"))
+    metrics: dict[str, dict[str, Any]] = {}
+    raw_metrics = field_data.get("metrics")
+    if isinstance(raw_metrics, Mapping):
+        for metric_id, raw_metric in cast(
+            Mapping[str, object], raw_metrics
+        ).items():
+            if not isinstance(raw_metric, Mapping):
+                continue
+            metric = cast(Mapping[str, object], raw_metric)
+            row: dict[str, Any] = {}
+            percentile = _pagespeed_number(metric.get("percentile"))
+            if percentile is not None:
+                row["percentile"] = percentile
+            category = _text(metric.get("category"))
+            if category:
+                row["category"] = category
+            if row:
+                metrics[str(metric_id)] = row
+    result: dict[str, Any] = {}
+    if overall:
+        result["overall_category"] = overall
+    if metrics:
+        result["metrics"] = metrics
+    return result if result else None
+
+
+def _pagespeed_audit_row(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    audit_id = _text(raw.get("id"))
+    if not audit_id:
+        return None
+    score = _pagespeed_number(raw.get("score"))
+    persisted_percent = _pagespeed_int_or_none(raw.get("score_percent"))
+    return {
+        "id": audit_id,
+        "title": _text(raw.get("title"), audit_id),
+        "score": score,
+        "score_percent": (
+            persisted_percent
+            if persisted_percent is not None
+            else _pagespeed_score_percent(score)
+        ),
+        "score_display_mode": _text(raw.get("score_display_mode"), "numeric"),
+        "display_value": _optional_text(raw.get("display_value")),
+        "description": _optional_text(raw.get("description")),
+        "failed": bool(raw.get("failed")),
+    }
+
+
+def _pagespeed_opportunity_row(
+    raw: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    opportunity_id = _text(raw.get("id"))
+    if not opportunity_id:
+        return None
+    items: list[dict[str, Any]] = []
+    for raw_item in _list_of_mappings(raw.get("items")):
+        item: dict[str, Any] = {}
+        for key in ("url", "totalBytes", "wastedBytes", "wastedMs", "responseTime", "transferSize", "requestCount"):
+            value = raw_item.get(key)
+            if isinstance(value, str) and key == "url":
+                item[key] = value
+            elif _pagespeed_number(value) is not None:
+                item[key] = _pagespeed_number(value)
+        if item:
+            items.append(item)
+    return {
+        "id": opportunity_id,
+        "title": _text(raw.get("title"), opportunity_id),
+        "score": _pagespeed_number(raw.get("score")),
+        "score_display_mode": _text(raw.get("score_display_mode"), "numeric"),
+        "display_value": _optional_text(raw.get("display_value")),
+        "savings_ms": _pagespeed_number(raw.get("savings_ms")),
+        "savings_bytes": _pagespeed_number(raw.get("savings_bytes")),
+        "items": items,
+    }
+
+
+def _pagespeed_score_percent(score: object) -> int | None:
+    number = _pagespeed_number(score)
+    if number is None:
+        return None
+    return round(float(number) * 100)
+
+
+def _pagespeed_int_or_none(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _pagespeed_number(value: object) -> float | int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _pagespeed_int(value: object, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
 
 
 def _slop_pattern_row(p: Mapping[str, Any]) -> dict[str, Any]:
@@ -2280,6 +2584,8 @@ def _report_context(
     )
     ux_audit = experiment.get("ux_audit")
     ux_audit = ux_audit if isinstance(ux_audit, Mapping) else None
+    pagespeed = experiment.get("pagespeed")
+    pagespeed = pagespeed if isinstance(pagespeed, Mapping) else None
     if synthesis.get("using_fallback"):
         runs = _project_fallback_run_findings(runs, synthesis.get("findings"))
     concise_index_fallback = (
@@ -2315,6 +2621,7 @@ def _report_context(
         "synthesis": synthesis,
         "synthesis_status": synthesis["synthesis_status"],
         "ux_audit": ux_audit,
+        "pagespeed": pagespeed,
         "report_json": _safe_json(report_payload),
     }
 
