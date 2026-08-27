@@ -180,6 +180,79 @@
       </article>
     {%- endmacro %}
 
+<section
+      id="analysis-summary"
+      class="report-section analysis-summary"
+      aria-labelledby="analysis-summary-title"
+      data-synthesis-status="{{ synthesis_status }}"
+      data-using-fallback="{{ 'true' if using_fallback else 'false' }}"
+    >
+      <div class="report-section-heading">
+        <div>
+          <p class="eyebrow">At a glance</p>
+          <h2 id="analysis-summary-title">Analysis summary</h2>
+        </div>
+        <span class="synthesis-status status-{{ synthesis_status }}">{{ status_label(synthesis_status) }}</span>
+      </div>
+      <p class="summary-assessment">
+        {% if using_fallback %}
+        {{ synthesis.assessment }}
+        {% elif synthesis_status == "no-issues" %}
+        No supported UX issues were established in the tested scenarios.
+        {% elif synthesis_status == "accepted" %}
+        {{ synthesis.assessment }}
+        {% elif synthesis_status == "rejected" %}
+        No report-synthesis finding was publishable because all candidate findings were rejected.
+        {% else %}
+        Only recorded evidence is shown; inspect the linked replays below.
+        {% endif %}
+      </p>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <strong>{{ "Recorded signals" if using_fallback else "Accepted findings" }}</strong>
+          <span>{{ synthesis.findings | length }}</span>
+        </div>
+        <div class="summary-item">
+          <strong>Tested scope</strong>
+          <span>{{ tested_scope.get("run_ids", []) | length }} run{% if tested_scope.get("run_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("scenario_ids", []) | length }} scenario{% if tested_scope.get("scenario_ids", []) | length != 1 %}s{% endif %}</span>
+        </div>
+        <div class="summary-item">
+          <strong>Versions and personas</strong>
+          <span>{{ tested_scope.get("version_ids", []) | length }} version{% if tested_scope.get("version_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("persona_ids", []) | length }} persona{% if tested_scope.get("persona_ids", []) | length != 1 %}s{% endif %}</span>
+        </div>
+        <div class="summary-item">
+          <strong>Report basis</strong>
+          <span>{{ "Recorded evidence only" if using_fallback else "Recorded evidence and reviewed findings" }}</span>
+        </div>
+      </div>
+      <div class="tested-scope-detail" data-no-issues-scope="true">
+        <h3>Tested scope</h3>
+        <ul>
+        {% for run in runs %}
+          <li>
+            <a href="{{ run.run_page ~ '?' if run.run_page is defined and run.run_page else '?' }}run={{ run.run_id | urlencode }}#playback-workspace">Open replay</a>:
+            {{ run.scenario_label }} / {{ run.version_label }} / {{ run.persona_label }}
+          </li>
+        {% endfor %}
+        </ul>
+      </div>
+      {% if using_fallback %}
+      <p class="fallback-notice">
+        {% if synthesis_status == "rejected" %}
+        Only recorded evidence is shown because no reviewed finding could be published. Verify each linked replay before changing the website.
+        {% elif synthesis_status == "invalid" %}
+        Only recorded evidence is shown because the review could not be validated. Verify each linked replay before changing the website.
+        {% elif synthesis_status in ["missing", "unavailable"] %}
+        Only recorded evidence is shown. Verify each linked replay before changing the website.
+        {% else %}
+        Only recorded evidence is shown. Verify each linked replay before changing the website.
+        {% endif %}
+      </p>
+      {% endif %}
+    </section>
+
+
+
     {% if ux_audit %}
     <section
       id="ux-audit"
@@ -354,80 +427,205 @@
     </section>
     {% endif %}
 
+    {% if pagespeed %}
     <section
-      id="analysis-summary"
-      class="report-section analysis-summary"
-      aria-labelledby="analysis-summary-title"
-      data-synthesis-status="{{ synthesis_status }}"
-      data-using-fallback="{{ 'true' if using_fallback else 'false' }}"
+      id="pagespeed"
+      class="report-section pagespeed"
+      aria-labelledby="pagespeed-title"
     >
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">At a glance</p>
-          <h2 id="analysis-summary-title">Analysis summary</h2>
+          <p class="eyebrow">PageSpeed Insights</p>
+          <h2 id="pagespeed-title">Lighthouse performance reports</h2>
         </div>
-        <span class="synthesis-status status-{{ synthesis_status }}">{{ status_label(synthesis_status) }}</span>
+        <span class="finding-count">{{ pagespeed.ok_strategy_count }} report{{ "s" if pagespeed.ok_strategy_count != 1 else "" }}</span>
       </div>
       <p class="summary-assessment">
-        {% if using_fallback %}
-        {{ synthesis.assessment }}
-        {% elif synthesis_status == "no-issues" %}
-        No supported UX issues were established in the tested scenarios.
-        {% elif synthesis_status == "accepted" %}
-        {{ synthesis.assessment }}
-        {% elif synthesis_status == "rejected" %}
-        No report-synthesis finding was publishable because all candidate findings were rejected.
-        {% else %}
-        Only recorded evidence is shown; inspect the linked replays below.
-        {% endif %}
+        Complete PageSpeed Insights results for each application start URL,
+        fetched from the same API that powers pagespeed.web.dev. Category
+        scores, per-audit pass/fail results, and opportunity savings are
+        taken verbatim from the API response; the audit pass threshold is
+        the pagespeed.web.dev convention (score &lt; 0.9 = failed).
       </p>
-      <div class="summary-grid">
-        <div class="summary-item">
-          <strong>{{ "Recorded signals" if using_fallback else "Accepted findings" }}</strong>
-          <span>{{ synthesis.findings | length }}</span>
+      {% for url_report in pagespeed.url_reports %}
+      <div class="psi-url">
+        <h3 class="psi-url-label">
+          {{ url_report.url }}
+          {% if url_report.pagespeed_web_url %}
+          <a
+            class="psi-web-link{% if url_report.pagespeed_web_saved %} psi-web-link-saved{% endif %}"
+            href="{{ url_report.pagespeed_web_url }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open this URL in PageSpeed Insights (runs a fresh analysis)"
+          >{% if url_report.pagespeed_web_saved %}View saved report{% else %}View on pagespeed.web.dev{% endif %}</a>
+          {% endif %}
+          {% if url_report.pagespeed_web_saved and url_report.pagespeed_web_fresh_url and url_report.pagespeed_web_fresh_url != url_report.pagespeed_web_url %}
+          <a
+            class="psi-web-link psi-web-link-fresh"
+            href="{{ url_report.pagespeed_web_fresh_url }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Run a fresh analysis for this URL on pagespeed.web.dev"
+          >Run fresh analysis</a>
+          {% endif %}
+        </h3>
+        {% if url_report.error %}
+        <p class="psi-error">Report unavailable: {{ url_report.error }}</p>
+        {% endif %}
+        {% if not url_report.strategies %}
+        <p class="ux-audit-clean">No PageSpeed reports could be fetched for this URL.</p>
+        {% endif %}
+        {% for strategy_name, strategy in url_report.strategies.items() %}
+        <div class="psi-strategy psi-strategy-{{ strategy.status }}">
+          <h4 class="psi-strategy-label">{{ strategy_name | title }} strategy</h4>
+          {% if strategy.status != "ok" %}
+          <p class="psi-error">Unavailable: {{ strategy.error or "no error detail recorded" }}</p>
+          {% if strategy.error_code %}<p class="psi-error-detail"><code>{{ strategy.error_code }}</code></p>{% endif %}
+          {% if strategy.error_code and "FAILED_DOCUMENT_REQUEST" in strategy.error_code %}<p class="psi-error-help">Lighthouse couldn't load this URL (government portal, likely blocking automated audits or slow ASPX). The local <code>ux-audit</code> and live-page checks in this report still ran — use the link above to retry on pagespeed.web.dev directly.</p>{% endif %}
+          {% else %}
+          <p class="psi-meta">
+            Lighthouse {{ strategy.lighthouse_version }}
+            {% if strategy.fetched_at %}· fetched {{ strategy.fetched_at }}{% endif %}
+            {% if strategy.from_cache %}· served from cache{% endif %}
+            {% if strategy.final_url and strategy.final_url != url_report.url %}· final URL {{ strategy.final_url }}{% endif %}
+          </p>
+          {% if strategy.field_data %}
+          <div class="psi-field">
+            <span class="psi-field-label">Field data (CrUX):</span>
+            <span class="psi-field-overall">{{ strategy.field_data.overall_category }}</span>
+            {% for metric_id, metric in strategy.field_data.metrics.items() %}
+            <span class="psi-field-metric">{{ metric_id }} {{ metric.percentile }}{% if metric.category %} ({{ metric.category }}){% endif %}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+          {% if strategy.categories %}
+          <div class="psi-categories">
+            {% for category in strategy.categories %}
+            <div class="psi-category psi-score-{{ 'good' if category.score is not none and category.score >= 0.9 else ('ok' if category.score is not none and category.score >= 0.5 else 'bad') }}">
+              <span class="psi-category-title">{{ category.title }}</span>
+              <span class="psi-category-score">{{ category.score_percent }}</span>
+              {% if category.display_value %}
+              <span class="psi-category-value">{{ category.display_value }}</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+          <p class="psi-totals">
+            {{ strategy.audits.totals.failed }} failed ·
+            {{ strategy.audits.totals.passed }} passed ·
+            {{ strategy.audits.totals.not_applicable }} not applicable ·
+            {{ strategy.audits.totals.manual }} manual ·
+            {{ strategy.audits.totals.informative }} informative ·
+            {{ strategy.audits.totals.error }} error
+          </p>
+          {% if strategy.audits.failed %}
+          <details class="psi-audit-bucket" open>
+            <summary>Failed audits ({{ strategy.audits.failed | length }})</summary>
+            <ul class="psi-audit-list">
+              {% for audit in strategy.audits.failed %}
+              <li class="psi-audit psi-audit-failed">
+                <div class="psi-audit-head">
+                  <span class="psi-audit-score">{{ audit.score_percent if audit.score is not none else "—" }}</span>
+                  <strong>{{ audit.title }}</strong>
+                  {% if audit.display_value %}<span class="psi-audit-value">{{ audit.display_value }}</span>{% endif %}
+                  <code class="psi-audit-id">{{ audit.id }}</code>
+                </div>
+                {% if audit.description %}
+                <details class="psi-audit-detail">
+                  <summary>Detail</summary>
+                  <p class="psi-audit-description">{{ audit.description }}</p>
+                </details>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+          {% if strategy.opportunities %}
+          <details class="psi-audit-bucket" open>
+            <summary>Opportunities ({{ strategy.opportunities | length }})</summary>
+            <ul class="psi-opportunity-list">
+              {% for opportunity in strategy.opportunities %}
+              <li class="psi-opportunity">
+                <div class="psi-opportunity-head">
+                  <strong>{{ opportunity.title }}</strong>
+                  {% if opportunity.display_value %}<span class="psi-audit-value">{{ opportunity.display_value }}</span>{% endif %}
+                  {% if opportunity.savings_ms is not none %}<span class="psi-savings">~{{ opportunity.savings_ms }} ms</span>{% endif %}
+                  {% if opportunity.savings_bytes is not none %}<span class="psi-savings">~{{ opportunity.savings_bytes }} bytes</span>{% endif %}
+                  <code class="psi-audit-id">{{ opportunity.id }}</code>
+                </div>
+                {% if opportunity['items'] %}
+                <details class="psi-audit-detail">
+                  <summary>{{ opportunity['items'] | length }} item(s)</summary>
+                  <ul class="psi-opportunity-items">
+                    {% for item in opportunity['items'] %}
+                    <li>
+                      {% if item.get('url') %}<code class="psi-item-url">{{ item.get('url') }}</code>{% endif %}
+                      {% if item.get('wastedBytes') is not none %} · ~{{ item.get('wastedBytes') }} bytes wasted{% endif %}
+                      {% if item.get('wastedMs') is not none %} · ~{{ item.get('wastedMs') }} ms wasted{% endif %}
+                      {% if item.get('totalBytes') is not none %} · {{ item.get('totalBytes') }} bytes total{% endif %}
+                      {% if item.get('responseTime') is not none %} · {{ item.get('responseTime') }} ms response{% endif %}
+                    </li>
+                    {% endfor %}
+                  </ul>
+                </details>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+          {% if strategy.metric_savings %}
+          <details class="psi-audit-bucket">
+            <summary>Metric savings ({{ strategy.metric_savings | length }})</summary>
+            <ul class="psi-opportunity-list">
+              {% for opportunity in strategy.metric_savings %}
+              <li class="psi-opportunity">
+                <div class="psi-opportunity-head">
+                  <strong>{{ opportunity.title }}</strong>
+                  {% if opportunity.display_value %}<span class="psi-audit-value">{{ opportunity.display_value }}</span>{% endif %}
+                  {% if opportunity.savings_ms is not none %}<span class="psi-savings">~{{ opportunity.savings_ms }} ms</span>{% endif %}
+                  {% if opportunity.savings_bytes is not none %}<span class="psi-savings">~{{ opportunity.savings_bytes }} bytes</span>{% endif %}
+                  <code class="psi-audit-id">{{ opportunity.id }}</code>
+                </div>
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+          {% set psi_buckets = {"Passed": strategy.audits.passed, "Not applicable": strategy.audits.not_applicable, "Manual": strategy.audits.manual, "Informative": strategy.audits.informative, "Error": strategy.audits.error} %}
+          {% for bucket_label, bucket_audits in psi_buckets.items() %}
+          {% if bucket_audits %}
+          <details class="psi-audit-bucket">
+            <summary>{{ bucket_label }} ({{ bucket_audits | length }})</summary>
+            <ul class="psi-audit-list">
+              {% for audit in bucket_audits %}
+              <li class="psi-audit">
+                <div class="psi-audit-head">
+                  <span class="psi-audit-score">{{ audit.score_percent if audit.score is not none else "—" }}</span>
+                  <strong>{{ audit.title }}</strong>
+                  {% if audit.display_value %}<span class="psi-audit-value">{{ audit.display_value }}</span>{% endif %}
+                  <code class="psi-audit-id">{{ audit.id }}</code>
+                </div>
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+          {% endfor %}
+          {% endif %}
         </div>
-        <div class="summary-item">
-          <strong>Tested scope</strong>
-          <span>{{ tested_scope.get("run_ids", []) | length }} run{% if tested_scope.get("run_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("scenario_ids", []) | length }} scenario{% if tested_scope.get("scenario_ids", []) | length != 1 %}s{% endif %}</span>
-        </div>
-        <div class="summary-item">
-          <strong>Versions and personas</strong>
-          <span>{{ tested_scope.get("version_ids", []) | length }} version{% if tested_scope.get("version_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("persona_ids", []) | length }} persona{% if tested_scope.get("persona_ids", []) | length != 1 %}s{% endif %}</span>
-        </div>
-        <div class="summary-item">
-          <strong>Report basis</strong>
-          <span>{{ "Recorded evidence only" if using_fallback else "Recorded evidence and reviewed findings" }}</span>
-        </div>
-      </div>
-      {% if synthesis_status == "no-issues" %}
-      <div class="tested-scope-detail" data-no-issues-scope="true">
-        <h3>Tested scope</h3>
-        <ul>
-        {% for run in runs %}
-          <li>
-            <a href="{{ run.run_page ~ '?' if run.run_page is defined and run.run_page else '?' }}run={{ run.run_id | urlencode }}#playback-workspace">Open replay</a>:
-            {{ run.scenario_label }} / {{ run.version_label }} / {{ run.persona_label }}
-          </li>
         {% endfor %}
-        </ul>
       </div>
-      {% endif %}
-      {% if using_fallback %}
-      <p class="fallback-notice">
-        {% if synthesis_status == "rejected" %}
-        Only recorded evidence is shown because no reviewed finding could be published. Verify each linked replay before changing the website.
-        {% elif synthesis_status == "invalid" %}
-        Only recorded evidence is shown because the review could not be validated. Verify each linked replay before changing the website.
-        {% elif synthesis_status in ["missing", "unavailable"] %}
-        Only recorded evidence is shown. Verify each linked replay before changing the website.
-        {% else %}
-        Only recorded evidence is shown. Verify each linked replay before changing the website.
-        {% endif %}
-      </p>
-      {% endif %}
+      {% endfor %}
     </section>
+    {% endif %}
 
-    <section id="priority-findings" class="report-section" aria-labelledby="priority-findings-title">
+
+
+        <section id="priority-findings" class="report-section" aria-labelledby="priority-findings-title">
       <div class="report-section-heading">
         <div>
           <p class="eyebrow">{{ "Recorded evidence" if using_fallback else "Conclusions" }}</p>
