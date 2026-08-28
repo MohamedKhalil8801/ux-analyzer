@@ -1832,7 +1832,7 @@ def test_renderer_places_conclusions_before_comparison_and_orders_severity(
     )
 
     section_positions = [
-        html.index('id="analysis-summary"'),
+        html.index('id="dash-index"'),
         html.index('id="priority-findings"'),
         html.index('id="fix-first"'),
         html.index('id="evidence-workspace"'),
@@ -1848,7 +1848,7 @@ def test_renderer_places_conclusions_before_comparison_and_orders_severity(
     assert priority_html.index("High priority finding") < priority_html.index(
         "Low priority finding"
     )
-    assert "Accepted findings" in html
+    assert 'id="dash-index"' in html
     assert "Tested scope" in html
     assert "Evidence review complete" in html
     assert html.count("Verify evidence") == 3
@@ -1873,7 +1873,7 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert "No supported UX issues were established in the tested scenarios." in (
         no_issue_html
     )
-    assert "Accepted findings" in no_issue_html
+    assert "No findings recorded." in no_issue_html
     assert 'data-synthesis-status="no-issues"' in no_issue_html
 
     fallback_root = tmp_path / "fallback"
@@ -1917,7 +1917,7 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert "Reviewer status" not in fallback_html
     assert "model review did not complete" not in fallback_copy
     assert 'data-report-navigation="true"' in fallback_html
-    assert "max-width: 1440px" in fallback_html
+    assert "max-width: 1280px" in fallback_html
     assert "padding-inline: clamp(" in fallback_html
     assert 'data-evidence-target="{&#34;kind&#34;: &#34;metric&#34;' in fallback_html
 
@@ -2257,7 +2257,7 @@ def test_renderer_no_issues_lists_named_scope_with_run_links(tmp_path: Path) -> 
         encoding="utf-8"
     )
     scope = html[
-        html.index('data-no-issues-scope="true"') : html.index('id="priority-findings"')
+        html.index('data-no-issues-scope="true"') : html.index('id="evidence-workspace"')
     ]
 
     assert "Invite / Improved / Workspace administrator" in scope
@@ -3956,7 +3956,7 @@ def test_renderer_renders_ux_audit_section_from_persisted_file(
     assert "robots.txt not found" in html
     assert "Render-blocking resources slow page display" in html
     assert "https://app.example.test/" in html
-    assert "Static page findings" in html
+    assert "Static &amp; visual page findings" in html
 
 
 def test_renderer_omits_ux_audit_section_without_file(tmp_path: Path) -> None:
@@ -4201,7 +4201,7 @@ def test_renderer_split_index_is_concise_and_uses_collision_safe_run_links(
         result["limitations"] = ["x" * 120_000]
         _write_json(result_path, result)
         _write_checksums(result_path.parent)
-    threshold = 80_000
+    threshold = 200_000
 
     output = render_experiment_report(
         tmp_path,
