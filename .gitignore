@@ -193,3 +193,7 @@ cython_debug/
 # Impeccable design-tool artifacts
 .impeccable/review/
 .impeccable/config.local.json
+/.claude
+/.codex
+/.cursor
+/.grok
