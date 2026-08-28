@@ -189,3 +189,7 @@ cython_debug/
 .cursorindexingignore
 /reports
 /.uxa-explore
+
+# Impeccable design-tool artifacts
+.impeccable/review/
+.impeccable/config.local.json
