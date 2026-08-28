@@ -344,6 +344,7 @@
     renderRunOptions();
     renderWorkspace();
     if (scrollWorkspace) {
+      showViewForNode(document.getElementById("playback-workspace"));
       document.getElementById("playback-workspace").scrollIntoView({ block: "start" });
     }
   }
@@ -360,6 +361,7 @@
       return Number(record.sequence) === Number(sequence);
     });
     setEventIndex(index >= 0 ? index : 0, false);
+    showViewForNode(document.getElementById("playback-workspace"));
     document.getElementById("playback-workspace").scrollIntoView({ block: "start" });
   }
 
@@ -507,7 +509,7 @@
     );
   }
 
-  function focusEvidenceDestination(target, evidenceId) {
+  function focusEvidenceDestination(target, evidenceId, options) {
     var destination = null;
     if (target.kind === "metric") destination = metricDestination(target.run_id, target.metric_id);
     else if (target.kind === "evidence-detail") destination = showEvidenceDetail(evidenceId, target);
@@ -577,7 +579,7 @@
       window.history.replaceState({ reportState: true }, "", previousUrl);
     }
     updateUrl(run, currentEvent(run), section, options.pushHistory !== false);
-    focusEvidenceDestination(target, evidenceId);
+    focusEvidenceDestination(target, evidenceId, options);
     return true;
   }
 
@@ -1304,6 +1306,10 @@
     applyUrlState();
     renderRunOptions();
     renderWorkspace();
+    if (window.location.hash.indexOf("#view-") === 0) {
+      clearEvidenceDestination();
+      return;
+    }
     if (state.evidenceId) openEvidence(state.evidenceId, { pushHistory: false });
     else clearEvidenceDestination();
   }
@@ -1366,6 +1372,7 @@
       selectRun(control.dataset.openRun, false);
       window.history.replaceState({ reportState: true }, "", previousUrl);
       updateUrl(currentRun(), currentEvent(currentRun()), "#playback-workspace", true);
+      showViewForNode(document.getElementById("playback-workspace"));
       document.getElementById("playback-workspace").scrollIntoView({ block: "start" });
     });
   });
@@ -1377,4 +1384,76 @@
     var run = currentRun();
     renderViewport(run, snapshotAt(run, state.eventIndex), currentEvent(run));
   });
+
+  function viewSectionOf(node) {
+    while (node) {
+      if (node.classList && node.classList.contains("view")) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function showViewForNode(node) {
+    var view = viewSectionOf(node);
+    if (!view) return false;
+    if (!view.hidden) return true;
+    document.querySelectorAll(".view").forEach(function (item) { item.hidden = item !== view; });
+    syncViewRail(view.id);
+    return true;
+  }
+  function syncViewRail(activeId) {
+    document.querySelectorAll(".view-rail a").forEach(function (tab) {
+      if (tab.getAttribute("href") === "#" + activeId) tab.setAttribute("aria-current", "page");
+      else tab.removeAttribute("aria-current");
+    });
+  }
+  document.querySelectorAll(".view-rail a").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      var target = document.getElementById(decodeURIComponent(tab.getAttribute("href").slice(1)));
+      if (target) showViewForNode(target);
+    });
+  });
+  function routeView(scrollTarget) {
+    var hash = window.location.hash;
+    if (hash.indexOf("#view-") === 0) {
+      var view = document.getElementById(hash.slice(1));
+      if (view) {
+        showViewForNode(view);
+        if (scrollTarget) window.scrollTo({ top: 0, behavior: "auto" });
+        return;
+      }
+    }
+    var params = new URLSearchParams(window.location.search);
+    if (params.get("run")) {
+      var workspace = document.getElementById("playback-workspace");
+      showViewForNode(workspace);
+      return;
+    }
+    if (hash.length > 1) {
+      var el = document.getElementById(decodeURIComponent(hash.slice(1)));
+      if (el) {
+        showViewForNode(el);
+        if (scrollTarget) el.scrollIntoView({ block: "start", behavior: "auto" });
+      }
+    }
+  }
+  focusEvidenceDestination = (function (original) {
+    return function (target, evidenceId, options) {
+      var destination = null;
+      if (target.kind === "metric") {
+        destination = metricDestination(target.run_id, target.metric_id);
+        if (!destination) {
+          destination = document.querySelector('tr[data-run-id="' + CSS.escape(String(target.run_id || "")) + '"]');
+        }
+      } else if (target.kind === "evidence-detail") destination = evidenceDetail;
+      else if (target.kind === "event" || target.kind === "replay") destination = eventCard;
+      else if (target.kind === "viewport" || target.kind === "screenshot") destination = viewportStage;
+      else if (target.duration) destination = saliencyTabs;
+      else if (target.element_id) destination = elementPanel;
+      else destination = eventCard;
+      if (destination && !(options && options.pushHistory === false)) showViewForNode(destination);
+      return original(target, evidenceId, options);
+    };
+  })(focusEvidenceDestination);
+  window.addEventListener("hashchange", function () { routeView(true); });
+  routeView(true);
 }());
