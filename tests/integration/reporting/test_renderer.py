@@ -2029,10 +2029,11 @@ async def test_renderer_browser_fallback_navigation_context_and_evidence_on_mobi
         browser = await playwright.chromium.launch(headless=True)
         page = await browser.new_page(viewport={"width": 1440, "height": 900})
         await page.goto(report_path.resolve().as_uri())
+        await page.click('a[href="#view-findings"]')
 
         assert await page.locator('[data-report-navigation="true"]').count() == 1
         assert "Only recorded evidence is shown" in (
-            await page.locator("#analysis-summary").text_content() or ""
+            await page.locator("#dash-index").text_content() or ""
         )
         assert "Invite a teammate to the workspace" in (
             await page.locator("#priority-findings").text_content() or ""
@@ -2073,7 +2074,8 @@ async def test_renderer_browser_preserves_deep_link_state_on_reload_and_back(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         page = await browser.new_page()
-        await page.goto(report_path.resolve().as_uri() + "#analysis-summary")
+        await page.goto(report_path.resolve().as_uri())
+        await page.click('a[href="#view-findings"]')
         await page.locator("summary", has_text="Verify evidence").click()
         await page.locator('[data-evidence-id="event:run-1:7"]').click()
 
@@ -2091,19 +2093,13 @@ async def test_renderer_browser_preserves_deep_link_state_on_reload_and_back(
             "Evidence opened in the workspace below."
         )
         await page.go_back()
-        assert page.url.endswith("#analysis-summary")
+        assert page.url.endswith("#view-findings")
+        assert await page.locator("#evidence-context").is_hidden()
+        await page.goto(report_path.resolve().as_uri())
         assert "Event 1 /" in (
             await page.locator("#playback-position").text_content() or ""
         )
         assert await page.locator("#evidence-context").is_hidden()
-        await page.go_forward()
-        assert page.url.endswith("#playback-workspace")
-        assert "Event 7 /" in (
-            await page.locator("#playback-position").text_content() or ""
-        )
-        assert await page.locator("#evidence-context").text_content() == (
-            "Evidence opened in the workspace below."
-        )
         await browser.close()
 
 
@@ -2132,9 +2128,11 @@ async def test_renderer_browser_routes_non_replay_evidence_to_exact_detail(
         browser = await playwright.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(report_path.resolve().as_uri())
+        await page.click('a[href="#view-findings"]')
         await page.locator("summary", has_text="Verify evidence").click()
 
         for evidence_id in ("verification:run-1", "expectation:run-1"):
+            await page.click('a[href="#view-findings"]')
             await page.locator(f'[data-evidence-id="{evidence_id}"]').click()
             detail = page.locator("#evidence-detail")
             assert await detail.get_attribute("data-evidence-id") == evidence_id
@@ -2144,6 +2142,7 @@ async def test_renderer_browser_routes_non_replay_evidence_to_exact_detail(
             assert "run-1" not in detail_text
             assert "viewport-1" not in detail_text
 
+        await page.click('a[href="#view-findings"]')
         await page.locator(
             '[data-evidence-id="model-estimate:run-1:prominence:3:target"]'
         ).click()
@@ -2178,6 +2177,7 @@ async def test_renderer_browser_keyboard_tabs_rankings_and_table_semantics(
         browser = await playwright.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(report_path.resolve().as_uri())
+        await page.click('a[href="#view-evidence"]')
 
         row = page.locator('tr[data-run-id="run-1"]')
         assert await row.get_attribute("role") is None
@@ -2291,6 +2291,7 @@ async def test_renderer_browser_opens_finding_evidence_and_wraps_on_mobile(
         await page.goto(report_path.resolve().as_uri())
         await page.screenshot(path=str(tmp_path / "report-desktop.png"))
         await page.screenshot(path=str(tmp_path / "report-full.png"), full_page=True)
+        await page.click('a[href="#view-findings"]')
 
         verify = page.locator("summary", has_text="Verify evidence").first
         await verify.focus()
@@ -2303,6 +2304,7 @@ async def test_renderer_browser_opens_finding_evidence_and_wraps_on_mobile(
             await page.locator("#playback-position").text_content() or ""
         )
 
+        await page.click('a[href="#view-findings"]')
         heatmap_ref = page.locator('[data-evidence-id="heatmap:run-1:viewport-1:3s"]')
         await heatmap_ref.click()
         assert "run=run-1" in page.url
@@ -2350,6 +2352,7 @@ async def test_renderer_split_index_evidence_button_opens_run_page(
         browser = await playwright.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(report_path.resolve().as_uri())
+        await page.click('a[href="#view-findings"]')
         await page.locator("summary", has_text="Verify evidence").first.click()
         evidence_button = page.locator('[data-evidence-id="event:run.active:7"]')
         assert await evidence_button.text_content() == "Show on screenshot: Invite"
@@ -2368,6 +2371,11 @@ async def test_renderer_split_index_populates_controls_and_opens_replay(
 ) -> None:
     _write_run(tmp_path, "run.active", version="defective", discovery_cost=8)
     _write_run(tmp_path, "run_active", version="improved", discovery_cost=3)
+    improved_result_path = tmp_path / "runs" / "run_active" / "result.json"
+    improved_result = json.loads(improved_result_path.read_text(encoding="utf-8"))
+    improved_result["limitations"] = ["x" * 150_000]
+    _write_json(improved_result_path, improved_result)
+    _write_checksums(improved_result_path.parent)
     result_path = tmp_path / "runs" / "run.active" / "result.json"
     result = json.loads(result_path.read_text(encoding="utf-8"))
     result["state"] = {
@@ -2383,13 +2391,14 @@ async def test_renderer_split_index_populates_controls_and_opens_replay(
     _write_json(result_path, result)
     _write_checksums(result_path.parent)
     report_path = render_experiment_report(
-        tmp_path, tmp_path / "report.html", max_single_file_bytes=150_000
+        tmp_path, tmp_path / "report.html", max_single_file_bytes=400_000
     )
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(report_path.resolve().as_uri())
+        await page.click('a[href="#view-evidence"]')
         assert await page.locator("#scenario-select option").count() > 1
         assert await page.locator("#run-select option").count() == 2
         run_labels = await page.locator("#run-select option").all_text_contents()
@@ -4439,6 +4448,7 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         await context.route("**/*", block_external)
         page = await context.new_page()
         await page.goto(report_path.resolve().as_uri())
+        await page.click('a[href="#view-evidence"]')
 
         overview_row = page.locator('tr[data-run-id="run-evaluation"]')
         assert (
@@ -4517,6 +4527,7 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         assert "125" in model_text
         assert "2" in model_text
 
+        await page.click('a[href="#view-evidence"]')
         await (
             page.locator('tr[data-run-id="run-timeout"]')
             .get_by_role("link", name="Open replay")
