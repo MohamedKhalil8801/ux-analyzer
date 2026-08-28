@@ -10,12 +10,29 @@
   </style>
 </head>
 <body>
+  <!--
+  DESIGN CONTRACT — The Lab Observation Log (user-locked direction, seed fcdbd2ef)
+  THESIS: The report is the researcher's own session log — a preprinted observation
+  sheet on the lab bench: ruled fields, carbon ink, rubber stamps. Every claim is an
+  observation row pointing at recorded evidence; it refuses the dashboard default.
+  OWN-WORLD: bond paper #f7f6f2, carbon ink #1d1f23, form ruling #d9d4c7, manila
+  panels #ece7db, review-red stamp ink #bf3a2b, verified-green pen #2f6b4f,
+  highlighter amber #a16207, archive brown #7a5230; Public Sans form voice,
+  system mono for machine-recorded values; 2px form corners; one sheet shadow.
+  STORY: The stakeholder reads the session header, the stamped findings in priority
+  order, and verifies any claim through its exhibit tag to the exact evidence.
+  FIRST VIEWPORT: Session-record masthead — UXA roundel and document title — above
+  the Index sheet: the status stamp, assessment line, and the dashboard cards.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the
+  finish review, the verdict, DESIGN.md, and every shipping raster carrying its
+  provenance.
+  -->
+  <a class="skip-link" href="#priority-findings">Skip to findings</a>
   <header class="page-header">
     <div>
-      <p class="eyebrow">UX Analyzer</p>
+      <p class="masthead-mark"><span class="masthead-roundel" aria-hidden="true">UXA</span><span>Session record</span></p>
       <h1>{{ title }}</h1>
     </div>
-    <p class="lede">Recorded experiment evidence. Simulated metrics, not real-user predictions.</p>
   </header>
 
   <main>
@@ -23,6 +40,16 @@
 {% set using_fallback = synthesis.using_fallback if synthesis.using_fallback is defined else true %}
 {% set tested_scope = synthesis.tested_scope if synthesis.tested_scope is defined else {} %}
     <p id="evidence-context" class="evidence-context" role="status" hidden></p>
+
+    <nav class="view-rail" aria-label="Report sections">
+      <a class="view-tab" href="#view-overview" aria-current="page">Overview</a>
+      <a class="view-tab" href="#view-findings">{{ "Recorded signals" if using_fallback else "Findings" }}</a>
+      {% if ux_audit %}<a class="view-tab" href="#view-audit">Page findings</a>{% endif %}
+      {% if pagespeed %}<a class="view-tab" href="#view-performance">Performance</a>{% endif %}
+      <a class="view-tab" href="#view-evidence">Evidence desk</a>
+    </nav>
+
+  <div class="view" id="view-overview">
 
     {% macro status_label(status) -%}
       {%- if status == "accepted" -%}Evidence review complete
@@ -180,17 +207,16 @@
       </article>
     {%- endmacro %}
 
-<section
-      id="analysis-summary"
-      class="report-section analysis-summary"
-      aria-labelledby="analysis-summary-title"
+    <section
+      id="dash-index"
+      class="report-section dash-board"
+      aria-labelledby="dash-index-title"
       data-synthesis-status="{{ synthesis_status }}"
       data-using-fallback="{{ 'true' if using_fallback else 'false' }}"
     >
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">At a glance</p>
-          <h2 id="analysis-summary-title">Analysis summary</h2>
+          <h2 id="dash-index-title">Index</h2>
         </div>
         <span class="synthesis-status status-{{ synthesis_status }}">{{ status_label(synthesis_status) }}</span>
       </div>
@@ -207,53 +233,85 @@
         Only recorded evidence is shown; inspect the linked replays below.
         {% endif %}
       </p>
-      <div class="summary-grid">
-        <div class="summary-item">
-          <strong>{{ "Recorded signals" if using_fallback else "Accepted findings" }}</strong>
-          <span>{{ synthesis.findings | length }}</span>
-        </div>
-        <div class="summary-item">
-          <strong>Tested scope</strong>
-          <span>{{ tested_scope.get("run_ids", []) | length }} run{% if tested_scope.get("run_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("scenario_ids", []) | length }} scenario{% if tested_scope.get("scenario_ids", []) | length != 1 %}s{% endif %}</span>
-        </div>
-        <div class="summary-item">
-          <strong>Versions and personas</strong>
-          <span>{{ tested_scope.get("version_ids", []) | length }} version{% if tested_scope.get("version_ids", []) | length != 1 %}s{% endif %}, {{ tested_scope.get("persona_ids", []) | length }} persona{% if tested_scope.get("persona_ids", []) | length != 1 %}s{% endif %}</span>
-        </div>
-        <div class="summary-item">
-          <strong>Report basis</strong>
-          <span>{{ "Recorded evidence only" if using_fallback else "Recorded evidence and reviewed findings" }}</span>
-        </div>
-      </div>
-      <div class="tested-scope-detail" data-no-issues-scope="true">
-        <h3>Tested scope</h3>
-        <ul>
-        {% for run in runs %}
-          <li>
-            <a href="{{ run.run_page ~ '?' if run.run_page is defined and run.run_page else '?' }}run={{ run.run_id | urlencode }}#playback-workspace">Open replay</a>:
-            {{ run.scenario_label }} / {{ run.version_label }} / {{ run.persona_label }}
-          </li>
-        {% endfor %}
-        </ul>
-      </div>
       {% if using_fallback %}
       <p class="fallback-notice">
         {% if synthesis_status == "rejected" %}
         Only recorded evidence is shown because no reviewed finding could be published. Verify each linked replay before changing the website.
         {% elif synthesis_status == "invalid" %}
         Only recorded evidence is shown because the review could not be validated. Verify each linked replay before changing the website.
-        {% elif synthesis_status in ["missing", "unavailable"] %}
-        Only recorded evidence is shown. Verify each linked replay before changing the website.
         {% else %}
         Only recorded evidence is shown. Verify each linked replay before changing the website.
         {% endif %}
       </p>
       {% endif %}
+      <div class="dash-grid">
+        <a class="dash-card" href="#view-findings">
+          <span class="dash-card-tab">{{ "Recorded signals" if using_fallback else "Findings" }}</span>
+          <span class="dash-card-count">{{ synthesis.findings | length }}</span>
+          {% for finding in synthesis.findings[:2] %}
+          <span class="dash-card-line">{{ finding.get("fallback_title", finding.title) }}</span>
+          {% else %}
+          <span class="dash-card-line empty">No findings recorded.</span>
+          {% endfor %}
+          <span class="dash-card-cta">{{ "Review signals" if using_fallback else "Review findings" }}</span>
+        </a>
+        {% if ux_audit %}
+        {% set ns_audit = namespace(critical=0, high=0, medium=0, low=0) %}
+        {% for url_report in ux_audit.url_reports %}{% for issue in url_report.issues %}
+          {% if issue.severity == "critical" %}{% set ns_audit.critical = ns_audit.critical + 1 %}{% endif %}
+          {% if issue.severity == "high" %}{% set ns_audit.high = ns_audit.high + 1 %}{% endif %}
+          {% if issue.severity == "medium" %}{% set ns_audit.medium = ns_audit.medium + 1 %}{% endif %}
+          {% if issue.severity in ("low", "info") %}{% set ns_audit.low = ns_audit.low + 1 %}{% endif %}
+        {% endfor %}{% endfor %}
+        <a class="dash-card" href="#view-audit">
+          <span class="dash-card-tab">Page findings</span>
+          <span class="dash-card-count">{{ ux_audit.total_issues }}</span>
+          <span class="dash-card-severities">
+            {% if ns_audit.critical %}<span class="severity-label severity-critical">{{ ns_audit.critical }} critical</span>{% endif %}
+            {% if ns_audit.high %}<span class="severity-label severity-high">{{ ns_audit.high }} high</span>{% endif %}
+            {% if ns_audit.medium %}<span class="severity-label severity-medium">{{ ns_audit.medium }} medium</span>{% endif %}
+            {% if ns_audit.low %}<span class="severity-label severity-low">{{ ns_audit.low }} low</span>{% endif %}
+          </span>
+          <span class="dash-card-line">Deterministic checks against each start URL — recorded page facts, not simulated-user findings.</span>
+          <span class="dash-card-cta">Open page findings</span>
+        </a>
+        {% endif %}
+        {% if pagespeed %}
+        <a class="dash-card" href="#view-performance">
+          <span class="dash-card-tab">Performance</span>
+          <span class="dash-card-tiles">
+          {% set ns_psi = namespace(found=false) %}
+          {% for url_report in pagespeed.url_reports %}{% if not ns_psi.found %}{% for strategy_name, strategy in url_report.strategies.items() %}{% if strategy.status == "ok" and strategy.categories and not ns_psi.found %}
+            {% for category in strategy.categories[:4] %}
+            <span class="psi-tile psi-score-{{ 'good' if category.score is not none and category.score >= 0.9 else ('ok' if category.score is not none and category.score >= 0.5 else 'bad') }}">
+              <span class="psi-tile-score">{{ category.score_percent }}</span>
+              <span class="psi-tile-label">{{ category.title }}</span>
+            </span>
+            {% endfor %}
+            {% set ns_psi.found = true %}
+          {% endif %}{% endfor %}{% endif %}{% endfor %}
+          </span>
+          <span class="dash-card-line">Lighthouse results per strategy, verbatim from the same API as pagespeed.web.dev.</span>
+          <span class="dash-card-cta">Open performance</span>
+        </a>
+        {% endif %}
+        <a class="dash-card" href="#view-evidence">
+          <span class="dash-card-tab">Evidence desk</span>
+          <span class="dash-card-count">{{ tested_scope.get("run_ids", []) | length }}</span>
+          <span class="dash-card-chips">
+            {% for item in evidence_summary %}
+            <span class="evidence-chip evidence-{{ item.evidence_class }}">{{ item.evidence_class }} <strong>{{ item.count }}</strong></span>
+            {% endfor %}
+          </span>
+          <span class="dash-card-line">{{ failure_rows | length }} failed run{{ "s" if failure_rows | length != 1 }} · comparison table, aggregates, gates, provider methods, and the replay workspace.</span>
+          <span class="dash-card-cta">Open evidence desk</span>
+        </a>
+      </div>
     </section>
+  </div>
 
+  {% if ux_audit %}<div class="view" id="view-audit" hidden>
 
-
-    {% if ux_audit %}
     <section
       id="ux-audit"
       class="report-section ux-audit"
@@ -261,7 +319,6 @@
     >
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">Live page audit</p>
           <h2 id="ux-audit-title">Static &amp; visual page findings</h2>
         </div>
         <span class="finding-count">{{ ux_audit.total_issues }} issue{{ "s" if ux_audit.total_issues != 1 else "" }}</span>
@@ -339,7 +396,9 @@
         {% endif %}
         {% if url_report.issues %}
         <ul class="ux-audit-issues">
-          {% for issue in url_report.issues %}
+          {% set severity_order = ["critical", "high", "medium", "low", "info"] %}
+          {% for audit_severity in severity_order %}
+          {% for issue in url_report.issues if issue.severity == audit_severity %}
           <li class="ux-audit-issue severity-{{ issue.severity }}">
             <div class="ux-audit-issue-header">
               <span class="severity-label severity-{{ issue.severity }}">{{ issue.severity | title }}</span>
@@ -418,6 +477,7 @@
             </details>
           </li>
           {% endfor %}
+          {% endfor %}
         </ul>
         {% else %}
         <p class="ux-audit-clean">No static page issues found for this URL.</p>
@@ -425,9 +485,10 @@
       </div>
       {% endfor %}
     </section>
-    {% endif %}
+  </div>
+  {% endif %}
 
-    {% if pagespeed %}
+  {% if pagespeed %}<div class="view" id="view-performance" hidden>
     <section
       id="pagespeed"
       class="report-section pagespeed"
@@ -435,7 +496,6 @@
     >
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">PageSpeed Insights</p>
           <h2 id="pagespeed-title">Lighthouse performance reports</h2>
         </div>
         <span class="finding-count">{{ pagespeed.ok_strategy_count }} report{{ "s" if pagespeed.ok_strategy_count != 1 else "" }}</span>
@@ -621,22 +681,22 @@
       </div>
       {% endfor %}
     </section>
-    {% endif %}
+  </div>
+  {% endif %}
 
-
+  <div class="view" id="view-findings" hidden>
 
         <section id="priority-findings" class="report-section" aria-labelledby="priority-findings-title">
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">{{ "Recorded evidence" if using_fallback else "Conclusions" }}</p>
           <h2 id="priority-findings-title">{{ "Recorded signals requiring manual review" if using_fallback else "Priority findings" }}</h2>
         </div>
         <span class="finding-count">{{ synthesis.findings | length }} {{ "recorded" if using_fallback else "accepted" }}</span>
       </div>
       {% if synthesis.findings %}
         {% if using_fallback %}
-          <details class="fallback-details">
-            <summary>Show {{ synthesis.findings | length }} recorded signals — hidden by default. Expand to verify each replay. Low confidence, requires human check.</summary>
+          <details class="fallback-details" open>
+            <summary>Recorded signal{{ "s" if synthesis.findings | length != 1 }} — verify each replay before acting on it. Low confidence, requires human check.</summary>
           {% for finding in synthesis.findings %}
           {% set fallback_viewport_ids = finding.get("viewport_ids", []) %}
           {% set fallback_element_ids = finding.get("element_ids", []) %}
@@ -765,7 +825,6 @@
     <section id="fix-first" class="report-section" aria-labelledby="fix-first-title">
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">Action</p>
           <h2 id="fix-first-title">{{ "Check first" if using_fallback else "Fix first" }}</h2>
         </div>
       </div>
@@ -802,18 +861,37 @@
       {% endif %}
     </section>
     {% endif %}
+  </div>
+
+  <div class="view" id="view-evidence" hidden>
+
+    <section class="report-section" aria-labelledby="tested-scope-title">
+      <div class="report-section-heading">
+        <div>
+          <h2 id="tested-scope-title">Tested scope</h2>
+        </div>
+      </div>
+      <div class="tested-scope-detail" data-no-issues-scope="true">
+        <ul>
+        {% for run in runs %}
+          <li>
+            <a href="{{ run.run_page ~ '?' if run.run_page is defined and run.run_page else '?' }}run={{ run.run_id | urlencode }}#playback-workspace">Open replay</a>:
+            {{ run.scenario_label }} / {{ run.version_label }} / {{ run.persona_label }}
+          </li>
+        {% endfor %}
+        </ul>
+      </div>
+    </section>
 
     <section id="evidence-workspace" class="report-section evidence-navigation" aria-labelledby="evidence-workspace-title">
       <div class="report-section-heading">
         <div>
-          <p class="eyebrow">Evidence</p>
           <h2 id="evidence-workspace-title">Evidence workspace</h2>
         </div>
         <span class="muted">Recorded detail and comparison</span>
       </div>
       <p>Use recorded evidence to verify a finding, compare runs, inspect saliency, or replay an interaction.</p>
       <nav class="evidence-nav" aria-label="Evidence sections" data-report-navigation="true">
-        <a href="#analysis-summary" aria-controls="analysis-summary">Analysis summary</a>
         <a href="#priority-findings" aria-controls="priority-findings">{{ "Recorded signals" if using_fallback else "Priority findings" }}</a>
         {% if not using_fallback %}
         <a href="#fix-first" aria-controls="fix-first">Fix first</a>
@@ -838,7 +916,6 @@
     <section id="comparison-overview" class="section evidence-panel overview-section" aria-labelledby="overview-title" aria-describedby="evidence-workspace-title">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Experiment</p>
           <h2 id="overview-title">Comparison overview</h2>
         </div>
         <div class="evidence-summary" aria-label="Evidence classes">
@@ -853,26 +930,26 @@
         <table id="comparison-table">
           <thead>
             <tr>
-              <th>Replay</th>
-              <th>Model trial</th>
-              <th>Prominence provider</th>
-              <th>Reproducibility</th>
-              <th>Scenario</th>
-              <th>Version</th>
-              <th>Persona</th>
-              <th>Policy</th>
-              <th>User actions</th>
-              <th>Observations</th>
-              <th>Discovery cost <span class="subvalue">lower is better</span></th>
-              <th>Estimated task time <span class="subvalue">simulated user effort</span></th>
-              <th>Model calls <span class="subvalue">analysis cost</span></th>
-              <th>Analysis latency</th>
-              <th>Tokens</th>
-              <th>Outcome</th>
-              <th>Stage</th>
-              <th>Verification</th>
-              <th>Failure / evaluation reason</th>
-              <th>Gate</th>
+              <th scope="col">Replay</th>
+              <th scope="col">Model trial</th>
+              <th scope="col">Prominence provider</th>
+              <th scope="col">Reproducibility</th>
+              <th scope="col">Scenario</th>
+              <th scope="col">Version</th>
+              <th scope="col">Persona</th>
+              <th scope="col">Policy</th>
+              <th scope="col">User actions</th>
+              <th scope="col">Observations</th>
+              <th scope="col">Discovery cost <span class="subvalue">lower is better</span></th>
+              <th scope="col">Estimated task time <span class="subvalue">simulated user effort</span></th>
+              <th scope="col">Model calls <span class="subvalue">analysis cost</span></th>
+              <th scope="col">Analysis latency</th>
+              <th scope="col">Tokens</th>
+              <th scope="col">Outcome</th>
+              <th scope="col">Stage</th>
+              <th scope="col">Verification</th>
+              <th scope="col">Failure / evaluation reason</th>
+              <th scope="col">Gate</th>
             </tr>
           </thead>
           <tbody>
@@ -900,7 +977,7 @@
               <td data-metric="model-calls">{{ row.model_calls }}</td>
               <td data-metric="analysis-latency">{{ row.analysis_latency }}</td>
               <td data-metric="analysis-tokens">{{ row.analysis_tokens }}</td>
-              <td><span class="status-pill">{{ row.outcome }}</span></td>
+              <td><span class="status-pill {{ row.status_class }}">{{ row.outcome }}</span></td>
               <td>{{ row.stage }}</td>
               <td>{{ "verified" if row.verified else "not verified" }}</td>
               <td>{{ row.failure_reason }}</td>
@@ -919,7 +996,7 @@
         <div class="aggregate-grid">
           <div class="table-wrap">
             <table id="aggregate-table">
-             <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Prominence provider</th><th>Model trial</th><th>Reproducibility</th><th>Version</th><th>Runs</th><th>Verified</th><th>Discovery cost</th><th>Task seconds</th><th>Model calls</th><th>Latency ms</th><th>Tokens</th></tr></thead>
+              <thead><tr><th scope="col">Scenario</th><th scope="col">Persona</th><th scope="col">Policy</th><th scope="col">Prominence provider</th><th scope="col">Model trial</th><th scope="col">Reproducibility</th><th scope="col">Version</th><th scope="col">Runs</th><th scope="col">Verified</th><th scope="col">Discovery cost</th><th scope="col">Task seconds</th><th scope="col">Model calls</th><th scope="col">Latency ms</th><th scope="col">Tokens</th></tr></thead>
               <tbody>
               {% for row in comparison_rows %}
                  <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td data-metric="prominence-provider">{{ row.prominence_provider_id }}</td><td data-metric="model-trial">{{ row.model_trial }}</td><td data-metric="reproducibility">{{ row.reproducibility_label }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.estimated_task_seconds) if row.estimated_task_seconds is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.model_calls) if row.model_calls is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_latency_ms) if row.analysis_latency_ms is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_tokens) if row.analysis_tokens is not none else "unavailable" }}</td></tr>
@@ -931,7 +1008,7 @@
           </div>
           <div class="table-wrap">
             <table id="gate-table">
-             <thead><tr><th>Scenario</th><th>Persona</th><th>Policy</th><th>Prominence provider</th><th>Model trial</th><th>Reproducibility</th><th>Seeds</th><th>Gate</th><th>Reason</th></tr></thead>
+              <thead><tr><th scope="col">Scenario</th><th scope="col">Persona</th><th scope="col">Policy</th><th scope="col">Prominence provider</th><th scope="col">Model trial</th><th scope="col">Reproducibility</th><th scope="col">Seeds</th><th scope="col">Gate</th><th scope="col">Reason</th></tr></thead>
               <tbody>
               {% for row in gate_rows %}
                  <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td data-metric="prominence-provider">{{ row.prominence_provider_id }}</td><td data-metric="model-trial">{{ row.model_trial }}</td><td data-metric="reproducibility">{{ row.reproducibility_label }}</td><td>{{ row.paired_seed_count }}</td><td>{{ "unavailable" if not row.available else "pass" if row.passed else "fail" }}</td><td>{{ row.reasons | join("; ") if row.reasons else "All directional checks passed" }}</td></tr>
@@ -949,7 +1026,6 @@
     <section id="focused-acceptance" class="section evidence-panel focused-acceptance" aria-labelledby="focused-acceptance-title" aria-describedby="evidence-workspace-title">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Focused saliency validation</p>
           <h2 id="focused-acceptance-title">Focused saliency promotion gate</h2>
         </div>
         <strong>{{ "pass" if focused_acceptance.gate.passed else "fail" }}</strong>
@@ -964,7 +1040,7 @@
       {% endif %}
       <div class="table-wrap">
         <table id="focused-operational-evidence">
-          <thead><tr><th>Scenario</th><th>Version</th><th>Provider</th><th>Status</th><th>Latency ms</th><th>Peak RSS bytes</th><th>Sampler</th><th>Synthetic</th></tr></thead>
+          <thead><tr><th scope="col">Scenario</th><th scope="col">Version</th><th scope="col">Provider</th><th scope="col">Status</th><th scope="col">Latency ms</th><th scope="col">Peak RSS bytes</th><th scope="col">Sampler</th><th scope="col">Synthetic</th></tr></thead>
           <tbody>
           {% for row in focused_acceptance.cells %}
             <tr><td>{{ row.scenario_id }}</td><td>{{ row.version_id }}</td><td>{{ row.provider_id }}</td><td>{{ row.status }}</td><td>{{ row.latency_ms }}</td><td>{{ row.peak_rss_bytes }}</td><td>{{ row.sampler_provider }}</td><td>{{ "yes" if row.synthetic else "no" }}</td></tr>
@@ -981,31 +1057,31 @@
       .provider-comparison-section { padding: 18px; }
       .comparison-note { max-width: 460px; margin: 0; text-align: right; }
       .provider-comparison-toolbar { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
-      .provider-comparison-toolbar label { display: grid; gap: 3px; color: var(--muted); font-size: .7rem; }
+      .provider-comparison-toolbar label { display: grid; gap: 3px; color: var(--ink-soft); font-size: .7rem; }
       .provider-comparison-output { min-width: 0; }
       .comparison-cell-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 8px 0 12px; }
       .comparison-cell-heading h3 { margin: 0; font-size: 1rem; }
       .comparison-cell-heading p { margin: 0; }
       .provider-comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-      .provider-card { min-width: 0; padding: 14px 0; border-top: 3px solid var(--accent); background: transparent; }
+      .provider-card { min-width: 0; padding: 14px 0; border-top: 3px solid var(--stamp); background: transparent; }
       .provider-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
       .provider-card-heading h3 { margin: 0; font-size: 1rem; }
-      .provider-status { padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: .68rem; font-weight: 800; }
-      .comparison-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+      .provider-status { padding: 3px 6px; border: 1px solid var(--rule-strong); border-radius: 2px; color: var(--ink-soft); font-size: .68rem; font-weight: 700; }
+      .comparison-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
       .comparison-block > strong { display: block; margin-bottom: 6px; font-size: .76rem; }
-      .provider-heatmap { display: block; width: min(100%, 420px); max-height: 260px; margin: 8px 0; border: 1px solid var(--line); image-rendering: auto; object-fit: contain; background: #17222a; }
+      .provider-heatmap { display: block; width: min(100%, 420px); max-height: 260px; margin: 8px 0; border: 1px solid var(--rule-strong); image-rendering: auto; object-fit: contain; background: var(--carbon); }
       .exact-heatmap { image-rendering: pixelated; }
-      .artifact-link { display: inline-block; margin: 2px 0; color: var(--accent); font-size: .74rem; font-weight: 750; overflow-wrap: anywhere; }
+      .artifact-link { display: inline-block; margin: 2px 0; color: var(--stamp-deep); font-size: .74rem; font-weight: 600; overflow-wrap: anywhere; }
       .comparison-ranking-table { margin-top: 8px; }
       .comparison-path { display: grid; gap: 6px; margin: 0; padding-left: 22px; }
       .comparison-path li { padding-left: 2px; font-size: .73rem; }
-      .path-step { max-width: 100%; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); text-align: left; font-size: .72rem; overflow-wrap: anywhere; }
-      .path-step:hover, .path-step:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
-      .path-status { margin-left: 6px; font-size: .68rem; font-weight: 800; text-transform: uppercase; }
-      .path-status-succeeded { color: var(--success); }
-      .path-status-failed { color: var(--danger); }
-      .path-status-recorded { color: var(--muted); }
-      .path-error { display: block; margin: 3px 0 0 6px; color: var(--danger); font-size: .68rem; overflow-wrap: anywhere; }
+      .path-step { max-width: 100%; padding: 4px 6px; border: 1px solid var(--rule-strong); border-radius: 2px; background: var(--paper-raised); color: var(--ink); text-align: left; font-size: .72rem; overflow-wrap: anywhere; }
+      .path-step:hover, .path-step:focus-visible { border-color: var(--stamp); background: var(--stamp-soft); }
+      .path-status { margin-left: 6px; font-size: .68rem; font-weight: 700; text-transform: uppercase; }
+      .path-status-succeeded { color: var(--verified); }
+      .path-status-failed { color: var(--stamp); }
+      .path-status-recorded { color: var(--ink-soft); }
+      .path-error { display: block; margin: 3px 0 0 6px; color: var(--stamp); font-size: .68rem; overflow-wrap: anywhere; }
       @media (max-width: 760px) {
         .provider-comparison-grid { grid-template-columns: 1fr; }
         .comparison-note { text-align: left; }
@@ -1015,7 +1091,6 @@
     <section id="provider-comparison-section" class="section evidence-panel provider-comparison-section" aria-labelledby="provider-comparison-title" aria-describedby="evidence-workspace-title">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Methods</p>
           <h2 id="provider-comparison-title">Provider method comparison</h2>
         </div>
         <p class="method-note comparison-note">Exact persisted heatmaps, prominence rankings, and executed action paths.</p>
@@ -1031,7 +1106,6 @@
     <section class="section evidence-panel workspace-shell" id="playback-workspace" aria-labelledby="workspace-title" aria-describedby="evidence-workspace-title">
       <div class="workspace-heading">
         <div>
-          <p class="eyebrow">Playback</p>
           <h2 id="workspace-title">Run workspace</h2>
         </div>
         <div class="selector-group">
@@ -1093,6 +1167,7 @@
         <ol id="timeline-list" class="timeline-list"></ol>
       </div>
     </section>
+  </div>
 
   </main>
 
