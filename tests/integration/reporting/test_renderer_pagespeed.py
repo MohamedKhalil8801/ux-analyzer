@@ -182,3 +182,33 @@ def test_render_experiment_report_embeds_pagespeed_section(tmp_path: Path) -> No
         in html
     )
     assert "Run fresh analysis" in html
+
+
+def test_render_experiment_report_escapes_html_markup_in_audit_titles(
+    tmp_path: Path,
+) -> None:
+    _minimal_run_bundle(tmp_path, "run-1")
+    payload = _pagespeed_payload()
+    strategy = payload["urls"][0]["strategies"]["mobile"]
+    strategy["audits"]["passed"].append(
+        {
+            "id": "document-title",
+            "title": "Document has a `<title>` element",
+            "score": 1.0,
+            "score_percent": 100,
+            "score_display_mode": "binary",
+            "display_value": None,
+            "description": None,
+            "failed": False,
+        }
+    )
+    strategy["audits"]["totals"]["passed"] = 2
+    _write_json(tmp_path / "pagespeed.json", payload)
+
+    output = tmp_path / "report.html"
+    rendered = render_experiment_report(tmp_path, output)
+
+    assert rendered == output
+    html = output.read_text(encoding="utf-8")
+    assert html.count("<title>") == 1
+    assert "Document has a `&lt;title&gt;` element" in html
