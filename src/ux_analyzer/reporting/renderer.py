@@ -304,7 +304,11 @@ def _oversized_run_html(title: str, threshold: int) -> str:
     escaped_title = html.escape(title)
     detailed = (
         '<!doctype html><html lang="en"><meta charset="utf-8">'
-        f"<title>Replay omitted: {escaped_title}</title>"
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>Replay omitted: {title}</title>"
+        '<style>body{{margin:0;padding:24px;background:#f7f6f2;color:#1d1f23;'
+        'font:16px/1.5 "Public Sans","Segoe UI",system-ui,sans-serif}}'
+        "h1{{font-size:1.4rem;letter-spacing:-.01em}}</style>"
         f"<h1>{escaped_title}</h1>"
         "<p>Detailed replay omitted because run page exceeds configured size limit.</p>"
         "<p>Run remains listed in experiment index with trust and failure details.</p>"
@@ -2670,7 +2674,9 @@ def _render_html(context: dict[str, Any], title: str) -> str:
     template_root = Path(__file__).parent
     environment = Environment(
         loader=FileSystemLoader(str(template_root / "templates")),
-        autoescape=select_autoescape(("html", "xml")),
+        autoescape=select_autoescape(
+            enabled_extensions=("html", "j2"), default_for_string=False
+        ),
         undefined=StrictUndefined,
     )
     template = environment.get_template("experiment.html.j2")
