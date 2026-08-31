@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ux_analyzer.analysis.pagespeed import PAGESPEED_SCHEMA_VERSION
@@ -172,16 +173,42 @@ def test_render_experiment_report_embeds_pagespeed_section(tmp_path: Path) -> No
     assert "https://example.com/app.js" in html
     assert "FAST" in html
     assert "Failed audits (1)" in html
-    assert (
-        'href="https://pagespeed.web.dev/analysis/https-example-com/abc123?form_factor=mobile"'
-        in html
-    )
+    assert 'href="pagespeed-report.html"' in html
     assert "View saved report" in html
     assert (
         'href="https://pagespeed.web.dev/analysis?url=https%3A%2F%2Fexample.com%2F"'
         in html
     )
-    assert "Run fresh analysis" in html
+    assert "Re-run on pagespeed.web.dev" in html
+
+    saved_report = tmp_path / "pagespeed-report.html"
+    assert saved_report.is_file()
+    replica = saved_report.read_text(encoding="utf-8")
+    assert "recorded analysis replica" in replica
+    assert "42" in replica
+    assert "Performance" in replica
+    assert "Reduce unused JavaScript" in replica
+    assert "FAST" in replica
+
+
+def test_saved_replica_scores_match_main_report(tmp_path: Path) -> None:
+    _minimal_run_bundle(tmp_path, "run-1")
+    _write_json(tmp_path / "pagespeed.json", _pagespeed_payload())
+
+    render_experiment_report(tmp_path, tmp_path / "report.html")
+
+    main = (tmp_path / "report.html").read_text(encoding="utf-8")
+    replica = (tmp_path / "pagespeed-report.html").read_text(encoding="utf-8")
+    main_scores = re.findall(
+        r'psi-category-title">Performance</span>\s*'
+        r'<span class="psi-category-score">(\d+)</span>',
+        main,
+    )
+    replica_scores = re.findall(
+        r'psi-gauge-ring">(\d+)</span>\s*<span class="psi-gauge-label">Performance',
+        replica,
+    )
+    assert main_scores == replica_scores == ["42"]
 
 
 def test_render_experiment_report_escapes_html_markup_in_audit_titles(
