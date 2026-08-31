@@ -10,7 +10,6 @@ import pytest
 from ux_analyzer.analysis.pagespeed import (
     CACHE_DIRNAME,
     PAGESPEED_SCHEMA_VERSION,
-    PSI_STRATEGIES,
     PagespeedApiError,
     PagespeedCache,
     WebLinksCache,
@@ -609,7 +608,7 @@ class _FakePlaywright:
         self._bodies = bodies
         self._chromium = _FakeChromium(urls, bodies)
 
-    def __enter__(self) -> "_FakePlaywright":
+    def __enter__(self) -> _FakePlaywright:
         return self
 
     def __exit__(self, *args) -> None:

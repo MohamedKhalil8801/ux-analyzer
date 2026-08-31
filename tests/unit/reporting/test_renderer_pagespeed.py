@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 import ux_analyzer.reporting.renderer as renderer
 from ux_analyzer.analysis.pagespeed import (
     PAGESPEED_FILENAME,

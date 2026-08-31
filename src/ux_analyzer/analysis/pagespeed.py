@@ -35,7 +35,6 @@ import secrets
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
@@ -99,7 +98,7 @@ def _realpath_retry(path: Path) -> str | None:
     for attempt in range(6):
         try:
             return os.path.realpath(path)
-        except OSError as error:
+        except OSError:
             if attempt == 5:
                 raise
             time.sleep(delay)
@@ -756,7 +755,7 @@ class PagespeedCache:
 
     def _path_for(self, url: str, strategy: str) -> Path:
         digest = hashlib.sha256(
-            f"{url}\n{strategy}".encode("utf-8")
+            f"{url}\n{strategy}".encode()
         ).hexdigest()
         return self.root / CACHE_DIRNAME / f"{digest}.json"
 

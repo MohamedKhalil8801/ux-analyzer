@@ -15,11 +15,11 @@ from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 from PIL import Image
-from urllib.parse import urlsplit
 
 from ux_analyzer.application.checkpoint import finalized_bundle_failures
 from ux_analyzer.application.evaluation import (
