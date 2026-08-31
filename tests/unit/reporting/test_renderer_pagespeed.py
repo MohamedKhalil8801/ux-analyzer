@@ -286,3 +286,41 @@ class TestLoadPagespeed:
         loaded = renderer._load_pagespeed(tmp_path)
         failed = loaded["url_reports"][0]["strategies"]["mobile"]["audits"]["failed"]
         assert [row["id"] for row in failed] == ["ok-audit"]
+
+
+class TestSavedReportScores:
+    def test_scores_pass_through_with_capture_date(self, tmp_path: Path) -> None:
+        payload = _pagespeed_payload(
+            [{"url": "https://example.com/", "strategies": {"mobile": _strategy_entry()}}]
+        )
+        payload["urls"][0]["saved_report_scores"] = {"mobile": 36, "desktop": 63}
+        payload["urls"][0]["saved_report_captured_at"] = "2026-08-30T12:00:00Z"
+        _write_pagespeed(tmp_path, payload)
+        entry = renderer._load_pagespeed(tmp_path)["url_reports"][0]
+        assert entry["saved_report_scores"] == {"mobile": 36, "desktop": 63}
+        assert entry["saved_report_captured_at"] == "2026-08-30T12:00:00Z"
+
+    def test_missing_scores_default_to_empty(self, tmp_path: Path) -> None:
+        _write_pagespeed(
+            tmp_path,
+            _pagespeed_payload(
+                [{"url": "https://example.com/", "strategies": {"mobile": _strategy_entry()}}]
+            ),
+        )
+        entry = renderer._load_pagespeed(tmp_path)["url_reports"][0]
+        assert entry["saved_report_scores"] == {}
+        assert entry["saved_report_captured_at"] is None
+
+    def test_invalid_scores_are_dropped(self, tmp_path: Path) -> None:
+        payload = _pagespeed_payload(
+            [{"url": "https://example.com/", "strategies": {"mobile": _strategy_entry()}}]
+        )
+        payload["urls"][0]["saved_report_scores"] = {
+            "mobile": 200,
+            "desktop": "63",
+            "pwa": True,
+            "other": 1.5,
+        }
+        _write_pagespeed(tmp_path, payload)
+        entry = renderer._load_pagespeed(tmp_path)["url_reports"][0]
+        assert entry["saved_report_scores"] == {}

@@ -486,6 +486,21 @@ def _pagespeed_web_link(value: object) -> str | None:
     return text[:512]
 
 
+def _pagespeed_saved_scores(value: object) -> dict[str, int]:
+    """Validate persisted saved-report scores (strategy -> 0..100)."""
+    if not isinstance(value, Mapping):
+        return {}
+    scores: dict[str, int] = {}
+    for strategy, score in value.items():
+        if not isinstance(strategy, str) or not strategy:
+            continue
+        if isinstance(score, bool) or not isinstance(score, int):
+            continue
+        if 0 <= score <= 100:
+            scores[strategy] = score
+    return scores
+
+
 def _load_pagespeed(root: Path) -> dict[str, Any] | None:
     """Load the persisted PageSpeed Insights report; malformed files stay omitted."""
 
@@ -525,6 +540,12 @@ def _load_pagespeed(root: Path) -> dict[str, Any] | None:
                 report.get("pagespeed_web_fresh_url")
             ),
             "pagespeed_web_saved": bool(report.get("pagespeed_web_saved")),
+            "saved_report_scores": _pagespeed_saved_scores(
+                report.get("saved_report_scores")
+            ),
+            "saved_report_captured_at": _optional_text(
+                report.get("saved_report_captured_at")
+            ),
             "strategies": {},
         }
         raw_strategies = report.get("strategies")
