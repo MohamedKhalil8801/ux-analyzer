@@ -222,6 +222,122 @@ def resolve_pagespeed_web_saved_link(
             browser.close()
 
 
+# A saved report's numbers come from its own Lighthouse run, which is
+# distinct from the API run recorded in pagespeed.json. Lighthouse scores
+# vary between runs, so the saved report must never be presented as if it
+# showed the recorded API numbers; its own scores are captured and shown
+# alongside the link instead.
+_SAVED_STRATEGIES = ("mobile", "desktop")
+
+# The saved report page embeds one full Lighthouse report per form factor
+# as ``article.lh-root`` and hydrates them lazily, so scores are read per
+# article once both have rendered; the emulated device text identifies
+# which article is mobile and which is desktop.
+_SAVED_ARTICLES_JS = """() => {
+  const scores = {};
+  for (const article of document.querySelectorAll('article.lh-root')) {
+    const text = article.textContent || '';
+    let strategy = null;
+    if (/moto g/i.test(text)) strategy = 'mobile';
+    else if (/emulated desktop/i.test(text)) strategy = 'desktop';
+    if (strategy === null || strategy in scores) continue;
+    const gauge = article.querySelector('.lh-scores-container .lh-gauge__wrapper');
+    if (gauge === null) continue;
+    const label = (gauge.getAttribute('aria-label') || '') + ' ' + (gauge.textContent || '');
+    const match = label.match(/(\\d+)\\s*Performance/i) || label.match(/Performance\\s*(\\d+)/i);
+    if (match) scores[strategy] = Number(match[1]);
+  }
+  return scores;
+}"""
+
+
+def extract_pagespeed_web_saved_scores(
+    link: str,
+    *,
+    timeout_seconds: float = 120.0,
+) -> dict[str, int | None]:
+    """Read the performance score each saved report renders, per strategy.
+
+    Opens the stored pagespeed.web.dev report (a saved report is served
+    from Google's storage, so this never re-runs the analysis) and reads
+    the performance gauge of each embedded Lighthouse report, matched to
+    its strategy by the emulated device it names. Strategies whose report
+    never renders come back as ``None`` so the link can still be shown
+    without claiming numbers that were never read.
+    """
+    from playwright.sync_api import sync_playwright
+
+    def _clean(raw: object) -> dict[str, int | None]:
+        scores: dict[str, int | None] = {}
+        if isinstance(raw, Mapping):
+            pairs = cast(Mapping[object, object], raw)
+            for strategy, score in pairs.items():
+                if (
+                    isinstance(strategy, str)
+                    and strategy in _SAVED_STRATEGIES
+                    and isinstance(score, int)
+                    and not isinstance(score, bool)
+                    and 0 <= score <= 100
+                ):
+                    scores[strategy] = score
+        return scores
+
+    deadline = time.monotonic() + max(15.0, timeout_seconds)
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_context().new_page()
+            try:
+                page.goto(
+                    link,
+                    wait_until="domcontentloaded",
+                    timeout=min(60000.0, max(10000.0, timeout_seconds * 1000)),
+                )
+                try:
+                    page.click("text=Ok, Got it", timeout=3000)
+                except Exception:
+                    pass
+                scores: dict[str, int | None] = {}
+                while time.monotonic() < deadline:
+                    page.wait_for_timeout(2000)
+                    scores = _clean(page.evaluate(_SAVED_ARTICLES_JS))
+                    if all(s in scores for s in _SAVED_STRATEGIES):
+                        return scores
+                return scores
+            except Exception:  # noqa: BLE001 - unreadable report yields no scores
+                return {}
+        finally:
+            browser.close()
+
+
+def resolve_pagespeed_web_saved_report(
+    url: str,
+    *,
+    timeout_seconds: float = 240.0,
+) -> dict[str, Any] | None:
+    """Capture a saved-report link plus the scores that report shows.
+
+    Combines :func:`resolve_pagespeed_web_saved_link` (which runs the
+    pagespeed.web.dev analysis once) with
+    :func:`extract_pagespeed_web_saved_scores` (which reads the stored
+    report's own numbers). Returns ``None`` when no saved report could be
+    captured; the ``scores`` mapping is best-effort and may be empty when
+    the stored report's gauges could not be read.
+    """
+    link = resolve_pagespeed_web_saved_link(url, timeout_seconds=timeout_seconds)
+    if link is None:
+        return None
+    try:
+        scores = extract_pagespeed_web_saved_scores(link)
+    except Exception:  # noqa: BLE001 - the link is captured; scores are optional
+        scores = {}
+    return {
+        "link": link,
+        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "scores": scores,
+    }
+
+
 class WebLinksCache:
     """Disk cache of resolved pagespeed.web.dev saved-report links.
 

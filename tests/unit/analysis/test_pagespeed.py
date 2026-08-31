@@ -20,12 +20,14 @@ from ux_analyzer.analysis.pagespeed import (
     extract_audits,
     extract_field_data,
     extract_opportunities,
+    extract_pagespeed_web_saved_scores,
     fetch_pagespeed,
     pagespeed_api_key,
     pagespeed_report,
     pagespeed_report_sync,
     pagespeed_web_url,
     resolve_pagespeed_web_saved_link,
+    resolve_pagespeed_web_saved_report,
 )
 
 
@@ -830,6 +832,146 @@ class TestEnrichWebLinks:
         )
         assert called == []
         assert report["urls"][0]["pagespeed_web_saved"] is False
+
+
+class TestSavedReportCapture:
+    def test_resolve_report_combines_link_and_scores(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved = "https://pagespeed.web.dev/analysis/https-example-com/abc?form_factor=mobile"
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_link",
+            lambda url, timeout_seconds=240.0: saved,
+        )
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed.extract_pagespeed_web_saved_scores",
+            lambda link: {"mobile": 36, "desktop": 63},
+        )
+        captured = resolve_pagespeed_web_saved_report("https://example.com/")
+        assert captured is not None
+        assert captured["link"] == saved
+        assert captured["scores"] == {"mobile": 36, "desktop": 63}
+        assert captured["captured_at"]
+
+    def test_score_extraction_failure_keeps_link(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved = "https://pagespeed.web.dev/analysis/https-example-com/abc?form_factor=mobile"
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_link",
+            lambda url, timeout_seconds=240.0: saved,
+        )
+
+        def failing(link: str) -> dict[str, int | None]:
+            raise RuntimeError("gauge never rendered")
+
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed.extract_pagespeed_web_saved_scores", failing
+        )
+        captured = resolve_pagespeed_web_saved_report("https://example.com/")
+        assert captured is not None
+        assert captured["link"] == saved
+        assert captured["scores"] == {}
+
+    def test_unresolved_link_yields_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_link",
+            lambda url, timeout_seconds=240.0: None,
+        )
+        assert resolve_pagespeed_web_saved_report("https://example.com/") is None
+
+
+class TestSavedScoreExtraction:
+    @staticmethod
+    def _articles_playwright(
+        payloads: list[dict], *, fail: bool = False
+    ) -> object:
+        class _ArticlesPage:
+            def __init__(self) -> None:
+                self._index = 0
+
+            def goto(self, *args, **kwargs) -> None:
+                pass
+
+            def click(self, *args, **kwargs) -> None:
+                raise RuntimeError("no consent dialog")
+
+            def wait_for_timeout(self, milliseconds: int) -> None:
+                self._index += 1
+
+            def evaluate(self, script: str) -> dict:
+                if fail:
+                    raise RuntimeError("page unavailable")
+                return payloads[min(self._index, len(payloads) - 1)]
+
+        class _Context:
+            def new_page(self) -> _ArticlesPage:
+                return _ArticlesPage()
+
+        class _Browser:
+            closed = False
+
+            def new_context(self) -> _Context:
+                return _Context()
+
+            def close(self) -> None:
+                self.closed = True
+
+        class _Chromium:
+            def launch(self) -> _Browser:
+                return _Browser()
+
+        class _Playwright:
+            chromium = _Chromium()
+
+            def __enter__(self) -> _Playwright:
+                return self
+
+            def __exit__(self, *args) -> None:
+                return None
+
+        return _Playwright()
+
+    def test_extracts_scores_per_strategy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved = "https://pagespeed.web.dev/analysis/https-example-com/abc?form_factor=mobile"
+        monkeypatch.setattr(
+            "playwright.sync_api.sync_playwright",
+            lambda: self._articles_playwright(
+                [
+                    {"mobile": 36, "desktop": 63},
+                ]
+            ),
+        )
+        scores = extract_pagespeed_web_saved_scores(saved)
+        assert scores == {"mobile": 36, "desktop": 63}
+
+    def test_out_of_range_scores_are_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved = "https://pagespeed.web.dev/analysis/https-example-com/abc?form_factor=mobile"
+        monkeypatch.setattr(
+            "playwright.sync_api.sync_playwright",
+            lambda: self._articles_playwright(
+                [
+                    {"mobile": 255, "desktop": -1},
+                ]
+            ),
+        )
+        scores = extract_pagespeed_web_saved_scores(saved)
+        assert scores == {}
+
+    def test_page_failure_yields_no_scores(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved = "https://pagespeed.web.dev/analysis/https-example-com/abc?form_factor=mobile"
+        monkeypatch.setattr(
+            "playwright.sync_api.sync_playwright",
+            lambda: self._articles_playwright([], fail=True),
+        )
+        scores = extract_pagespeed_web_saved_scores(saved)
+        assert scores == {}
 
 
 class TestBuildUrlReport:
