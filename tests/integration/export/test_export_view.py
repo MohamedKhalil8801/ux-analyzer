@@ -1,0 +1,560 @@
+"""Integration tests for the public report-findings view."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+import ux_analyzer.reporting.renderer as renderer
+from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntry
+from ux_analyzer.domain.findings import EvidenceClass
+from ux_analyzer.domain.synthesis import (
+    CANONICAL_SYNTHESIS_ROLES,
+    EvidenceRef,
+    SynthesisAttempt,
+    SynthesisFinding,
+    SynthesisRoleReceipt,
+    SynthesisStatus,
+)
+from ux_analyzer.reporting.renderer import load_report_findings
+from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _write_checksums(run: Path) -> None:
+    files = sorted(
+        path
+        for path in run.rglob("*")
+        if path.is_file() and path.name != "checksums.sha256"
+    )
+    (run / "checksums.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  "
+            f"{path.relative_to(run).as_posix()}\n"
+            for path in files
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_run(
+    root: Path,
+    run_id: str,
+    *,
+    version: str,
+    discovery_cost: float,
+    model_trial: int = 2,
+    screenshot: bytes = b"not-an-image",
+    outcome: str = "verified-success",
+    verified: bool | None = None,
+    terminal_reason: str | None = None,
+    evaluation_failure_reason: str | None = None,
+    ux_sample_valid: bool | None = None,
+    ux_sample_invalid_reason: str | None = None,
+    prominence_provider_id: str = "heuristic",
+    event_overrides: dict[int, dict[str, object]] | None = None,
+) -> None:
+    is_verified = outcome == "verified-success" if verified is None else verified
+    is_valid_sample = (
+        outcome in {"verified-success", "agent-abandoned", "budget-exhausted"}
+        and evaluation_failure_reason is None
+        if ux_sample_valid is None
+        else ux_sample_valid
+    )
+    run = root / "runs" / run_id
+    (run / "artifacts").mkdir(parents=True)
+    (run / "artifacts" / "screenshot.png").write_bytes(screenshot)
+    _write_json(
+        run / "manifest.json",
+        {
+            "run_id": run_id,
+            "seed": 7,
+            "model_trial": model_trial,
+            "prominence_provider_id": prominence_provider_id,
+            "config_digest": "config-sha",
+            "endpoint_origin": "https://llm.example.test/v1",
+            "model_ids": {"cognitive": "model-v1"},
+            "prompt_versions": {"cognitive": "cognitive-v1"},
+            "package_version": "0.1.0",
+            "provider_versions": {"observation": "fixture-v1"},
+            "provider_manifests": [
+                {
+                    "provider_id": "provider",
+                    "role": "cognitive",
+                    "model_id": "model-v1",
+                    "endpoint_origin": "https://llm.example.test",
+                    "version": "1",
+                }
+            ],
+        },
+    )
+    events = [
+        {
+            "sequence": 1,
+            "kind": "viewport-captured",
+            "viewport_width": 800,
+            "viewport_height": 600,
+            "snapshot": {
+                "id": "viewport-1",
+                "screenshot_artifact": "artifacts/screenshot.png",
+                "elements": [
+                    {
+                        "id": "target",
+                        "role": "button",
+                        "label": '<img src=x onerror="alert(1)">',
+                        "bounds": {"x": 40, "y": 50, "width": 180, "height": 40},
+                        "visibility_fraction": 1,
+                        "occlusion_fraction": 0.25,
+                        "local_contrast": 0.75,
+                        "actionable": True,
+                        "disabled": False,
+                        "region_id": "team",
+                        "selector": "button[data-testid=secret]",
+                        "test_id": "secret",
+                        "execution_reference": {
+                            "provider_id": "provider",
+                            "token": "secret-token",
+                        },
+                    },
+                    {
+                        "id": "competitor",
+                        "role": "button",
+                        "label": "Share",
+                        "bounds": {"x": 300, "y": 50, "width": 100, "height": 40},
+                        "visibility_fraction": 1,
+                        "actionable": True,
+                        "disabled": False,
+                        "region_id": "team",
+                    },
+                ],
+                "regions": [{"id": "team", "label": "Team"}],
+            },
+        },
+        {
+            "sequence": 2,
+            "kind": "observation-recorded",
+            "observation": {
+                "viewport_id": "viewport-1",
+                "newly_revealed_elements": [
+                    {
+                        "id": "target",
+                        "role": "button",
+                        "label": '<img src=x onerror="alert(1)">',
+                        "bounds": {"x": 40, "y": 50, "width": 180, "height": 40},
+                        "visibility_fraction": 1,
+                        "actionable": True,
+                        "disabled": False,
+                        "region_id": "team",
+                    }
+                ],
+                "remembered_elements": [],
+                "region_context": {"id": "team", "label": "Team"},
+            },
+        },
+        {
+            "sequence": 3,
+            "kind": "prominence-recorded",
+            "viewport_id": "viewport-1",
+            "scores": [
+                {
+                    "element_id": "target",
+                    "raw_score": 0.2,
+                    "normalized_probability": 0.3,
+                    "feature_contributions": {"area": 0.1, "contrast": 0.2},
+                    "raw_values": {"area": 7200, "contrast": 4.5},
+                    "normalized_values": {"area": 0.4, "contrast": 0.8},
+                }
+            ],
+        },
+        {
+            "sequence": 4,
+            "kind": "coarse-scent-recorded",
+            "scores": [{"element_id": "target", "score": 0.4}],
+        },
+        {
+            "sequence": 5,
+            "kind": "full-scent-recorded",
+            "scores": [{"element_id": "target", "score": 0.6}],
+        },
+        {
+            "sequence": 6,
+            "kind": "action-proposed",
+            "action": {"kind": "interact-with-element", "element_id": "target"},
+            "reason": "Target matches goal.",
+        },
+        {
+            "sequence": 7,
+            "kind": "action-executed",
+            "action": {"kind": "interact-with-element", "element_id": "target"},
+            "succeeded": True,
+            "viewport_id": "viewport-1",
+            "execution_reference": {"token": "secret-token"},
+        },
+        {
+            "sequence": 8,
+            "kind": "verification-recorded",
+            "result": {
+                "verified": is_verified,
+                "evidence_ids": ["verify-1"],
+                "details": (
+                    "Independent verifier passed."
+                    if is_verified
+                    else "Independent verifier did not confirm completion."
+                ),
+            },
+        },
+        {
+            "sequence": 9,
+            "kind": "model-call-recorded",
+            "record": {
+                "role": "cognitive",
+                "model": "model-v1",
+                "endpoint_origin": "https://llm.example.test",
+                "prompt_digest": "prompt-sha",
+                "schema_version": "cognitive-v1",
+                "attempts": 2,
+                "latency_ms": 125,
+                "token_usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 7,
+                    "total_tokens": 19,
+                },
+                "request": {"messages": [{"role": "user", "content": "safe request"}]},
+                "response": {"summary": "safe response"},
+                "retries": [{"attempt": 1, "reason": "rate-limit"}],
+            },
+        },
+        {
+            "sequence": 10,
+            "kind": "run-terminated",
+            "outcome": {"kind": outcome},
+        },
+    ]
+    if event_overrides:
+        for index, event in enumerate(events):
+            sequence = event.get("sequence")
+            if isinstance(sequence, int) and sequence in event_overrides:
+                events[index] = {"sequence": sequence, **event_overrides[sequence]}
+    (run / "timeline.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    _write_json(
+        run / "result.json",
+        {
+            "run_id": run_id,
+            "spec": {
+                "scenario": {
+                    "id": "invite",
+                    "name": "Invite",
+                    "goal": "Invite a teammate to the workspace",
+                },
+                "application_version": {
+                    "id": version,
+                    "label": version.title(),
+                },
+                "persona": {
+                    "id": "persona",
+                    "name": "Workspace administrator",
+                },
+            },
+            "agent_claimed_success": True,
+            "outcome": {"kind": outcome},
+            "terminal_reason": terminal_reason,
+            "evaluation_failure_reason": evaluation_failure_reason,
+            "ux_sample_valid": is_valid_sample,
+            "ux_sample_invalid_reason": ux_sample_invalid_reason,
+            "evidence": {
+                "prominence": [],
+                "scent": [],
+                "selections": [],
+                "decisions": [],
+                "model_calls": [],
+                "screenshot_artifacts": [],
+            },
+            "metrics": {
+                "run_id": run_id,
+                "scenario_id": "invite",
+                "application_version_id": version,
+                "persona_id": "persona",
+                "policy": "progressive-prominence-scent",
+                "model_trial": model_trial,
+                "prominence_provider_id": prominence_provider_id,
+                "comparison_valid": is_valid_sample,
+                "prominence_fallback": False,
+                "prominence_fallback_reason": None,
+                "reproducibility": "model-dependent",
+                "verified_completion": is_verified,
+                "wrong_actions": 0 if version == "improved" else 2,
+                "backtracks": 0,
+                "discovery_cost": {"total": discovery_cost},
+                "evidence": [
+                    {
+                        "evidence_id": f"{run_id}:discovery-cost",
+                        "evidence_class": "model-estimate",
+                        "description": "Seeded discovery cost.",
+                    },
+                    {
+                        "evidence_id": f"{run_id}:human",
+                        "evidence_class": "unsupported-human-claim",
+                        "description": "People will love it.",
+                    },
+                ],
+            },
+            "findings": [
+                {
+                    "finding_id": f"{run_id}:weak-scent",
+                    "category": "weak-scent",
+                    "title": "Target wording gives weak goal cues",
+                    "cause": "Target scent 0.2 is below configured threshold 0.3.",
+                    "severity": "medium",
+                    "reproducibility": "model-dependent",
+                    "evidence_class": "model-estimate",
+                    "evidence_ids": [f"{run_id}:discovery-cost"],
+                    "limitations": ["simulated benchmark evidence"],
+                    "run_ids": [run_id],
+                    "viewport_ids": ["viewport-1"],
+                    "element_ids": ["target"],
+                    "supporting_metrics": {"target-scent": 0.2},
+                    "action_sequence": ["interact-with-element target: succeeded"],
+                    "replay_links": [f"#run={run_id}&element=target"],
+                }
+            ],
+            "limitations": ["Simulated benchmark; not human satisfaction evidence."],
+        },
+    )
+    _write_checksums(run)
+
+
+def _synthesis_payload(ref: EvidenceRef) -> dict[str, object]:
+    payload: dict[str, object] = {"evidence_id": ref.evidence_id}
+    if ref.kind in {"heatmap", "native-map"}:
+        payload.update({"namespace": "inference-1", "duration": "3s"})
+    return payload
+
+
+def _screenshot_ref(
+    run_id: str = "run-1",
+    *,
+    screenshot: bytes = b"not-an-image",
+) -> EvidenceRef:
+    digest = hashlib.sha256(screenshot).hexdigest()
+    return EvidenceRef(
+        f"screenshot:{run_id}:{digest}",
+        "screenshot",
+        run_id,
+        viewport_id="viewport-1",
+        artifact_path=f"runs/{run_id}/artifacts/screenshot.png",
+        sha256=digest,
+    )
+
+
+def _write_synthesis(
+    root: Path,
+    *,
+    status: SynthesisStatus = SynthesisStatus.ACCEPTED,
+    corpus_refs: tuple[EvidenceRef, ...] | None = None,
+    finding_refs: tuple[EvidenceRef, ...] = (),
+    finding_title: str = "Accepted synthesis finding",
+    sequence: int = 1,
+    run_id: str = "run-1",
+    findings: tuple[SynthesisFinding, ...] | None = None,
+    limitations: tuple[str, ...] | None = None,
+    include_scope_identity: bool = True,
+    scope_run_ids: tuple[str, ...] | None = None,
+    corpus_marker: str | None = None,
+    created_at: str = "2026-08-10T12:00:00+00:00",
+) -> None:
+    finding_values = findings
+    if finding_values is None:
+        finding_values = ()
+        if status is SynthesisStatus.ACCEPTED and not finding_refs:
+            finding_refs = (_screenshot_ref(run_id),)
+        if finding_refs:
+            finding_values = (
+                SynthesisFinding(
+                    finding_id="synthesis-finding",
+                    title=finding_title,
+                    issue="The tested task takes extra navigation.",
+                    impact="The tested task takes longer to complete.",
+                    root_cause="The task entry point is hard to identify.",
+                    fixes=("Label the entry point around the user's task.",),
+                    severity="high",
+                    confidence=0.9,
+                    evidence_refs=finding_refs,
+                    reviewer_state="accepted",
+                    severity_justification="The recorded action sequence shows extra navigation.",
+                ),
+            )
+    refs = (
+        corpus_refs
+        or finding_refs
+        or tuple(ref for finding in finding_values for ref in finding.evidence_refs)
+    )
+    entries = tuple(
+        EvidenceEntry(
+            ref=ref,
+            evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+            summary=f"Recorded {ref.evidence_id}.",
+            payload=_synthesis_payload(ref),
+        )
+        for ref in refs
+    )
+    scoped_run_ids = scope_run_ids or (run_id,)
+    metadata: dict[str, object] = {"experiment_run_ids": scoped_run_ids}
+    metadata["finalized_bundle_checksums"] = tuple(
+        {
+            "run_id": scoped_run_id,
+            "checksums_sha256": hashlib.sha256(
+                (root / "runs" / scoped_run_id / "checksums.sha256").read_bytes()
+            ).hexdigest(),
+        }
+        for scoped_run_id in scoped_run_ids
+    )
+    if corpus_marker is not None:
+        metadata["marker"] = corpus_marker
+    if include_scope_identity:
+        metadata["experiment_run_identities"] = tuple(
+            {
+                "run_id": scoped_run_id,
+                "seed": loaded_run["seed"],
+                "model_trial": loaded_run["model_trial"],
+                "config_digest": manifest.get("config_digest"),
+                "scenario_id": loaded_run["scenario_id"],
+                "application_version_id": loaded_run["version_id"],
+                "persona_id": loaded_run["persona_id"],
+                "policy": loaded_run["policy"],
+                "prominence_provider_id": loaded_run["prominence_provider_id"],
+            }
+            for scoped_run_id in scoped_run_ids
+            for loaded_run in (renderer._load_run(root / "runs" / scoped_run_id),)
+            for manifest in (
+                json.loads(
+                    (root / "runs" / scoped_run_id / "manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+            )
+        )
+    corpus = EvidenceCorpus(
+        output_root=root,
+        entries=entries,
+        metadata=metadata,
+    )
+    expectation_payloads = [
+        dict(entry.payload) for entry in entries if entry.ref.kind == "expectation"
+    ]
+    expectation_digest = hashlib.sha256(
+        json.dumps(
+            expectation_payloads,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    attempt = SynthesisAttempt(
+        attempt_id=f"20260810T120000Z-{corpus.digest[:12]}-{sequence}",
+        status=status,
+        corpus_digest=corpus.digest,
+        expectation_digest=expectation_digest,
+        principle_pack_digest=corpus.principle_pack_digest,
+        prompt_version="report-synthesis-orchestrator-v1",
+        schema_version="synthesis-v1",
+        role_receipts=tuple(
+            SynthesisRoleReceipt(
+                role=role,
+                provider_id="fixture-provider",
+                model_id="fixture-model",
+                prompt_digest=hashlib.sha256(f"{role}:prompt".encode()).hexdigest(),
+                schema_digest=hashlib.sha256(f"{role}:schema".encode()).hexdigest(),
+                output_digest=hashlib.sha256(f"{role}:output".encode()).hexdigest(),
+            )
+            for role in CANONICAL_SYNTHESIS_ROLES
+        ),
+        candidate_findings=finding_values,
+        rejected_findings=(
+            tuple(
+                replace(finding, reviewer_state="not-established")
+                for finding in finding_values
+            )
+            if status is SynthesisStatus.REJECTED
+            else ()
+        ),
+        findings=(finding_values if status is SynthesisStatus.ACCEPTED else ()),
+        limitations=(
+            limitations
+            if limitations is not None
+            else ("Fixture synthesis evidence only.",)
+        ),
+        created_at=created_at,
+    )
+    SynthesisArtifactStore(root).write_attempt(attempt, corpus)
+
+
+@pytest.fixture
+def synthesis_bundle(tmp_path: Path) -> Path:
+    screenshot = b"not-an-image"
+    _write_run(
+        tmp_path,
+        "run-1",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+        screenshot=screenshot,
+    )
+    reference = _screenshot_ref(screenshot=screenshot)
+    _write_synthesis(
+        tmp_path,
+        corpus_refs=(reference,),
+        finding_refs=(reference,),
+    )
+    return tmp_path
+
+
+def test_load_report_findings_mirrors_reported_synthesis_findings(
+    synthesis_bundle: Path,
+) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    assert view["synthesis_status"] == "accepted"
+    assert view["using_fallback"] is False
+    assert isinstance(view["attempt_id"], str)
+    assert [f["finding_id"] for f in view["findings"]], "findings are present"
+    finding = view["findings"][0]
+    assert finding["fixes"], "reviewed findings carry fix options"
+    assert finding["evidence_refs"], "reviewed findings carry evidence"
+
+
+def test_screenshot_target_exposes_verifiable_artifact(
+    synthesis_bundle: Path,
+) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    screenshots = [
+        target
+        for finding in view["findings"]
+        for target in finding["evidence_targets"]
+        if target["kind"] == "screenshot"
+    ]
+    assert screenshots, "fixture finding references a screenshot"
+    artifact = screenshots[0]["artifact"]
+    source = synthesis_bundle / artifact["path"]
+    assert source.is_file()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == artifact["sha256"]
+
+
+def test_evidence_target_carries_humanized_detail(
+    synthesis_bundle: Path,
+) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    for finding in view["findings"]:
+        for target in finding["evidence_targets"]:
+            assert isinstance(target.get("detail"), dict)

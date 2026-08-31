@@ -257,6 +257,35 @@ def render_experiment_report(
     return destination
 
 
+def load_report_findings(bundle_root: Path) -> dict[str, Any]:
+    """Return the findings report.html renders, for evidence-parity consumers.
+
+    Mirrors the report exactly: reviewed synthesis findings when a valid
+    attempt is published, publishable deterministic fallback findings
+    otherwise. See docs/adr/0006-fix-export-mirrors-report-findings.md.
+    """
+
+    root = Path(bundle_root)
+    if not root.exists() or not root.is_dir() or secure_is_link_or_reparse(root):
+        raise FileNotFoundError(f"bundle root does not exist: {root}")
+    experiment = _load_experiment(root)
+    synthesis = cast(dict[str, Any], experiment["synthesis"])
+    return {
+        "bundle_root": root,
+        "synthesis_status": _text(synthesis.get("synthesis_status")),
+        "using_fallback": bool(synthesis.get("using_fallback")),
+        "attempt_id": (
+            None
+            if synthesis.get("attempt_id") is None
+            else _text(synthesis.get("attempt_id"))
+        ),
+        "findings": _list_of_mappings(synthesis.get("findings")),
+        "limitations": [
+            _text(item) for item in synthesis.get("limitations", [])
+        ],
+    }
+
+
 _PAGESPEED_SAVED_FILENAME = "pagespeed-report.html"
 _CORE_METRIC_IDS = (
     "first-contentful-paint",
@@ -1708,6 +1737,7 @@ def _synthesis_findings(
         for reference in finding.evidence_refs:
             entry = corpus.require(reference.evidence_id)
             target = _synthesis_navigation_target(entry, run_map, root)
+            target["detail"] = _humanize_evidence_detail(dict(entry.payload))
             targets.append(target)
             public_refs.append(_public_synthesis_ref(entry.ref))
         counterevidence: list[object] = []
@@ -2217,6 +2247,10 @@ def _screenshot_navigation_target(
     )
     if hashlib.sha256(content).hexdigest() != reference.sha256:
         raise SynthesisArtifactError("synthesis screenshot digest mismatch")
+    target["artifact"] = {
+        "path": root_relative.as_posix(),
+        "sha256": reference.sha256,
+    }
     target["viewport_id"] = snapshot.get("id")
     return target
 
