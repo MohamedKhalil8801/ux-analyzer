@@ -3955,6 +3955,13 @@ def _write_pagespeed(output: Path, results: Sequence[object]) -> Path | None:
     to ``pagespeed.json`` so ``report.html`` can render the complete
     pagespeed.web.dev-style result. Failures are recorded as error entries
     or a warning; they never fail an otherwise healthy run.
+
+    The report shows exactly one analysis per URL and strategy — the API
+    run — so its numbers and any link it renders cannot contradict each
+    other. The headless pagespeed.web.dev saved-report capture is opt-in
+    via ``UXA_PAGESPEED_WEB_LINKS=1`` because it triggers a second,
+    independent Lighthouse analysis whose scores inevitably differ from
+    the recorded API run.
     """
     if os.environ.get("UXA_SKIP_PAGESPEED", "") not in {"", "0", "false", "False"}:
         return None
@@ -3977,8 +3984,8 @@ def _write_pagespeed(output: Path, results: Sequence[object]) -> Path | None:
         report = enrich_pagespeed_web_links(
             report,
             cache_root=output,
-            resolve=os.environ.get("UXA_SKIP_PAGESPEED_WEB", "")
-            not in {"1", "true", "True"},
+            resolve=os.environ.get("UXA_PAGESPEED_WEB_LINKS", "")
+            in {"1", "true", "True"},
         )
     except Exception as error:  # noqa: BLE001 - pagespeed must not fail a run
         typer.echo(
