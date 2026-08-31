@@ -163,7 +163,10 @@ from ux_analyzer.providers.scent import (
     StructuredFullScentEvaluator,
 )
 from ux_analyzer.providers.ux_principles import ux_principles
-from ux_analyzer.reporting.renderer import render_experiment_report
+from ux_analyzer.reporting.renderer import (
+    load_report_findings,
+    render_experiment_report,
+)
 from ux_analyzer.saliency.model_registry import (
     DEFAULT_MODEL_ID,
     DEFAULT_PRECISION,
@@ -2341,6 +2344,126 @@ def inspect_run(run_path: Path) -> None:
     typer.echo("artifacts:")
     for artifact in artifacts:
         typer.echo(f"- {artifact}")
+
+
+def _parse_issue_skill(flag: str) -> tuple[str, str]:
+    finding_id, separator, set_name = flag.partition("=")
+    if not separator or not finding_id.strip() or not set_name.strip():
+        raise typer.BadParameter(
+            "--issue-skill must be FINDING_ID=SET (the skill set for one issue)"
+        )
+    return finding_id, set_name
+
+
+@app.command()
+def export(
+    report: Path = typer.Option(
+        ...,
+        "--report",
+        exists=True,
+        file_okay=False,
+        help="Experiment output directory containing report.html",
+    ),
+    out: Path | None = typer.Option(None, "--out", help="Package directory"),
+    all_issues: bool = typer.Option(False, "--all"),
+    finding: list[str] = typer.Option([], "--finding", help="Finding ID"),
+    exclude: list[str] = typer.Option([], "--exclude", help="Finding ID"),
+    skill_set: list[str] = typer.Option([], "--skill-set", help="Set for all issues"),
+    issue_skill: list[str] = typer.Option(
+        [], "--issue-skill", help="FINDING_ID=SET per-issue override"
+    ),
+    skill_sets_file: Path | None = typer.Option(None, "--skill-sets"),
+    skills_note: str | None = typer.Option(None, "--skills-note"),
+    notes: Path | None = typer.Option(
+        None, "--notes", help="Reproduction notes file (embedded verbatim)"
+    ),
+) -> None:
+    """Export selected issues as an LLM-optimized fix package."""
+    from ux_analyzer.export.catalog import build_catalog, parse_issue_flags
+    from ux_analyzer.export.render import ExportContext
+    from ux_analyzer.export.skills import (
+        load_skill_sets,
+        resolve_assignments,
+        resolve_skill_sets_path,
+    )
+    from ux_analyzer.export.writer import ExportError, write_export
+
+    view = load_report_findings(report)
+    if not view["findings"]:
+        raise typer.BadParameter("nothing to export: the report contains no issues")
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    catalog = build_catalog(view)
+    sets = load_skill_sets(resolve_skill_sets_path(skill_sets_file))
+    try:
+        if interactive:
+            from ux_analyzer.export.flow import run_selection_flow
+            from ux_analyzer.export.interactive import PromptToolkitUI
+
+            result = run_selection_flow(catalog, sets, PromptToolkitUI())
+            if result is None:
+                raise typer.Exit(code=1)
+            selected = result.issues
+            default_name = result.default_skill_set
+            per_issue = result.per_issue_skills
+        else:
+            selected = parse_issue_flags(
+                all_issues=all_issues,
+                findings=finding,
+                exclude=exclude,
+                catalog=catalog,
+            )
+            default_name = (
+                skill_set[0]
+                if skill_set
+                else next((s.name for s in sets if s.is_default), None)
+            )
+            per_issue = dict(_parse_issue_skill(flag) for flag in issue_skill)
+            resolve_assignments(sets, default_name, per_issue)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    assignments = {
+        issue.finding_id: default_name
+        for issue in selected
+        if default_name is not None
+    }
+    assignments.update(per_issue)
+    notes_text: str | None = None
+    if notes is not None:
+        if not notes.is_file():
+            raise typer.BadParameter(f"notes file does not exist: {notes}")
+        notes_text = notes.read_text(encoding="utf-8")
+    now = datetime.now(UTC)
+    package_dir = (
+        out if out is not None else Path.cwd() / f"fix-export-{now:%Y%m%d-%H%M%S}"
+    )
+    context = ExportContext(
+        report_path=report,
+        exported_at=now.isoformat(),
+        tool_version=__version__,
+        synthesis_status=str(view["synthesis_status"]),
+        using_fallback=bool(view["using_fallback"]),
+        attempt_id=view["attempt_id"],
+        issues=tuple(selected),
+        assignments=assignments,
+        skill_sets=sets,
+        skills_note=skills_note,
+        reproduction_notes=notes_text,
+    )
+    try:
+        result = write_export(package_dir, context)
+    except ExportError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"export package: {result.package_dir}")
+    typer.echo(f"issues: {result.issue_count}")
+    typer.echo(f"assets: {result.asset_count}")
+    for issue in selected:
+        if issue.has_unresolved_evidence:
+            typer.echo(
+                f"warning: issue '{issue.finding_id}' has evidence unavailable; "
+                "it is exported with 'evidence unavailable' markers.",
+                err=True,
+            )
 
 
 def _referenced_origins_sync_cli(url: str) -> frozenset[str]:
