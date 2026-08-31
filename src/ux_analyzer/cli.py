@@ -553,10 +553,12 @@ def pagespeed(
     (https://www.googleapis.com/pagespeedonline/v5/runPagespeed), matching
     its Lighthouse category scores, per-audit pass/fail results, and
     opportunity savings. Uses PSI_API_Key / GOOGLE_API_KEY from .env or the
-    environment when present. With --web-ui (default) each URL is analyzed
-    once in a headless pagespeed.web.dev session to capture the stable
-    saved-report link (cached per URL; set UXA_SKIP_PAGESPEED_WEB=1 to
-    disable).
+    environment when present. With --web-ui (default) each URL is also
+    analyzed once in a headless pagespeed.web.dev session to capture the
+    stable saved-report link and the scores that report renders — that is
+    a second, independent Lighthouse run, so its scores are labeled and
+    shown separately from the API run's. The capture is cached per URL for
+    7 days; set UXA_SKIP_PAGESPEED_WEB=1 to disable.
     """
     from ux_analyzer.analysis.pagespeed import (
         enrich_pagespeed_web_links,
@@ -591,6 +593,16 @@ def pagespeed(
             typer.echo(
                 f"  pagespeed.web.dev: {web_link}"
                 + (" (saved report)" if saved else " (runs a fresh analysis)")
+            )
+        saved_scores = url_report.get("saved_report_scores") or {}
+        if saved and saved_scores:
+            rendered = ", ".join(
+                f"{name} {score}" for name, score in saved_scores.items()
+            )
+            captured_at = url_report.get("saved_report_captured_at") or ""
+            typer.echo(
+                f"  saved report scores: {rendered}"
+                + (f" (captured {captured_at[:10]})" if captured_at else "")
             )
         for strategy_name in url_report["strategies"]:
             entry = url_report["strategies"][strategy_name]
