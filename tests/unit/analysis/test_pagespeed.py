@@ -795,18 +795,22 @@ class TestWebLinksCache:
 
 
 class TestEnrichWebLinks:
-    def test_cached_link_is_reused_without_resolution(
+    def test_cached_capture_is_reused_without_resolution(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         cache = WebLinksCache(tmp_path)
-        cache.store(
+        cache.store_entry(
             "https://example.com/",
-            "https://pagespeed.web.dev/analysis/https-example-com/cached1?form_factor=mobile",
+            {
+                "link": "https://pagespeed.web.dev/analysis/https-example-com/cached1?form_factor=mobile",
+                "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "scores": {"mobile": 36, "desktop": 63},
+            },
         )
         called: list[str] = []
         monkeypatch.setattr(
-            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_link",
-            lambda url, timeout_seconds=240.0: called.append(url) or "never-called",
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_report",
+            lambda url, timeout_seconds=240.0: called.append(url) or None,
         )
         report = enrich_pagespeed_web_links(
             {
@@ -824,14 +828,20 @@ class TestEnrichWebLinks:
         assert entry["pagespeed_web_fresh_url"] == pagespeed_web_url(
             "https://example.com/"
         )
+        assert entry["saved_report_scores"] == {"mobile": 36, "desktop": 63}
+        assert entry["saved_report_captured_at"] is not None
 
     def test_resolves_and_stores_when_uncached(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         saved = "https://pagespeed.web.dev/analysis/https-example-com/fresh1?form_factor=mobile"
         monkeypatch.setattr(
-            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_link",
-            lambda url, timeout_seconds=240.0: saved,
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_report",
+            lambda url, timeout_seconds=240.0: {
+                "link": saved,
+                "captured_at": "2026-08-30T12:00:00Z",
+                "scores": {"mobile": 36, "desktop": 63},
+            },
         )
         report = enrich_pagespeed_web_links(
             {
@@ -840,8 +850,74 @@ class TestEnrichWebLinks:
             },
             cache_root=tmp_path,
         )
-        assert report["urls"][0]["pagespeed_web_url"] == saved
-        assert WebLinksCache(tmp_path).load("https://example.com/") == saved
+        entry = report["urls"][0]
+        assert entry["pagespeed_web_url"] == saved
+        assert entry["pagespeed_web_saved"] is True
+        assert entry["saved_report_scores"] == {"mobile": 36, "desktop": 63}
+        cached = WebLinksCache(tmp_path).load_entry("https://example.com/")
+        assert cached["link"] == saved
+        assert cached["scores"] == {"mobile": 36, "desktop": 63}
+
+    def test_stale_capture_is_re_resolved(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cache = WebLinksCache(tmp_path)
+        cache.store_entry(
+            "https://example.com/",
+            {
+                "link": "https://pagespeed.web.dev/analysis/https-example-com/stale1?form_factor=mobile",
+                "captured_at": "2020-01-01T00:00:00Z",
+                "scores": {"mobile": 99, "desktop": 99},
+            },
+        )
+        saved = "https://pagespeed.web.dev/analysis/https-example-com/fresh2?form_factor=mobile"
+        called: list[str] = []
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_report",
+            lambda url, timeout_seconds=240.0: called.append(url)
+            or {
+                "link": saved,
+                "captured_at": "2026-08-30T12:00:00Z",
+                "scores": {"mobile": 40, "desktop": 63},
+            },
+        )
+        report = enrich_pagespeed_web_links(
+            {
+                "schema_version": PAGESPEED_SCHEMA_VERSION,
+                "urls": [{"url": "https://example.com/", "strategies": {}}],
+            },
+            cache_root=tmp_path,
+        )
+        entry = report["urls"][0]
+        assert called == ["https://example.com/"]
+        assert entry["pagespeed_web_url"] == saved
+        assert entry["saved_report_scores"] == {"mobile": 40, "desktop": 63}
+
+    def test_resolve_disabled_keeps_legacy_cached_link(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        path = tmp_path / CACHE_DIRNAME / "web-links.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({"https://example.com/": "https://pagespeed.web.dev/analysis/a/z"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_report",
+            lambda url, timeout_seconds=240.0: pytest.fail("must not resolve"),
+        )
+        report = enrich_pagespeed_web_links(
+            {
+                "schema_version": PAGESPEED_SCHEMA_VERSION,
+                "urls": [{"url": "https://example.com/", "strategies": {}}],
+            },
+            cache_root=tmp_path,
+            resolve=False,
+        )
+        entry = report["urls"][0]
+        assert entry["pagespeed_web_url"] == "https://pagespeed.web.dev/analysis/a/z"
+        assert entry["pagespeed_web_saved"] is True
+        assert entry["saved_report_scores"] == {}
 
     def test_failure_falls_back_to_fresh_link(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -850,7 +926,7 @@ class TestEnrichWebLinks:
             raise RuntimeError("browser unavailable")
 
         monkeypatch.setattr(
-            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_link", failing
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_report", failing
         )
         report = enrich_pagespeed_web_links(
             {
@@ -862,13 +938,14 @@ class TestEnrichWebLinks:
         entry = report["urls"][0]
         assert entry["pagespeed_web_url"] == pagespeed_web_url("https://example.com/")
         assert entry["pagespeed_web_saved"] is False
+        assert entry["saved_report_scores"] == {}
 
     def test_resolve_disabled_uses_fresh_fallback(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         called: list[str] = []
         monkeypatch.setattr(
-            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_link",
+            "ux_analyzer.analysis.pagespeed.resolve_pagespeed_web_saved_report",
             lambda url, timeout_seconds=240.0: called.append(url) or "x",
         )
         report = enrich_pagespeed_web_links(

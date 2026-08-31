@@ -470,41 +470,61 @@ def enrich_pagespeed_web_links(
 
     For every URL entry the resolved saved link (``/analysis/<slug>/<id>``,
     cached per URL) becomes ``pagespeed_web_url``; the re-run deep link is
-    always available as ``pagespeed_web_fresh_url``. Resolution only runs
-    once per URL thanks to the cache — subsequent runs reuse the same
-    server-side report. When resolution is skipped or fails, the fresh-run
-    deep link remains as the fallback.
+    always available as ``pagespeed_web_fresh_url``. A capture is reused
+    within :data:`_SAVED_REPORT_TTL_SECONDS`; when resolution is allowed,
+    stale captures are replaced with a fresh one. Because the saved report
+    is an independent Lighthouse run, the scores it renders are captured
+    alongside the link and exposed as ``saved_report_scores`` /
+    ``saved_report_captured_at`` so reports can show them next to the link
+    instead of implying they match the recorded API run. When resolution is
+    skipped or fails, the fresh-run deep link remains as the fallback.
     """
     urls = report.get("urls")
     if not isinstance(urls, list):
         return dict(report)
     cache = WebLinksCache(cache_root) if cache_root is not None else None
-    for idx, url_report in enumerate(urls):
-        if not isinstance(url_report, Mapping):
+    for idx, raw_url_report in enumerate(cast(list[object], urls)):
+        if not isinstance(raw_url_report, Mapping):
             continue
-        entry = dict(url_report)
+        entry = dict(cast(Mapping[str, object], raw_url_report))
         url = entry.get("url")
         if not isinstance(url, str) or not url.strip():
             continue
         fresh = pagespeed_web_url(url)
-        saved: str | None = None
+        captured: dict[str, Any] | None = None
         if cache is not None:
-            saved = cache.load(url)
-        if saved is None and resolve:
+            cached = cache.load_entry(url)
+            if cached is not None and (not resolve or _saved_entry_is_fresh(cached)):
+                captured = cached
+        if captured is None and resolve:
             try:
-                saved = resolve_pagespeed_web_saved_link(
+                captured = resolve_pagespeed_web_saved_report(
                     url, timeout_seconds=timeout_seconds
                 )
-            except Exception as error:  # noqa: BLE001 - link must not fail a run
-                saved = None
-            if saved is not None and cache is not None:
+            except Exception:  # noqa: BLE001 - link must not fail a run
+                captured = None
+            if captured is not None and cache is not None:
                 try:
-                    cache.store(url, saved)
+                    cache.store_entry(url, captured)
                 except OSError:
                     pass
+        saved = captured.get("link") if captured else None
         entry["pagespeed_web_fresh_url"] = fresh
         entry["pagespeed_web_url"] = saved or fresh
         entry["pagespeed_web_saved"] = saved is not None
+        raw_scores = captured.get("scores") if captured else None
+        entry["saved_report_scores"] = {
+            strategy: score
+            for strategy, score in (
+                cast(Mapping[str, object], raw_scores).items()
+                if isinstance(raw_scores, Mapping)
+                else ()
+            )
+            if isinstance(score, int) and not isinstance(score, bool)
+        }
+        entry["saved_report_captured_at"] = (
+            captured.get("captured_at") if captured else None
+        )
         urls[idx] = entry
     return dict(report)
 
