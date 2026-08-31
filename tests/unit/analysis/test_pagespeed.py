@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -743,6 +744,54 @@ class TestWebLinksCache:
         cache.store("https://b.example/", "https://pagespeed.web.dev/analysis/b/y")
         assert cache.load("https://a.example/") == "https://pagespeed.web.dev/analysis/a/z"
         assert cache.load("https://b.example/") == "https://pagespeed.web.dev/analysis/b/y"
+
+    def test_store_entry_roundtrip(self, tmp_path: Path) -> None:
+        cache = WebLinksCache(tmp_path)
+        cache.store_entry(
+            "https://example.com/",
+            {
+                "link": "https://pagespeed.web.dev/analysis/https-example-com/x?form_factor=mobile",
+                "captured_at": "2026-08-30T12:00:00Z",
+                "scores": {"mobile": 36, "desktop": 63},
+            },
+        )
+        entry = cache.load_entry("https://example.com/")
+        assert entry["link"] == (
+            "https://pagespeed.web.dev/analysis/https-example-com/x?form_factor=mobile"
+        )
+        assert entry["captured_at"] == "2026-08-30T12:00:00Z"
+        assert entry["scores"] == {"mobile": 36, "desktop": 63}
+
+    def test_legacy_string_entry_is_migrated(self, tmp_path: Path) -> None:
+        path = tmp_path / CACHE_DIRNAME / "web-links.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({"https://example.com/": "https://pagespeed.web.dev/analysis/a/z"}),
+            encoding="utf-8",
+        )
+        entry = WebLinksCache(tmp_path).load_entry("https://example.com/")
+        assert entry == {
+            "link": "https://pagespeed.web.dev/analysis/a/z",
+            "captured_at": None,
+            "scores": {},
+        }
+
+    def test_malformed_entries_are_ignored(self, tmp_path: Path) -> None:
+        path = tmp_path / CACHE_DIRNAME / "web-links.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "https://a.example/": {"scores": {"mobile": 36}},
+                    "https://b.example/": 42,
+                }
+            ),
+            encoding="utf-8",
+        )
+        cache = WebLinksCache(tmp_path)
+        assert cache.load_entry("https://a.example/") is None
+        assert cache.load_entry("https://b.example/") is None
+        assert cache.load("https://c.example/") is None
 
 
 class TestEnrichWebLinks:

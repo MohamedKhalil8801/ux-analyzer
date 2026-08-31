@@ -26,6 +26,7 @@ web.dev applies in its "Failed audits" list. Audits without a score
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import os
@@ -229,6 +230,10 @@ def resolve_pagespeed_web_saved_link(
 # alongside the link instead.
 _SAVED_STRATEGIES = ("mobile", "desktop")
 
+# A capture older than this is re-resolved so the linked report cannot go
+# silently stale.
+_SAVED_REPORT_TTL_SECONDS = 7 * 24 * 3600.0
+
 # The saved report page embeds one full Lighthouse report per form factor
 # as ``article.lh-root`` and hydrates them lazily, so scores are read per
 # article once both have rendered; the emulated device text identifies
@@ -339,10 +344,15 @@ def resolve_pagespeed_web_saved_report(
 
 
 class WebLinksCache:
-    """Disk cache of resolved pagespeed.web.dev saved-report links.
+    """Disk cache of resolved pagespeed.web.dev saved-report captures.
 
     Keyed by analyzed URL so repeated ``uxa run`` invocations reuse the
     same server-side report instead of triggering a new analysis each time.
+    Entries carry the saved link, the capture timestamp, and the scores the
+    saved report rendered when it was captured. Legacy entries that predate
+    score capture hold a bare link string and are migrated on load; they
+    have no capture timestamp, so they expire immediately and are
+    re-captured on the next run that allows resolution.
     """
 
     def __init__(self, root: Path | str) -> None:
@@ -351,7 +361,8 @@ class WebLinksCache:
     def _path(self) -> Path:
         return self.root / CACHE_DIRNAME / _WEB_LINKS_CACHE_FILENAME
 
-    def load(self, url: str) -> str | None:
+    def load_entry(self, url: str) -> dict[str, Any] | None:
+        """Return the cached capture for ``url``, migrating legacy entries."""
         try:
             if self._path().stat().st_size > _WEB_LINKS_MAX_BYTES:
                 return None
@@ -360,10 +371,47 @@ class WebLinksCache:
             return None
         if not isinstance(value, Mapping):
             return None
-        entry = value.get(url)
-        return entry if isinstance(entry, str) else None
+        entries = cast(Mapping[object, object], value)
+        raw_entry = entries.get(url)
+        if isinstance(raw_entry, str):
+            return {"link": raw_entry, "captured_at": None, "scores": {}}
+        if not isinstance(raw_entry, Mapping):
+            return None
+        entry = cast(Mapping[str, object], raw_entry)
+        link = entry.get("link")
+        if not isinstance(link, str) or not link:
+            return None
+        captured_at = entry.get("captured_at")
+        if not isinstance(captured_at, str):
+            captured_at = None
+        scores: dict[str, int | None] = {}
+        raw_scores = entry.get("scores")
+        if isinstance(raw_scores, Mapping):
+            pairs = cast(Mapping[object, object], raw_scores)
+            for strategy, score in pairs.items():
+                if isinstance(strategy, str) and isinstance(
+                    score, int
+                ) and not isinstance(score, bool):
+                    scores[strategy] = score
+        return {"link": link, "captured_at": captured_at, "scores": scores}
+
+    def load(self, url: str) -> str | None:
+        entry = self.load_entry(url)
+        if entry is None:
+            return None
+        return entry["link"]
 
     def store(self, url: str, saved_link: str) -> None:
+        self.store_entry(
+            url,
+            {
+                "link": saved_link,
+                "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "scores": {},
+            },
+        )
+
+    def store_entry(self, url: str, entry: Mapping[str, Any]) -> None:
         path = self._path()
         try:
             if path.is_file():
@@ -374,13 +422,17 @@ class WebLinksCache:
             value = {}
         if not isinstance(value, Mapping):
             value = {}
-        value = dict(value)
-        value[url] = saved_link
+        entries = dict(cast(Mapping[str, object], value))
+        entries[url] = {
+            "link": entry.get("link"),
+            "captured_at": entry.get("captured_at"),
+            "scores": dict(entry.get("scores") or {}),
+        }
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
         try:
             temporary.write_text(
-                json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(entries, ensure_ascii=False, separators=(",", ":")),
                 encoding="utf-8",
             )
             os.replace(temporary, path)
@@ -390,6 +442,21 @@ class WebLinksCache:
             except OSError:
                 pass
             raise
+
+
+def _saved_entry_is_fresh(entry: Mapping[str, Any] | None) -> bool:
+    """A capture is reusable only within the saved-report TTL."""
+    if entry is None:
+        return False
+    captured_at = entry.get("captured_at")
+    if not isinstance(captured_at, str):
+        return False
+    try:
+        captured = time.strptime(captured_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    age = time.time() - calendar.timegm(captured)
+    return 0 <= age < _SAVED_REPORT_TTL_SECONDS
 
 
 def enrich_pagespeed_web_links(
