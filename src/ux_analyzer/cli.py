@@ -2396,10 +2396,9 @@ def export(
     sets = load_skill_sets(resolve_skill_sets_path(skill_sets_file))
     try:
         if interactive:
-            from ux_analyzer.export.flow import run_selection_flow
-            from ux_analyzer.export.interactive import PromptToolkitUI
+            from ux_analyzer.export.interactive import run_interactive_export
 
-            result = run_selection_flow(catalog, sets, PromptToolkitUI())
+            result = run_interactive_export(catalog, sets)
             if result is None:
                 raise typer.Exit(code=1)
             selected = result.issues
