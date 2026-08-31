@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PageSpeed Insights — recorded analysis replica</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; font-family: "Segoe UI", system-ui, sans-serif; color: #1c2430; background: #f5f2ea; line-height: 1.45; }
+    main { max-width: 980px; margin: 0 auto; }
+    .psi-saved-header { border: 1px solid #d7d0bd; border-radius: 4px; background: #fdfcf8; padding: 16px 20px; margin-bottom: 18px; }
+    .psi-saved-header h1 { margin: 0 0 6px; font-size: 1.25rem; }
+    .psi-saved-note { margin: 0; font-size: .85rem; color: #5a5647; }
+    .psi-url { border: 1px solid #d7d0bd; border-radius: 4px; background: #fff; padding: 16px 20px; margin-bottom: 18px; }
+    .psi-url-label { margin: 0 0 10px; font-size: 1rem; overflow-wrap: anywhere; }
+    .psi-strategy { border-top: 1px solid #e6e0cf; padding-top: 14px; margin-top: 14px; }
+    .psi-strategy-label { margin: 0 0 8px; font-size: .95rem; text-transform: capitalize; }
+    .psi-meta { margin: 0 0 10px; font-size: .78rem; color: #6a6555; }
+    .psi-gauges { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0; }
+    .psi-gauge { text-align: center; min-width: 96px; }
+    .psi-gauge-ring { width: 76px; height: 76px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.3rem; font-weight: 700; color: #fff; }
+    .psi-gauge-good .psi-gauge-ring { background: #0c8040; }
+    .psi-gauge-ok .psi-gauge-ring { background: #b25e09; }
+    .psi-gauge-bad .psi-gauge-ring { background: #c5221f; }
+    .psi-gauge-none .psi-gauge-ring { background: #8a8577; }
+    .psi-gauge-label { display: block; margin-top: 4px; font-size: .75rem; color: #5a5647; }
+    .psi-metrics { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 14px; }
+    .psi-metric { border: 1px solid #e6e0cf; border-radius: 4px; background: #faf8f1; padding: 8px 12px; min-width: 130px; }
+    .psi-metric-title { display: block; font-size: .68rem; color: #6a6555; }
+    .psi-metric-value { font-weight: 700; font-size: .95rem; }
+    .psi-field { margin: 8px 0; font-size: .8rem; color: #4a5545; }
+    .psi-field-label { font-weight: 700; margin-right: 6px; }
+    .psi-field-metric { display: inline-block; margin-right: 10px; }
+    .psi-bucket { margin: 10px 0; }
+    .psi-bucket summary { cursor: pointer; font-weight: 700; font-size: .85rem; }
+    .psi-bucket table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: .78rem; }
+    .psi-bucket th, .psi-bucket td { text-align: left; border-bottom: 1px solid #eee8d8; padding: 5px 8px; vertical-align: top; }
+    .psi-bucket th { color: #6a6555; font-weight: 600; }
+    .psi-audit-score-fail { color: #c5221f; font-weight: 700; }
+    .psi-audit-score-pass { color: #0c8040; font-weight: 700; }
+    .psi-opportunity { border: 1px solid #e6e0cf; border-radius: 4px; background: #faf8f1; padding: 8px 12px; margin: 8px 0; font-size: .8rem; }
+    .psi-opportunity-title { font-weight: 700; }
+    .psi-opportunity-savings { color: #6a6555; }
+    .psi-error { color: #c5221f; font-size: .85rem; }
+    .psi-cite { font-size: .75rem; color: #6a6555; margin-top: 4px; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="psi-saved-header">
+    <h1>PageSpeed Insights — recorded analysis replica</h1>
+    <p class="psi-saved-note">
+      Offline replica of the exact analysis recorded for this experiment. These
+      numbers are identical to the Performance tab of the main report — both are
+      rendered from the same recorded result. Re-running the analysis on
+      pagespeed.web.dev starts a new Lighthouse run whose scores vary.
+    </p>
+  </div>
+  {% for url_report in pagespeed.url_reports %}
+  <div class="psi-url">
+    <h2 class="psi-url-label">{{ url_report.url }}</h2>
+    {% if url_report.error %}<p class="psi-error">Report unavailable: {{ url_report.error }}</p>{% endif %}
+    {% for strategy_name, strategy in url_report.strategies.items() %}
+    <div class="psi-strategy">
+      <h3 class="psi-strategy-label">{{ strategy_name }} strategy</h3>
+      {% if strategy.status != "ok" %}
+      <p class="psi-error">Unavailable: {{ strategy.error or "no error detail recorded" }}</p>
+      {% else %}
+      <p class="psi-meta">
+        Lighthouse {{ strategy.lighthouse_version }}
+        {% if strategy.fetched_at %}· fetched {{ strategy.fetched_at }}{% endif %}
+        {% if strategy.analysis_timestamp %}· analyzed {{ strategy.analysis_timestamp }}{% endif %}
+        {% if strategy.from_cache %}· served from recorded cache{% endif %}
+        {% if strategy.final_url and strategy.final_url != url_report.url %}· final URL {{ strategy.final_url }}{% endif %}
+      </p>
+      <div class="psi-gauges">
+        {% for category in strategy.categories %}
+        {% set pct = category.score_percent %}
+        <div class="psi-gauge {{ 'psi-gauge-good' if pct is not none and pct >= 90 else ('psi-gauge-ok' if pct is not none and pct >= 50 else ('psi-gauge-bad' if pct is not none else 'psi-gauge-none')) }}">
+          <span class="psi-gauge-ring">{{ pct if pct is not none else "–" }}</span>
+          <span class="psi-gauge-label">{{ category.title }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% if strategy.core_metrics %}
+      <div class="psi-metrics">
+        {% for metric in strategy.core_metrics %}
+        <div class="psi-metric">
+          <span class="psi-metric-title">{{ metric.title }}</span>
+          <span class="psi-metric-value">{{ metric.display_value or "–" }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if strategy.field_data %}
+      <p class="psi-field">
+        <span class="psi-field-label">Field data (CrUX):</span>
+        {{ strategy.field_data.overall_category }}
+        {% for metric_id, metric in strategy.field_data.metrics.items() %}
+        <span class="psi-field-metric">{{ metric_id }} {{ metric.percentile }}{% if metric.category %} ({{ metric.category }}){% endif %}</span>
+        {% endfor %}
+      </p>
+      {% endif %}
+      {% if strategy.opportunities %}
+      {% for opportunity in strategy.opportunities %}
+      <div class="psi-opportunity">
+        <span class="psi-opportunity-title">{{ opportunity.title }}</span>
+        {% if opportunity.display_value %} — {{ opportunity.display_value }}{% endif %}
+        {% if opportunity.savings_bytes %}<span class="psi-opportunity-savings"> · est. savings {{ (opportunity.savings_bytes / 1024) | round(0) | int }} KiB</span>{% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+      {% for bucket in ("failed", "passed", "informative", "not_applicable", "manual", "error") %}
+      {% set rows = strategy.audits[bucket] %}
+      {% if rows %}
+      <details class="psi-bucket" {% if bucket == "failed" %}open{% endif %}>
+        <summary>{{ bucket | replace("_", " ") | capitalize }} audits ({{ rows | length }})</summary>
+        <table>
+          <tr><th>Audit</th><th>Score</th><th>Value</th><th>Description</th></tr>
+          {% for audit in rows %}
+          <tr>
+            <td>{{ audit.title }}</td>
+            <td class="{{ 'psi-audit-score-fail' if audit.failed else 'psi-audit-score-pass' }}">
+              {%- if audit.score_percent is not none %}{{ audit.score_percent }}%{% else %}—{% endif -%}
+            </td>
+            <td>{{ audit.display_value or "—" }}</td>
+            <td>{{ audit.description or "" }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </details>
+      {% endif %}
+      {% endfor %}
+      <p class="psi-cite">
+        Source of truth: recorded API response in <code>pagespeed-cache/</code> and
+        derived summary in <code>pagespeed.json</code> beside the main report.
+      </p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</main>
+</body>
+</html>

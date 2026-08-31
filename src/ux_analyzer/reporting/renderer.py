@@ -208,6 +208,7 @@ def render_experiment_report(
             )
             if len(single_html.encode("utf-8")) <= threshold:
                 _publish_report_text(output_parent, destination.name, single_html)
+                _publish_pagespeed_saved_report(experiment, destination.parent)
                 return destination
 
         run_directory = destination.parent / f"{destination.stem}-runs"
@@ -252,6 +253,121 @@ def render_experiment_report(
                     run_page_names[run["run_id"]],
                     run_html,
                 )
+    _publish_pagespeed_saved_report(experiment, destination.parent)
+    return destination
+
+
+_PAGESPEED_SAVED_FILENAME = "pagespeed-report.html"
+_CORE_METRIC_IDS = (
+    "first-contentful-paint",
+    "largest-contentful-paint",
+    "total-blocking-time",
+    "cumulative-layout-shift",
+    "speed-index",
+    "interactive",
+)
+_CORE_METRIC_BUCKETS = (
+    "failed",
+    "passed",
+    "informative",
+    "not_applicable",
+    "manual",
+    "error",
+)
+
+
+def _pagespeed_core_metrics(strategy: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Collect the Lighthouse performance metrics for the saved-report replica."""
+    audits = strategy.get("audits")
+    audit_mapping = (
+        cast(Mapping[str, object], audits) if isinstance(audits, Mapping) else None
+    )
+    if audit_mapping is None:
+        return []
+    by_id: dict[str, Mapping[str, object]] = {}
+    for bucket in _CORE_METRIC_BUCKETS:
+        raw_rows = audit_mapping.get(bucket)
+        if not isinstance(raw_rows, list):
+            continue
+        for row in cast(list[object], raw_rows):
+            if isinstance(row, Mapping):
+                row_mapping = cast(Mapping[str, object], row)
+                audit_id = row_mapping.get("id")
+                if isinstance(audit_id, str):
+                    by_id[audit_id] = row_mapping
+    metrics: list[dict[str, Any]] = []
+    for metric_id in _CORE_METRIC_IDS:
+        row = by_id.get(metric_id)
+        if row is None:
+            continue
+        metrics.append(
+            {
+                "id": metric_id,
+                "title": row.get("title") or metric_id,
+                "display_value": row.get("display_value"),
+                "score_percent": row.get("score_percent"),
+                "failed": bool(row.get("failed")),
+            }
+        )
+    return metrics
+
+
+def _render_pagespeed_saved_html(pagespeed: dict[str, Any]) -> str:
+    template_root = Path(__file__).parent
+    environment = Environment(
+        loader=FileSystemLoader(str(template_root / "templates")),
+        autoescape=select_autoescape(
+            enabled_extensions=("html", "j2"), default_for_string=False
+        ),
+        undefined=StrictUndefined,
+    )
+    template = environment.get_template("pagespeed_saved.html.j2")
+    context_pagespeed = cast(dict[str, Any], dict(pagespeed))
+    projected_urls: list[dict[str, Any]] = []
+    for raw_url_report in cast(list[object], context_pagespeed["url_reports"]):
+        if not isinstance(raw_url_report, Mapping):
+            continue
+        url_report = cast(dict[str, Any], dict(raw_url_report))
+        strategies_raw = url_report.get("strategies")
+        strategies: dict[str, Any] = {}
+        if isinstance(strategies_raw, Mapping):
+            for name, raw_strategy in cast(
+                Mapping[str, object], strategies_raw
+            ).items():
+                if not isinstance(raw_strategy, Mapping):
+                    continue
+                strategy = cast(dict[str, Any], dict(raw_strategy))
+                strategy["core_metrics"] = _pagespeed_core_metrics(
+                    cast(Mapping[str, Any], raw_strategy)
+                )
+                strategies[str(name)] = strategy
+        url_report["strategies"] = strategies
+        projected_urls.append(url_report)
+    context_pagespeed["url_reports"] = projected_urls
+    return template.render(pagespeed=context_pagespeed)
+
+
+def _publish_pagespeed_saved_report(
+    experiment: Mapping[str, Any], output_parent: Path
+) -> Path | None:
+    """Write the offline saved-report replica beside the rendered report."""
+    pagespeed = experiment.get("pagespeed")
+    pagespeed_mapping = (
+        cast(Mapping[str, object], pagespeed) if isinstance(pagespeed, Mapping) else None
+    )
+    if pagespeed_mapping is None or not pagespeed_mapping.get("url_reports"):
+        return None
+    destination = output_parent / _PAGESPEED_SAVED_FILENAME
+    with secure_open_directory(
+        output_parent,
+        "report output directory",
+        create=True,
+    ) as parent:
+        _publish_report_text(
+            parent,
+            _PAGESPEED_SAVED_FILENAME,
+            _render_pagespeed_saved_html(cast(dict[str, Any], pagespeed)),
+        )
     return destination
 
 

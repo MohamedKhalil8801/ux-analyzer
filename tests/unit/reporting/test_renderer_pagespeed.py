@@ -324,3 +324,102 @@ class TestSavedReportScores:
         _write_pagespeed(tmp_path, payload)
         entry = renderer._load_pagespeed(tmp_path)["url_reports"][0]
         assert entry["saved_report_scores"] == {}
+
+
+class TestSavedReportReplica:
+    def _payload(self) -> dict:
+        return {
+            "url_reports": [
+                {
+                    "url": "https://example.com/",
+                    "error": None,
+                    "pagespeed_web_saved": False,
+                    "saved_report_scores": {},
+                    "saved_report_captured_at": None,
+                    "strategies": {
+                        "mobile": {
+                            "strategy": "mobile",
+                            "status": "ok",
+                            "error": None,
+                            "error_code": None,
+                            "fetched_at": "2026-08-30T14:15:50Z",
+                            "analysis_timestamp": "2026-08-30T14:15:44Z",
+                            "lighthouse_version": "12.1.0",
+                            "from_cache": False,
+                            "final_url": "https://example.com/",
+                            "categories": [
+                                {
+                                    "id": "performance",
+                                    "title": "Performance",
+                                    "score": 0.42,
+                                    "score_percent": 42,
+                                    "display_value": None,
+                                    "audit_refs": 47,
+                                }
+                            ],
+                            "audits": {
+                                "failed": [
+                                    {
+                                        "id": "total-blocking-time",
+                                        "title": "Total Blocking Time",
+                                        "score": 0.0,
+                                        "score_percent": 0,
+                                        "score_display_mode": "numeric",
+                                        "display_value": "10 ms",
+                                        "description": None,
+                                        "failed": True,
+                                    }
+                                ],
+                                "passed": [
+                                    {
+                                        "id": "first-contentful-paint",
+                                        "title": "First Contentful Paint",
+                                        "score": 0.28,
+                                        "score_percent": 28,
+                                        "score_display_mode": "numeric",
+                                        "display_value": "3.8 s",
+                                        "description": None,
+                                        "failed": False,
+                                    }
+                                ],
+                                "not_applicable": [],
+                                "manual": [],
+                                "informative": [],
+                                "error": [],
+                                "totals": {},
+                            },
+                            "opportunities": [],
+                            "metric_savings": [],
+                            "field_data": None,
+                        }
+                    },
+                }
+            ]
+        }
+
+    def test_core_metrics_are_collected_in_lighthouse_order(self) -> None:
+        strategy = self._payload()["url_reports"][0]["strategies"]["mobile"]
+        metrics = renderer._pagespeed_core_metrics(strategy)
+        assert [m["id"] for m in metrics][:2] == [
+            "first-contentful-paint",
+            "total-blocking-time",
+        ]
+
+    def test_replica_html_contains_same_scores(self) -> None:
+        html = renderer._render_pagespeed_saved_html(self._payload())
+        assert "recorded analysis replica" in html
+        assert 'psi-gauge-ring">42</span>' in html
+        assert "Total Blocking Time" in html
+        assert "10 ms" in html
+
+    def test_replica_is_written_beside_the_report(self, tmp_path: Path) -> None:
+        experiment = {"pagespeed": self._payload()}
+        destination = renderer._publish_pagespeed_saved_report(
+            experiment, tmp_path
+        )
+        assert destination == tmp_path / "pagespeed-report.html"
+        assert destination.is_file()
+
+    def test_no_pagespeed_yields_no_replica(self, tmp_path: Path) -> None:
+        assert renderer._publish_pagespeed_saved_report({}, tmp_path) is None
+        assert not (tmp_path / "pagespeed-report.html").exists()
