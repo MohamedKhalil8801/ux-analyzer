@@ -14,7 +14,7 @@ from ux_analyzer.export.skills import SkillSet, resolve_assignments
 class SelectionResult:
     issues: tuple[IssueView, ...]
     default_skill_set: str | None
-    per_issue_skills: dict[str, str] = field(default_factory=dict)
+    per_issue_skills: dict[str, str] = field(default_factory=dict[str, str])
 
 
 class SelectionUI(Protocol):

@@ -2155,11 +2155,11 @@ Run: `pytest -q`
 Expected: all PASS.
 Result: 2006 passed / 10 failed / 7 skipped — all 10 failures verified pre-existing on base `feature/export` via worktree (browser/network-policy, transport-budget, corpus-bounding, report e2e). Export suites fully green.
 
-- [ ] **Step 2: Lint + types** (ruff done; pyright BLOCKED — see blocker report)
+- [ ] **Step 2: Lint + types** (ruff done; pyright partially blocked — see blocker report)
 
 Run: `rtk ruff check` and `uv run pyright`
 Expected: clean (pyright strict over `src/ux_analyzer`).
-Result: ruff clean except pre-existing `scripts/slop_bench/parity_sweep.py` I001 (untouched by this branch). `uv run pyright` hangs/stalls in this environment — never completes (4 attempts, >73 min, memory plateau). Scoped pyright runs on `src/ux_analyzer/export` reduced 31 → 15 errors; all 15 trace to pyright's broken interpreter probe (`SRE module mismatch` crash → site-packages dropped from search paths → false "could not be resolved" for installed packages). Real strict defects (yaml Any propagation, unknown dialog returns) fixed with explicit casts.
+Result: ruff clean. pyright (with `--pythonpath .venv\Scripts\python.exe`, working resolution): `src/ux_analyzer/export` = 0 errors / 0 warnings; renderer.py and cli.py additions = 0 errors in edited regions. Whole-project `pyright` never completes because pre-existing `src/ux_analyzer/application/run_agent.py` stalls it (bisected: run_agent.py alone never finishes; every other package completes). Pre-existing strict errors elsewhere in the codebase (analysis ~1400, renderer 50, cli 24, evaluation 3, ports 5) are not from this branch.
 
 - [ ] **Step 3: Manual end-to-end on a real experiment directory** (non-interactive path exercised via `tests/integration/export/test_cli_export.py`; interactive TUI smoke not possible headless)
 

@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 _REVIEWED_GROUP = "reviewed"
@@ -21,7 +21,7 @@ class EvidenceRefView:
     kind: str
     run_id: str
     available: bool
-    detail: Mapping[str, object] = field(default_factory=dict)
+    detail: Mapping[str, object] = field(default_factory=dict[str, object])
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,8 +105,8 @@ def issue_filename(finding_id: str, taken: set[str]) -> str:
 def _evidence_view(finding: Mapping[str, Any]) -> tuple[EvidenceRefView, ...]:
     """Pair refs with targets by index (the renderer builds them 1:1)."""
 
-    refs = list(finding.get("evidence_refs") or ())
-    targets = list(finding.get("evidence_targets") or ())
+    refs: list[Mapping[str, Any]] = list(finding.get("evidence_refs") or ())
+    targets: list[Mapping[str, Any]] = list(finding.get("evidence_targets") or ())
     views: list[EvidenceRefView] = []
     for index, ref in enumerate(refs):
         target: Mapping[str, Any] = targets[index] if index < len(targets) else {}
@@ -117,26 +117,29 @@ def _evidence_view(finding: Mapping[str, Any]) -> tuple[EvidenceRefView, ...]:
                 kind=str(ref.get("kind", "")),
                 run_id=str(ref.get("run_id", "")),
                 available=bool(target.get("available", True)),
-                detail=dict(detail) if isinstance(detail, Mapping) else {},
+                detail=dict(cast("Mapping[str, object]", detail))
+                if isinstance(detail, Mapping)
+                else {},
             )
         )
     return tuple(views)
 
 
 def _artifacts(finding: Mapping[str, Any], root: Path) -> tuple[ArtifactFile, ...]:
+    refs: list[Mapping[str, Any]] = list(finding.get("evidence_refs") or ())
+    targets: list[Mapping[str, Any]] = list(finding.get("evidence_targets") or ())
     artifacts: list[ArtifactFile] = []
-    for ref, target in zip(
-        finding.get("evidence_refs") or (),
-        finding.get("evidence_targets") or (),
-    ):
+    for ref, target in zip(refs, targets):
         artifact = target.get("artifact")
         if not isinstance(artifact, Mapping):
             continue
+        artifact_map = cast("Mapping[str, object]", artifact)
+        digest = artifact_map.get("sha256")
         artifacts.append(
             ArtifactFile(
                 evidence_id=str(ref.get("evidence_id", "")),
-                source=root / str(artifact.get("path", "")),
-                sha256=artifact.get("sha256"),
+                source=root / str(artifact_map.get("path", "")),
+                sha256=None if digest is None else str(digest),
             )
         )
     return tuple(artifacts)
