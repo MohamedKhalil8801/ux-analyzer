@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import yaml
 from platformdirs import user_config_dir
@@ -42,25 +43,30 @@ def load_skill_sets(path: Path) -> tuple[SkillSet, ...]:
 
     if not path.is_file():
         return ()
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    sets_raw = (raw or {}).get("sets")
+    raw = cast("Mapping[str, object] | None", yaml.safe_load(path.read_text(encoding="utf-8")))
+    document: Mapping[str, object] = raw or {}
+    sets_raw = document.get("sets")
     if not isinstance(sets_raw, Mapping):
         raise ValueError(f"{path}: 'sets' must be a mapping of set names")
+    named_sets = cast("Mapping[str, object]", sets_raw)
     sets: list[SkillSet] = []
     defaults = 0
-    for name, spec in sets_raw.items():
+    for name, spec in named_sets.items():
         set_name = str(name)
         if not set_name.strip():
             raise ValueError(f"{path}: skill set name must not be empty")
         if not isinstance(spec, Mapping):
             raise ValueError(f"{path}: set '{set_name}' must be a mapping")
-        skills_raw = spec.get("skills", [])
+        spec_map = cast("Mapping[str, object]", spec)
+        skills_raw = spec_map.get("skills", [])
         if not isinstance(skills_raw, list):
             raise ValueError(f"{path}: set '{set_name}' skills must be a list")
-        skills = tuple(str(skill) for skill in skills_raw)
+        skills = tuple(
+            str(skill) for skill in cast("list[object]", skills_raw)
+        )
         if any(not skill.strip() for skill in skills):
             raise ValueError(f"{path}: set '{set_name}' has an empty skill name")
-        is_default = bool(spec.get("default", False))
+        is_default = bool(spec_map.get("default", False))
         defaults += int(is_default)
         sets.append(SkillSet(set_name, skills, is_default))
     if defaults > 1:

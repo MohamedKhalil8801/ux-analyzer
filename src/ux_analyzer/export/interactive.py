@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 from prompt_toolkit.shortcuts import (
     checkboxlist_dialog,
@@ -25,24 +26,30 @@ class PromptToolkitUI:
         defaults = tuple(
             finding_id for finding_id, _, preselected in items if preselected
         )
-        result = checkboxlist_dialog(
-            title=f"Select issues: {group_name}",
-            text="Space toggles, Enter continues to the next type.",
-            values=values,
-            default_values=defaults,
-        ).run()
+        result = cast(
+            "tuple[str, ...] | None",
+            checkboxlist_dialog(
+                title=f"Select issues: {group_name}",
+                text="Space toggles, Enter continues to the next type.",
+                values=values,
+                default_values=defaults,
+            ).run(),
+        )
         return tuple(result or ())
 
     def choose_skill_set(self, sets: Sequence[SkillSet]) -> str | None:
         default = next((s.name for s in sets if s.is_default), None)
         values: list[tuple[str | None, str]] = [(None, "(no skills)")]
         values += [(s.name, f"{s.name} ({len(s.skills)} skill(s))") for s in sets]
-        return radiolist_dialog(
-            title="Skill set for all issues",
-            text="One set applies to every issue; adjust per issue next.",
-            values=values,
-            default=default,
-        ).run()
+        return cast(
+            "str | None",
+            radiolist_dialog(
+                title="Skill set for all issues",
+                text="One set applies to every issue; adjust per issue next.",
+                values=values,
+                default=default,
+            ).run(),
+        )
 
     def override_per_issue(
         self,
@@ -56,18 +63,24 @@ class PromptToolkitUI:
                 (None, f"(use default: {default_name or 'none'})")
             ]
             values += [(s.name, s.name) for s in sets]
-            choice = radiolist_dialog(
-                title=f"Skill set for: {issue.finding_id}",
-                values=values,
-                default=None,
-            ).run()
+            choice = cast(
+                "str | None",
+                radiolist_dialog(
+                    title=f"Skill set for: {issue.finding_id}",
+                    values=values,
+                    default=None,
+                ).run(),
+            )
             if choice is not None:
                 overrides[issue.finding_id] = choice
         return overrides
 
     def confirm(self, summary: str) -> bool:
         return bool(
-            confirm_dialog(title="Write export package", text=summary).run()
+            cast(
+                "bool | None",
+                confirm_dialog(title="Write export package", text=summary).run(),
+            )
         )
 
 
