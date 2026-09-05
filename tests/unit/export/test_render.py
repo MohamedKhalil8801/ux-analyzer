@@ -211,8 +211,7 @@ def test_render_issue_skips_empty_static_sections() -> None:
     assert "## Root cause" not in md
     assert "## Suggested fixes" not in md
     assert (
-        "- **Source:** page-audit (recorded page fact; "
-        "not a simulated-user finding)" in md
+        "- **Source:** page-audit" in md
     )
     assert "- **URL:** https://app.example.test/" in md
     assert "- **found_count:** 2" in md

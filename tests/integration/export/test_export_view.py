@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from dataclasses import replace
@@ -561,6 +562,14 @@ def _write_ux_audit(root: Path) -> None:
                         "evidence": {
                             "element_selectors": ["img.logo", "img.hero"],
                             "element_xpaths": ["/html/body/img[1]"],
+                            "element_screenshots": [
+                                "data:image/png;base64,"
+                                + base64.b64encode(b"element-shot").decode("ascii")
+                            ],
+                            "combined_screenshots": [
+                                "data:image/jpeg;base64,"
+                                + base64.b64encode(b"combined-shot").decode("ascii")
+                            ],
                         },
                     },
                 ],
@@ -736,6 +745,16 @@ def test_page_audit_issues_mirror_the_page_findings_tab(
     assert json_ld["detail"]["URL"] == "https://app.example.test/"
     alt = by_id["audit:img_alt"]
     assert alt["detail"]["element_selectors"] == ["img.logo", "img.hero"]
+    assert alt["affected_surfaces"] == ["https://app.example.test/"]
+    attachments = alt["attachments"]
+    assert [entry["suffix"] for entry in attachments] == [".png", ".jpg"]
+    assert attachments[0]["data"] == b"element-shot"
+    assert attachments[1]["data"] == b"combined-shot"
+    assert attachments[0]["evidence_id"] == "audit:img_alt:screenshot-1"
+    assert attachments[1]["evidence_id"] == "audit:img_alt:screenshot-2"
+    assert alt["detail"]["Screenshots"] == (
+        "2 annotated screenshot(s), copied into assets/"
+    )
 
 
 def test_slop_card_becomes_one_ai_slop_finding(synthesis_bundle: Path) -> None:

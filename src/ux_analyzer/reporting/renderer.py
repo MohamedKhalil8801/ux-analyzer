@@ -335,6 +335,64 @@ def _strip_data_uris(value: object) -> object:
     return value
 
 
+def _decode_data_uri(value: str) -> tuple[bytes, str] | None:
+    """Decode an inline image data URI into (bytes, file suffix)."""
+
+    match = re.match(
+        r"data:image/(png|jpeg|jpg|webp);base64,(.*)", value, re.DOTALL
+    )
+    if match is None:
+        return None
+    suffixes = {"jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "webp": ".webp"}
+    try:
+        return base64.b64decode(match.group(2), validate=False), suffixes[
+            match.group(1)
+        ]
+    except ValueError:
+        return None
+
+
+def _attachment_entries(
+    finding_id: str, evidence: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Extract inline screenshot data URIs into copyable attachments."""
+
+    attachments: list[dict[str, Any]] = []
+    index = 0
+    raw_lists = [
+        evidence.get("element_screenshots"),
+        evidence.get("combined_screenshots"),
+    ]
+    for raw_list in raw_lists:
+        for uri in _strings(raw_list):
+            decoded = _decode_data_uri(uri)
+            if decoded is None:
+                continue
+            index += 1
+            content, suffix = decoded
+            attachments.append(
+                {
+                    "evidence_id": f"{finding_id}:screenshot-{index}",
+                    "data": content,
+                    "suffix": suffix,
+                }
+            )
+    combined = evidence.get("combined_screenshot")
+    if isinstance(combined, str):
+        decoded = _decode_data_uri(combined)
+        if decoded is not None:
+            index += 1
+            content, suffix = decoded
+            attachments.append(
+                {
+                    "evidence_id": f"{finding_id}:screenshot-{index}",
+                    "data": content,
+                    "suffix": suffix,
+                }
+            )
+    return attachments
+
+
 def _static_finding(
     finding_id: str,
     title: str,
@@ -344,7 +402,9 @@ def _static_finding(
     source: str,
     detail: dict[str, Any],
     *,
+    affected_surfaces: list[str] | None = None,
     limitations: list[str] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "finding_id": finding_id,
@@ -357,7 +417,7 @@ def _static_finding(
         "category": category,
         "evidence_refs": [],
         "evidence_targets": [],
-        "affected_surfaces": [],
+        "affected_surfaces": affected_surfaces or [],
         "principles": [],
         "counterevidence": [],
         "limitations": limitations or [],
@@ -368,6 +428,7 @@ def _static_finding(
         "reviewer_notes": [],
         "source": source,
         "detail": detail,
+        "attachments": attachments or [],
     }
 
 
@@ -385,6 +446,7 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
             if not title:
                 continue
             check_id = _text(issue.get("check_id")) or _slug_fallback(title)
+            finding_id = _unique_finding_id(f"audit:{check_id}", used)
             evidence = issue.get("evidence")
             evidence_map: Mapping[str, Any] = (
                 cast("Mapping[str, Any]", evidence)
@@ -399,15 +461,22 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
                 if stripped in (None, "", [], {}):
                     continue
                 detail[key] = stripped
+            attachments = _attachment_entries(finding_id, evidence_map)
+            if attachments:
+                detail["Screenshots"] = (
+                    f"{len(attachments)} annotated screenshot(s), copied into assets/"
+                )
             findings.append(
                 _static_finding(
-                    _unique_finding_id(f"audit:{check_id}", used),
+                    finding_id,
                     title,
                     f"{title} — recorded page fact from the static audit of {url}.",
                     _text(issue.get("severity"), "low"),
                     _text(issue.get("category"), "page-audit"),
                     "page-audit",
                     detail,
+                    affected_surfaces=[url],
+                    attachments=attachments,
                 )
             )
         slop = url_report.get("slop")
@@ -494,6 +563,7 @@ def _slop_findings(
             "ai-slop",
             "ai-slop",
             detail,
+            affected_surfaces=[url],
         )
     ]
 
@@ -582,6 +652,7 @@ def _pagespeed_audit_findings(
                 "performance",
                 "pagespeed",
                 detail,
+                affected_surfaces=[url],
                 limitations=[
                     "Verbatim Lighthouse result; scores vary between runs."
                 ],
@@ -630,6 +701,7 @@ def _pagespeed_opportunity_findings(
                 "performance",
                 "pagespeed",
                 detail,
+                affected_surfaces=[url],
                 limitations=[
                     "Verbatim Lighthouse result; scores vary between runs."
                 ],

@@ -44,9 +44,18 @@ class ExportContext:
 
 def _scalar(value: object) -> object:
     if isinstance(value, (list, tuple)):
-        return ", ".join(
-            str(item) for item in cast("Sequence[object]", value)
-        )
+        items = cast("Sequence[object]", value)
+        if items and all(isinstance(item, Mapping) for item in items):
+            return "; ".join(
+                ", ".join(
+                    f"{_humanize_key(str(key))} {_scalar(item_value)}"
+                    for key, item_value in cast(
+                        "Mapping[str, object]", item
+                    ).items()
+                )
+                for item in items
+            )
+        return ", ".join(str(item) for item in items)
     return value
 
 
@@ -94,7 +103,11 @@ def _detail_lines(detail: Mapping[str, object]) -> list[str]:
     return lines
 
 
-def render_issue(issue: IssueView, asset_links: Mapping[str, str]) -> str:
+def render_issue(
+    issue: IssueView,
+    asset_links: Mapping[str, str],
+    extra_images: Sequence[tuple[str, str]] = (),
+) -> str:
     lines: list[str] = [
         f"# Issue: {issue.title}",
         "",
@@ -108,10 +121,7 @@ def render_issue(issue: IssueView, asset_links: Mapping[str, str]) -> str:
         f"- **Evidence class:** {issue.evidence_class}",
         f"- **Reproducibility:** {issue.reproducibility}",
         *(
-            [
-                f"- **Source:** {issue.source} (recorded page fact; "
-                "not a simulated-user finding)"
-            ]
+            [f"- **Source:** {issue.source}"]
             if issue.source not in ("", "reviewed")
             else []
         ),
@@ -142,6 +152,8 @@ def render_issue(issue: IssueView, asset_links: Mapping[str, str]) -> str:
                 f"  Run `{ref.run_id}` — could not be resolved at export time; "
                 "verify against the recorded report before relying on it."
             )
+    for image_alt, image_path in extra_images:
+        lines.append(f"  ![screenshot {image_alt}]({image_path})")
     if issue.fixes:
         lines += [
             "",

@@ -31,6 +31,8 @@ class ArtifactFile:
     evidence_id: str
     source: Path
     sha256: str | None
+    content: bytes | None = None
+    suffix: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +164,34 @@ def _artifacts(finding: Mapping[str, Any], root: Path) -> tuple[ArtifactFile, ..
     return tuple(artifacts)
 
 
+def _attachment_artifacts(
+    finding: Mapping[str, Any],
+) -> tuple[ArtifactFile, ...]:
+    """Materialize inline screenshot attachments into copyable artifacts."""
+
+    artifacts: list[ArtifactFile] = []
+    raw_attachments = finding.get("attachments")
+    if not isinstance(raw_attachments, list):
+        return tuple(artifacts)
+    for attachment in cast("list[object]", raw_attachments):
+        if not isinstance(attachment, Mapping):
+            continue
+        entry = cast("Mapping[str, Any]", attachment)
+        data = entry.get("data")
+        if not isinstance(data, bytes) or not data:
+            continue
+        artifacts.append(
+            ArtifactFile(
+                evidence_id=str(entry.get("evidence_id", "")),
+                source=Path(),
+                sha256=None,
+                content=data,
+                suffix=str(entry.get("suffix", ".png")) or ".png",
+            )
+        )
+    return tuple(artifacts)
+
+
 def _issue_view(finding: Mapping[str, Any], root: Path, taken: set[str]) -> IssueView:
     confidence = finding.get("confidence")
     return IssueView(
@@ -187,7 +217,7 @@ def _issue_view(finding: Mapping[str, Any], root: Path, taken: set[str]) -> Issu
         reproducibility=str(finding.get("reproducibility", "")),
         confidence=None if confidence is None else float(confidence),
         evidence=_evidence_view(finding) or _static_evidence(finding),
-        artifacts=_artifacts(finding, root),
+        artifacts=_artifacts(finding, root) + _attachment_artifacts(finding),
         source=str(finding.get("source", "reviewed")),
     )
 

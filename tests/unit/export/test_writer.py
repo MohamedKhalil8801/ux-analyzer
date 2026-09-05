@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,9 @@ from ux_analyzer.export.skills import SkillSet
 from ux_analyzer.export.writer import ExportError, ExportResult, write_export
 
 
-def _issue(artifact: ArtifactFile | None) -> IssueView:
+def _issue(
+    artifact: ArtifactFile | None, evidence_id: str = "ev-1"
+) -> IssueView:
     return IssueView(
         finding_id="run-1:spacing",
         filename="run-1-spacing.md",
@@ -32,7 +36,9 @@ def _issue(artifact: ArtifactFile | None) -> IssueView:
         reproducibility="seeded",
         confidence=None,
         evidence=(
-            EvidenceRefView("ev-1", "screenshot", "run-1", artifact is not None),
+            EvidenceRefView(
+                evidence_id, "screenshot", "run-1", artifact is not None
+            ),
         ),
         artifacts=((artifact,) if artifact else ()),
         source="reviewed",
@@ -102,3 +108,35 @@ def test_existing_package_is_never_overwritten(tmp_path: Path) -> None:
 
     with pytest.raises(ExportError, match="already exists"):
         write_export(package, _context(_issue(None)))
+
+
+def test_write_export_writes_attachment_content_with_safe_name(
+    tmp_path: Path,
+) -> None:
+    evidence_id = "audit:contrast.below-threshold:screenshot-1"
+    artifact = ArtifactFile(
+        evidence_id,
+        Path(),
+        None,
+        content=b"jpeg-bytes",
+        suffix=".jpg",
+    )
+    package = tmp_path / "package"
+
+    result = write_export(
+        package, _context(_issue(artifact, evidence_id="audit:contrast.below-threshold"))
+    )
+
+    assert result.asset_count == 1
+    copied = package / "assets" / "audit-contrast.below-threshold-screenshot-1.jpg"
+    assert copied.read_bytes() == b"jpeg-bytes"
+    md = (package / "issues" / "run-1-spacing.md").read_text(encoding="utf-8")
+    assert (
+        "![screenshot audit:contrast.below-threshold:screenshot-1]"
+        "(assets/audit-contrast.below-threshold-screenshot-1.jpg)" in md
+    )
+    manifest = json.loads((package / "manifest.json").read_text("utf-8"))
+    digest = hashlib.sha256(b"jpeg-bytes").hexdigest()
+    assert manifest["assets"] == {
+        "assets/audit-contrast.below-threshold-screenshot-1.jpg": digest
+    }

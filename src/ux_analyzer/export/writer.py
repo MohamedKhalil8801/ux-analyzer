@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from ux_analyzer.export.render import (
     render_issue,
     render_manifest,
 )
+
+_SAFE_ASSET_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class ExportError(RuntimeError):
@@ -24,6 +27,10 @@ class ExportResult:
     package_dir: Path
     issue_count: int
     asset_count: int
+
+
+def _asset_stem(evidence_id: str) -> str:
+    return _SAFE_ASSET_CHARS.sub("-", evidence_id).strip("-._") or "asset"
 
 
 def write_export(out_dir: Path, context: ExportContext) -> ExportResult:
@@ -40,8 +47,25 @@ def write_export(out_dir: Path, context: ExportContext) -> ExportResult:
     asset_count = 0
     for issue in context.issues:
         links: dict[str, str] = {}
+        copied: list[tuple[str, str]] = []
         missing_ids: set[str] = set()
         for artifact in issue.artifacts:
+            if artifact.content is not None:
+                digest = hashlib.sha256(artifact.content).hexdigest()
+                if artifact.sha256 is not None and digest != artifact.sha256:
+                    raise ExportError(
+                        f"artifact for evidence '{artifact.evidence_id}' does not "
+                        "match its recorded sha256 in the bundle"
+                    )
+                suffix = artifact.suffix or ".bin"
+                relative = (
+                    f"assets/{_asset_stem(artifact.evidence_id)}{suffix}"
+                )
+                (destination / relative).write_bytes(artifact.content)
+                asset_digests[relative] = digest
+                copied.append((artifact.evidence_id, relative))
+                asset_count += 1
+                continue
             if not artifact.source.is_file():
                 missing_ids.add(artifact.evidence_id)
                 continue
@@ -53,11 +77,18 @@ def write_export(out_dir: Path, context: ExportContext) -> ExportResult:
                     "match its recorded sha256 in the bundle"
                 )
             suffix = artifact.source.suffix or ".bin"
-            relative = f"assets/{artifact.evidence_id}{suffix}"
+            relative = f"assets/{_asset_stem(artifact.evidence_id)}{suffix}"
             (destination / relative).write_bytes(content)
             asset_digests[relative] = digest
-            links[artifact.evidence_id] = relative
+            copied.append((artifact.evidence_id, relative))
             asset_count += 1
+        linked_ids = {ref.evidence_id for ref in issue.evidence}
+        links = {
+            eid: relative for eid, relative in copied if eid in linked_ids
+        }
+        extra_images = [
+            (eid, relative) for eid, relative in copied if eid not in linked_ids
+        ]
         if missing_ids:
             issue = replace(
                 issue,
@@ -69,7 +100,7 @@ def write_export(out_dir: Path, context: ExportContext) -> ExportResult:
                 ),
             )
         rendered.append(
-            (issue.filename, render_issue(issue, links))
+            (issue.filename, render_issue(issue, links, extra_images))
         )
 
     for filename, markdown in rendered:
