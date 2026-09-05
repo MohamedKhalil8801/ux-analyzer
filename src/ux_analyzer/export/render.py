@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ _XPATH_KEYS = (
     "Element xpaths",
     "Element xpath",
 )
+_CAMEL_SPLIT = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,27 @@ def _scalar(value: object) -> object:
     return value
 
 
+def _humanize_key(key: str) -> str:
+    words = _CAMEL_SPLIT.sub(" ", str(key)).replace("_", " ").split()
+    if not words:
+        return str(key)
+    return " ".join(word.capitalize() for word in words)
+
+
+def _nested_lines(detail: Mapping[str, object]) -> list[str]:
+    lines: list[str] = []
+    for key, value in detail.items():
+        if str(key) == "triggered":
+            continue
+        humanized = _humanize_key(str(key))
+        if isinstance(value, Mapping):
+            lines.append(f"  - **{humanized}:**")
+            lines.extend(_nested_lines(cast("Mapping[str, object]", value)))
+        else:
+            lines.append(f"  - **{humanized}:** {_scalar(value)}")
+    return lines
+
+
 def _detail_lines(detail: Mapping[str, object]) -> list[str]:
     lines: list[str] = []
     for key in _SELECTOR_KEYS:
@@ -63,7 +86,11 @@ def _detail_lines(detail: Mapping[str, object]) -> list[str]:
     for key, value in detail.items():
         if key in _SELECTOR_KEYS or key in _XPATH_KEYS:
             continue
-        lines.append(f"- **{key}:** {_scalar(value)}")
+        if isinstance(value, Mapping):
+            lines.append(f"- **{key}:**")
+            lines.extend(_nested_lines(cast("Mapping[str, object]", value)))
+        else:
+            lines.append(f"- **{key}:** {_scalar(value)}")
     return lines
 
 

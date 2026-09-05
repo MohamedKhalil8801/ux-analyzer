@@ -448,6 +448,16 @@ def _slop_findings(
             f"{_text(pattern.get('label'))} "
             f"[{_text(pattern.get('id'))}] (+{_text(pattern.get('weight'), '0')})"
         )
+        evidence = pattern.get("evidence")
+        if (
+            isinstance(evidence, Mapping)
+            and len(cast("Mapping[object, object]", evidence)) > 1
+        ):
+            detail[f"Design pattern {pattern_number} evidence"] = {
+                str(key): value
+                for key, value in cast("Mapping[object, object]", evidence).items()
+                if key != "triggered"
+            }
     copy = slop.get("copy")
     if isinstance(copy, Mapping):
         copy_map = cast("Mapping[str, Any]", copy)
@@ -459,6 +469,18 @@ def _slop_findings(
                 f"{_text(pattern.get('label'))} "
                 f"[{_text(pattern.get('id'))}] (+{_text(pattern.get('weight'), '0')})"
             )
+            evidence = pattern.get("evidence")
+            if (
+                isinstance(evidence, Mapping)
+                and len(cast("Mapping[object, object]", evidence)) > 1
+            ):
+                detail[f"Copy pattern {pattern_number} evidence"] = {
+                    str(key): value
+                    for key, value in cast(
+                        "Mapping[object, object]", evidence
+                    ).items()
+                    if key != "triggered"
+                }
     detail["Annotated evidence"] = "open report.html, Page findings tab"
     return [
         _static_finding(

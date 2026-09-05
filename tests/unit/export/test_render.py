@@ -145,6 +145,46 @@ def test_render_issue_joins_list_selectors() -> None:
     assert "run ``" not in md
 
 
+def test_render_issue_nests_mapping_evidence_with_humanized_keys() -> None:
+    issue = _issue(
+        evidence=(
+            EvidenceRefView(
+                "slop:page",
+                "ai-slop",
+                "",
+                True,
+                {
+                    "Slop score": "30/100 (grade D+, tier Heavy)",
+                    "Design pattern 1": "AI-default font stack [slop_fonts] (+8)",
+                    "Design pattern 1 evidence": {
+                        "slopCount": 238,
+                        "total": 273,
+                        "ratio": 0.872,
+                        "heroIsSlop": False,
+                        "heroFam": 'Fraunces, "Hoefler Text", Georgia, serif',
+                        "accentSerifItalicCount": 3,
+                        "triggered": True,
+                    },
+                },
+            ),
+        ),
+    )
+
+    md = render_issue(issue, {})
+
+    assert "- **Design pattern 1:** AI-default font stack [slop_fonts] (+8)" in md
+    assert "- **Design pattern 1 evidence:**" in md
+    assert "  - **Slop Count:** 238" in md
+    assert "  - **Total:** 273" in md
+    assert "  - **Ratio:** 0.872" in md
+    assert "  - **Hero Is Slop:** False" in md
+    assert (
+        '  - **Hero Fam:** Fraunces, "Hoefler Text", Georgia, serif' in md
+    )
+    assert "  - **Accent Serif Italic Count:** 3" in md
+    assert "triggered" not in md
+
+
 def test_render_issue_skips_empty_static_sections() -> None:
     issue = _issue(
         source="page-audit",
