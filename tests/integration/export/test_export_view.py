@@ -654,6 +654,12 @@ def _write_pagespeed(root: Path) -> None:
                                     "score_percent": 30,
                                     "display_value": "1.2 s",
                                     "description": "Potential savings of 900 ms.",
+                                    "items": [
+                                        {
+                                            "url": "https://app.example.test/styles.css",
+                                            "wastedMs": 900,
+                                        }
+                                    ],
                                 }
                             ],
                             "passed": [],
@@ -672,9 +678,22 @@ def _write_pagespeed(root: Path) -> None:
                                 "savings_ms": 150,
                                 "savings_bytes": 28869,
                                 "items": [
-                                    {"url": "https://app.example.test/app.js"}
+                                    {
+                                        "url": "https://app.example.test/app.js",
+                                        "totalBytes": 60427,
+                                        "wastedBytes": 28869,
+                                    }
                                 ],
-                            }
+                            },
+                            {
+                                "id": "unminified-css",
+                                "title": "Minify CSS",
+                                "score": 1,
+                                "display_value": "",
+                                "savings_ms": 0,
+                                "savings_bytes": 0,
+                                "items": [],
+                            },
                         ],
                     }
                 },
@@ -790,15 +809,29 @@ def test_pagespeed_findings_mirror_the_performance_tab(
     assert set(by_id) == {
         "pagespeed:mobile:render-blocking-resources",
         "pagespeed:mobile:opportunity:unused-javascript",
+        "pagespeed:mobile:opportunity:unminified-css",
     }
     failed = by_id["pagespeed:mobile:render-blocking-resources"]
     assert failed["severity"] == "high"
     assert failed["category"] == "performance"
     assert failed["detail"]["Lighthouse score"] == "30/100"
+    assert failed["detail"]["Detected files"] == [
+        {"url": "https://app.example.test/styles.css", "wastedMs": 900}
+    ]
     opportunity = by_id["pagespeed:mobile:opportunity:unused-javascript"]
     assert opportunity["severity"] == "medium"
     assert opportunity["detail"]["Estimated saving"] == "Est savings of 28 KiB"
-    assert opportunity["detail"]["Wasted on"] == ["https://app.example.test/app.js"]
+    assert opportunity["detail"]["Detected files"] == [
+        {
+            "url": "https://app.example.test/app.js",
+            "totalBytes": 60427,
+            "wastedBytes": 28869,
+        }
+    ]
+    unminified = by_id["pagespeed:mobile:opportunity:unminified-css"]
+    assert unminified["detail"]["Detected files"] == (
+        "none recorded by Lighthouse"
+    )
 
 
 def test_all_mapped_findings_have_unique_ids_and_resolved_evidence(

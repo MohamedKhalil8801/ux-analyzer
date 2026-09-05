@@ -606,6 +606,24 @@ def _pagespeed_findings(
     return findings
 
 
+def _detected_files_detail(
+    detail: dict[str, Any], raw_items: object
+) -> None:
+    """Record the per-file facts a Lighthouse result lists, if any."""
+
+    files = [
+        {
+            key: value
+            for key, value in item.items()
+            if key in ("url", "totalBytes", "wastedBytes", "wastedMs")
+        }
+        for item in _list_of_mappings(raw_items)
+    ]
+    detail["Detected files"] = (
+        files if files else "none recorded by Lighthouse"
+    )
+
+
 def _pagespeed_audit_findings(
     url: str,
     strategy: str,
@@ -640,6 +658,8 @@ def _pagespeed_audit_findings(
         description = _optional_text(audit.get("description"))
         if description:
             detail["About"] = description
+        if audit.get("items"):
+            _detected_files_detail(detail, audit.get("items"))
         findings.append(
             _static_finding(
                 _unique_finding_id(f"pagespeed:{strategy}:{audit_id}", used),
@@ -683,10 +703,7 @@ def _pagespeed_opportunity_findings(
         savings_bytes = opportunity.get("savings_bytes")
         if isinstance(savings_bytes, (int, float)):
             detail["savings_bytes"] = savings_bytes
-        for item in _list_of_mappings(opportunity.get("items")):
-            item_url = _text(item.get("url"))
-            if item_url:
-                detail.setdefault("Wasted on", []).append(item_url)
+        _detected_files_detail(detail, opportunity.get("items"))
         findings.append(
             _static_finding(
                 _unique_finding_id(
@@ -1289,6 +1306,23 @@ def _pagespeed_field_data(value: object) -> dict[str, Any] | None:
     return result if result else None
 
 
+def _opportunity_items(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Normalize the per-file savings rows of a Lighthouse audit result."""
+
+    items: list[dict[str, Any]] = []
+    for raw_item in _list_of_mappings(raw.get("items")):
+        item: dict[str, Any] = {}
+        for key in ("url", "totalBytes", "wastedBytes", "wastedMs", "responseTime", "transferSize", "requestCount"):
+            value = raw_item.get(key)
+            if isinstance(value, str) and key == "url":
+                item[key] = value
+            elif _pagespeed_number(value) is not None:
+                item[key] = _pagespeed_number(value)
+        if item:
+            items.append(item)
+    return items
+
+
 def _pagespeed_audit_row(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     audit_id = _text(raw.get("id"))
     if not audit_id:
@@ -1307,6 +1341,7 @@ def _pagespeed_audit_row(raw: Mapping[str, Any]) -> dict[str, Any] | None:
         "score_display_mode": _text(raw.get("score_display_mode"), "numeric"),
         "display_value": _optional_text(raw.get("display_value")),
         "description": _optional_text(raw.get("description")),
+        "items": _opportunity_items(raw),
         "failed": bool(raw.get("failed")),
     }
 
@@ -1317,17 +1352,6 @@ def _pagespeed_opportunity_row(
     opportunity_id = _text(raw.get("id"))
     if not opportunity_id:
         return None
-    items: list[dict[str, Any]] = []
-    for raw_item in _list_of_mappings(raw.get("items")):
-        item: dict[str, Any] = {}
-        for key in ("url", "totalBytes", "wastedBytes", "wastedMs", "responseTime", "transferSize", "requestCount"):
-            value = raw_item.get(key)
-            if isinstance(value, str) and key == "url":
-                item[key] = value
-            elif _pagespeed_number(value) is not None:
-                item[key] = _pagespeed_number(value)
-        if item:
-            items.append(item)
     return {
         "id": opportunity_id,
         "title": _text(raw.get("title"), opportunity_id),
@@ -1336,7 +1360,7 @@ def _pagespeed_opportunity_row(
         "display_value": _optional_text(raw.get("display_value")),
         "savings_ms": _pagespeed_number(raw.get("savings_ms")),
         "savings_bytes": _pagespeed_number(raw.get("savings_bytes")),
-        "items": items,
+        "items": _opportunity_items(raw),
     }
 
 
