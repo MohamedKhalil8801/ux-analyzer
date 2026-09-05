@@ -84,10 +84,12 @@ def write_export(out_dir: Path, context: ExportContext) -> ExportResult:
             asset_count += 1
         linked_ids = {ref.evidence_id for ref in issue.evidence}
         links = {
-            eid: relative for eid, relative in copied if eid in linked_ids
+            eid: f"../{relative}" for eid, relative in copied if eid in linked_ids
         }
         extra_images = [
-            (eid, relative) for eid, relative in copied if eid not in linked_ids
+            (eid, f"../{relative}")
+            for eid, relative in copied
+            if eid not in linked_ids
         ]
         if missing_ids:
             issue = replace(

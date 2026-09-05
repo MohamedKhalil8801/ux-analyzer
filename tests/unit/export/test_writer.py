@@ -133,7 +133,7 @@ def test_write_export_writes_attachment_content_with_safe_name(
     md = (package / "issues" / "run-1-spacing.md").read_text(encoding="utf-8")
     assert (
         "![screenshot audit:contrast.below-threshold:screenshot-1]"
-        "(assets/audit-contrast.below-threshold-screenshot-1.jpg)" in md
+        "(../assets/audit-contrast.below-threshold-screenshot-1.jpg)" in md
     )
     manifest = json.loads((package / "manifest.json").read_text("utf-8"))
     digest = hashlib.sha256(b"jpeg-bytes").hexdigest()
