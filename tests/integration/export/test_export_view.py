@@ -520,6 +520,25 @@ def synthesis_bundle(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def fallback_bundle(tmp_path: Path) -> Path:
+    _write_run(
+        tmp_path,
+        "run-1",
+        version="improved",
+        discovery_cost=3,
+        prominence_provider_id="foveacast",
+    )
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.REJECTED,
+        finding_refs=(_screenshot_ref(),),
+    )
+    _write_ux_audit(tmp_path)
+    _write_pagespeed(tmp_path)
+    return tmp_path
+
+
 def _write_ux_audit(root: Path) -> None:
     payload = {
         "schema_version": "ux-audit-v1",
@@ -774,3 +793,27 @@ def test_all_mapped_findings_have_unique_ids_and_resolved_evidence(
         if finding.get("source") in ("page-audit", "ai-slop", "pagespeed"):
             assert finding["evidence_refs"] == []
             assert isinstance(finding["detail"], dict)
+
+
+def test_fallback_findings_are_excluded_from_export(
+    fallback_bundle: Path,
+) -> None:
+    view = load_report_findings(fallback_bundle)
+
+    assert view["using_fallback"] is True
+    ids = [finding["finding_id"] for finding in view["findings"]]
+    assert ids, "deterministic page facts still export"
+    assert all(
+        finding_id.startswith(("audit:", "slop:", "pagespeed:"))
+        for finding_id in ids
+    )
+    assert not any(
+        finding.get("limitations")
+        for finding in view["findings"]
+        if finding.get("source") in ("page-audit", "ai-slop")
+    )
+    assert all(
+        finding.get("limitations")
+        for finding in view["findings"]
+        if finding.get("source") == "pagespeed"
+    )

@@ -258,13 +258,14 @@ def render_experiment_report(
 
 
 def load_report_findings(bundle_root: Path) -> dict[str, Any]:
-    """Return the findings report.html renders, for evidence-parity consumers.
+    """Return the exportable findings a report presents, for fix exports.
 
-    Mirrors the report exactly: reviewed synthesis findings when a valid
-    attempt is published, publishable deterministic fallback findings
-    otherwise, plus the Page findings tab (static audit + AI-slop card)
-    and the Performance tab (Lighthouse audits and opportunities). See
-    docs/adr/0006-fix-export-mirrors-report-findings.md.
+    Reviewed synthesis findings when a valid attempt is published, plus the
+    Page findings tab (static audit + AI-slop card) and the Performance tab
+    (Lighthouse audits and opportunities). Deterministic fallback findings
+    ("Recorded interaction needs review …") are excluded: they are
+    unconfirmed inferences from a simulated run, not established issues.
+    See docs/adr/0006-fix-export-mirrors-report-findings.md.
     """
 
     root = Path(bundle_root)
@@ -272,14 +273,15 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"bundle root does not exist: {root}")
     experiment = _load_experiment(root)
     synthesis = cast(dict[str, Any], experiment["synthesis"])
-    findings = _list_of_mappings(synthesis.get("findings"))
+    using_fallback = bool(synthesis.get("using_fallback"))
+    findings = [] if using_fallback else _list_of_mappings(synthesis.get("findings"))
     used_ids = {str(finding.get("finding_id", "")) for finding in findings}
     findings = findings + _page_audit_findings(experiment.get("ux_audit"), used_ids)
     findings = findings + _pagespeed_findings(experiment.get("pagespeed"), used_ids)
     return {
         "bundle_root": root,
         "synthesis_status": _text(synthesis.get("synthesis_status")),
-        "using_fallback": bool(synthesis.get("using_fallback")),
+        "using_fallback": using_fallback,
         "attempt_id": (
             None
             if synthesis.get("attempt_id") is None
@@ -406,7 +408,6 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
                     _text(issue.get("category"), "page-audit"),
                     "page-audit",
                     detail,
-                    limitations=["Static page audit; not a simulated-user finding."],
                 )
             )
         slop = url_report.get("slop")
@@ -471,10 +472,6 @@ def _slop_findings(
             "ai-slop",
             "ai-slop",
             detail,
-            limitations=[
-                "27-rule design fingerprint + 9 copy-axis tells; heuristic, "
-                "not a simulated-user finding."
-            ],
         )
     ]
 
