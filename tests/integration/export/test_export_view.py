@@ -1,4 +1,4 @@
-"""Integration tests for the public report-findings view."""
+﻿"""Integration tests for the public report-findings view."""
 
 from __future__ import annotations
 
@@ -515,7 +515,145 @@ def synthesis_bundle(tmp_path: Path) -> Path:
         corpus_refs=(reference,),
         finding_refs=(reference,),
     )
+    _write_ux_audit(tmp_path)
+    _write_pagespeed(tmp_path)
     return tmp_path
+
+
+def _write_ux_audit(root: Path) -> None:
+    payload = {
+        "schema_version": "ux-audit-v1",
+        "urls": [
+            {
+                "url": "https://app.example.test/",
+                "issues": [
+                    {
+                        "category": "GEO",
+                        "check_id": "json_ld",
+                        "title": "No JSON-LD structured data found",
+                        "severity": "critical",
+                        "evidence": {"found": False, "found_count": 0},
+                    },
+                    {
+                        "category": "accessibility",
+                        "check_id": "img_alt",
+                        "title": "Images missing alt text",
+                        "severity": "medium",
+                        "evidence": {
+                            "element_selectors": ["img.logo", "img.hero"],
+                            "element_xpaths": ["/html/body/img[1]"],
+                        },
+                    },
+                ],
+                "slop": {
+                    "score": 30,
+                    "tier": "Heavy",
+                    "grade": "F",
+                    "verdict": "Heavy slop across the page.",
+                    "patternsFlagged": 2,
+                    "patternsTotal": 27,
+                    "unifiedScore": 28,
+                    "unifiedTier": "Heavy",
+                    "patterns": [
+                        {
+                            "id": "slop_fonts",
+                            "label": "AI-default font stack",
+                            "short": "Slop fonts",
+                            "category": "fonts",
+                            "weight": 8,
+                            "triggered": True,
+                            "evidence": {"ratio": 0.87},
+                        },
+                        {
+                            "id": "clean_pattern",
+                            "label": "Not triggered",
+                            "short": "Clean",
+                            "category": "css",
+                            "weight": 4,
+                            "triggered": False,
+                            "evidence": {},
+                        },
+                        {
+                            "id": "colored_glows",
+                            "label": "Big colored box-shadow glows",
+                            "short": "Glows",
+                            "category": "css",
+                            "weight": 4,
+                            "triggered": True,
+                            "evidence": {},
+                        },
+                    ],
+                    "copy": {
+                        "score": 0,
+                        "tier": "Heavy",
+                        "grade": "F",
+                        "patternsFlagged": 1,
+                        "patternsTotal": 9,
+                        "patterns": [
+                            {
+                                "id": "copy_emdash",
+                                "label": "Em-dash overuse",
+                                "short": "Em-dash",
+                                "category": "copy",
+                                "weight": 2,
+                                "triggered": True,
+                                "evidence": {},
+                            }
+                        ],
+                    },
+                },
+            }
+        ],
+    }
+    (root / "ux-audit.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_pagespeed(root: Path) -> None:
+    payload = {
+        "schema_version": "pagespeed-insights-v1",
+        "urls": [
+            {
+                "url": "https://app.example.test/",
+                "strategies": {
+                    "mobile": {
+                        "status": "ok",
+                        "audits": {
+                            "failed": [
+                                {
+                                    "id": "render-blocking-resources",
+                                    "title": "Eliminate render-blocking resources",
+                                    "score": 0.3,
+                                    "score_percent": 30,
+                                    "display_value": "1.2 s",
+                                    "description": "Potential savings of 900 ms.",
+                                }
+                            ],
+                            "passed": [],
+                            "not_applicable": [],
+                            "manual": [],
+                            "informative": [],
+                            "error": [],
+                            "totals": {},
+                        },
+                        "opportunities": [
+                            {
+                                "id": "unused-javascript",
+                                "title": "Reduce unused JavaScript",
+                                "score": 0.5,
+                                "display_value": "Est savings of 28 KiB",
+                                "savings_ms": 150,
+                                "savings_bytes": 28869,
+                                "items": [
+                                    {"url": "https://app.example.test/app.js"}
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        ],
+    }
+    (root / "pagespeed.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_load_report_findings_mirrors_reported_synthesis_findings(
@@ -558,3 +696,81 @@ def test_evidence_target_carries_humanized_detail(
     for finding in view["findings"]:
         for target in finding["evidence_targets"]:
             assert isinstance(target.get("detail"), dict)
+
+
+def test_page_audit_issues_mirror_the_page_findings_tab(
+    synthesis_bundle: Path,
+) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    audit_findings = [
+        finding
+        for finding in view["findings"]
+        if finding.get("source") == "page-audit"
+    ]
+    by_id = {finding["finding_id"]: finding for finding in audit_findings}
+    assert set(by_id) == {"audit:json_ld", "audit:img_alt"}
+    json_ld = by_id["audit:json_ld"]
+    assert json_ld["title"] == "No JSON-LD structured data found"
+    assert json_ld["severity"] == "critical"
+    assert json_ld["category"] == "GEO"
+    assert json_ld["detail"]["URL"] == "https://app.example.test/"
+    alt = by_id["audit:img_alt"]
+    assert alt["detail"]["element_selectors"] == ["img.logo", "img.hero"]
+
+
+def test_slop_card_becomes_one_ai_slop_finding(synthesis_bundle: Path) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    slop = next(
+        finding
+        for finding in view["findings"]
+        if finding.get("source") == "ai-slop"
+    )
+    assert slop["finding_id"] == "slop:https-app-example-test"
+    assert slop["severity"] == "high"
+    assert slop["category"] == "ai-slop"
+    assert "Heavy slop across the page." in slop["issue"]
+    detail = slop["detail"]
+    assert detail["Slop score"] == "30/100 (grade F, tier Heavy)"
+    assert detail["Design pattern 1"].startswith("AI-default font stack")
+    assert detail["Copy pattern 3"].startswith("Em-dash overuse")
+    assert "Not triggered" not in json.dumps(detail)
+
+
+def test_pagespeed_findings_mirror_the_performance_tab(
+    synthesis_bundle: Path,
+) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    performance = [
+        finding
+        for finding in view["findings"]
+        if finding.get("source") == "pagespeed"
+    ]
+    by_id = {finding["finding_id"]: finding for finding in performance}
+    assert set(by_id) == {
+        "pagespeed:mobile:render-blocking-resources",
+        "pagespeed:mobile:opportunity:unused-javascript",
+    }
+    failed = by_id["pagespeed:mobile:render-blocking-resources"]
+    assert failed["severity"] == "high"
+    assert failed["category"] == "performance"
+    assert failed["detail"]["Lighthouse score"] == "30/100"
+    opportunity = by_id["pagespeed:mobile:opportunity:unused-javascript"]
+    assert opportunity["severity"] == "medium"
+    assert opportunity["detail"]["Estimated saving"] == "Est savings of 28 KiB"
+    assert opportunity["detail"]["Wasted on"] == ["https://app.example.test/app.js"]
+
+
+def test_all_mapped_findings_have_unique_ids_and_resolved_evidence(
+    synthesis_bundle: Path,
+) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    ids = [finding["finding_id"] for finding in view["findings"]]
+    assert len(ids) == len(set(ids))
+    for finding in view["findings"]:
+        if finding.get("source") in ("page-audit", "ai-slop", "pagespeed"):
+            assert finding["evidence_refs"] == []
+            assert isinstance(finding["detail"], dict)

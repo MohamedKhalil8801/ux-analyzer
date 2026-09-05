@@ -99,7 +99,7 @@ def issue_filename(finding_id: str, taken: set[str]) -> str:
         candidate = f"{base}-{counter}"
         counter += 1
     taken.add(candidate)
-    return candidate
+    return f"{candidate}.md"
 
 
 def _evidence_view(finding: Mapping[str, Any]) -> tuple[EvidenceRefView, ...]:
@@ -123,6 +123,23 @@ def _evidence_view(finding: Mapping[str, Any]) -> tuple[EvidenceRefView, ...]:
             )
         )
     return tuple(views)
+
+
+def _static_evidence(finding: Mapping[str, Any]) -> tuple[EvidenceRefView, ...]:
+    """Wrap a recorded page fact's detail dict as its single evidence view."""
+
+    detail = finding.get("detail")
+    if not isinstance(detail, Mapping) or not detail:
+        return ()
+    return (
+        EvidenceRefView(
+            evidence_id=str(finding.get("finding_id", "")),
+            kind=str(finding.get("source", "static")),
+            run_id="",
+            available=True,
+            detail=dict(cast("Mapping[str, object]", detail)),
+        ),
+    )
 
 
 def _artifacts(finding: Mapping[str, Any], root: Path) -> tuple[ArtifactFile, ...]:
@@ -169,7 +186,7 @@ def _issue_view(finding: Mapping[str, Any], root: Path, taken: set[str]) -> Issu
         evidence_class=str(finding.get("evidence_class", "")),
         reproducibility=str(finding.get("reproducibility", "")),
         confidence=None if confidence is None else float(confidence),
-        evidence=_evidence_view(finding),
+        evidence=_evidence_view(finding) or _static_evidence(finding),
         artifacts=_artifacts(finding, root),
         source=str(finding.get("source", "reviewed")),
     )

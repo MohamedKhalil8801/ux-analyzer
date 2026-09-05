@@ -119,3 +119,61 @@ def test_render_manifest_shape() -> None:
     assert manifest["report_path"] == "D:/reports"
     assert manifest["issues"][0]["filename"] == "run-1-visual-hierarchy.md"
     assert manifest["assets"] == {"assets/ev-1.png": "abc"}
+
+
+def test_render_issue_joins_list_selectors() -> None:
+    issue = _issue(
+        evidence=(
+            EvidenceRefView(
+                "ev-1",
+                "static",
+                "",
+                True,
+                {
+                    "element_selectors": ["img.logo", "img.hero"],
+                    "element_xpaths": ["/html/body/img[1]", "/html/body/img[2]"],
+                },
+            ),
+        ),
+    )
+
+    md = render_issue(issue, {})
+
+    assert "- **SELECTOR:** `img.logo, img.hero`" in md
+    assert "- **XPATH:** `/html/body/img[1], /html/body/img[2]`" in md
+    assert "(static)" in md
+    assert "run ``" not in md
+
+
+def test_render_issue_skips_empty_static_sections() -> None:
+    issue = _issue(
+        source="page-audit",
+        issue_text="",
+        impact="",
+        root_cause="",
+        fixes=(),
+        affected_surfaces=("https://app.example.test/",),
+        evidence=(
+            EvidenceRefView(
+                "audit:img_alt",
+                "page-audit",
+                "",
+                True,
+                {"URL": "https://app.example.test/", "found_count": 2},
+            ),
+        ),
+    )
+
+    md = render_issue(issue, {})
+
+    assert "## Problem" not in md
+    assert "## Impact" not in md
+    assert "## Root cause" not in md
+    assert "## Suggested fixes" not in md
+    assert (
+        "- **Source:** page-audit (recorded page fact; "
+        "not a simulated-user finding)" in md
+    )
+    assert "- **URL:** https://app.example.test/" in md
+    assert "- **found_count:** 2" in md
+    assert "### Evidence" in md

@@ -262,7 +262,9 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
 
     Mirrors the report exactly: reviewed synthesis findings when a valid
     attempt is published, publishable deterministic fallback findings
-    otherwise. See docs/adr/0006-fix-export-mirrors-report-findings.md.
+    otherwise, plus the Page findings tab (static audit + AI-slop card)
+    and the Performance tab (Lighthouse audits and opportunities). See
+    docs/adr/0006-fix-export-mirrors-report-findings.md.
     """
 
     root = Path(bundle_root)
@@ -270,6 +272,10 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"bundle root does not exist: {root}")
     experiment = _load_experiment(root)
     synthesis = cast(dict[str, Any], experiment["synthesis"])
+    findings = _list_of_mappings(synthesis.get("findings"))
+    used_ids = {str(finding.get("finding_id", "")) for finding in findings}
+    findings = findings + _page_audit_findings(experiment.get("ux_audit"), used_ids)
+    findings = findings + _pagespeed_findings(experiment.get("pagespeed"), used_ids)
     return {
         "bundle_root": root,
         "synthesis_status": _text(synthesis.get("synthesis_status")),
@@ -279,11 +285,343 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
             if synthesis.get("attempt_id") is None
             else _text(synthesis.get("attempt_id"))
         ),
-        "findings": _list_of_mappings(synthesis.get("findings")),
+        "findings": findings,
         "limitations": [
             _text(item) for item in synthesis.get("limitations", [])
         ],
     }
+
+
+_UX_AUDIT_EVIDENCE_SKIP_KEYS = frozenset(
+    {
+        "element_screenshots",
+        "combined_screenshots",
+        "combined_screenshot",
+        "element_boxes",
+    }
+)
+_SLOP_TIER_SEVERITY = {"heavy": "high", "mild": "medium"}
+
+
+def _unique_finding_id(base: str, used: set[str]) -> str:
+    candidate = base
+    counter = 2
+    while candidate in used:
+        candidate = f"{base}-{counter}"
+        counter += 1
+    used.add(candidate)
+    return candidate
+
+
+def _strip_data_uris(value: object) -> object:
+    """Replace embedded data-URI payloads with a pointer to the report."""
+
+    if isinstance(value, str):
+        return "see report.html" if value.startswith("data:") else value
+    if isinstance(value, list):
+        return [
+            _strip_data_uris(item)
+            for item in cast("list[object]", value)
+            if not (isinstance(item, str) and item.startswith("data:"))
+        ]
+    if isinstance(value, Mapping):
+        return {
+            str(key): _strip_data_uris(item)
+            for key, item in cast("Mapping[object, object]", value).items()
+            if not (isinstance(item, str) and item.startswith("data:"))
+        }
+    return value
+
+
+def _static_finding(
+    finding_id: str,
+    title: str,
+    issue: str,
+    severity: str,
+    category: str,
+    source: str,
+    detail: dict[str, Any],
+    *,
+    limitations: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "finding_id": finding_id,
+        "title": title,
+        "issue": issue,
+        "impact": "",
+        "root_cause": "",
+        "fixes": [],
+        "severity": severity,
+        "category": category,
+        "evidence_refs": [],
+        "evidence_targets": [],
+        "affected_surfaces": [],
+        "principles": [],
+        "counterevidence": [],
+        "limitations": limitations or [],
+        "reviewer_state": "recorded",
+        "evidence_class": "recorded-page-fact",
+        "reproducibility": "deterministic",
+        "severity_justification": "",
+        "reviewer_notes": [],
+        "source": source,
+        "detail": detail,
+    }
+
+
+def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any]]:
+    """Mirror the report's Page findings tab: audit issues + AI-slop card."""
+
+    findings: list[dict[str, Any]] = []
+    if not isinstance(ux_audit, Mapping):
+        return findings
+    audit_root = cast("Mapping[str, Any]", ux_audit)
+    for url_report in _list_of_mappings(audit_root.get("url_reports")):
+        url = _text(url_report.get("url"))
+        for issue in _list_of_mappings(url_report.get("issues")):
+            title = _text(issue.get("title"))
+            if not title:
+                continue
+            check_id = _text(issue.get("check_id")) or _slug_fallback(title)
+            evidence = issue.get("evidence")
+            evidence_map: Mapping[str, Any] = (
+                cast("Mapping[str, Any]", evidence)
+                if isinstance(evidence, Mapping)
+                else {}
+            )
+            detail: dict[str, Any] = {"URL": url}
+            for key, value in evidence_map.items():
+                if key in _UX_AUDIT_EVIDENCE_SKIP_KEYS:
+                    continue
+                stripped = _strip_data_uris(value)
+                if stripped in (None, "", [], {}):
+                    continue
+                detail[key] = stripped
+            findings.append(
+                _static_finding(
+                    _unique_finding_id(f"audit:{check_id}", used),
+                    title,
+                    f"{title} — recorded page fact from the static audit of {url}.",
+                    _text(issue.get("severity"), "low"),
+                    _text(issue.get("category"), "page-audit"),
+                    "page-audit",
+                    detail,
+                    limitations=["Static page audit; not a simulated-user finding."],
+                )
+            )
+        slop = url_report.get("slop")
+        if isinstance(slop, Mapping):
+            findings.extend(
+                _slop_findings(url_report, cast("Mapping[str, Any]", slop), used)
+            )
+    return findings
+
+
+def _slop_findings(
+    url_report: Mapping[str, Any],
+    slop: Mapping[str, Any],
+    used: set[str],
+) -> list[dict[str, Any]]:
+    url = _text(url_report.get("url"))
+    flagged = slop.get("patternsFlagged")
+    if not isinstance(flagged, int) or flagged <= 0:
+        return []
+    tier = _text(slop.get("tier"), "Mild")
+    score = slop.get("score")
+    grade = _text(slop.get("grade"), "F")
+    verdict = _text(slop.get("verdict"))
+    unified_score = slop.get("unifiedScore")
+    unified_tier = _text(slop.get("unifiedTier"), "")
+    detail: dict[str, Any] = {
+        "URL": url,
+        "Slop score": f"{score}/100 (grade {grade}, tier {tier})",
+    }
+    if isinstance(unified_score, int):
+        detail["Unified score"] = f"{unified_score}/100 (tier {unified_tier})"
+    pattern_number = 0
+    for pattern in _list_of_mappings(slop.get("patterns")):
+        if not pattern.get("triggered"):
+            continue
+        pattern_number += 1
+        detail[f"Design pattern {pattern_number}"] = (
+            f"{_text(pattern.get('label'))} "
+            f"[{_text(pattern.get('id'))}] (+{_text(pattern.get('weight'), '0')})"
+        )
+    copy = slop.get("copy")
+    if isinstance(copy, Mapping):
+        copy_map = cast("Mapping[str, Any]", copy)
+        for pattern in _list_of_mappings(copy_map.get("patterns")):
+            if not pattern.get("triggered"):
+                continue
+            pattern_number += 1
+            detail[f"Copy pattern {pattern_number}"] = (
+                f"{_text(pattern.get('label'))} "
+                f"[{_text(pattern.get('id'))}] (+{_text(pattern.get('weight'), '0')})"
+            )
+    detail["Annotated evidence"] = "open report.html, Page findings tab"
+    return [
+        _static_finding(
+            _unique_finding_id(f"slop:{_slug_fallback(url) or 'page'}", used),
+            f"AI-slop fingerprint ({tier}): {flagged} patterns triggered",
+            (
+                verdict
+                or f"AI-slop fingerprint scored {score}/100 (tier {tier}) on {url}."
+            ),
+            _SLOP_TIER_SEVERITY.get(tier.casefold(), "medium"),
+            "ai-slop",
+            "ai-slop",
+            detail,
+            limitations=[
+                "27-rule design fingerprint + 9 copy-axis tells; heuristic, "
+                "not a simulated-user finding."
+            ],
+        )
+    ]
+
+
+def _pagespeed_findings(
+    pagespeed: object, used: set[str]
+) -> list[dict[str, Any]]:
+    """Mirror the report's Performance tab: failed audits + opportunities."""
+
+    findings: list[dict[str, Any]] = []
+    if not isinstance(pagespeed, Mapping):
+        return findings
+    pagespeed_root = cast("Mapping[str, Any]", pagespeed)
+    for url_report in _list_of_mappings(pagespeed_root.get("url_reports")):
+        url = _text(url_report.get("url"))
+        strategies = url_report.get("strategies")
+        if not isinstance(strategies, Mapping):
+            continue
+        strategy_map = cast("Mapping[str, Any]", strategies)
+        for strategy_name, raw_entry in strategy_map.items():
+            strategy = str(strategy_name)
+            if not isinstance(raw_entry, Mapping):
+                continue
+            entry_map = cast("Mapping[str, Any]", raw_entry)
+            if _text(entry_map.get("status"), "error") != "ok":
+                continue
+            audits = entry_map.get("audits")
+            if isinstance(audits, Mapping):
+                findings.extend(
+                    _pagespeed_audit_findings(
+                        url,
+                        strategy,
+                        cast("Mapping[str, Any]", audits),
+                        used,
+                    )
+                )
+            findings.extend(
+                _pagespeed_opportunity_findings(url, strategy, entry_map, used)
+            )
+    return findings
+
+
+def _pagespeed_audit_findings(
+    url: str,
+    strategy: str,
+    audits: Mapping[str, Any],
+    used: set[str],
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for audit in _list_of_mappings(audits.get("failed")):
+        audit_id = _text(audit.get("id"))
+        title = _text(audit.get("title"), audit_id)
+        if not audit_id:
+            continue
+        score_percent = audit.get("score_percent")
+        if isinstance(score_percent, int):
+            severity = (
+                "high" if score_percent < 50 else
+                "medium" if score_percent < 90 else
+                "low"
+            )
+            score_text = f"{score_percent}/100"
+        else:
+            severity = "medium"
+            score_text = "n/a"
+        detail: dict[str, Any] = {
+            "URL": url,
+            "Strategy": strategy,
+            "Lighthouse score": score_text,
+        }
+        display_value = _optional_text(audit.get("display_value"))
+        if display_value:
+            detail["Measured"] = display_value
+        description = _optional_text(audit.get("description"))
+        if description:
+            detail["About"] = description
+        findings.append(
+            _static_finding(
+                _unique_finding_id(f"pagespeed:{strategy}:{audit_id}", used),
+                title,
+                (
+                    f"Failed Lighthouse audit '{title}' ({strategy}) scored "
+                    f"{score_text} on {url}."
+                ),
+                severity,
+                "performance",
+                "pagespeed",
+                detail,
+                limitations=[
+                    "Verbatim Lighthouse result; scores vary between runs."
+                ],
+            )
+        )
+    return findings
+
+
+def _pagespeed_opportunity_findings(
+    url: str,
+    strategy: str,
+    raw_entry: Mapping[str, Any],
+    used: set[str],
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for opportunity in _list_of_mappings(raw_entry.get("opportunities")):
+        opportunity_id = _text(opportunity.get("id"))
+        title = _text(opportunity.get("title"), opportunity_id)
+        if not opportunity_id:
+            continue
+        detail: dict[str, Any] = {"URL": url, "Strategy": strategy}
+        display_value = _optional_text(opportunity.get("display_value"))
+        if display_value:
+            detail["Estimated saving"] = display_value
+        savings_ms = opportunity.get("savings_ms")
+        if isinstance(savings_ms, (int, float)):
+            detail["savings_ms"] = savings_ms
+        savings_bytes = opportunity.get("savings_bytes")
+        if isinstance(savings_bytes, (int, float)):
+            detail["savings_bytes"] = savings_bytes
+        for item in _list_of_mappings(opportunity.get("items")):
+            item_url = _text(item.get("url"))
+            if item_url:
+                detail.setdefault("Wasted on", []).append(item_url)
+        findings.append(
+            _static_finding(
+                _unique_finding_id(
+                    f"pagespeed:{strategy}:opportunity:{opportunity_id}", used
+                ),
+                title,
+                (
+                    f"Performance opportunity '{title}' on {url} ({strategy}): "
+                    f"{_optional_text(opportunity.get('display_value')) or 'reducible cost'}."
+                ),
+                "medium",
+                "performance",
+                "pagespeed",
+                detail,
+                limitations=[
+                    "Verbatim Lighthouse result; scores vary between runs."
+                ],
+            )
+        )
+    return findings
+
+
+def _slug_fallback(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+    return slug[:48]
 
 
 _PAGESPEED_SAVED_FILENAME = "pagespeed-report.html"

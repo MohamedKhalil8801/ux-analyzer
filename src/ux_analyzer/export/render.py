@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from ux_analyzer.export.catalog import IssueView
 from ux_analyzer.export.skills import SkillSet
@@ -39,22 +40,30 @@ class ExportContext:
     reproduction_notes: str | None
 
 
+def _scalar(value: object) -> object:
+    if isinstance(value, (list, tuple)):
+        return ", ".join(
+            str(item) for item in cast("Sequence[object]", value)
+        )
+    return value
+
+
 def _detail_lines(detail: Mapping[str, object]) -> list[str]:
     lines: list[str] = []
     for key in _SELECTOR_KEYS:
         if key in detail:
-            value = detail[key]
+            value = _scalar(detail[key])
             lines.append(f"- **SELECTOR:** `{value}`")
             break
     for key in _XPATH_KEYS:
         if key in detail:
-            value = detail[key]
+            value = _scalar(detail[key])
             lines.append(f"- **XPATH:** `{value}`")
             break
     for key, value in detail.items():
         if key in _SELECTOR_KEYS or key in _XPATH_KEYS:
             continue
-        lines.append(f"- **{key}:** {value}")
+        lines.append(f"- **{key}:** {_scalar(value)}")
     return lines
 
 
@@ -71,28 +80,30 @@ def render_issue(issue: IssueView, asset_links: Mapping[str, str]) -> str:
         ),
         f"- **Evidence class:** {issue.evidence_class}",
         f"- **Reproducibility:** {issue.reproducibility}",
+        *(
+            [
+                f"- **Source:** {issue.source} (recorded page fact; "
+                "not a simulated-user finding)"
+            ]
+            if issue.source not in ("", "reviewed")
+            else []
+        ),
         f"- **Affected surfaces:** "
         f"{', '.join(issue.affected_surfaces) or 'unspecified'}",
         "",
-        "## Problem",
-        "",
-        issue.issue_text,
-        "",
-        "## Impact",
-        "",
-        issue.impact,
-        "",
-        "## Root cause",
-        "",
-        issue.root_cause,
-        "",
-        "### Evidence",
-        "",
     ]
+    if issue.issue_text:
+        lines += ["## Problem", "", issue.issue_text, ""]
+    if issue.impact:
+        lines += ["## Impact", "", issue.impact, ""]
+    if issue.root_cause:
+        lines += ["## Root cause", "", issue.root_cause, ""]
+    lines += ["### Evidence", ""]
     for ref in issue.evidence:
         link = asset_links.get(ref.evidence_id)
         if ref.available:
-            lines.append(f"- `{ref.evidence_id}` ({ref.kind}, run `{ref.run_id}`)")
+            run_label = f", run `{ref.run_id}`" if ref.run_id else ""
+            lines.append(f"- `{ref.evidence_id}` ({ref.kind}{run_label})")
             lines.extend(_detail_lines(ref.detail))
             if link:
                 lines.append(f"  ![screenshot {ref.evidence_id}]({link})")
@@ -104,19 +115,20 @@ def render_issue(issue: IssueView, asset_links: Mapping[str, str]) -> str:
                 f"  Run `{ref.run_id}` — could not be resolved at export time; "
                 "verify against the recorded report before relying on it."
             )
-    lines += [
-        "",
-        "## Suggested fixes",
-        "",
-        "The options below are suggestions. Pick one, combine several, or "
-        "invent a better solution — including a hybrid — as long as the "
-        "reproduction no longer shows the problem.",
-        "",
-    ]
-    lines += [
-        f"- Option {chr(65 + index)}: {fix}"
-        for index, fix in enumerate(issue.fixes)
-    ]
+    if issue.fixes:
+        lines += [
+            "",
+            "## Suggested fixes",
+            "",
+            "The options below are suggestions. Pick one, combine several, or "
+            "invent a better solution — including a hybrid — as long as the "
+            "reproduction no longer shows the problem.",
+            "",
+        ]
+        lines += [
+            f"- Option {chr(65 + index)}: {fix}"
+            for index, fix in enumerate(issue.fixes)
+        ]
     if issue.principles:
         lines += [
             "",
