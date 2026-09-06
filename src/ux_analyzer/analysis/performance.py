@@ -1,4 +1,4 @@
-"""Performance detector.
+﻿"""Performance detector.
 
 Covers TheUXBites performance slice and Markswebb slowness classes 4.1/4.2.
 
@@ -229,6 +229,10 @@ def _find_lcp_image(parser: _PerfParser) -> dict[str, str] | None:
         src = img.get("src", "").strip()
         if not src or src.startswith("data:"):
             continue
+        if src.lower().endswith(".svg"):
+            # Vector graphics scale losslessly and are rarely the LCP
+            # element; preloading them wastes bandwidth.
+            continue
         w_raw = img.get("width", "").strip()
         h_raw = img.get("height", "").strip()
         wi = 0
@@ -361,9 +365,7 @@ def _check_render_blocking(parser: _PerfParser) -> PerformanceIssue | None:
     if total == 0:
         return None
     severity = "medium"
-    if total > 2:
-        severity = "critical"
-    elif total == 2:
+    if total > 3:
         severity = "high"
     evidence = {
         "blocking_stylesheets": len(blocking_css),
@@ -378,7 +380,9 @@ def _check_render_blocking(parser: _PerfParser) -> PerformanceIssue | None:
         description=(
             f"Found {total} render-blocking resources ({len(blocking_css)} stylesheets, "
             f"{len(blocking_js)} head scripts, {imports} @import). "
-            "These delay first paint and also cause 'Render-blocking resources delay page load'."
+            "These delay first paint and also cause 'Render-blocking resources delay page load'. "
+            "Scripts with type=module or async/defer are excluded: they are deferred by default "
+            "and do not block rendering."
         ),
         severity=severity,
         evidence=evidence,
@@ -524,35 +528,11 @@ def _check_preload_lcp(parser: _PerfParser) -> PerformanceIssue | None:
             title="Preload Largest Contentful Paint image",
             description=(
                 "Largest image is not preloaded and lacks fetchpriority=\"high\". "
-                "This also covers 'LCP request discovery' – late discovery delays LCP."
+                "This also covers 'LCP request discovery' â€“ late discovery delays LCP."
             ),
             severity="critical",
             evidence=evidence,
             check_id="preload_lcp",
-        )
-    return None
-
-
-def _check_slow_fcp(parser: _PerfParser) -> PerformanceIssue | None:
-    # Proxy for Slow first content paint / First Meaningful Paint
-    blocking_css = _blocking_stylesheets(parser)
-    blocking_js = _blocking_scripts(parser)
-    total_blocking = len(blocking_css) + len(blocking_js) + _import_count(parser)
-    if total_blocking >= 2:
-        evidence = {
-            "total_blocking": total_blocking,
-            "blocking_stylesheets": len(blocking_css),
-            "blocking_scripts": len(blocking_js),
-        }
-        return PerformanceIssue(
-            title="Slow first content paint",
-            description=(
-                f"With {total_blocking} blocking resources, first content paint is likely delayed. "
-                "This also implies 'First Meaningful Paint' risk."
-            ),
-            severity="medium",
-            evidence=evidence,
-            check_id="slow_fcp",
         )
     return None
 
@@ -567,7 +547,7 @@ def _check_slow_lcp(parser: _PerfParser) -> PerformanceIssue | None:
     has_preload = _has_preload_for_lcp(parser, lcp)
     lcp_lazy = lcp.get("loading", "").lower() == "lazy"
     # Deduplicate: if LCP is lazy or missing preload, preload_lcp/lcp_lazy already
-    # reports the root cause for this src – don't double-report slow_lcp.
+    # reports the root cause for this src â€“ don't double-report slow_lcp.
     if not has_preload or lcp_lazy:
         return None
     if blocking_total >= 2:
@@ -579,28 +559,6 @@ def _check_slow_lcp(parser: _PerfParser) -> PerformanceIssue | None:
             evidence=evidence,
             check_id="slow_lcp",
         )
-    return None
-
-
-def _check_speed_index(parser: _PerfParser) -> PerformanceIssue | None:
-    # Page loads visually slowly (Speed Index) proxy: many blocking + images without dimensions
-    missing_dims = _images_missing_dimensions(parser)
-    blocking_total = len(_blocking_stylesheets(parser)) + len(_blocking_scripts(parser)) + _import_count(parser)
-    if blocking_total >= 2 or len(missing_dims) >= 1:
-        # Only flag if visual factors present
-        if len(missing_dims) >= 1 or blocking_total >= 3:
-            evidence = {
-                "total_blocking": blocking_total,
-                "images_missing_dimensions": len(missing_dims),
-                "missing_srcs": [m.get("src", "")[:200] for m in missing_dims[:3]],
-            }
-            return PerformanceIssue(
-                title="Page loads visually slowly",
-                description="Visual completeness is delayed by blocking resources or un-sized images causing layout shifts (Speed Index).",
-                severity="medium",
-                evidence=evidence,
-                check_id="speed_index",
-            )
     return None
 
 
@@ -773,17 +731,10 @@ async def analyze_performance(url: str, client: httpx.AsyncClient | None = None)
             issues.append(v)
 
         # Paint / interactivity proxies (cover TheUXBites metrics)
-        v = _check_slow_fcp(parser)
-        if v:
-            issues.append(v)
+        # slow_fcp and speed_index were removed: they were pure blocking-count
+        # proxies that duplicated render_blocking here and the measured PSI
+        # metrics in the report's Performance tab.
         v = _check_slow_lcp(parser)
-        if v:
-            # Avoid duplicate title if preload_lcp already emitted slow_lcp with same cause? Keep both for metric coverage but deduplicate if identical evidence
-            # Only add if not already replaced by preload/lazy? Keep distinct check_id so both appear is intentional for coverage
-            # But to avoid double-critical noise when preload already flagged, we keep separate severity
-            # Tests expecting preload_lcp should still see slow_lcp; we keep it
-            issues.append(v)
-        v = _check_speed_index(parser)
         if v:
             issues.append(v)
         v = _check_tti(parser)

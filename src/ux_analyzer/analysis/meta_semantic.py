@@ -350,7 +350,7 @@ def _check_canonical(parser: _MetaSemanticParser, url: str) -> list[MetaSemantic
             MetaSemanticIssue(
                 title="Page is missing a canonical URL",
                 description="No <link rel=\"canonical\"> was found. Canonical URLs prevent duplicate-content issues.",
-                severity="critical",
+                severity="medium",
                 evidence=evidence,
                 check_id="canonical_missing",
             )

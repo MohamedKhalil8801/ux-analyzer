@@ -127,7 +127,7 @@ async def test_robots_missing():
     await client.aclose()
     titles = [i.title for i in issues]
     assert "robots.txt not found" in titles
-    assert any(i.check_id == "robots_txt" and i.severity == "critical" for i in issues)
+    assert any(i.check_id == "robots_txt" and i.severity == "low" for i in issues)
 
 
 @pytest.mark.asyncio
@@ -175,7 +175,7 @@ async def test_sitemap_missing():
     client = _make_client(routes)
     issues = await analyze_geo("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.title == "No XML sitemap found" and i.severity == "critical" for i in issues)
+    assert any(i.title == "No XML sitemap found" and i.severity == "low" for i in issues)
 
 
 @pytest.mark.asyncio
@@ -295,7 +295,9 @@ async def test_json_ld_valid_no_issue():
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_meta_incomplete():
-    # missing canonical and og:image => 4/6
+    """GEO no longer emits meta_tags — meta-semantic owns the per-tag
+    findings (canonical, og, description, viewport) individually."""
+    # missing canonical and og:image would previously yield 4/6
     html = _html_full(canonical=False, og_image=False)
     routes = {
         "https://example.com/": (200, html),
@@ -306,12 +308,7 @@ async def test_meta_incomplete():
     client = _make_client(routes)
     issues = await analyze_geo("https://example.com/", client=client)
     await client.aclose()
-    meta = [i for i in issues if i.check_id == "meta_tags"]
-    assert len(meta) == 1
-    assert meta[0].title == "Meta tags incomplete (4/6)"
-    assert meta[0].severity == "medium"
-    assert "canonical" in meta[0].evidence["missing_tags"]
-    assert "og:image" in meta[0].evidence["missing_tags"]
+    assert not any(i.check_id == "meta_tags" for i in issues)
 
 
 @pytest.mark.asyncio
@@ -330,7 +327,10 @@ async def test_meta_complete_no_issue():
 
 
 @pytest.mark.asyncio
-async def test_meta_missing_title_counts():
+async def test_meta_tag_completeness_not_rechecked_by_geo():
+    """meta_tags is intentionally gone: meta-semantic covers each tag
+    individually with actionable evidence (title, description, viewport,
+    canonical, og)."""
     html = _html_full(title="")
     routes = {
         "https://example.com/": (200, html),
@@ -341,7 +341,7 @@ async def test_meta_missing_title_counts():
     client = _make_client(routes)
     issues = await analyze_geo("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.check_id == "meta_tags" for i in issues)
+    assert not any(i.check_id == "meta_tags" for i in issues)
 
 
 # ---------------------------------------------------------------------------
@@ -451,10 +451,10 @@ async def test_import_without_side_effects():
 
 
 # ---------------------------------------------------------------------------
-# portfolio mock reproducing live site: 5 GEO issues, 2 passes
+# portfolio mock reproducing live site: 4 GEO issues, 2 passes
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_portfolio_mock_finds_exactly_5_geo_issues():
+async def test_portfolio_mock_finds_exactly_4_geo_issues():
     # Replicate https://mohamed-khalil.vercel.app head snippet observed live
     portfolio_head = """
     <meta charset="UTF-8" />
@@ -466,7 +466,8 @@ async def test_portfolio_mock_finds_exactly_5_geo_issues():
     <meta property="og:title" content="Mohamed Khalil - Mobile, Web & UI/UX" />
     <meta property="og:description" content="Sole developer of Muslim Pedia..." />
     """
-    # note: missing canonical and og:image intentionally
+    # note: missing canonical and og:image intentionally; the meta-semantic
+    # detector owns those findings, GEO no longer re-flags them.
     body = "<header><nav>nav</nav></header><main>" + " ".join(["portfolio content word"] * 300) + "</main><footer>footer</footer>"
     html = f"<!doctype html><html><head>{portfolio_head}</head><body>{body}</body></html>"
     routes = {
@@ -479,13 +480,19 @@ async def test_portfolio_mock_finds_exactly_5_geo_issues():
     issues = await analyze_geo("https://example.com/", client=client)
     await client.aclose()
     titles = sorted([i.title for i in issues])
-    # Expect exactly 5 GEO issues matching TheUXBites
+    # Expect exactly 4 GEO issues; meta_tags was removed as a duplicate
     assert "robots.txt not found" in titles
     assert "No JSON-LD structured data found" in titles
     assert "No XML sitemap found" in titles
     assert "No llms.txt file" in titles
-    assert "Meta tags incomplete (4/6)" in titles
-    assert len(issues) == 5, f"expected 5 issues, got {len(issues)}: {titles}"
+    assert len(issues) == 4, f"expected 4 issues, got {len(issues)}: {titles}"
     # Ensure passing checks NOT flagged
     assert not any(i.check_id == "js_content" for i in issues)
     assert not any(i.check_id == "semantic_html" for i in issues)
+    assert not any(i.check_id == "meta_tags" for i in issues)
+    # severity recalibration: file-level 404s are low, not critical
+    assert all(
+        i.severity == "low"
+        for i in issues
+        if i.check_id in ("robots_txt", "sitemap", "llms_txt", "json_ld")
+    )

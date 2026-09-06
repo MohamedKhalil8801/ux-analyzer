@@ -308,7 +308,7 @@ async def test_canonical_missing():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_meta_semantic("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.check_id == "canonical_missing" and i.severity == "critical" for i in issues)
+    assert any(i.check_id == "canonical_missing" and i.severity == "medium" for i in issues)
     assert any(i.title == "Page is missing a canonical URL" for i in issues)
 
 

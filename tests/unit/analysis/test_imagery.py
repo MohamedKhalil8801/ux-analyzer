@@ -478,8 +478,9 @@ async def test_image_count_too_many_flagged():
 
 
 @pytest.mark.asyncio
-async def test_image_count_empty_video_not_counted():
-    # Empty video src/poster should not inflate visual count
+async def test_image_count_counts_every_canvas_and_video():
+    """A rendered <canvas>/<video> occupies layout and paints pixels users
+    see even when aria-hidden or JS-populated — visual richness counts them."""
     long_text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 40
     html = f"""<!doctype html><html><head><title>T</title></head><body>
 <section class="hero"><canvas class="hero__canvas" aria-hidden="true"></canvas></section>
@@ -491,11 +492,10 @@ async def test_image_count_empty_video_not_counted():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_imagery("https://example.com/", client=client)
     await client.aclose()
-    # Only 1 img counts (canvas decorative excluded, empty videos excluded) -> <2 visuals for 320 words => should flag Too few
-    assert any(i.check_id == "image_count" and "Too few" in i.title for i in issues)
-    cnt = [i for i in issues if i.check_id == "image_count"][0]
-    assert cnt.evidence["total_visuals"] == 1
-    assert cnt.evidence["total_videos"] == 0
+    # 1 img + 1 canvas + 2 videos = 4 visuals for ~320 words => not flagged
+    assert not any(i.check_id == "image_count" and "Too few" in i.title for i in issues)
+    cnt = [i for i in issues if i.check_id == "image_count"]
+    assert not cnt or cnt[0].evidence["total_visuals"] >= 4
 
 
 @pytest.mark.asyncio
@@ -532,7 +532,7 @@ async def test_image_count_decorative_svg_not_counted():
 
 
 @pytest.mark.asyncio
-async def test_image_count_decorative_canvas_not_counted():
+async def test_image_count_canvas_counted_even_when_aria_hidden():
     long_text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 40
     html = f"""<!doctype html><html><head><title>T</title></head><body>
 <section class="hero"><canvas class="hero__canvas" aria-hidden="true"></canvas></section>
@@ -542,10 +542,10 @@ async def test_image_count_decorative_canvas_not_counted():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_imagery("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.check_id == "image_count" and "Too few" in i.title for i in issues)
-    cnt = [i for i in issues if i.check_id == "image_count"][0]
-    assert cnt.evidence["total_canvases"] == 0
-    assert cnt.evidence["total_visuals"] == 1
+    # canvas paints pixels users see; aria-hidden is screen-reader semantics only
+    assert not any(i.check_id == "image_count" and "Too few" in i.title for i in issues)
+    cnt = [i for i in issues if i.check_id == "image_count"]
+    assert not cnt or cnt[0].evidence["total_canvases"] == 1
 
 
 @pytest.mark.asyncio
@@ -564,8 +564,9 @@ async def test_image_count_icon_svg_inside_button_not_counted():
 
 
 @pytest.mark.asyncio
-async def test_portfolio_live_regression_too_few():
-    # Replicates live portfolio after fix: 1 bespoke SVG + decorative canvas + empty videos => Too few for 881 words
+async def test_portfolio_live_regression_visuals_counted():
+    """Replicates the live portfolio: aria-hidden hero canvas + two JS-fed
+    videos all render — the page is NOT 'too few images' for 800 words."""
     long_text = " ".join(["Lorem ipsum dolor sit amet"] * 200)  # ~800 words
     html = f"""<!doctype html><html><head><title>Test</title></head><body>
 <section class="hero"><canvas class="hero__canvas" aria-hidden="true"></canvas></section>
@@ -580,7 +581,7 @@ async def test_portfolio_live_regression_too_few():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_imagery("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.check_id == "image_count" and "Too few" in i.title for i in issues)
+    assert not any(i.check_id == "image_count" and "Too few" in i.title for i in issues)
     # ensure generic_stock not falsely flagged for bespoke svg
     assert not any(i.check_id == "generic_stock" for i in issues)
 

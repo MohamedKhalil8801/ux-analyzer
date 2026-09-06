@@ -826,9 +826,11 @@ def _check_cutout(parser: _ImageryParser) -> ImageryIssue | None:
 
 def _check_image_count(parser: _ImageryParser) -> ImageryIssue | None:
     total_imgs = len([i for i in parser.images if (i.get("src", "").strip() and not i.get("src", "").strip().startswith("data:"))])
-    # total visuals includes canvas/video non-decorative + images
-    total_canvases = len([c for c in parser.canvases if not c.get("decorative")])
-    total_videos = len([v for v in parser.videos if (v.get("src", "").strip() or v.get("poster", "").strip())])
+    # Visual richness counts every rendered <canvas>/<video>: aria-hidden
+    # canvases still paint pixels users see (e.g., animated hero backdrops),
+    # and a <video> element occupies layout even before JS attaches sources.
+    total_canvases = len(parser.canvases)
+    total_videos = len(parser.videos)
     total_svgs_content = len([s for s in parser.svgs if not s.get("decorative")])
     total_visuals = total_imgs + total_canvases + total_videos + total_svgs_content
 

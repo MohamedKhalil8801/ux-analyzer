@@ -1,15 +1,18 @@
-"""GEO (AI visibility) detector.
+﻿"""GEO (AI visibility) detector.
 
-Covers 7 checks seen in live audit via
+Covers checks seen in live audit via
 docs/ux-issue-references/theuxbites_extracted.json:
 
 - robots.txt not found / has errors
 - Content is visible without JavaScript
 - No JSON-LD structured data found / Structured data is valid
 - No XML sitemap found
-- Meta tags incomplete (at least 6 tags)
-- Good semantic HTML structure (landmarks)
 - No llms.txt file
+
+Meta-tag completeness is intentionally NOT re-checked here: the
+meta-semantic detector already covers title, description, viewport,
+canonical, and Open Graph individually with actionable per-check
+evidence.
 """
 
 from __future__ import annotations
@@ -170,7 +173,7 @@ def _check_robots(status: int | None, body: str | None, error: str | None, url: 
         return GeoIssue(
             title="robots.txt not found",
             description="robots.txt was not found at /robots.txt. AI crawlers and search engines rely on it to discover allowed paths.",
-            severity="critical",
+            severity="low",
             evidence=evidence,
             check_id="robots_txt",
         )
@@ -183,7 +186,7 @@ def _check_robots(status: int | None, body: str | None, error: str | None, url: 
         return GeoIssue(
             title="robots.txt file has errors",
             description="robots.txt is present but empty or too short to be valid.",
-            severity="critical",
+            severity="low",
             evidence=evidence,
             check_id="robots_txt",
         )
@@ -194,7 +197,7 @@ def _check_robots(status: int | None, body: str | None, error: str | None, url: 
         return GeoIssue(
             title="robots.txt file has errors",
             description="robots.txt is present but missing a valid User-agent directive or appears malformed.",
-            severity="critical",
+            severity="low",
             evidence=evidence,
             check_id="robots_txt",
         )
@@ -260,7 +263,7 @@ def _check_sitemap(
         return GeoIssue(
             title="No XML sitemap found",
             description="No XML sitemap was found at /sitemap.xml and no Sitemap directive in robots.txt points to a valid sitemap. AI crawlers rely on sitemaps to discover pages.",
-            severity="critical",
+            severity="low",
             evidence=evidence,
             check_id="sitemap",
         )
@@ -269,7 +272,7 @@ def _check_sitemap(
     return GeoIssue(
         title="No XML sitemap found",
         description="No XML sitemap was found at /sitemap.xml and no Sitemap directive in robots.txt points to a valid sitemap.",
-        severity="critical",
+        severity="low",
         evidence=evidence,
         check_id="sitemap",
     )
@@ -309,7 +312,7 @@ def _check_json_ld(parser: _GeoHTMLParser, html: str) -> GeoIssue | None:
         return GeoIssue(
             title="No JSON-LD structured data found",
             description="No JSON-LD structured data was found in the page. AI visibility depends on structured data to understand entities and relationships.",
-            severity="critical",
+            severity="low",
             evidence=evidence,
             check_id="json_ld",
         )
@@ -337,77 +340,11 @@ def _check_json_ld(parser: _GeoHTMLParser, html: str) -> GeoIssue | None:
         return GeoIssue(
             title="Structured data is invalid",
             description=f"Found {len(parser.ld_scripts)} JSON-LD block(s) but {len(invalid)} failed to parse as valid JSON.",
-            severity="critical",
+            severity="low",
             evidence=evidence,
             check_id="json_ld",
         )
     evidence["found"] = True
-    return None
-
-
-def _check_meta(parser: _GeoHTMLParser) -> GeoIssue | None:
-    title_present = bool(parser.title and parser.title.strip())
-    # meta lookups
-    def _meta_has(name_val: str, prop_val: str | None = None) -> bool:
-        for m in parser.metas:
-            # check name
-            if m.get("name", "").lower() == name_val.lower() and m.get("content", "").strip():
-                return True
-            if prop_val and m.get("property", "").lower() == prop_val.lower() and m.get("content", "").strip():
-                return True
-            # also handle property without name distinction
-            if name_val.lower().startswith("og:"):
-                if m.get("property", "").lower() == name_val.lower() and m.get("content", "").strip():
-                    return True
-                if m.get("name", "").lower() == name_val.lower() and m.get("content", "").strip():
-                    return True
-        return False
-
-    has_description = _meta_has("description")
-    has_viewport = _meta_has("viewport")
-    has_og_title = _meta_has("og:title", "og:title")
-    has_og_image = _meta_has("og:image", "og:image")
-    # canonical link
-    has_canonical = False
-    canonical_href = ""
-    for link in parser.links:
-        rel = link.get("rel", "").lower()
-        # rel may be space-separated
-        rels = [r.strip() for r in rel.split()]
-        if "canonical" in rels and link.get("href", "").strip():
-            has_canonical = True
-            canonical_href = link.get("href", "").strip()
-            break
-
-    checks = {
-        "title": title_present,
-        "description": has_description,
-        "canonical": has_canonical,
-        "og:image": has_og_image,
-        "og:title": has_og_title,
-        "viewport": has_viewport,
-    }
-    found = [k for k, v in checks.items() if v]
-    missing = [k for k, v in checks.items() if not v]
-    evidence = {
-        "found_tags": found,
-        "missing_tags": missing,
-        "found_count": len(found),
-        "total": 6,
-        "title": parser.title[:200] if parser.title else "",
-        "canonical_href": canonical_href,
-    }
-    # provide details for transparency
-    evidence["checks"] = checks
-    if len(found) < 6:
-        # match exact TheUXBites formatting: "Meta tags incomplete (4/6)"
-        return GeoIssue(
-            title=f"Meta tags incomplete ({len(found)}/6)",
-            description=f"Meta tags are incomplete: missing {', '.join(missing)}. Expected 6 tags (title, description, canonical, og:image, og:title, viewport).",
-            severity="medium",
-            evidence=evidence,
-            check_id="meta_tags",
-        )
     return None
 
 
@@ -545,11 +482,6 @@ async def analyze_geo(url: str, client: httpx.AsyncClient | None = None) -> list
             ji = _check_json_ld(parser, main_html)
             if ji:
                 issues.append(ji)
-
-            # meta
-            mi = _check_meta(parser)
-            if mi:
-                issues.append(mi)
 
             # js content
             jsi = _check_js_content(parser)

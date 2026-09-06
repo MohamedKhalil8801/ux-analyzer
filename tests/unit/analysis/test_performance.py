@@ -101,7 +101,30 @@ async def test_render_blocking_single_stylesheet():
 
 
 @pytest.mark.asyncio
-async def test_render_blocking_critical_over_two():
+async def test_render_blocking_high_over_three():
+    html = """<!doctype html><html><head>
+<link rel="stylesheet" href="a.css">
+<link rel="stylesheet" href="b.css">
+<link rel="stylesheet" href="c.css">
+<link rel="stylesheet" href="d.css">
+<link rel="preload" as="image" href="hero.jpg">
+<style>@font-face {font-family:test;src:url(test.woff2);font-display:swap;}</style>
+</head><body>
+<img src="hero.jpg" width="1200" height="800" fetchpriority="high" alt="hero"><script>performance.mark('x');</script>
+</body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    rb = [i for i in issues if i.check_id == "render_blocking"][0]
+    # Render-blocking resources are opportunities, not catastrophes: cap at
+    # high even with many blockers; small counts stay medium.
+    assert rb.severity == "high"
+    assert rb.evidence["total_blocking"] == 4
+    assert "type=module" in rb.description
+
+
+@pytest.mark.asyncio
+async def test_render_blocking_medium_for_small_counts():
     html = """<!doctype html><html><head>
 <link rel="stylesheet" href="a.css">
 <link rel="stylesheet" href="b.css">
@@ -115,7 +138,7 @@ async def test_render_blocking_critical_over_two():
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
     rb = [i for i in issues if i.check_id == "render_blocking"][0]
-    assert rb.severity == "critical"
+    assert rb.severity == "medium"
     assert rb.evidence["total_blocking"] == 3
 
 
@@ -468,18 +491,33 @@ async def test_preload_lcp_no_image_no_flag():
 
 @pytest.mark.asyncio
 async def test_preload_duplicate_not_double():
-    # Same SVG missing preload should only produce preload_lcp, not duplicate slow_lcp
+    # Same raster image missing preload should only produce preload_lcp, not duplicate slow_lcp
     html = """<!doctype html><html><head>
 <link rel="stylesheet" href="a.css">
 <style>@font-face {font-family:test;src:url(test.woff2);font-display:swap;}</style>
 </head><body>
-<img src="hero.svg" width="1200" height="800" alt="hero"><script>performance.mark('x');</script>
+<img src="hero.jpg" width="1200" height="800" alt="hero"><script>performance.mark('x');</script>
 </body></html>"""
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
     assert any(i.check_id == "preload_lcp" for i in issues)
     assert not any(i.check_id == "slow_lcp" for i in issues), "slow_lcp should be suppressed when preload_lcp already flags same src (deduplication)"
+
+
+@pytest.mark.asyncio
+async def test_preload_lcp_svg_never_a_candidate():
+    """Vector graphics are rarely the LCP element; suggesting a preload for a
+    below-fold SVG wastes bandwidth (live-verified false positive)."""
+    html = """<!doctype html><html><head>
+<link rel="stylesheet" href="a.css">
+</head><body>
+<img src="./digitalkhatt-bismillah.svg" width="1200" height="800" alt="hero"><script>performance.mark('x');</script>
+</body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    assert not any(i.check_id in ("preload_lcp", "lcp_lazy", "slow_lcp") for i in issues)
 
 
 @pytest.mark.asyncio
@@ -604,35 +642,22 @@ async def test_font_display_present_no_flag():
 # paint / interactivity proxies
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_slow_fcp_flagged():
+async def test_slow_fcp_and_speed_index_removed_as_duplicates():
+    """slow_fcp / speed_index were pure blocking-count proxies duplicating
+    render_blocking here and the measured PSI metrics in the report; they
+    must no longer be emitted."""
     html = """<!doctype html><html><head>
 <link rel="stylesheet" href="a.css">
 <link rel="stylesheet" href="b.css">
 <link rel="preload" as="image" href="hero.jpg">
 <style>@font-face {font-family:test;src:url(test.woff2);font-display:swap;}</style>
 </head><body>
-<img src="hero.jpg" width="1200" height="800" fetchpriority="high" alt="hero"><script>performance.mark('x');</script>
+<img src="a.jpg" width="800" height="600" alt="a"><script>performance.mark('x');</script>
 </body></html>"""
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.check_id == "slow_fcp" for i in issues)
-    assert any("Slow first content paint" in i.title for i in issues if i.check_id == "slow_fcp")
-
-
-@pytest.mark.asyncio
-async def test_speed_index_flagged_missing_dims():
-    html = """<!doctype html><html><head>
-<link rel="preload" as="image" href="hero.jpg">
-<style>@font-face {font-family:test;src:url(test.woff2);font-display:swap;}</style>
-</head><body>
-<img src="a.jpg" alt="a"><img src="b.jpg" alt="b"><script>performance.mark('x');</script>
-</body></html>"""
-    client = _make_client({"https://example.com/": (200, html)})
-    issues = await analyze_performance("https://example.com/", client=client)
-    await client.aclose()
-    assert any(i.check_id == "speed_index" for i in issues)
-    assert any("visually slowly" in i.title.lower() for i in issues if i.check_id == "speed_index")
+    assert not any(i.check_id in ("slow_fcp", "speed_index") for i in issues)
 
 
 @pytest.mark.asyncio
@@ -695,13 +720,13 @@ async def test_portfolio_mock_flags_expected():
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
     ids = [i.check_id for i in issues]
-    # Should flag render_blocking due to 2 stylesheets + 1 inline (total 3 => critical)
+    # Should flag render_blocking due to 2 stylesheets + 1 inline (total 3 => high)
     assert "render_blocking" in ids
     rb = [i for i in issues if i.check_id == "render_blocking"][0]
     assert rb.evidence["total_blocking"] == 3
     assert rb.evidence["blocking_stylesheets"] == 2
     assert rb.evidence["blocking_scripts"] == 1
-    assert rb.severity == "critical"
+    assert rb.severity == "medium"
     # network dependency depth 3 should NOT flag (threshold 4)
     assert "network_dependency" not in ids
     # main_thread/tti/inp should not flag with only 1 blocking script
@@ -712,6 +737,9 @@ async def test_portfolio_mock_flags_expected():
     assert "preload_lcp" not in ids
     # font hints should not flag because preconnect present
     assert "resource_hints" not in ids
+    # removed duplicate proxies
+    assert "slow_fcp" not in ids
+    assert "speed_index" not in ids
 
 
 @pytest.mark.asyncio
