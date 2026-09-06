@@ -43,3 +43,11 @@ _Avoid_: latest report, successful model call
 **UX Principle Pack**:
 A versioned static set of UX principles used as interpretive lenses during report synthesis. Principles may help name or explain evidence-backed problems, but they are not evidence and do not determine whether an issue exists or how severe it is.
 _Avoid_: Laws of UX verdict, heuristic proof
+
+**Fix Export**:
+An immutable, self-contained markdown package derived from one analysis report, presenting selected UX findings as issues for an external fixing agent, with embedded evidence, fix options, skill references, and the fixer workflow.
+_Avoid_: bug report, ticket dump
+
+**Fixer Workflow**:
+The fixed multi-step protocol embedded in a fix export that an external agent follows for each issue: reproduce the problem, write failing tests, choose a solution, load skills, implement, verify, run critique loops, and report final status including blockers.
+_Avoid_: agent prompt, remediation guide
