@@ -302,7 +302,11 @@ _UX_AUDIT_EVIDENCE_SKIP_KEYS = frozenset(
         "element_boxes",
     }
 )
-_SLOP_TIER_SEVERITY = {"heavy": "high", "mild": "medium"}
+# The AI-slop fingerprint is a heuristic scorecard, not an established
+# finding: it has no single selector or testable property, so it exports
+# at low severity regardless of tier.
+_SLOP_TIER_SEVERITY = {"heavy": "low", "mild": "low"}
+_MAX_ATTACHMENTS_PER_FINDING = 6
 
 
 def _unique_finding_id(base: str, used: set[str]) -> str:
@@ -491,11 +495,20 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
         for (check_id, title, category), instances in groups.items():
             finding_id = _unique_finding_id(f"audit:{check_id}", used)
             attachments: list[dict[str, Any]] = []
+            seen_attachment: set[bytes] = set()
             for instance in instances:
                 instance_attachments = _attachment_entries(
                     finding_id, instance["evidence_map"]
                 )
                 for entry in instance_attachments:
+                    # Instances of one check crop overlapping elements, so
+                    # their combined views repeat byte-for-byte; duplicates
+                    # add weight without adding evidence.
+                    if entry["data"] in seen_attachment:
+                        continue
+                    seen_attachment.add(entry["data"])
+                    if len(attachments) >= _MAX_ATTACHMENTS_PER_FINDING:
+                        break
                     entry["evidence_id"] = (
                         f"{finding_id}:screenshot-{len(attachments) + 1}"
                     )
@@ -705,6 +718,17 @@ def _zero_savings(savings_ms: object, savings_bytes: object) -> bool:
     return ms == 0 and size == 0
 
 
+_PSI_HIGH_VARIANCE_IDS = frozenset(
+    {
+        "interactive",
+        "total-blocking-time",
+        "speed-index",
+        "mainthread-work-breakdown",
+        "max-potential-fid",
+    }
+)
+
+
 def _pagespeed_audit_findings(
     url: str,
     strategy: str,
@@ -751,6 +775,11 @@ def _pagespeed_audit_findings(
             "Strategy": strategy,
             "Lighthouse score": score_text,
         }
+        if audit_id in _PSI_HIGH_VARIANCE_IDS:
+            detail["Run variance"] = (
+                "high between runs on animation-heavy pages; treat this "
+                "single-run value as indicative, not exact"
+            )
         display_value = _optional_text(audit.get("display_value"))
         if display_value:
             detail["Measured"] = display_value
@@ -759,6 +788,14 @@ def _pagespeed_audit_findings(
             detail["About"] = description
         if audit.get("items"):
             _detected_files_detail(detail, audit.get("items"))
+        elif (
+            audit_id.endswith("-insight")
+            or _text(audit.get("score_display_mode")) == "binary"
+        ):
+            detail["Lighthouse items"] = (
+                "not recorded in this capture; re-run the audit capture to "
+                "export the offender list"
+            )
         findings.append(
             _static_finding(
                 _unique_finding_id(f"pagespeed:{strategy}:{audit_id}", used),

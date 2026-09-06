@@ -832,7 +832,7 @@ def test_slop_card_becomes_one_ai_slop_finding(synthesis_bundle: Path) -> None:
         if finding.get("source") == "ai-slop"
     )
     assert slop["finding_id"] == "slop:https-app-example-test"
-    assert slop["severity"] == "high"
+    assert slop["severity"] == "low"
     assert slop["category"] == "ai-slop"
     assert "Heavy slop across the page." in slop["issue"]
     detail = slop["detail"]

@@ -130,8 +130,15 @@ _FORM_CONTROLS = frozenset({"button", "input", "select", "textarea"})
 
 def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
     issues: list[VisualIssue] = []
+    # The font palette is what the site *declares for its text*: census and
+    # one-off checks run on non-control text only. Form controls carry a UA
+    # default face (arial) whenever the site forgets font-family: inherit,
+    # and counting that default as a palette entry both inflated the family
+    # count and duplicated the dedicated control-fallback finding.
     text_families: dict[str, list[SNode]] = defaultdict(list)
     for node in _text_nodes(snapshot):
+        if node.tag in _FORM_CONTROLS:
+            continue
         stack = node.style("font-family")
         if stack:
             text_families[_primary_family(stack)].append(node)
@@ -139,27 +146,22 @@ def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
         fam for fam, nodes in text_families.items() if len(nodes) >= 2
     }
 
-    by_family: dict[str, SNode] = {}
     fallback_controls: list[SNode] = []
     for node in snapshot.nodes:
-        if _is_offscreen(node):
+        if _is_offscreen(node) or node.tag not in _FORM_CONTROLS:
             continue
         stack = node.style("font-family")
         if not stack:
             continue
         family = _primary_family(stack)
-        if (
-            node.tag in _FORM_CONTROLS
-            and family not in established_families
-        ):
+        if family not in established_families:
             # UA stylesheets give form controls their own default face
             # (e.g. arial) when the site never declares one. That is a
             # real inheritance bug, but it is NOT a font-palette decision
-            # — census it separately below.
+            # — report it on its own so the fix is `font-family: inherit`.
             fallback_controls.append(node)
-            continue
-        by_family.setdefault(family, node)
-    families = sorted(by_family)
+
+    families = sorted(text_families)
     if len(families) > _MAX_FAMILIES:
         issues.append(
             _issue(
@@ -175,7 +177,7 @@ def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
                 ),
                 "medium",
                 {"families": families},
-                [by_family[fam] for fam in families],
+                [text_families[fam][0] for fam in families],
             )
         )
 
@@ -236,7 +238,10 @@ def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
             continue
         stack = node.style("font-family")
         if stack:
-            control_families[_primary_family(stack)].append(node)
+            family = _primary_family(stack)
+            if family not in established_families:
+                continue  # UA-fallback faces are reported by control-fallback
+            control_families[family].append(node)
     established = {
         fam: nodes
         for fam, nodes in control_families.items()
@@ -675,32 +680,38 @@ def _scale_issues(snapshot: Snapshot) -> list[VisualIssue]:
         max_size = max(fs for _, fs in sized)
         min_size = min(fs for _, fs in sized)
         if min_size > 0 and max_size / min_size >= _SPREAD_RATIO:
-            floor = min_size * 1.15
-            lows = [n for n, fs in sized if fs <= floor]
-            peak = [n for n, fs in sized if fs == max_size][:1]
-            issues.append(
-                _issue(
-                    snapshot,
-                    "scale",
-                    "scale-size-disparity",
-                    "Extreme size gap between smallest and largest text",
-                    (
-                        f"Text sizes span {round(min_size, 1)} px to"
-                        f" {round(max_size, 1)} px"
-                        f" ({round(max_size / min_size, 1)}x) with no middle"
-                        " steps carrying the smallest strings; the tiny text"
-                        " drowns next to the display sizes."
-                    ),
-                    "medium",
-                    {
-                        "min_px": round(min_size, 1),
-                        "max_px": round(max_size, 1),
-                        "ratio": round(max_size / min_size, 2),
-                        "smallest_count": len(lows),
-                    },
-                    lows + peak,
+            # A real disparity leaves a hole in the scale: no size between
+            # the tiny floor and half the display peak. Type systems with a
+            # clamp()/token ladder fill that band — deliberate design.
+            band = [fs for _, fs in sized if min_size * 2 <= fs <= max_size / 2]
+            if not band:
+                floor = min_size * 1.15
+                lows = [n for n, fs in sized if fs <= floor]
+                peak = [n for n, fs in sized if fs == max_size][:1]
+                ratio = max_size / min_size
+                issues.append(
+                    _issue(
+                        snapshot,
+                        "scale",
+                        "scale-size-disparity",
+                        "Extreme size gap between smallest and largest text",
+                        (
+                            f"Text sizes span {round(min_size, 1)} px to"
+                            f" {round(max_size, 1)} px"
+                            f" ({round(ratio, 1)}x) with no middle steps"
+                            " carrying the smallest strings; the tiny text"
+                            " drowns next to the display sizes."
+                        ),
+                        "medium",
+                        {
+                            "min_px": round(min_size, 1),
+                            "max_px": round(max_size, 1),
+                            "ratio": round(ratio, 2),
+                            "smallest_count": len(lows),
+                        },
+                        lows + peak,
+                    )
                 )
-            )
 
     heads = [
         n for n in snapshot.nodes if n.tag in _HEADINGS and n.text.strip()

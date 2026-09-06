@@ -382,7 +382,10 @@ def _check_render_blocking(parser: _PerfParser) -> PerformanceIssue | None:
             f"{len(blocking_js)} head scripts, {imports} @import). "
             "These delay first paint and also cause 'Render-blocking resources delay page load'. "
             "Scripts with type=module or async/defer are excluded: they are deferred by default "
-            "and do not block rendering."
+            "and do not block rendering. "
+            "Typical levers: self-host Google Fonts CSS (or add font-display: swap and "
+            "preconnect to fonts.gstatic.com) and inline the critical CSS of the site "
+            "stylesheet; every removed blocking resource directly shortens first paint."
         ),
         severity=severity,
         evidence=evidence,
@@ -456,7 +459,10 @@ def _check_main_thread(parser: _PerfParser) -> PerformanceIssue | None:
             title="Main thread blocks user interaction",
             description=(
                 "Main thread is blocked by large or synchronous JavaScript, increasing input delay and risking 'Main thread is overloaded'. "
-                "Long tasks block interaction (INP) and delay interactivity."
+                "Long tasks block interaction (INP) and delay interactivity. "
+                "Typical causes: continuously-running requestAnimationFrame animation loops, "
+                "large bundle evaluation, and long event handlers — profile long tasks and "
+                "yield to the main thread between animation frames."
             ),
             severity=severity,
             evidence=evidence,
@@ -575,7 +581,13 @@ def _check_tti(parser: _PerfParser) -> PerformanceIssue | None:
         }
         return PerformanceIssue(
             title="Page takes too long to become interactive",
-            description="Too much blocking JavaScript or large inline scripts delay Time to Interactive.",
+            description=(
+                "Too much blocking JavaScript or large inline scripts delay Time to Interactive. "
+                "Common root causes: continuously-running requestAnimationFrame loops "
+                "(canvas particles, cursor followers, carousels) that never let the main "
+                "thread go quiet, plus long tasks from the main bundle — pause offscreen "
+                "animations and split long tasks."
+            ),
             severity="high",
             evidence=evidence,
             check_id="tti",
@@ -585,26 +597,28 @@ def _check_tti(parser: _PerfParser) -> PerformanceIssue | None:
 
 def _check_inp(parser: _PerfParser) -> PerformanceIssue | None:
     # INP breakdown / Long input delay potential proxy: large inline + blocking
+    # A single small blocking script is normal theme bootstrap — require
+    # large inline JS or several blocking scripts before flagging.
     large = _large_inline_scripts(parser, 1024)
     blocking_scripts = _blocking_scripts(parser)
-    if large or len(blocking_scripts) >= 1:
-        # To avoid flagging every page with 1 blocking, require large or >=2 blocking for inp
-        if large or len(blocking_scripts) > 1:
-            evidence = {
-                "large_inline": len(large),
-                "blocking_scripts": len(blocking_scripts),
-                "total_scripts": len(parser.scripts),
-            }
-            return PerformanceIssue(
-                title="INP breakdown",
-                description=(
-                    "Long input delay potential due to main-thread blocking JS. "
-                    "Also covers 'Long input delay potential'."
-                ),
-                severity="medium",
-                evidence=evidence,
-                check_id="inp",
-            )
+    if large or len(blocking_scripts) > 1:
+        evidence = {
+            "large_inline": len(large),
+            "blocking_scripts": len(blocking_scripts),
+            "total_scripts": len(parser.scripts),
+        }
+        return PerformanceIssue(
+            title="INP breakdown",
+            description=(
+                "Long input delay potential due to main-thread blocking JS. "
+                "Also covers 'Long input delay potential'. "
+                "Typical causes: continuously-running requestAnimationFrame loops and "
+                "long tasks — pause offscreen animations and chunk heavy work."
+            ),
+            severity="medium",
+            evidence=evidence,
+            check_id="inp",
+        )
     return None
 
 
@@ -653,7 +667,12 @@ def _check_user_timing(parser: _PerfParser) -> PerformanceIssue | None:
         evidence = {"has_performance_mark": False, "suggestion": "Add performance.mark/measure for User Timing"}
         return PerformanceIssue(
             title="User Timing marks and measures",
-            description="No User Timing marks (performance.mark/measure) found. Adding them helps diagnose real-user performance.",
+            description=(
+                "No User Timing marks (performance.mark/measure) found. Adding them helps diagnose real-user performance: "
+                "instrument the journeys that matter on this page (e.g., first navigation ready, "
+                "search/filter applied, form submitted, primary content rendered) and wrap slow "
+                "operations in measure() calls so field diagnostics point at real interactions."
+            ),
             severity="low",
             evidence=evidence,
             check_id="user_timing",
