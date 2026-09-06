@@ -118,6 +118,13 @@ class TestApiKey:
 
 
 class TestFetchPagespeed:
+    @pytest.fixture(autouse=True)
+    def _zero_retry_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Retry sequencing is under test, not wall-clock backoff."""
+        monkeypatch.setattr(
+            "ux_analyzer.analysis.pagespeed._RETRY_DELAYS", (0.0, 0.0, 0.0)
+        )
+
     async def test_returns_payload_on_200(self) -> None:
         payload = {"lighthouseResult": {"fetchTime": "now"}}
         client = _FakeAsyncClient([httpx.Response(200, json=payload)])
@@ -1084,7 +1091,10 @@ class TestSavedScoreExtraction:
                 ]
             ),
         )
-        scores = extract_pagespeed_web_saved_scores(saved)
+        # The fake page never renders valid gauges, so the poll loop would
+        # otherwise run its full 120s production deadline against a no-op
+        # fake; one poll is enough to pin the filtering behavior.
+        scores = extract_pagespeed_web_saved_scores(saved, timeout_seconds=1)
         assert scores == {}
 
     def test_page_failure_yields_no_scores(
