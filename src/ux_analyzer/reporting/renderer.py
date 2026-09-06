@@ -405,6 +405,7 @@ def _static_finding(
     affected_surfaces: list[str] | None = None,
     limitations: list[str] | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    reproducibility: str = "deterministic",
 ) -> dict[str, Any]:
     return {
         "finding_id": finding_id,
@@ -423,7 +424,7 @@ def _static_finding(
         "limitations": limitations or [],
         "reviewer_state": "recorded",
         "evidence_class": "recorded-page-fact",
-        "reproducibility": "deterministic",
+        "reproducibility": reproducibility,
         "severity_justification": "",
         "reviewer_notes": [],
         "source": source,
@@ -432,8 +433,16 @@ def _static_finding(
     }
 
 
+_UX_AUDIT_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
 def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any]]:
-    """Mirror the report's Page findings tab: audit issues + AI-slop card."""
+    """Mirror the report's Page findings tab: audit issues + AI-slop card.
+
+    Repeated instances of the same check on one URL (one detector rule
+    flagged several elements) are consolidated into a single issue with
+    per-instance facts, so the fixer solves one root cause once.
+    """
 
     findings: list[dict[str, Any]] = []
     if not isinstance(ux_audit, Mapping):
@@ -441,27 +450,63 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
     audit_root = cast("Mapping[str, Any]", ux_audit)
     for url_report in _list_of_mappings(audit_root.get("url_reports")):
         url = _text(url_report.get("url"))
+        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for issue in _list_of_mappings(url_report.get("issues")):
             title = _text(issue.get("title"))
             if not title:
                 continue
             check_id = _text(issue.get("check_id")) or _slug_fallback(title)
-            finding_id = _unique_finding_id(f"audit:{check_id}", used)
+            category = _text(issue.get("category"), "page-audit")
             evidence = issue.get("evidence")
             evidence_map: Mapping[str, Any] = (
                 cast("Mapping[str, Any]", evidence)
                 if isinstance(evidence, Mapping)
                 else {}
             )
-            detail: dict[str, Any] = {"URL": url}
+            facts: dict[str, Any] = {}
             for key, value in evidence_map.items():
                 if key in _UX_AUDIT_EVIDENCE_SKIP_KEYS:
                     continue
                 stripped = _strip_data_uris(value)
                 if stripped in (None, "", [], {}):
                     continue
-                detail[key] = stripped
-            attachments = _attachment_entries(finding_id, evidence_map)
+                facts[key] = stripped
+            groups.setdefault((check_id, title, category), []).append(
+                {
+                    "severity": _text(issue.get("severity"), "low"),
+                    "facts": facts,
+                    "evidence_map": evidence_map,
+                }
+            )
+        for (check_id, title, category), instances in groups.items():
+            finding_id = _unique_finding_id(f"audit:{check_id}", used)
+            attachments: list[dict[str, Any]] = []
+            for instance in instances:
+                instance_attachments = _attachment_entries(
+                    finding_id, instance["evidence_map"]
+                )
+                for entry in instance_attachments:
+                    entry["evidence_id"] = (
+                        f"{finding_id}:screenshot-{len(attachments) + 1}"
+                    )
+                    attachments.append(entry)
+            severity = min(
+                (instance["severity"] for instance in instances),
+                key=lambda value: _UX_AUDIT_SEVERITY_RANK.get(value, 99),
+            )
+            detail: dict[str, Any] = {"URL": url}
+            if len(instances) == 1:
+                detail.update(instances[0]["facts"])
+                problem = (
+                    f"{title} — recorded page fact from the static audit of {url}."
+                )
+            else:
+                for index, instance in enumerate(instances, start=1):
+                    detail[f"Instance {index}"] = instance["facts"]
+                problem = (
+                    f"{title} — {len(instances)} occurrences recorded by the "
+                    f"static audit of {url}."
+                )
             if attachments:
                 detail["Screenshots"] = (
                     f"{len(attachments)} annotated screenshot(s), copied into assets/"
@@ -470,9 +515,9 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
                 _static_finding(
                     finding_id,
                     title,
-                    f"{title} — recorded page fact from the static audit of {url}.",
-                    _text(issue.get("severity"), "low"),
-                    _text(issue.get("category"), "page-audit"),
+                    problem,
+                    severity,
+                    category,
                     "page-audit",
                     detail,
                     affected_surfaces=[url],
@@ -550,7 +595,10 @@ def _slop_findings(
                     ).items()
                     if key != "triggered"
                 }
-    detail["Annotated evidence"] = "open report.html, Page findings tab"
+    detail["Annotated evidence"] = (
+        "see report.html in the experiment output directory "
+        "(Page findings tab); it is not part of this package"
+    )
     return [
         _static_finding(
             _unique_finding_id(f"slop:{_slug_fallback(url) or 'page'}", used),
@@ -571,7 +619,12 @@ def _slop_findings(
 def _pagespeed_findings(
     pagespeed: object, used: set[str]
 ) -> list[dict[str, Any]]:
-    """Mirror the report's Performance tab: failed audits + opportunities."""
+    """Mirror the report's Performance tab: failed audits + opportunities.
+
+    Zero-savings opportunities (passing audits Lighthouse still lists) are
+    not exported, and a failed audit that also produced an opportunity is
+    exported once, through the opportunity (which carries the file list).
+    """
 
     findings: list[dict[str, Any]] = []
     if not isinstance(pagespeed, Mapping):
@@ -591,17 +644,26 @@ def _pagespeed_findings(
             if _text(entry_map.get("status"), "error") != "ok":
                 continue
             audits = entry_map.get("audits")
-            if isinstance(audits, Mapping):
-                findings.extend(
-                    _pagespeed_audit_findings(
-                        url,
-                        strategy,
-                        cast("Mapping[str, Any]", audits),
-                        used,
-                    )
-                )
+            audit_map = (
+                cast("Mapping[str, Any]", audits)
+                if isinstance(audits, Mapping)
+                else cast("Mapping[str, Any]", {})
+            )
+            opportunities = _list_of_mappings(entry_map.get("opportunities"))
+            opportunity_ids = {
+                _text(opportunity.get("id"))
+                for opportunity in opportunities
+                if _text(opportunity.get("id"))
+            }
             findings.extend(
-                _pagespeed_opportunity_findings(url, strategy, entry_map, used)
+                _pagespeed_audit_findings(
+                    url, strategy, audit_map, used, skip=opportunity_ids
+                )
+            )
+            findings.extend(
+                _pagespeed_opportunity_findings(
+                    url, strategy, entry_map, audit_map, used
+                )
             )
     return findings
 
@@ -624,29 +686,55 @@ def _detected_files_detail(
     )
 
 
+def _zero_savings(savings_ms: object, savings_bytes: object) -> bool:
+    """True when Lighthouse reports no reducible cost at all."""
+
+    ms = savings_ms if isinstance(savings_ms, (int, float)) else 0
+    size = savings_bytes if isinstance(savings_bytes, (int, float)) else 0
+    return ms == 0 and size == 0
+
+
 def _pagespeed_audit_findings(
     url: str,
     strategy: str,
     audits: Mapping[str, Any],
     used: set[str],
+    *,
+    skip: set[str],
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for audit in _list_of_mappings(audits.get("failed")):
         audit_id = _text(audit.get("id"))
         title = _text(audit.get("title"), audit_id)
-        if not audit_id:
+        if not audit_id or audit_id in skip:
             continue
+        diagnostic = (
+            audit_id.endswith("-insight")
+            or _text(audit.get("score_display_mode")) == "metricSavings"
+        )
         score_percent = audit.get("score_percent")
         if isinstance(score_percent, int):
+            score_text = f"{score_percent}/100"
+        else:
+            score_text = "n/a"
+        if diagnostic:
+            severity = "low"
+            issue = f"Lighthouse diagnostic '{title}' ({strategy}) on {url}."
+        elif isinstance(score_percent, int):
             severity = (
                 "high" if score_percent < 50 else
                 "medium" if score_percent < 90 else
                 "low"
             )
-            score_text = f"{score_percent}/100"
+            issue = (
+                f"Failed Lighthouse audit '{title}' ({strategy}) scored "
+                f"{score_text} on {url}."
+            )
         else:
             severity = "medium"
-            score_text = "n/a"
+            issue = (
+                f"Failed Lighthouse audit '{title}' ({strategy}) on {url}."
+            )
         detail: dict[str, Any] = {
             "URL": url,
             "Strategy": strategy,
@@ -664,10 +752,7 @@ def _pagespeed_audit_findings(
             _static_finding(
                 _unique_finding_id(f"pagespeed:{strategy}:{audit_id}", used),
                 title,
-                (
-                    f"Failed Lighthouse audit '{title}' ({strategy}) scored "
-                    f"{score_text} on {url}."
-                ),
+                issue,
                 severity,
                 "performance",
                 "pagespeed",
@@ -676,6 +761,7 @@ def _pagespeed_audit_findings(
                 limitations=[
                     "Verbatim Lighthouse result; scores vary between runs."
                 ],
+                reproducibility="lab-run",
             )
         )
     return findings
@@ -685,22 +771,35 @@ def _pagespeed_opportunity_findings(
     url: str,
     strategy: str,
     raw_entry: Mapping[str, Any],
+    audits: Mapping[str, Any],
     used: set[str],
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
+    failed_by_id = {
+        _text(audit.get("id")): audit
+        for audit in _list_of_mappings(audits.get("failed"))
+        if _text(audit.get("id"))
+    }
     for opportunity in _list_of_mappings(raw_entry.get("opportunities")):
         opportunity_id = _text(opportunity.get("id"))
         title = _text(opportunity.get("title"), opportunity_id)
         if not opportunity_id:
             continue
+        savings_ms = opportunity.get("savings_ms")
+        savings_bytes = opportunity.get("savings_bytes")
+        if _zero_savings(savings_ms, savings_bytes):
+            continue
         detail: dict[str, Any] = {"URL": url, "Strategy": strategy}
+        matching_audit = failed_by_id.get(opportunity_id)
+        if matching_audit is not None:
+            score_percent = matching_audit.get("score_percent")
+            if isinstance(score_percent, int):
+                detail["Lighthouse score"] = f"{score_percent}/100"
         display_value = _optional_text(opportunity.get("display_value"))
         if display_value:
             detail["Estimated saving"] = display_value
-        savings_ms = opportunity.get("savings_ms")
         if isinstance(savings_ms, (int, float)):
             detail["savings_ms"] = savings_ms
-        savings_bytes = opportunity.get("savings_bytes")
         if isinstance(savings_bytes, (int, float)):
             detail["savings_bytes"] = savings_bytes
         _detected_files_detail(detail, opportunity.get("items"))
@@ -722,6 +821,7 @@ def _pagespeed_opportunity_findings(
                 limitations=[
                     "Verbatim Lighthouse result; scores vary between runs."
                 ],
+                reproducibility="lab-run",
             )
         )
     return findings

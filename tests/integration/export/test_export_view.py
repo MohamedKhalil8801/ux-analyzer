@@ -572,6 +572,15 @@ def _write_ux_audit(root: Path) -> None:
                             ],
                         },
                     },
+                    {
+                        "category": "accessibility",
+                        "check_id": "img_alt",
+                        "title": "Images missing alt text",
+                        "severity": "low",
+                        "evidence": {
+                            "element_selectors": ["img.footer-mark"],
+                        },
+                    },
                 ],
                 "slop": {
                     "score": 30,
@@ -660,7 +669,22 @@ def _write_pagespeed(root: Path) -> None:
                                             "wastedMs": 900,
                                         }
                                     ],
-                                }
+                                },
+                                {
+                                    "id": "unused-javascript",
+                                    "title": "Reduce unused JavaScript",
+                                    "score": 0.5,
+                                    "score_percent": 50,
+                                    "display_value": "Est savings of 28 KiB",
+                                    "score_display_mode": "metricSavings",
+                                },
+                                {
+                                    "id": "cls-culprits-insight",
+                                    "title": "Layout shift culprits",
+                                    "score": 0,
+                                    "score_percent": 0,
+                                    "display_value": "2 layout shifts found",
+                                },
                             ],
                             "passed": [],
                             "not_applicable": [],
@@ -691,7 +715,15 @@ def _write_pagespeed(root: Path) -> None:
                                 "score": 1,
                                 "display_value": "",
                                 "savings_ms": 0,
-                                "savings_bytes": 0,
+                                "savings_bytes": 4096,
+                                "items": [],
+                            },
+                            {
+                                "id": "redirects",
+                                "title": "Avoid multiple page redirects",
+                                "score": 1,
+                                "display_value": "",
+                                "savings_ms": 0,
                                 "items": [],
                             },
                         ],
@@ -763,8 +795,19 @@ def test_page_audit_issues_mirror_the_page_findings_tab(
     assert json_ld["category"] == "GEO"
     assert json_ld["detail"]["URL"] == "https://app.example.test/"
     alt = by_id["audit:img_alt"]
-    assert alt["detail"]["element_selectors"] == ["img.logo", "img.hero"]
     assert alt["affected_surfaces"] == ["https://app.example.test/"]
+    assert alt["severity"] == "medium"
+    assert alt["detail"]["Instance 1"]["element_selectors"] == [
+        "img.logo",
+        "img.hero",
+    ]
+    assert alt["detail"]["Instance 2"]["element_selectors"] == [
+        "img.footer-mark"
+    ]
+    assert alt["issue"] == (
+        "Images missing alt text — 2 occurrences recorded by the static "
+        "audit of https://app.example.test/."
+    )
     attachments = alt["attachments"]
     assert [entry["suffix"] for entry in attachments] == [".png", ".jpg"]
     assert attachments[0]["data"] == b"element-shot"
@@ -808,6 +851,7 @@ def test_pagespeed_findings_mirror_the_performance_tab(
     by_id = {finding["finding_id"]: finding for finding in performance}
     assert set(by_id) == {
         "pagespeed:mobile:render-blocking-resources",
+        "pagespeed:mobile:cls-culprits-insight",
         "pagespeed:mobile:opportunity:unused-javascript",
         "pagespeed:mobile:opportunity:unminified-css",
     }
@@ -818,8 +862,19 @@ def test_pagespeed_findings_mirror_the_performance_tab(
     assert failed["detail"]["Detected files"] == [
         {"url": "https://app.example.test/styles.css", "wastedMs": 900}
     ]
+    diagnostic = by_id["pagespeed:mobile:cls-culprits-insight"]
+    assert diagnostic["severity"] == "low"
+    assert diagnostic["reproducibility"] == "lab-run"
+    assert diagnostic["issue"] == (
+        "Lighthouse diagnostic 'Layout shift culprits' (mobile) on "
+        "https://app.example.test/."
+    )
+    assert diagnostic["detail"]["Measured"] == "2 layout shifts found"
+    assert "pagespeed:mobile:unused-javascript" not in by_id
     opportunity = by_id["pagespeed:mobile:opportunity:unused-javascript"]
     assert opportunity["severity"] == "medium"
+    assert opportunity["reproducibility"] == "lab-run"
+    assert opportunity["detail"]["Lighthouse score"] == "50/100"
     assert opportunity["detail"]["Estimated saving"] == "Est savings of 28 KiB"
     assert opportunity["detail"]["Detected files"] == [
         {
@@ -832,6 +887,7 @@ def test_pagespeed_findings_mirror_the_performance_tab(
     assert unminified["detail"]["Detected files"] == (
         "none recorded by Lighthouse"
     )
+    assert "pagespeed:mobile:opportunity:redirects" not in by_id
 
 
 def test_all_mapped_findings_have_unique_ids_and_resolved_evidence(

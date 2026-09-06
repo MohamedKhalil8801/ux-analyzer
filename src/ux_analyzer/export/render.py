@@ -198,9 +198,11 @@ Work on exactly the issues listed in the table above, ordered
    If you cannot reproduce it after an honest attempt, stop, record it as a
    blocker in FIX-REPORT.md, and move on. Do not fix what you cannot observe.
 3. Write failing tests (red) that fail because of this issue.
-4. Choose the best solution. The issue file lists suggested fixes; you may
-   pick one, combine several, invent a better one, or hybridize. Record the
-   chosen solution and your reasoning. Ask the user when genuinely ambiguous.
+4. Choose the best solution. The issue file may list suggested fixes; if
+   it does, pick one, combine several, invent a better one, or hybridize.
+   If it does not, design the solution yourself from the recorded evidence.
+   Record the chosen solution and your reasoning. Ask the user when
+   genuinely ambiguous.
 5. Load the skills assigned to this issue (Skills section above) and
    implement the fix. Skills may cover planning, coding, design, or review.
 6. Verify: the previously failing tests now pass, AND manually re-check the
