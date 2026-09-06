@@ -450,6 +450,16 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
     audit_root = cast("Mapping[str, Any]", ux_audit)
     for url_report in _list_of_mappings(audit_root.get("url_reports")):
         url = _text(url_report.get("url"))
+        viewport = url_report.get("viewport")
+        environment: dict[str, Any] = {}
+        if isinstance(viewport, Mapping):
+            width = viewport.get("width")
+            height = viewport.get("height")
+            if isinstance(width, int) and isinstance(height, int):
+                environment["Viewport"] = f"{width}x{height}"
+        theme = _text(url_report.get("theme"))
+        if theme and theme != "unknown":
+            environment["Theme"] = theme
         groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for issue in _list_of_mappings(url_report.get("issues")):
             title = _text(issue.get("title"))
@@ -495,6 +505,7 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
                 key=lambda value: _UX_AUDIT_SEVERITY_RANK.get(value, 99),
             )
             detail: dict[str, Any] = {"URL": url}
+            detail.update(environment)
             if len(instances) == 1:
                 detail.update(instances[0]["facts"])
                 problem = (

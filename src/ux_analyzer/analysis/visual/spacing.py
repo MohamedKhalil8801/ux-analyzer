@@ -259,6 +259,24 @@ def _reliable_sides(node: SNode) -> frozenset[str]:
     return frozenset({"left", "top", "bottom"})
 
 
+def _flush_with_parent_rail(scan: _Scan, node: SNode) -> bool:
+    """True when the node's horizontal edges sit on the parent's content rail.
+
+    Text touching a rail shared with every other section is the page's own
+    alignment grid, not content pressed against a painted boundary.
+    """
+    parent = scan.by_index.get(node.parent)
+    if parent is None or parent.box.w <= 0:
+        return True  # no inset context: treat as rail
+    pad_left = parent.style_px("padding-left") or 0.0
+    pad_right = parent.style_px("padding-right") or 0.0
+    left_gap = node.box.x - (parent.box.x + pad_left)
+    right_gap = (parent.box.x + parent.box.w - pad_right) - (
+        node.box.x + node.box.w
+    )
+    return left_gap <= 2.0 and abs(right_gap) <= 2.0
+
+
 def _find_cramped_containers(
     snapshot: Snapshot, scan: _Scan
 ) -> Iterator[VisualIssue]:
@@ -303,6 +321,13 @@ def _find_cramped_containers(
         if worst_inset >= _CRAMPED_INSET_PX or worst_inset < _OVERFLOW_SLACK_PX:
             continue
         touching = worst_inset <= _TOUCH_PX
+        # A horizontal edge flush with the parent's content rail is the
+        # page's alignment grid (e.g., a list row whose anchor spans the
+        # content column): nothing is visually pressed against a boundary.
+        rail = (
+            worst_side in ("left", "right")
+            and _flush_with_parent_rail(scan, c)
+        )
         yield VisualIssue(
             fundamental="white-space",
             check_id=(
@@ -321,13 +346,23 @@ def _find_cramped_containers(
                 "White space frames content; without it the block reads as "
                 "cramped and harder to scan. Increase inner padding so text "
                 "keeps clear of the container boundary."
+                if not rail
+                else (
+                    f"Text inside this container sits only "
+                    f"{round(worst_inset, 1)}px from its {worst_side} edge, "
+                    "and the container itself spans the parent content rail, "
+                    "so the text visually touches the page's alignment edge. "
+                    "Add inner padding on the container (or inset it from "
+                    "the rail) so content keeps clear of the boundary."
+                )
             ),
-            severity="critical" if touching else "medium",
+            severity=("low" if rail else "critical") if touching else "medium",
             evidence={
                 "container": snapshot.selector(c),
                 "side": worst_side,
                 "minInsetPx": round(worst_inset, 1),
                 "textBlocks": len(texts),
+                "onParentRail": rail,
             },
             element_refs=(snapshot.selector(c), snapshot.selector(worst_node)),
         )

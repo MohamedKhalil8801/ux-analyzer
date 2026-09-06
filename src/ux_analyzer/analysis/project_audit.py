@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 from collections.abc import Sequence
 from typing import Any
@@ -54,11 +55,21 @@ async def _visual_analyze(url: str) -> list[Any]:
                         page.evaluate("() => { return Promise.all(Array.from(document.images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.addEventListener('load', () => r(true), {once:true}); img.addEventListener('error', () => r(true), {once:true}); setTimeout(() => r(true), 3000); }))); }")
                     except Exception:
                         pass
+                    # Scroll-warm the page so scroll-reveal animations and
+                    # lazy content finish before the snapshot: capturing
+                    # mid-reveal produced washed-out "empty element" crops.
                     try:
-                        page.evaluate("() => { return new Promise(r => { if (document.readyState === 'complete') r(true); else window.addEventListener('load', () => r(true), {once:true}); setTimeout(() => r(true), 2000); }); }")
+                        page.evaluate(
+                            "async () => { const step = window.innerHeight * 0.8;"
+                            " const limit = document.documentElement.scrollHeight;"
+                            " for (let y = 0; y <= limit; y += step)"
+                            " { window.scrollTo(0, y); await new Promise(r => setTimeout(r, 120)); }"
+                            " window.scrollTo(0, 0);"
+                            " await new Promise(r => setTimeout(r, 350)); }"
+                        )
                     except Exception:
                         pass
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(800)
                     style_props = ["display","position","flex-direction","justify-content","align-items","gap","row-gap","column-gap","grid-template-columns","font-family","font-size","font-weight","font-style","line-height","letter-spacing","text-transform","text-align","text-decoration-line","color","background-color","background-image","background-clip","backdrop-filter","-webkit-backdrop-filter","filter","margin-top","margin-right","margin-bottom","margin-left","padding-top","padding-right","padding-bottom","padding-left","border-top-width","border-right-width","border-bottom-width","border-left-width","border-top-color","border-right-color","border-bottom-color","border-left-color","border-radius","opacity","width","height","box-shadow","grid-column","transform","perspective"]
                     snapshot_js = """
                     (props) => {
@@ -101,8 +112,14 @@ async def _visual_analyze(url: str) -> list[Any]:
                         " for (var k=0;k<ps.length && paragraphs.length<200;k++){ var pt=(ps[k].innerText||ps[k].textContent||'').trim(); if (pt) paragraphs.push(pt.slice(0,400)); }"
                         " var words = text ? text.split(/\\s+/).filter(Boolean) : [];"
                         " var centerEl = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);"
-                        " return { viewport:{w:window.innerWidth,h:window.innerHeight}, docHeight:document.documentElement.scrollHeight, scrollY:window.scrollY,"
-                        "   surface:{ htmlBg:getComputedStyle(document.documentElement).backgroundColor, bodyBg:getComputedStyle(document.body).backgroundColor, centerBg:centerEl ? getComputedStyle(centerEl).backgroundColor : '' },"
+                        " var bodyBg = getComputedStyle(document.body).backgroundColor;"
+                        " var theme = 'unknown';"
+                        " var bgm = bodyBg.match(/rgba?\\(([^)]+)\\)/);"
+                        " if (bgm) { var p = bgm[1].split(',').map(parseFloat);"
+                        "  var lum = (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) / 255;"
+                        "  theme = lum < 0.2 ? 'dark' : (lum > 0.8 ? 'light' : 'unknown'); }"
+                        " return { viewport:{w:window.innerWidth,h:window.innerHeight}, docHeight:document.documentElement.scrollHeight, scrollY:window.scrollY, theme:theme,"
+                        "   surface:{ htmlBg:getComputedStyle(document.documentElement).backgroundColor, bodyBg:bodyBg, centerBg:centerEl ? getComputedStyle(centerEl).backgroundColor : '' },"
                         "   textContext:{ text:text.slice(0,200000), headings:headings, paragraphs:paragraphs, wordCount:words.length } };"
                         " }"
                     )
@@ -140,6 +157,7 @@ async def _visual_analyze(url: str) -> list[Any]:
                         xpaths: list[str] = []
                         boxes: list[dict[str, float]] = []
                         screenshots: list[str] = []
+                        seen_shots: set[str] = set()
                         for node in element_nodes:
                             try:
                                 css = snap.css_selector(node)
@@ -234,11 +252,20 @@ async def _visual_analyze(url: str) -> list[Any]:
                                     except Exception:
                                         screenshot_b64 = None
                             if screenshot_b64:
-                                screenshots.append(screenshot_b64)
+                                shot_digest = hashlib.sha256(
+                                    screenshot_b64.encode("ascii")
+                                ).hexdigest()
+                                # Identical byte-for-byte crops (same element
+                                # flagged by neighbouring rules) add bloat and
+                                # read as "more evidence" than exists.
+                                if shot_digest not in seen_shots:
+                                    seen_shots.add(shot_digest)
+                                    screenshots.append(screenshot_b64)
                         # Combined annotated views grouped by common parent, so
                         # scattered elements never produce a huge mostly-empty
                         # union crop.
                         combined_screenshots: list[str] = []
+                        seen_combined: set[str] = set()
                         if len(element_nodes) > 1:
                             by_parent: dict[int, list[Any]] = {}
                             for n in element_nodes:
@@ -280,9 +307,13 @@ async def _visual_analyze(url: str) -> list[Any]:
                                         parent_img.thumbnail((720, 540), Image.LANCZOS)
                                     buf = io.BytesIO()
                                     parent_img.save(buf, format="JPEG", quality=82, optimize=True)
-                                    combined_screenshots.append(
-                                        f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
-                                    )
+                                    combined_b64 = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+                                    combined_digest = hashlib.sha256(
+                                        combined_b64.encode("ascii")
+                                    ).hexdigest()
+                                    if combined_digest not in seen_combined:
+                                        seen_combined.add(combined_digest)
+                                        combined_screenshots.append(combined_b64)
                                 except Exception:
                                     continue
                             # Union-crop fallback only when the elements actually
@@ -346,7 +377,7 @@ async def _visual_analyze(url: str) -> list[Any]:
                             object.__setattr__(issue, "evidence", ev)
                         except Exception:
                             pass
-                    return [issues, slop_report]
+                    return [issues, slop_report, meta]
                 finally:
                     browser.close()
         except Exception:
@@ -382,6 +413,24 @@ async def audit_url(url: str) -> dict[str, Any]:
         for issue in category_issues:
             issues.append({"category": category, "check_id": issue.check_id, "title": issue.title, "severity": issue.severity, "evidence": issue.evidence})
     report: dict[str, Any] = {"url": url, "counts": counts, "total": len(issues), "issues": issues}
+    for (category, _), category_issues in zip(_CATEGORIES, results, strict=True):
+        if category == "visual":
+            # _visual_analyze returns [issues, slop_report, meta]
+            visual_meta = (
+                category_issues[2]
+                if len(category_issues) > 2 and isinstance(category_issues[2], dict)
+                else {}
+            )
+            viewport = visual_meta.get("viewport")
+            if isinstance(viewport, dict) and viewport.get("w"):
+                report["viewport"] = {
+                    "width": int(viewport.get("w", 0)),
+                    "height": int(viewport.get("h", 0)),
+                }
+            theme = str(visual_meta.get("theme", "") or "")
+            if theme and theme != "unknown":
+                report["theme"] = theme
+            break
     if slop is not None:
         report["slop"] = slop
     return report

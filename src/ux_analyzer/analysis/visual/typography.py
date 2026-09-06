@@ -125,22 +125,40 @@ def _weight_int(node: SNode) -> int | None:
         return None
 
 
+_FORM_CONTROLS = frozenset({"button", "input", "select", "textarea"})
+
+
 def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
     issues: list[VisualIssue] = []
+    text_families: dict[str, list[SNode]] = defaultdict(list)
+    for node in _text_nodes(snapshot):
+        stack = node.style("font-family")
+        if stack:
+            text_families[_primary_family(stack)].append(node)
+    established_families = {
+        fam for fam, nodes in text_families.items() if len(nodes) >= 2
+    }
+
     by_family: dict[str, SNode] = {}
-    text_by_family: dict[str, list[SNode]] = defaultdict(list)
+    fallback_controls: list[SNode] = []
     for node in snapshot.nodes:
         if _is_offscreen(node):
             continue
         stack = node.style("font-family")
         if not stack:
             continue
-        by_family.setdefault(_primary_family(stack), node)
-    for node in _text_nodes(snapshot):
-        stack = node.style("font-family")
-        if stack:
-            text_by_family[_primary_family(stack)].append(node)
-
+        family = _primary_family(stack)
+        if (
+            node.tag in _FORM_CONTROLS
+            and family not in established_families
+        ):
+            # UA stylesheets give form controls their own default face
+            # (e.g. arial) when the site never declares one. That is a
+            # real inheritance bug, but it is NOT a font-palette decision
+            # — census it separately below.
+            fallback_controls.append(node)
+            continue
+        by_family.setdefault(family, node)
     families = sorted(by_family)
     if len(families) > _MAX_FAMILIES:
         issues.append(
@@ -161,15 +179,39 @@ def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
             )
         )
 
-    if len(text_by_family) == 2 and 1 in (
-        len(nodes) for nodes in text_by_family.values()
+    if fallback_controls:
+        issues.append(
+            _issue(
+                snapshot,
+                "typography",
+                "typography-control-font-fallback",
+                "Interactive controls fall back to the UA font",
+                (
+                    f"{len(fallback_controls)} control(s) render in a UA"
+                    " default face instead of the site's type system"
+                    " (form controls don't inherit font-family). Add"
+                    " `font-family: inherit` so buttons and inputs share"
+                    " the page's families."
+                ),
+                "low",
+                {
+                    "families": sorted(
+                        {_primary_family(n.style("font-family")) for n in fallback_controls}
+                    )
+                },
+                fallback_controls,
+            )
+        )
+
+    if len(text_families) == 2 and 1 in (
+        len(nodes) for nodes in text_families.values()
     ):
         loners = [
             fam
-            for fam, nodes in text_by_family.items()
+            for fam, nodes in text_families.items()
             if len(nodes) == 1
         ]
-        stray = [text_by_family[fam][0] for fam in loners]
+        stray = [text_families[fam][0] for fam in loners]
         issues.append(
             _issue(
                 snapshot,
@@ -183,7 +225,7 @@ def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
                     " rather than a two-family system."
                 ),
                 "medium",
-                {"family_counts": {f: len(text_by_family[f]) for f in text_by_family}},
+                {"family_counts": {f: len(text_families[f]) for f in text_families}},
                 stray,
             )
         )
@@ -230,9 +272,14 @@ def _family_issues(snapshot: Snapshot) -> list[VisualIssue]:
 
 
 def _off_grid(value: float) -> bool:
+    # A value that resolves to a clean rem step (e.g. 13.44px = 0.84rem at a
+    # 16px root) is a design token, not an accident. Only sizes that miss
+    # both the px grid and the rem grid read as arbitrary.
+    rem = value / 16.0
+    rem_off = abs(rem * 100 - round(rem * 100)) > 0.5
     steps_x10 = abs(value * 10 - round(value * 10)) > 0.15
     steps_int = abs(value - round(value)) > 0.15
-    return steps_x10 and steps_int
+    return rem_off and steps_x10 and steps_int
 
 
 def _size_issues(snapshot: Snapshot) -> list[VisualIssue]:
@@ -494,13 +541,13 @@ def _tracking_caps_issues(snapshot: Snapshot) -> list[VisualIssue]:
 
 def _weight_issues(snapshot: Snapshot) -> list[VisualIssue]:
     issues: list[VisualIssue] = []
-    weights: set[int] = set()
+    weights: dict[int, list[SNode]] = defaultdict(list)
     light_prose: list[SNode] = []
     for node in _text_nodes(snapshot):
         weight = _weight_int(node)
         if weight is None:
             continue
-        weights.add(weight)
+        weights[weight].append(node)
         if (
             weight < 400
             and node.tag not in _HEADINGS
@@ -508,20 +555,30 @@ def _weight_issues(snapshot: Snapshot) -> list[VisualIssue]:
         ):
             light_prose.append(node)
     if len(weights) > _MAX_WEIGHTS:
+        # Variable fonts legitimately ship intermediate weights, so this is
+        # framed as low-severity and names exactly which elements carry
+        # which weight — a fixer can see the system (or its absence).
+        hits = [n for nodes in weights.values() for n in nodes]
         issues.append(
             _issue(
                 snapshot,
                 "typography",
                 "typography-weight-sprawl",
-                "Too many distinct font weights",
+                "Many distinct font weights in one view",
                 (
-                    f"{len(weights)} distinct font weights ({sorted(weights)})"
-                    " appear in one view; more than five signals a missing"
-                    " weight system."
+                    f"{len(weights)} distinct font weights"
+                    f" ({sorted(weights)}) appear in one view; if the"
+                    " families are variable fonts the intermediates may be"
+                    " deliberate, otherwise consolidate onto a weight scale."
                 ),
-                "medium",
-                {"weights": sorted(weights)},
-                [],
+                "low",
+                {
+                    "weights": sorted(weights),
+                    "weight_counts": {
+                        str(w): len(nodes) for w, nodes in sorted(weights.items())
+                    },
+                },
+                hits,
             )
         )
     if light_prose:
@@ -778,6 +835,10 @@ def _scale_issues(snapshot: Snapshot) -> list[VisualIssue]:
     groups: dict[tuple[int, str], list[SNode]] = defaultdict(list)
     for node in text_nodes:
         if _fs(node) > 0:
+            # Uppercase section labels/eyebrows are deliberately smaller
+            # than their body-text siblings — not a drift accident.
+            if node.style("text-transform").strip().lower() == "uppercase":
+                continue
             groups[(node.parent, node.tag)].append(node)
     drift: list[SNode] = []
     for members in groups.values():

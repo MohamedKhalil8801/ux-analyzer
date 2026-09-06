@@ -233,6 +233,31 @@ def _is_large_text(node: SNode) -> bool:
     return size >= _LARGE_BOLD_PX and _weight(node) >= _BOLD_WEIGHT
 
 
+_GRADIENT_COLOR_RE = re.compile(r"rgba?\([^)]*\)")
+
+
+def _gradient_scrim_color(surface: SNode) -> tuple[float, float, float, float] | None:
+    """Strongest semi-transparent color stop in a background-image gradient.
+
+    Overlays commonly draw a scrim as a gradient whose stops carry alpha
+    (e.g. ``linear-gradient(to top, rgba(11,11,13,.55), transparent 45%)``).
+    The stop that matters for legibility is the most opaque one: compositing
+    it keeps the backdrop estimate conservative in the direction that
+    avoids false "unreadable contrast" verdicts.
+    """
+    image = surface.style("background-image").strip().lower()
+    if "gradient" not in image:
+        return None
+    best: tuple[float, float, float, float] | None = None
+    for raw in _GRADIENT_COLOR_RE.findall(image):
+        color = _parse_color(raw)
+        if color is None or color[3] <= 0.0:
+            continue
+        if best is None or color[3] > best[3]:
+            best = color
+    return best
+
+
 def _backdrop(
     by_index: dict[int, SNode],
     opacity: dict[int, float],
@@ -242,7 +267,9 @@ def _backdrop(
 
     Walks from the node itself up through its ancestors; every painted
     background is blended root-most-first, with the element's cumulative
-    opacity multiplied into its alpha.
+    opacity multiplied into its alpha. Semi-transparent gradient scrims on
+    ancestor surfaces are composited too — text over an overlay must be
+    judged against the scrim, not the bare theme background beneath it.
     """
     surfaces: list[SNode] = []
     cursor: SNode | None = node
@@ -252,12 +279,15 @@ def _backdrop(
     backdrop = (255.0, 255.0, 255.0)
     for surface in reversed(surfaces):
         color = _parse_color(surface.style("background-color"))
-        if color is None:
-            continue
-        alpha = color[3] * opacity.get(surface.i, 1.0)
-        if alpha <= 0.0:
-            continue
-        backdrop = _blend(color[:3], alpha, backdrop)
+        if color is not None:
+            alpha = color[3] * opacity.get(surface.i, 1.0)
+            if alpha > 0.0:
+                backdrop = _blend(color[:3], alpha, backdrop)
+        scrim = _gradient_scrim_color(surface)
+        if scrim is not None:
+            alpha = scrim[3] * opacity.get(surface.i, 1.0)
+            if alpha > 0.0:
+                backdrop = _blend(scrim[:3], alpha, backdrop)
     return backdrop
 
 

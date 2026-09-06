@@ -554,6 +554,21 @@ def _centered_hero(ctx: SlopContext) -> dict[str, Any]:
     return {"triggered": triggered, "fontSize": font_size, "centered": centered, "slopFont": slop_font, "family": cs.get("font-family", "")}
 
 
+def _in_site_chrome(ctx: SlopContext, el: SNode) -> bool:
+    """True when the element lives under a nav/header landmark.
+
+    Eyebrow pills are a hero-section device; anything inside site chrome
+    (nav menus, header buttons like "Download CV") is not one, no matter
+    how pill-shaped it is.
+    """
+    cur: SNode | None = el
+    while cur is not None:
+        if cur.tag in ("nav", "header"):
+            return True
+        cur = ctx.parent_of(cur)
+    return False
+
+
 def _hero_eyebrow_pill(ctx: SlopContext) -> dict[str, Any]:
     h1 = ctx.h1
     if not h1:
@@ -566,6 +581,8 @@ def _hero_eyebrow_pill(ctx: SlopContext) -> dict[str, Any]:
     sparkle_emoji = re.compile(r"✨|🚀|⚡")
     for el in ctx.visible:
         if el.tag not in ("a", "div", "span", "button"):
+            continue
+        if _in_site_chrome(ctx, el):
             continue
         r = el.box
         bottom = r.y + r.h
@@ -868,6 +885,11 @@ def _glassmorphism(ctx: SlopContext) -> dict[str, Any]:
 
 
 def _colored_glows(ctx: SlopContext) -> dict[str, Any]:
+    """Big box-shadow glows in the AI-default hue zone (purple/blue/pink).
+
+    A saturated glow in any warm hue (gold, orange, teal accents) is a
+    deliberate brand choice, not the VibeCode purple/blue/pink tell.
+    """
     glow_count = 0
     for el in ctx.visible:
         shadow = el.style("box-shadow")
@@ -885,9 +907,14 @@ def _colored_glows(ctx: SlopContext) -> dict[str, Any]:
             if is_purple(col):
                 glow_count += 1
                 break
-            mx = max(col.r, col.g, col.b)
-            mn = min(col.r, col.g, col.b)
-            if mx - mn > 60 and col.a > 0.2:
+            hsl = rgb_to_hsl(col)
+            if (
+                hsl is not None
+                and 200 <= hsl.h <= 340
+                and hsl.s > 0.25
+                and col.a > 0.2
+            ):
+                # blue through magenta: the published purple/blue/pink zone
                 glow_count += 1
                 break
     return {"glowCount": glow_count, "triggered": glow_count >= 1}

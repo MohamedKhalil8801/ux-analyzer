@@ -254,6 +254,16 @@ def _mixed_align_issue(
     ]
     if len(with_text) < _MIN_GROUP:
         return None
+    # Only "equivalent items" can disagree about alignment: siblings whose
+    # rendered heights are in the same league AND small enough to be list
+    # items / labels rather than whole page sections. One deliberately
+    # centered section among start-aligned sections is design, not a
+    # ragged column.
+    heights = [m.box.h for m in with_text if m.box.h > 0]
+    if not heights or max(heights) > 200.0:
+        return None
+    if min(heights) * 2.2 < max(heights):
+        return None
     counts = Counter(_align(m) for m in with_text)
     if len(counts) < 2:
         return None
@@ -401,10 +411,12 @@ def _cross_tag_vertical_drift(snapshot: Snapshot) -> list[VisualIssue]:
 
 
 def _card_bottom_drift(snapshot: Snapshot) -> list[VisualIssue]:
-    """Sibling cards whose bottom edges don't line up.
+    """Sibling cards whose bottom edges don't line up *within one row*.
 
     Catches pricing-style decks where the featured card is taller and its
-    bottom drops below its siblings.
+    bottom drops below its siblings. Cards in DIFFERENT rows of a grid
+    naturally end at different heights — comparing across rows produced
+    systematic false positives, so each visual row is judged separately.
     """
     issues: list[VisualIssue] = []
     for parent in snapshot.nodes:
@@ -414,47 +426,54 @@ def _card_bottom_drift(snapshot: Snapshot) -> list[VisualIssue]:
         for group in _role_groups(members):
             if len(group) < 3:
                 continue
-            # horizontal row of similar cards
-            # check they are side-by-side (no vertical overlap large)
             if _is_vertical_stack(group):
                 continue
-            bottoms = [c.box.y + c.box.h for c in group]
-            spread = max(bottoms) - min(bottoms)
-            if spread <= _ROW_DRIFT:
-                continue
-            dominant, off = _outliers(bottoms, _ROW_DRIFT)
-            if not off or dominant is None:
-                continue
-            worst = max(abs(b - dominant) for b in off)
-            if worst < 20:
-                continue
-            # if every outlier is also a different size it's intentional
-            # featured-card elevation — only flag when size difference is the
-            # source of the drift, which is exactly the pricing case where
-            # the middle card is taller by 93px. Allow that as intentional
-            # only when the taller card also has a distinct border/shadow.
-            issues.append(
-                VisualIssue(
-                    fundamental="alignment",
-                    check_id="alignment.card-bottom-drift",
-                    title="Sibling cards bottoms don't line up",
-                    description=(
-                        "Cards that are meant to sit as a row end up to"
-                        f" {worst:.0f}px apart at the bottom, so the deck"
-                        " looks uneven."
-                    ),
-                    severity=_drift_severity(worst, _ROW_DRIFT),
-                    evidence={"max_offset_px": round(worst, 1)},
-                    element_refs=tuple(snapshot.selector(c) for c in group),
+            # Judge each visual row separately: bottoms can only drift when
+            # the cards actually sit side by side.
+            for band in _y_bands(group):
+                if len(band) < 2:
+                    continue
+                bottoms = [c.box.y + c.box.h for c in band]
+                spread = max(bottoms) - min(bottoms)
+                if spread <= _ROW_DRIFT:
+                    continue
+                dominant, off = _outliers(bottoms, _ROW_DRIFT)
+                if not off or dominant is None:
+                    continue
+                worst = max(abs(b - dominant) for b in off)
+                if worst < 20:
+                    continue
+                issues.append(
+                    VisualIssue(
+                        fundamental="alignment",
+                        check_id="alignment.card-bottom-drift",
+                        title="Sibling cards bottoms don't line up",
+                        description=(
+                            "Cards that are meant to sit as a row end up to"
+                            f" {worst:.0f}px apart at the bottom, so the deck"
+                            " looks uneven."
+                        ),
+                        severity=_drift_severity(worst, _ROW_DRIFT),
+                        evidence={"max_offset_px": round(worst, 1)},
+                        element_refs=tuple(snapshot.selector(c) for c in band),
+                    )
                 )
-            )
     return issues
 
 
 def _footer_inset_inconsistency(snapshot: Snapshot) -> list[VisualIssue]:
-    """Footer/nav columns where item inset vs column differs."""
+    """Footer columns where item inset vs column differs.
+
+    Restricted to real footer landmarks: comparing inset across unrelated
+    sibling widgets (e.g., a chip grid next to a stacked result list)
+    produced false positives on non-footer layouts.
+    """
     issues: list[VisualIssue] = []
     for parent in snapshot.nodes:
+        # Only judge genuine footer contexts: the same inset-mismatch among
+        # unrelated sibling widgets elsewhere is by design.
+        if parent.tag != "footer" and not _has_footer_ancestor(snapshot, parent):
+            continue
         # find sibling column containers (e.g., footer-left + foot-nav uls)
         cols = [
             c for c in snapshot.children(parent.i) if _visible(c) and not _abspos(c)
@@ -494,7 +513,7 @@ def _footer_inset_inconsistency(snapshot: Snapshot) -> list[VisualIssue]:
                 check_id="alignment.column-inset-drift",
                 title="Footer columns indent their items inconsistently",
                 description=(
-                    "Items inside sibling columns are inset"
+                    "Items inside sibling footer columns are inset"
                     f" {min(insets):.0f}px in one column but"
                     f" {max(insets):.0f}px in another, so the columns"
                     " don't share a common grid."
@@ -505,6 +524,19 @@ def _footer_inset_inconsistency(snapshot: Snapshot) -> list[VisualIssue]:
             )
         )
     return issues
+
+
+def _has_footer_ancestor(snapshot: Snapshot, node: SNode) -> bool:
+    cur: SNode | None = node
+    while cur is not None:
+        if cur.tag == "footer":
+            return True
+        cur = (
+            next((n for n in snapshot.nodes if n.i == cur.parent), None)
+            if cur.parent >= 0
+            else None
+        )
+    return False
 
 
 def _is_descendant(snapshot: Snapshot, node: SNode, ancestor: SNode) -> bool:
