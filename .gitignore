@@ -178,6 +178,13 @@ cython_debug/
 .uxa-live-smoke/
 .uxa-live-smoke-*/
 
+# Generated fix-export packages (default now lives under .uxa-output/)
+fix-export-*/
+/fix-export-verification/
+
+# Local exploration scratch
+/.portfolio-explore/
+
 # PyPI configuration file
 .pypirc
 

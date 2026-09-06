@@ -519,7 +519,11 @@ def ablate(
 @app.command()
 def report(
     bundle_root: Path,
-    output: Path = typer.Option(Path("report.html"), "--output"),
+    output: Path = typer.Option(
+        Path("reports") / "report.html",
+        "--output",
+        help="Rendered report path (defaults inside the git-ignored reports/ dir)",
+    ),
 ) -> None:
     """Regenerate static report from finalized run bundles."""
     try:
@@ -2364,7 +2368,11 @@ def export(
         file_okay=False,
         help="Experiment output directory containing report.html",
     ),
-    out: Path | None = typer.Option(None, "--out", help="Package directory"),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Package directory (defaults under the git-ignored .uxa-output/ dir)",
+    ),
     all_issues: bool = typer.Option(False, "--all"),
     finding: list[str] = typer.Option([], "--finding", help="Finding ID"),
     exclude: list[str] = typer.Option([], "--exclude", help="Finding ID"),
@@ -2433,7 +2441,11 @@ def export(
         notes_text = notes.read_text(encoding="utf-8")
     now = datetime.now(UTC)
     package_dir = (
-        out if out is not None else Path.cwd() / f"fix-export-{now:%Y%m%d-%H%M%S}"
+        out
+        if out is not None
+        # Generated artifacts live under the git-ignored .uxa-output/ dir;
+        # explicit --out still wins for custom locations.
+        else Path(".uxa-output") / f"fix-export-{now:%Y%m%d-%H%M%S}"
     )
     context = ExportContext(
         report_path=report,
