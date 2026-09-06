@@ -354,6 +354,21 @@ def _cross_tag_vertical_drift(snapshot: Snapshot) -> list[VisualIssue]:
         if any((c.style("text-align") or "start").strip().lower() == "center" for c in kids):
             # if any child is centered, left variance is not meaningful
             continue
+
+        def _margin_auto_centered(child: SNode) -> bool:
+            # A child centered by horizontal auto margins (e.g. a caption
+            # under a figure) reads as centered even when its own
+            # text-align is start.
+            left_gap = child.box.x - parent.box.x
+            right_gap = (parent.box.x + parent.box.w) - (child.box.x + child.box.w)
+            return (
+                left_gap > 8
+                and abs(left_gap - right_gap) <= 8
+            )
+
+        kids = [c for c in kids if not _margin_auto_centered(c)]
+        if len(kids) < 2:
+            continue
         # full-bleed children that are flush with parent are intentional
         # (e.g., a chart spanning the section while text is padded)
         def _is_flush_fullbleed(child: SNode) -> bool:

@@ -1136,6 +1136,17 @@ def _load_ux_audit(root: Path) -> dict[str, Any] | None:
             "issues": issues,
             "slop": None,
         }
+        # Capture environment (recorded by the audit's visual pass) so
+        # downstream consumers can reproduce measurements per URL.
+        raw_viewport = report.get("viewport")
+        if isinstance(raw_viewport, Mapping):
+            width = raw_viewport.get("width")
+            height = raw_viewport.get("height")
+            if isinstance(width, int) and isinstance(height, int):
+                url_entry["viewport"] = {"width": width, "height": height}
+        raw_theme = report.get("theme")
+        if isinstance(raw_theme, str) and raw_theme in {"light", "dark"}:
+            url_entry["theme"] = raw_theme
         if isinstance(slop, Mapping):
             score = slop.get("score")
             if isinstance(score, int) and 0 <= score <= 100:

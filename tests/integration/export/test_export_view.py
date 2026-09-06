@@ -546,6 +546,8 @@ def _write_ux_audit(root: Path) -> None:
         "urls": [
             {
                 "url": "https://app.example.test/",
+                "viewport": {"width": 1280, "height": 800},
+                "theme": "light",
                 "issues": [
                     {
                         "category": "GEO",
@@ -794,6 +796,8 @@ def test_page_audit_issues_mirror_the_page_findings_tab(
     assert json_ld["severity"] == "critical"
     assert json_ld["category"] == "GEO"
     assert json_ld["detail"]["URL"] == "https://app.example.test/"
+    assert json_ld["detail"]["Viewport"] == "1280x800"
+    assert json_ld["detail"]["Theme"] == "light"
     alt = by_id["audit:img_alt"]
     assert alt["affected_surfaces"] == ["https://app.example.test/"]
     assert alt["severity"] == "medium"
