@@ -505,7 +505,7 @@
     var evalInput = editTextField("Evaluation target label", evalVal, s.id + ":eval-label");
     var evalRoleInput = editTextField("Evaluation target role", (s.evaluation_target && s.evaluation_target.role) || "", s.id + ":eval-role");
     // budget sliders
-    var budget = s.budget || { max_steps: 20, max_observations: 12, max_interactions: 8, timeout_seconds: 120, max_model_calls: 32 };
+    var budget = s.budget || { max_steps: 20, max_observations: 12, max_interactions: 8, timeout_seconds: 120, stall_timeout_seconds: 90, max_model_calls: 32 };
     var budgetGrid = el("div", "budget-grid");
     function budgetSlider(key, label, min, max, step) {
       var wrap = el("label", "slider-row", label);
@@ -580,7 +580,7 @@
         start_url: s.start_url,
         verifier: { type: "visible-result", text: newVerifier, role: roleInput.value.trim() || null, all_of: (s.verifier && s.verifier.all_of) || [] },
         evaluation_target: evaluationTarget,
-        budget: { max_steps: parseInt(budget.max_steps, 10), max_observations: parseInt(budget.max_observations, 10), max_interactions: parseInt(budget.max_interactions, 10), max_model_calls: parseInt(budget.max_model_calls, 10), timeout_seconds: parseInt(timeoutInput.value, 10) || 120 },
+        budget: { max_steps: parseInt(budget.max_steps, 10), max_observations: parseInt(budget.max_observations, 10), max_interactions: parseInt(budget.max_interactions, 10), max_model_calls: parseInt(budget.max_model_calls, 10), timeout_seconds: parseInt(timeoutInput.value, 10) || 120, stall_timeout_seconds: budget.stall_timeout_seconds || 90 },
         rationale: s.rationale || "",
         coverage: s.coverage || []
       };
@@ -908,7 +908,7 @@
           start_url: urlSelect.value,
           verifier: { type: "visible-result", text: verifier, role: null, all_of: [] },
           evaluation_target: { label: target },
-          budget: { max_steps: 20, max_observations: 12, max_interactions: 8, timeout_seconds: 120, max_model_calls: 32 },
+          budget: { max_steps: 20, max_observations: 12, max_interactions: 8, timeout_seconds: 120, stall_timeout_seconds: 90, max_model_calls: 32 },
           rationale: "Custom scenario",
           coverage: ["custom"]
         };

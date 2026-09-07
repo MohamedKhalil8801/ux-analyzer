@@ -162,6 +162,43 @@ def _is_same_origin_as_any(candidate: str, start_urls: tuple[str, ...]) -> bool:
     return False
 
 
+def _merge_visible_labels(
+    top: tuple[str, ...], scroll: tuple[str, ...], cap: int = 30, top_priority: int = 20
+) -> tuple[str, ...]:
+    """Merge top-viewport labels with below-fold scroll labels.
+
+    The first ``top_priority`` top labels stay head-most (pack truncation
+    keeps the head), then scroll-sweep labels fill reserved capacity so
+    synthesis evidence covers destination-state content, then remaining top
+    labels. De-duplicated throughout, bounded at ``cap`` labels.
+    """
+
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    def _add(label: object) -> bool:
+        text = " ".join(str(label).split())
+        if not text or text in seen:
+            return False
+        merged.append(text)
+        seen.add(text)
+        return True
+
+    for label in top[:top_priority]:
+        _add(label)
+        if len(merged) >= cap:
+            return tuple(merged)
+    for label in scroll:
+        _add(label)
+        if len(merged) >= cap:
+            return tuple(merged)
+    for label in top[top_priority:]:
+        _add(label)
+        if len(merged) >= cap:
+            break
+    return tuple(merged)
+
+
 # ---------------------------------------------------------------------------
 # Crawler
 # ---------------------------------------------------------------------------
@@ -256,12 +293,15 @@ class ExplorationCrawler:
                 viewport_id = f"explore-viewport-{len(pages)}-{abs(hash(normalized_url)) % 100000}"
 
                 # --- settlement (bounded, never infinite) ---
+                scroll_labels: tuple[str, ...] = ()
                 try:
-                    await self._settle_page(page, url, effective_policy)
+                    scroll_labels = await self._settle_page(
+                        page, url, effective_policy
+                    )
                 except Exception:
                     # Bounded try/except: goto failure still attempt to capture
                     # but do not crash whole crawl; record page with empty content.
-                    pass
+                    scroll_labels = ()
 
                 # --- capture ---
                 title: str
@@ -287,6 +327,9 @@ class ExplorationCrawler:
                     headings = tuple(headings) if headings else ()  # type: ignore[assignment]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
                 if not isinstance(visible_elements, tuple):  # pyright: ignore[reportUnnecessaryIsInstance]
                     visible_elements = tuple(visible_elements) if visible_elements else ()  # type: ignore[assignment]
+                visible_elements = _merge_visible_labels(
+                    visible_elements, scroll_labels
+                )
 
                 # --- link extraction (same-origin <a href> absolute links) ---
                 raw_links: list[str]
@@ -395,7 +438,16 @@ class ExplorationCrawler:
 
     async def _settle_page(
         self, page: Any, url: str, policy: PageSettlementPolicy
-    ) -> None:
+    ) -> tuple[str, ...]:
+        """Settle one page and collect below-fold labels during the sweep.
+
+        The scroll sweep both triggers lazy reveals and records the labels
+        each scroll position renders. Merging them into the page evidence
+        lets scenario synthesis anchor verifiers on below-fold and
+        destination-state content, not just the top viewport.
+        """
+
+        collected_labels: list[str] = []
         # goto domcontentloaded 15s
         await page.goto(
             url, wait_until="domcontentloaded", timeout=policy.goto_timeout_ms
@@ -458,12 +510,17 @@ class ExplorationCrawler:
                 await page.wait_for_load_state(
                     "networkidle", timeout=policy.scroll_networkidle_ms
                 )
+            with suppress(Exception):
+                for label in await self._safe_visible_elements(page, None):
+                    if label not in collected_labels:
+                        collected_labels.append(label)
 
         # Brief wait for reveal transitions triggered near the bottom,
         # then reset to top so capture sees the settled page from the top.
         with suppress(Exception):
             await page.wait_for_timeout(policy.scroll_wait_ms)
         await self._reset_scroll_to_top(page, policy)
+        return tuple(collected_labels)
 
     async def _reset_scroll_to_top(
         self, page: Any, policy: PageSettlementPolicy

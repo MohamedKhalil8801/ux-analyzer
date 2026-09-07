@@ -110,7 +110,7 @@ def test_cognitive_prompt_requires_grounded_navigation() -> None:
         / "src"
         / "ux_analyzer"
         / "prompts"
-        / "cognitive-v2.txt"
+        / "cognitive-v3.txt"
     ).read_text(encoding="utf-8")
 
     assert "Do not infer unseen destinations" in prompt

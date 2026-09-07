@@ -122,7 +122,7 @@ class CognitiveModelResponse(_RoleSchema):
 
 
 def _prompt() -> str:
-    path = Path(__file__).resolve().parents[1] / "prompts" / "cognitive-v2.txt"
+    path = Path(__file__).resolve().parents[1] / "prompts" / "cognitive-v3.txt"
     return path.read_text(encoding="utf-8").strip()
 
 
@@ -223,7 +223,7 @@ def _manifest(client: StructuredModelClient, model: str) -> ModelManifest:
         role=ModelRole.COGNITIVE,
         model_id=model,
         endpoint_origin=client.endpoint_origin,
-        prompt_version="cognitive-v2",
+        prompt_version="cognitive-v3",
         schema_version=CognitiveDecision.schema_version,
         provider_version=str(
             getattr(client, "provider_version", "openai-compatible-v1")
@@ -235,7 +235,7 @@ class StructuredCognitiveAgent:
     """Choose one qualitative action from persona-visible observations."""
 
     role = ModelRole.COGNITIVE
-    prompt_version = "cognitive-v2"
+    prompt_version = "cognitive-v3"
 
     def __init__(
         self,

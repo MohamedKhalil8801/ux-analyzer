@@ -19,6 +19,7 @@ from ux_analyzer.domain.attention import (
 from ux_analyzer.domain.benchmark import (
     ApplicationVersionKind,
     ScenarioEvaluationTarget,
+    VisibleResultVerifierSpec,
 )
 from ux_analyzer.domain.findings import (
     Evidence,
@@ -1287,11 +1288,24 @@ def _target_elements(
         for element in snapshot.elements
         if target.element_id is None or element.id == target.element_id
     ]
+    normalized_expected = (
+        " ".join(target.expected_label.replace("\u00a0", " ").split()).casefold()
+        if target.expected_label is not None
+        else None
+    )
+
+    def _label_matches(element_label: str) -> bool:
+        if normalized_expected is None:
+            return True
+        element_normalized = " ".join(
+            element_label.replace("\u00a0", " ").split()
+        ).casefold()
+        return normalized_expected in element_normalized
+
     selected = [
         element
         for element in identity_candidates
-        if target.expected_label is None
-        or element.label.strip().casefold() == target.expected_label.strip().casefold()
+        if _label_matches(element.label)
         if target.role is None
         or str(getattr(element.role, "value", element.role)) == target.role
         if target.region_id is None or element.region_id == target.region_id
@@ -1369,6 +1383,12 @@ def _pretarget_interaction_labels(
 def _feedback_observed(
     result: RunResult, target_elements: Sequence[ElementSnapshot]
 ) -> bool | None:
+    spec = result.state.spec
+    if isinstance(spec.scenario.verifier, VisibleResultVerifierSpec):
+        # Informative scenarios verify information that is already present;
+        # the application is not expected to acknowledge success, so feedback
+        # applicability stays None instead of a false-negative fact.
+        return None
     if not target_elements:
         return None
     target_ids = {element.id for element in target_elements}

@@ -28,7 +28,7 @@ Canonical curate payload (snake_case only; unknown keys rejected via pydantic ex
              verifier: {type: "visible-result", text, role?, all_of?},
              evaluation_target: {label}
                                | {labels_by_version: {<version-id>: <label>}, role?, region_label?},
-             budget: {max_steps, max_observations, max_interactions, timeout_seconds?, max_model_calls},
+             budget: {max_steps, max_observations, max_interactions, timeout_seconds?, stall_timeout_seconds?, max_model_calls},
              rationale?, coverage?}
 Known version ids are the ApplicationVersionKind values (exploration is live-only).
 Responses use the same snake_case names; no alias keys are emitted.
@@ -216,6 +216,7 @@ class BudgetPayload(_StrictPayloadModel):
     max_observations: int = Field(gt=0)
     max_interactions: int = Field(gt=0)
     timeout_seconds: float | None = Field(default=None, gt=0)
+    stall_timeout_seconds: float | None = Field(default=None, gt=0)
     max_model_calls: int = Field(default=64, gt=0)
 
 
@@ -370,6 +371,7 @@ def _suggestion_to_dict(s: Any) -> dict[str, Any]:
                     "max_observations": budget.max_observations,
                     "max_interactions": budget.max_interactions,
                     "timeout_seconds": budget.timeout_seconds,
+                    "stall_timeout_seconds": budget.stall_timeout_seconds,
                     "max_model_calls": budget.max_model_calls,
                 },
                 "rationale": s.rationale,

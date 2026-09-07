@@ -616,6 +616,7 @@ def _to_scenario(scenario: ScenarioModel) -> Scenario:
             max_observations=scenario.budget.max_observations,
             max_interactions=scenario.budget.max_interactions,
             timeout_seconds=scenario.budget.timeout_seconds,
+            stall_timeout_seconds=scenario.budget.stall_timeout_seconds,
             max_model_calls=scenario.budget.max_model_calls,
         ),
         verifier=verifier,
@@ -741,6 +742,12 @@ def _digest_compatibility_payload(payload: dict[str, object]) -> dict[str, objec
                     if verifier.get("all_of") == []:
                         verifier.pop("all_of", None)
                     scenario["verifier"] = verifier
+                budget_value = scenario.get("budget")
+                if isinstance(budget_value, dict):
+                    budget = dict(cast(dict[str, object], budget_value))
+                    if budget.get("stall_timeout_seconds") is None:
+                        budget.pop("stall_timeout_seconds", None)
+                    scenario["budget"] = budget
                 scenarios.append(scenario)
             else:
                 scenarios.append(item)

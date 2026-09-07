@@ -39,6 +39,7 @@ from ux_analyzer.domain.benchmark import (
     Budget,
     ExperimentPolicy,
     FixtureInputs,
+    FixtureStateVerifierSpec,
     Persona,
     Scenario,
     ScenarioEvaluationTarget,
@@ -179,6 +180,72 @@ def _result(version: ApplicationVersion) -> RunResult:
         agent_claimed_success=False,
         state=state,
     )
+
+
+def test_target_reference_survives_nonbreaking_space_label() -> None:
+    """Evaluation target matching uses normalized whitespace, like discovery."""
+
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    spec = _spec(version)
+    nbsp_element = ElementSnapshot(
+        id="target",
+        role="button",
+        label="Target\u00a0",
+        bounds=BoundingBox(x=10, y=10, width=100, height=40),
+        visibility_fraction=1.0,
+        actionable=True,
+        provider_id="fixture",
+        execution_reference=PrivateExecutionReference(
+            provider_id="fixture", viewport_id="viewport-1", token="target"
+        ),
+    )
+    snapshot = ViewportSnapshot(
+        id="viewport-1",
+        provider_id="fixture",
+        elements=(_element("competitor"), nbsp_element),
+    )
+    state = RunState.initial(spec).apply(RunStarted(run_id=spec.run_id))
+    state = state.apply(ViewportCaptured(snapshot=snapshot))
+    state = state.apply(
+        ObservationRecorded(
+            observation=ProgressiveObservation.from_snapshot(
+                snapshot, newly_revealed_ids=("competitor", "target"), region_id=None
+            )
+        )
+    )
+    verification = VerificationResult(verified=True, evidence_ids=("verify-1",))
+    state = state.apply(
+        RunTerminated(
+            outcome=VerifiedSuccess(),
+            verification=verification,
+            provider_manifests=(
+                ProviderManifest(
+                    provider_id="fixture",
+                    role="observation",
+                    model_id=None,
+                    endpoint_origin="fixture",
+                    version="1",
+                ),
+            ),
+            configuration_digest=spec.config_digest,
+            artifact_checksums=(ArtifactChecksum(path="timeline", sha256="sha"),),
+        )
+    )
+    result = RunResult(
+        run_id=spec.run_id,
+        outcome=VerifiedSuccess(),
+        verification=verification,
+        agent_claimed_success=False,
+        state=state,
+    )
+
+    target = evaluation_target_for(result)
+    inputs = evaluation_inputs_for(result)
+
+    assert target.element_id == "target"
+    assert inputs.target_below_fold is False
 
 
 def test_evaluate_run_reports_metrics_and_preserves_cost_components() -> None:
@@ -1274,6 +1341,35 @@ def test_feedback_is_unknown_when_post_action_capture_failed() -> None:
     assert evaluation_inputs_for(result).feedback_observed is None
 
 
+def test_feedback_is_not_applicable_for_informative_scenarios() -> None:
+    """Visible-result scenarios verify information that is already present."""
+
+    result = _feedback_result(
+        persona_id="first-time-nontechnical",
+        policy=ExperimentPolicy.PROGRESSIVE_PROMINENCE_SCENT,
+        version_kind=ApplicationVersionKind.IMPROVED,
+        feedback_label="Two-factor authentication enabled.",
+    )
+    informative = replace(
+        result,
+        state=replace(
+            result.state,
+            spec=replace(
+                result.state.spec,
+                scenario=replace(
+                    result.state.spec.scenario,
+                    verifier=VisibleResultVerifierSpec(
+                        type="visible-result",
+                        text="Two-factor authentication enabled",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert evaluation_inputs_for(informative).feedback_observed is None
+
+
 def test_scorecard_rejects_unsupported_human_evidence() -> None:
     version = ApplicationVersion(
         id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
@@ -1314,8 +1410,12 @@ def _feedback_result(
         start_state="settings",
         fixture_inputs=FixtureInputs(values={"totp_code": "246810"}),
         budget=Budget(20, 20, 10, 30),
-        verifier=VisibleResultVerifierSpec(
-            type="visible-result", text="Two-factor authentication enabled"
+        verifier=FixtureStateVerifierSpec(
+            type="fixture-state",
+            resource="workspace",
+            field="twofactor_enabled",
+            operator="equals",
+            expected_fixture_key="totp_code",
         ),
         safeguards=(),
         eligible_persona_ids=(persona_id,),

@@ -186,21 +186,25 @@ class WebVerifier(VerificationProvider):
             for element in snapshot.elements
             if element.visibility_fraction > 0 and element.rendered_text is not None
         )
+        effective_rendered = tuple(
+            _normalized_verifier_text(element.rendered_text or "")
+            for element in effective_visible_elements
+        )
+        normalized_all_of = tuple(
+            _normalized_verifier_text(item) for item in spec.all_of
+        )
+        normalized_target = _normalized_verifier_text(spec.text)
         for element in snapshot.elements:
-            if (
-                element.visibility_fraction <= 0
-                or element.rendered_text is None
-                or spec.text not in element.rendered_text
-            ):
+            rendered_text = element.rendered_text
+            if rendered_text is None or element.visibility_fraction <= 0:
+                continue
+            if normalized_target not in _normalized_verifier_text(rendered_text):
                 continue
             if spec.role is not None and ElementRole(element.role).value != spec.role:
                 continue
             if not all(
-                any(
-                    required_text in visible_element.rendered_text
-                    for visible_element in effective_visible_elements
-                )
-                for required_text in spec.all_of
+                any(required_text in text for text in effective_rendered)
+                for required_text in normalized_all_of
             ):
                 continue
             return VerificationResult(
@@ -217,6 +221,16 @@ class WebVerifier(VerificationProvider):
 
 FixtureStateWebVerifier = WebVerifier
 VisibleResultWebVerifier = WebVerifier
+
+
+def _normalized_verifier_text(value: str) -> str:
+    """Normalize rendered text for containment checks.
+
+    Non-breaking spaces and other odd whitespace must not hide a genuinely
+    visible label: replace them, collapse runs, and strip.
+    """
+
+    return " ".join(value.replace("\u00a0", " ").split())
 
 
 def _relabel_snapshot(

@@ -261,12 +261,20 @@ class FixtureInputs:
 
 @dataclass(frozen=True, slots=True)
 class Budget:
-    """Bounded actions plus an optional overall deadline for one run."""
+    """Bounded actions plus optional run deadline controls for one run.
+
+    ``timeout_seconds`` is an optional absolute wall-clock cap. When it is
+    unset, the run may continue as long as it makes progress.
+    ``stall_timeout_seconds`` ends a run only when no progress heartbeat has
+    been recorded for that long; a run that keeps advancing is never stopped
+    by it.
+    """
 
     max_steps: int
     max_observations: int
     max_interactions: int
     timeout_seconds: float | None = None
+    stall_timeout_seconds: float | None = None
     max_model_calls: int = 64
 
     def __post_init__(self) -> None:
@@ -280,6 +288,16 @@ class Budget:
             raise ValueError("max_model_calls must be greater than zero")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
+        if self.stall_timeout_seconds is not None and self.stall_timeout_seconds <= 0:
+            raise ValueError("stall_timeout_seconds must be greater than zero")
+        if (
+            self.timeout_seconds is not None
+            and self.stall_timeout_seconds is not None
+            and self.stall_timeout_seconds > self.timeout_seconds
+        ):
+            raise ValueError(
+                "stall_timeout_seconds must not exceed timeout_seconds"
+            )
 
 
 @dataclass(frozen=True, slots=True)

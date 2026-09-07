@@ -120,7 +120,14 @@ async def test_unexpected_route_abort_errors_propagate(error: BaseException) -> 
         await policy.handle_route(route, request)
 
 
-def test_live_origins_separate_navigation_from_resource_documents() -> None:
+def test_live_origins_allow_all_connections_and_journal_only() -> None:
+    """Live runs deliberately allow every connection to keep runs unblocked.
+
+    Ad-heavy live sites would otherwise safety-block the whole run, so live
+    policies never reject a scheme-valid request; the allowlist stays as
+    recorded context. Fixture-only policies remain strict.
+    """
+
     origins = BrowserAllowedOrigins.for_live(
         "https://target.example/work",
         ("https://fonts.example",),
@@ -128,21 +135,36 @@ def test_live_origins_separate_navigation_from_resource_documents() -> None:
 
     assert origins.navigation_origins == frozenset({"https://target.example"})
     assert origins.resource_origins == frozenset({"https://fonts.example"})
-    assert origins.allows(
-        "https://target.example/work", resource_type="document", kind="navigation"
-    )
-    assert origins.allows("https://target.example/app.js", resource_type="script")
-    assert origins.allows(
-        "https://fonts.example/site.css", resource_type="stylesheet"
-    )
-    assert origins.allows("https://fonts.example/font.woff2", resource_type="font")
     for url, resource_type, kind in (
+        ("https://target.example/work", "document", "navigation"),
+        ("https://target.example/app.js", "script", "request"),
+        ("https://fonts.example/site.css", "stylesheet", "request"),
+        ("https://fonts.example/font.woff2", "font", "request"),
         ("https://fonts.example/page", "document", "navigation"),
         ("https://fonts.example/page", "document", "popup"),
         ("https://fonts.example/page", "document", "redirect"),
         ("wss://fonts.example/socket", "websocket", "websocket"),
         ("https://foreign.example/page", "document", "navigation"),
     ):
-        assert not origins.allows(url, resource_type=resource_type, kind=kind)
-        with pytest.raises(SafetyBlocked):
-            origins.require_allowed(url, resource_type=resource_type, kind=kind)
+        assert origins.allows(url, resource_type=resource_type, kind=kind)
+        origins.require_allowed(url, resource_type=resource_type, kind=kind)
+
+
+def test_fixture_only_origins_stay_strict() -> None:
+    origins = BrowserAllowedOrigins.fixture_only(("http://fixture.test",))
+
+    assert origins.allows(
+        "http://fixture.test/app", resource_type="document", kind="navigation"
+    )
+    assert origins.is_fixture_only
+    with pytest.raises(SafetyBlocked):
+        origins.require_allowed(
+            "http://127.0.0.1:9999/page", resource_type="document", kind="navigation"
+        )
+    # Non-fixture hosts cannot even be classified as origins.
+    with pytest.raises(ValueError):
+        origins.require_allowed(
+            "https://foreign.example/page",
+            resource_type="document",
+            kind="navigation",
+        )

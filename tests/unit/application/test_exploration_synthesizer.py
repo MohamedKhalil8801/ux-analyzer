@@ -149,8 +149,28 @@ class RecordingClient:
         except Exception:
             max_s = 2
         max_s = max(1, min(20, max_s))
+
+        def _pack_anchor(page: dict[str, Any]) -> tuple[str, str | None]:
+            """Anchor verifier text in evidence labels the model was shown."""
+
+            headings = page.get("headings") or []
+            visible = page.get("visible_elements") or []
+            if headings:
+                return str(headings[0]), "heading"
+            if visible:
+                return str(visible[0]), None
+            return f"Visible result {self.calls}", None
+
         scenarios = []
         for i in range(min(len(urls), max_s)):
+            page = next(
+                (p for p in pages if p.get("url") == urls[i % len(urls)]),
+                None,
+            )
+            if page is None:
+                anchor, anchor_role = f"Visible result {i + 1}", None
+            else:
+                anchor, anchor_role = _pack_anchor(page)
             scenarios.append(
                 {
                     "id": f"scenario-{i + 1}",
@@ -159,8 +179,8 @@ class RecordingClient:
                     "start_url": urls[i % len(urls)],
                     "verifier": {
                         "type": "visible-result",
-                        "text": f"Visible result {i + 1}",
-                        "role": "heading",
+                        "text": anchor,
+                        "role": anchor_role,
                     },
                     "evaluation_target": {
                         "label": f"Target {i + 1}",
@@ -173,6 +193,14 @@ class RecordingClient:
         # if urls single, still generate up to max_s with same start_url but different goals
         while len(scenarios) < max_s and len(scenarios) < 3:
             idx = len(scenarios) + 1
+            page = next(
+                (p for p in pages if p.get("url") == urls[0]),
+                None,
+            )
+            if page is None:
+                anchor, anchor_role = f"Visible result {idx}", None
+            else:
+                anchor, anchor_role = _pack_anchor(page)
             scenarios.append(
                 {
                     "id": f"scenario-{idx}",
@@ -181,7 +209,8 @@ class RecordingClient:
                     "start_url": urls[0],
                     "verifier": {
                         "type": "visible-result",
-                        "text": f"Visible result {idx}",
+                        "text": anchor,
+                        "role": anchor_role,
                     },
                     "evaluation_target": {"label": f"Target {idx}"},
                     "rationale": f"Rationale {idx}",
@@ -626,6 +655,46 @@ async def test_model_narrative_redacted_before_domain_conversion() -> None:
     assert "chain of thought" not in by_id["leaky"].rationale.lower()
     # Untainted strings pass through untouched.
     assert by_id["clean"].rationale == "Covers discovery coverage"
+
+
+@pytest.mark.asyncio
+async def test_synthesized_scenarios_never_pin_roles() -> None:
+    """Synthesized verifiers match any rendered text; role pinning stays manual."""
+
+    pages = [
+        _make_page(
+            url="https://example.test/",
+            title="Home",
+            headings=("Welcome",),
+            visible_elements=("Get Started",),
+        )
+    ]
+    corpus = _make_corpus(pages)
+    payload = {
+        "scenarios": [
+            {
+                "id": "s1",
+                "name": "S1",
+                "goal": "Goal one",
+                "start_url": "https://example.test/",
+                "verifier": {
+                    "type": "visible-result",
+                    "text": "Get Started",
+                    "role": "heading",
+                },
+                "evaluation_target": {"label": "Get Started", "role": "heading"},
+                "rationale": "Rationale",
+                "coverage": ["discovery"],
+            }
+        ]
+    }
+    client = RecordingClient(responses=[payload])
+    result = await ExplorationSynthesizer(client, model="test-model").suggest(
+        corpus, max_scenarios=3
+    )
+    assert [s.id for s in result.suggestions] == ["s1"]
+    assert result.suggestions[0].verifier.role is None
+    assert result.suggestions[0].evaluation_target.role is None
 
 
 @pytest.mark.asyncio

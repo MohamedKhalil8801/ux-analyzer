@@ -174,6 +174,43 @@ def test_inspection_and_scroll_consume_steps_without_interaction_budget() -> Non
     assert scrolled.attention.budgets.interactions == 3
 
 
+def test_inspection_applies_for_current_observation_element_even_when_evicted() -> None:
+    """A target in the newest observation stays inspectable despite eviction.
+
+    Regression: ``after_action`` demanded working-memory membership while
+    ``validate_action`` accepted the current observation, so a legitimate
+    inspect decision crashed the run with an internal error instead of being
+    validated against the same contract.
+    """
+
+    snapshot = _snapshot()
+    observation = ProgressiveObservation.from_snapshot(
+        snapshot, newly_revealed_ids=("target", "email")
+    )
+    state = apply_observation(
+        ApplicationState.from_attention(_attention()), observation, snapshot=snapshot
+    )
+    evicted = replace(
+        state,
+        attention=replace(
+            state.attention,
+            memory=(),
+        ),
+    )
+    assert "target" not in evicted.attention.remembered_ids
+    assert "target" in evicted.attention.current_observation_ids
+
+    inspected = apply_interaction_result(
+        evicted,
+        InspectElement(element_id="target"),
+        True,
+        snapshot=snapshot,
+    )
+
+    assert "target" in inspected.attention.inspected_ids
+    assert inspected.attention.budgets.steps == state.attention.budgets.steps - 1
+
+
 def test_failure_crossing_threshold_marks_application_state_abandoned() -> None:
     state = _observed_state()
 

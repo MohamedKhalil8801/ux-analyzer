@@ -8,6 +8,7 @@ import pytest
 from ux_analyzer.application.exploration_crawler import (
     ExplorationCrawler,
     PageSettlementPolicy,
+    _merge_visible_labels,
 )
 from ux_analyzer.domain.benchmark import normalize_crawl_url
 from ux_analyzer.domain.exploration import ExplorationSpec
@@ -138,6 +139,15 @@ class FakePage:
             return self.current_data.get("title", "Fake Title")
         if "Array.from(document.querySelectorAll('a[href]'))" in script:
             return self.current_data.get("links", [])
+        if "querySelectorAll('a[href], button" in script:
+            # Position-aware visible-label fallback used by the scroll sweep.
+            seq = self.current_data.get("scroll_labels_seq") or []
+            if seq:
+                if self.scroll_y <= 0:
+                    return list(seq[0])
+                idx = min(max(1, self.scroll_by_count), len(seq) - 1)
+                return list(seq[idx])
+            return list(self.current_data.get("scroll_labels", []))
         if "querySelectorAll('h1,h2,h3')" in script or "h1,h2,h3" in script:
             return self.current_data.get("headings", [])
         # For extractor EVALUATION_PAYLOAD (contains viewport) – return minimal payload that will fail
@@ -207,7 +217,12 @@ def _capture_fn_maker(url_map: dict[str, dict[str, Any]]):
         headings = tuple(data.get("headings", ()))
         # screenshot digest from fake bytes
         digest = hashlib.sha256(b"fake-png-bytes").hexdigest()
-        return {"title": title, "headings": headings, "screenshot_digest": digest}
+        return {
+            "title": title,
+            "headings": headings,
+            "screenshot_digest": digest,
+            "visible_elements": list(data.get("top_labels", [])),
+        }
 
     return capture_fn
 
@@ -341,6 +356,65 @@ async def test_cycle_visited_once() -> None:
         normalize_crawl_url("https://a.test/a"),
         normalize_crawl_url("https://a.test/b"),
     }
+
+
+@pytest.mark.asyncio
+async def test_scroll_sweep_collects_below_fold_labels_into_page_evidence() -> None:
+    """The scroll sweep records below-fold labels for synthesis evidence."""
+
+    url_map: dict[str, dict[str, Any]] = {
+        normalize_crawl_url("https://a.test/"): {
+            "title": "Long page",
+            "links": [],
+            "height_seq": [3000],
+            "top_labels": ["Hero A", "Hero B"],
+            "scroll_labels_seq": [
+                ["Hero A", "Hero B"],
+                ["Below-fold X", "Below-fold X2"],
+                ["Below-fold Y"],
+            ],
+        }
+    }
+    page = FakePage(url_map)
+    spec = ExplorationSpec(start_urls=("https://a.test/",), depth=0, max_pages=1)
+    policy = PageSettlementPolicy(settle_ms=10000, scroll_wait_ms=10, scroll_networkidle_ms=10)
+    crawler = ExplorationCrawler(page=page, capture_fn=_capture_fn_maker(url_map), policy=policy)
+    corpus = await crawler.crawl(spec)
+
+    assert len(corpus.pages) == 1
+    labels = corpus.pages[0].visible_elements
+    assert "Hero A" in labels
+    assert "Below-fold X" in labels
+    assert "Below-fold Y" in labels
+    # Head-most labels come from the top viewport...
+    assert labels[0] == "Hero A"
+    # ...and below-fold labels are not pushed out by the cap.
+    assert labels.index("Below-fold X") < 30
+
+
+def test_merge_visible_labels_interleaves_scroll_labels() -> None:
+    top = tuple(f"top{i}" for i in range(25))
+    scroll = tuple(f"scroll{i}" for i in range(10))
+    merged = _merge_visible_labels(top, scroll)
+    assert len(merged) == 30
+    assert merged[:20] == top[:20]
+    assert merged[20:] == scroll
+    assert "top20" not in merged
+
+    # Sparse scroll keeps room for remaining top labels.
+    merged = _merge_visible_labels(top, ("only-below-fold",))
+    assert merged[:20] == top[:20]
+    assert "only-below-fold" in merged
+    assert merged[21] == "top20"
+
+    # Duplicates collapse; cap is respected.
+    merged = _merge_visible_labels(("a", "a", "b"), ("b", "c"), cap=3)
+    assert merged == ("a", "b", "c")
+
+
+def test_merge_visible_labels_normalizes_whitespace() -> None:
+    merged = _merge_visible_labels(("Hero\u00a0 A",), ("Hero A", "  Below\u00a0fold  "))
+    assert merged == ("Hero A", "Below fold")
 
 
 @pytest.mark.asyncio

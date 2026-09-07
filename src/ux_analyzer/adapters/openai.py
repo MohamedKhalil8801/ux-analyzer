@@ -386,6 +386,18 @@ async def _model_call_slot(
         yield
 
 
+def _client_user_agent() -> str:
+    """Identify this client to the model endpoint (provider-required header)."""
+
+    try:
+        from importlib.metadata import version as _distribution_version
+
+        package_version = _distribution_version("ux-analyzer")
+    except Exception:  # noqa: BLE001 - version metadata is best-effort
+        package_version = "0.0.0"
+    return f"ux-analyzer/{package_version}"
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class OpenAICompatibleSettings:
     """Validated model endpoint settings loaded from environment variables."""
@@ -403,6 +415,7 @@ class OpenAICompatibleSettings:
     redaction_values: tuple[str, ...] = ()
     report_model: str | None = None
     report_reasoning_effort: str | None = None
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         normalized_mode = _normalize_llm_mode(self.mode)
@@ -499,6 +512,7 @@ class OpenAICompatibleSettings:
             values.get("UXA_LLM_MAX_CONCURRENT_CALLS", "2"),
             name="max_concurrent_calls",
         )
+        session_id = values.get("UXA_LLM_SESSION_ID") or None
         return cls(
             base_url=base_url,
             api_key=api_key,
@@ -517,6 +531,7 @@ class OpenAICompatibleSettings:
             ),
             timeout_seconds=timeout_seconds,
             max_concurrent_calls=max_concurrent_calls,
+            session_id=session_id,
         )
 
     @classmethod
@@ -597,6 +612,9 @@ class OpenAICompatibleSettings:
             timeout_seconds=timeout_seconds,
             max_concurrent_calls=max_concurrent_calls,
             retry_policy=retry,
+            session_id=(
+                None if value.get("session_id") is None else str(value["session_id"])
+            ),
             redaction_values=tuple(
                 str(item) for item in cast(Sequence[object], redaction_value)
             ),
@@ -861,7 +879,12 @@ def _response_message_content(body: object) -> object:
 
 
 def _response_message_tool_calls(body: object) -> object:
-    return _response_message(body).get("tool_calls", _MISSING_RESPONSE_CONTENT)
+    # An explicit JSON null (some providers emit it alongside plain content)
+    # means "no tool calls", exactly like an absent field.
+    value = _response_message(body).get("tool_calls", _MISSING_RESPONSE_CONTENT)
+    if value is None:
+        return _MISSING_RESPONSE_CONTENT
+    return value
 
 
 def _text_content_stream(content: object) -> str | None:
@@ -955,6 +978,41 @@ def _json_container_spans(content_text: str) -> tuple[tuple[int, int], ...]:
     return tuple(spans)
 
 
+def _strip_trailing_commas(text: str) -> str:
+    """Remove commas directly before ``}``/``]`` outside string literals.
+
+    Some models emit pretty-printed JSON with trailing commas; the payload is
+    unambiguous, so the report transport tolerates it during recovery (the
+    parsed object is still schema-validated afterwards).
+    """
+
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for index, character in enumerate(text):
+        if in_string:
+            out.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            out.append(character)
+            continue
+        if character == ",":
+            lookahead = index + 1
+            while lookahead < len(text) and text[lookahead] in " \t\r\n":
+                lookahead += 1
+            if lookahead < len(text) and text[lookahead] in "}]":
+                continue
+        out.append(character)
+    return "".join(out)
+
+
 def _report_json_object(content_text: str) -> dict[str, object]:
     try:
         return _strict_json_object(content_text)
@@ -964,13 +1022,32 @@ def _report_json_object(content_text: str) -> dict[str, object]:
     decoder = _json_decoder()
     valid_values: list[tuple[int, int, object]] = []
     for start, end in _json_container_spans(content_text):
+        span_text = content_text[start:end]
+        parsed: object
+        span_len: int
         try:
-            parsed, parsed_end = decoder.raw_decode(content_text[start:end])
+            parsed, parsed_end = decoder.raw_decode(span_text)
+            span_len = end - start
         except (TypeError, ValueError):
-            continue
-        if parsed_end == end - start:
+            relaxed = _strip_trailing_commas(span_text)
+            if relaxed == span_text:
+                continue
+            try:
+                parsed, parsed_end = decoder.raw_decode(relaxed)
+            except (TypeError, ValueError):
+                continue
+            span_len = len(relaxed)
+        if parsed_end == span_len:
             valid_values.append((start, end, parsed))
     object_values = [value for value in valid_values if isinstance(value[2], Mapping)]
+    if (
+        len(object_values) == 2
+        and len(valid_values) == 2
+        and object_values[0][2] == object_values[1][2]
+    ):
+        # Some models emit the same JSON object twice in one reply. The
+        # payload is identical, so the answer is unambiguous; accept it.
+        return dict(cast(Mapping[str, object], object_values[0][2]))
     if len(object_values) == 1 and len(valid_values) > 1:
         raise ValueError("structured response contains multiple JSON values")
     if len(object_values) != 1 or len(valid_values) != 1:
@@ -1272,6 +1349,15 @@ def _structured_output_diagnostics(
         diagnostics["validation_errors"] = errors
     elif error is not None:
         diagnostics["error_type"] = type(error).__name__
+        message = str(error)
+        # Bounded static parse-failure message only (no response content).
+        if (
+            isinstance(error, ValueError)
+            and 0 < len(message) <= 160
+            and "\n" not in message
+            and "private" not in message.casefold()
+        ):
+            diagnostics["error_message"] = message
     return diagnostics
 
 
@@ -1551,14 +1637,20 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 enforce_transport_size(request_body)
             try:
                 async with _model_call_slot(self._call_limiter):
+                    request_headers: dict[str, str] = {
+                        "accept": "application/json",
+                        "content-type": "application/json",
+                        "authorization": f"Bearer {self.settings.api_key}",
+                        "user-agent": _client_user_agent(),
+                    }
+                    if self.settings.session_id:
+                        request_headers["x-opencode-session"] = (
+                            self.settings.session_id
+                        )
                     response = await _bounded_http_response(
                         self._http_client,
                         f"{self.settings.base_url}/chat/completions",
-                        headers={
-                            "accept": "application/json",
-                            "content-type": "application/json",
-                            "authorization": f"Bearer {self.settings.api_key}",
-                        },
+                        headers=request_headers,
                         content=request_body,
                     )
                 response_payload = _response_body(response)
@@ -1605,10 +1697,22 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             if (
                 response.status_code == 400
                 and mode == "tool-call"
-                and last_provider_metadata.get("error_code") == "INVALID_REQUEST"
                 and attempts < retry_policy.max_attempts
             ):
-                if attempts + 1 == retry_policy.max_attempts:
+                # Some providers reject the function-calling transport with a
+                # bare 400 (no diagnostic code). A coded INVALID_REQUEST may
+                # be a transient provider fault, so tool-call is retried once
+                # before degrading to plain JSON at the last attempt; a bare
+                # 400 means the transport itself is unsupported, so skip
+                # straight to strict JSON-schema mode (server-enforced clean
+                # JSON); further rejections then degrade to json-object and
+                # plain, all locally validated.
+                bare_rejection = (
+                    last_provider_metadata.get("error_code") != "INVALID_REQUEST"
+                )
+                if bare_rejection:
+                    mode = "strict"
+                elif attempts + 1 == retry_policy.max_attempts:
                     mode = "plain"
                 retries.append(
                     self._retry(
@@ -1627,7 +1731,6 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 response.status_code == 400
                 and mode == "json-object"
                 and role_value in _REPORT_ROLES
-                and last_provider_metadata.get("error_code") == "INVALID_REQUEST"
                 and attempts < retry_policy.max_attempts
             ):
                 mode = "plain"
@@ -1850,6 +1953,24 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         *,
         include_attachment_bytes: bool = True,
     ) -> dict[str, object]:
+        role_value = ModelRole(role)
+        effective_messages = messages
+        if role_value in _REPORT_ROLES and mode != "tool-call":
+            # Degraded report transports lose the tool-call contract; some
+            # models then answer with prose around a fenced JSON object.
+            # Re-anchor the output contract explicitly.
+            effective_messages = (
+                *messages,
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "Return exactly one valid JSON object matching the "
+                        "requested schema now. Output only that JSON object: "
+                        "no markdown fences, no prose before or after it, and "
+                        "never repeat the object a second time."
+                    ),
+                ),
+            )
         payload: dict[str, object] = {
             "model": model,
             "messages": [
@@ -1858,7 +1979,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                     if include_attachment_bytes
                     else _audit_message_dump(message)
                 )
-                for message in messages
+                for message in effective_messages
             ],
         }
         reasoning_effort = _reasoning_effort(self.settings, role)

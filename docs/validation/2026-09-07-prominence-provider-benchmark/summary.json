@@ -1,0 +1,3768 @@
+{
+  "aggregates": [
+    {
+      "case_count": 12,
+      "fallback_count": 0,
+      "hit_rate_at_3": 0.6666666666666666,
+      "mean_elapsed_ms": 0.13200833927839994,
+      "mean_reciprocal_rank": 0.4444444444444444,
+      "ndcg_at_3": 0.5749831545138805,
+      "pairwise_accuracy": 0.35000000000000003,
+      "provider": "heuristic",
+      "split": "calibration",
+      "top1_accuracy": 0.08333333333333333
+    },
+    {
+      "case_count": 12,
+      "fallback_count": 0,
+      "hit_rate_at_3": 0.3333333333333333,
+      "mean_elapsed_ms": 910.2225083236893,
+      "mean_reciprocal_rank": 0.3611111111111111,
+      "ndcg_at_3": 0.46493265683460633,
+      "pairwise_accuracy": 0.21666666666666667,
+      "provider": "foveacast",
+      "split": "calibration",
+      "top1_accuracy": 0.08333333333333333
+    },
+    {
+      "case_count": 12,
+      "fallback_count": 0,
+      "hit_rate_at_3": 0.6666666666666666,
+      "mean_elapsed_ms": 910.3545166629677,
+      "mean_reciprocal_rank": 0.4444444444444444,
+      "ndcg_at_3": 0.5749831545138805,
+      "pairwise_accuracy": 0.35000000000000003,
+      "provider": "hybrid",
+      "split": "calibration",
+      "top1_accuracy": 0.08333333333333333
+    },
+    {
+      "case_count": 12,
+      "fallback_count": 0,
+      "hit_rate_at_3": 0.75,
+      "mean_elapsed_ms": 0.1423999977608522,
+      "mean_reciprocal_rank": 0.4513888888888889,
+      "ndcg_at_3": 0.592727262471647,
+      "pairwise_accuracy": 0.3666666666666667,
+      "provider": "heuristic",
+      "split": "holdout",
+      "top1_accuracy": 0.08333333333333333
+    },
+    {
+      "case_count": 12,
+      "fallback_count": 0,
+      "hit_rate_at_3": 0.5,
+      "mean_elapsed_ms": 926.9752333202632,
+      "mean_reciprocal_rank": 0.40277777777777773,
+      "ndcg_at_3": 0.5196464668898827,
+      "pairwise_accuracy": 0.26666666666666666,
+      "provider": "foveacast",
+      "split": "holdout",
+      "top1_accuracy": 0.16666666666666666
+    },
+    {
+      "case_count": 12,
+      "fallback_count": 0,
+      "hit_rate_at_3": 0.75,
+      "mean_elapsed_ms": 927.1176333180241,
+      "mean_reciprocal_rank": 0.4513888888888889,
+      "ndcg_at_3": 0.592727262471647,
+      "pairwise_accuracy": 0.3666666666666667,
+      "provider": "hybrid",
+      "split": "holdout",
+      "top1_accuracy": 0.08333333333333333
+    }
+  ],
+  "benchmark_version": "prominence-comparison-v1",
+  "cases": [
+    {
+      "id": "calibration-primary-cta",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.25559991710897023
+            },
+            "nav": {
+              "stage_1s": 0.18942708339202521
+            },
+            "secondary": {
+              "stage_1s": 0.16856818755924158
+            },
+            "target": {
+              "stage_1s": 0.16843761532116716
+            }
+          },
+          "elapsed_ms": 821.2205999880098,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.25559991710897023,
+            "nav": 0.18942708339202521,
+            "secondary": 0.16856818755924158,
+            "target": 0.16843761532116716
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=778.122ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.030273493507644644,
+              "competition": -0.08,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.01628779083668007,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.10173913043478264
+            }
+          },
+          "elapsed_ms": 0.18120004096999764,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.21794344023117077,
+            "nav": 0.19387979221267584,
+            "secondary": 0.18210153408625238,
+            "target": 0.20577698277556328
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.25559991710897023,
+              "heuristic_probability": 0.21794344023117077
+            },
+            "nav": {
+              "foveacast_probability": 0.18942708339202521,
+              "heuristic_probability": 0.19387979221267584
+            },
+            "secondary": {
+              "foveacast_probability": 0.16856818755924158,
+              "heuristic_probability": 0.18210153408625238
+            },
+            "target": {
+              "foveacast_probability": 0.16843761532116716,
+              "heuristic_probability": 0.20577698277556328
+            }
+          },
+          "elapsed_ms": 821.4018000289798,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2725309034529426,
+            "nav": 0.24244012518543465,
+            "secondary": 0.2277118116152194,
+            "target": 0.2573171597464033
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "single-target"
+      ]
+    },
+    {
+      "id": "calibration-competing-actions",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.30637189974406825
+            },
+            "nav": {
+              "stage_1s": 0.2261966479655875
+            },
+            "secondary": {
+              "stage_1s": 0.21727601924203999
+            },
+            "target": {
+              "stage_1s": 0.2501554330483043
+            }
+          },
+          "elapsed_ms": 910.2108999504708,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.30637189974406825,
+            "nav": 0.2261966479655875,
+            "secondary": 0.21727601924203996,
+            "target": 0.2501554330483043
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=882.494ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06905856617910013,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.03772400408572192,
+              "competition": -0.08,
+              "contrast": 0.1090909090909091,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.14,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09130434782608698
+            }
+          },
+          "elapsed_ms": 0.13800000306218863,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_3": 0.9721212198129313,
+            "pairwise_accuracy": 0.8,
+            "top1_accuracy": 1.0
+          },
+          "probabilities": {
+            "content": 0.20829025586138097,
+            "nav": 0.18587260484845186,
+            "secondary": 0.19403138406457382,
+            "target": 0.22094053229036412
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.30637189974406825,
+              "heuristic_probability": 0.20829025586138097
+            },
+            "nav": {
+              "foveacast_probability": 0.2261966479655875,
+              "heuristic_probability": 0.18587260484845186
+            },
+            "secondary": {
+              "foveacast_probability": 0.21727601924203996,
+              "heuristic_probability": 0.19403138406457382
+            },
+            "target": {
+              "foveacast_probability": 0.2501554330483043,
+              "heuristic_probability": 0.22094053229036412
+            }
+          },
+          "elapsed_ms": 910.348899953533,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_3": 0.9721212198129313,
+            "pairwise_accuracy": 0.8,
+            "top1_accuracy": 1.0
+          },
+          "probabilities": {
+            "content": 0.25742343768361775,
+            "nav": 0.2297177307379199,
+            "secondary": 0.2398010684554246,
+            "target": 0.2730577631230377
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "competing-cta"
+      ]
+    },
+    {
+      "id": "calibration-dense-navigation",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.22978339023356614
+            },
+            "nav": {
+              "stage_1s": 0.18385398231750982
+            },
+            "secondary": {
+              "stage_1s": 0.22801236831848337
+            },
+            "target": {
+              "stage_1s": 0.15997447010050653
+            }
+          },
+          "elapsed_ms": 942.8982000099495,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22978339023356614,
+            "nav": 0.18385398231750982,
+            "secondary": 0.22801236831848337,
+            "target": 0.15997447010050653
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=915.122ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.04999999999999999,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.015,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.0327288224738314,
+              "competition": -0.08,
+              "contrast": 0.015,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.019287307590040766,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.06391304347826086
+            }
+          },
+          "elapsed_ms": 0.123299949336797,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2213918366707882,
+            "nav": 0.19507643424352705,
+            "secondary": 0.18367591131908692,
+            "target": 0.19914408504149508
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.22978339023356614,
+              "heuristic_probability": 0.2213918366707882
+            },
+            "nav": {
+              "foveacast_probability": 0.18385398231750982,
+              "heuristic_probability": 0.19507643424352705
+            },
+            "secondary": {
+              "foveacast_probability": 0.22801236831848337,
+              "heuristic_probability": 0.18367591131908692
+            },
+            "target": {
+              "foveacast_probability": 0.15997447010050653,
+              "heuristic_probability": 0.19914408504149508
+            }
+          },
+          "elapsed_ms": 943.0214999592863,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.27698622103587744,
+            "nav": 0.24406267704719714,
+            "secondary": 0.22979933378143244,
+            "target": 0.2491517681354929
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "dense-navigation"
+      ]
+    },
+    {
+      "id": "calibration-form-submit",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.26029230429330724
+            },
+            "nav": {
+              "stage_1s": 0.18454163410587193
+            },
+            "secondary": {
+              "stage_1s": 0.16840035006655463
+            },
+            "target": {
+              "stage_1s": 0.1738570791193919
+            }
+          },
+          "elapsed_ms": 932.0071999682114,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.26029230429330724,
+            "nav": 0.18454163410587193,
+            "secondary": 0.16840035006655463,
+            "target": 0.1738570791193919
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=900.657ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.030273493507644644,
+              "competition": -0.08,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.0677511330343145,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09652173913043481
+            }
+          },
+          "elapsed_ms": 0.12799998512491584,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2158411837325889,
+            "nav": 0.1920096508003421,
+            "secondary": 0.1803450043507004,
+            "target": 0.21343796352135844
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.26029230429330724,
+              "heuristic_probability": 0.2158411837325889
+            },
+            "nav": {
+              "foveacast_probability": 0.18454163410587193,
+              "heuristic_probability": 0.1920096508003421
+            },
+            "secondary": {
+              "foveacast_probability": 0.16840035006655463,
+              "heuristic_probability": 0.1803450043507004
+            },
+            "target": {
+              "foveacast_probability": 0.1738570791193919,
+              "heuristic_probability": 0.21343796352135844
+            }
+          },
+          "elapsed_ms": 932.1351999533363,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.269251599776658,
+            "nav": 0.2395228971436733,
+            "secondary": 0.22497180609106737,
+            "target": 0.2662536969886013
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "form"
+      ]
+    },
+    {
+      "id": "calibration-section-heading",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.23587926463383727
+            },
+            "nav": {
+              "stage_1s": 0.18556843693086061
+            },
+            "secondary": {
+              "stage_1s": 0.16634750245776148
+            },
+            "target": {
+              "stage_1s": 0.21256610870697498
+            }
+          },
+          "elapsed_ms": 915.4402000131086,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.23587926463383727,
+            "nav": 0.18556843693086061,
+            "secondary": 0.16634750245776148,
+            "target": 0.21256610870697498
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=882.981ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.04444444444444444,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.013333333333333334,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.0327288224738314,
+              "competition": -0.08,
+              "contrast": 0.013333333333333334,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.0,
+              "area": 0.037451971688574316,
+              "center_distance": 0.02805608441988221,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09
+            }
+          },
+          "elapsed_ms": 0.12769998284056783,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.224705198028556,
+            "nav": 0.19876744138092703,
+            "secondary": 0.18715121115361674,
+            "target": 0.1845256519369205
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.23587926463383727,
+              "heuristic_probability": 0.224705198028556
+            },
+            "nav": {
+              "foveacast_probability": 0.18556843693086061,
+              "heuristic_probability": 0.19876744138092703
+            },
+            "secondary": {
+              "foveacast_probability": 0.16634750245776148,
+              "heuristic_probability": 0.18715121115361674
+            },
+            "target": {
+              "foveacast_probability": 0.21256610870697498,
+              "heuristic_probability": 0.1845256519369205
+            }
+          },
+          "elapsed_ms": 915.5678999959491,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.28259490488526123,
+            "nav": 0.24997493019361094,
+            "secondary": 0.2353660670920334,
+            "target": 0.23206409782909446
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "heading"
+      ]
+    },
+    {
+      "id": "calibration-low-contrast-action",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.2581735845549807
+            },
+            "nav": {
+              "stage_1s": 0.1957691072736066
+            },
+            "secondary": {
+              "stage_1s": 0.1752366547648416
+            },
+            "target": {
+              "stage_1s": 0.16352595311515428
+            }
+          },
+          "elapsed_ms": 910.4737000307068,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2581735845549807,
+            "nav": 0.1957691072736066,
+            "secondary": 0.17523665476484163,
+            "target": 0.1635259531151543
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=877.520ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.04736842105263158,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.025263157894736845,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.030273493507644644,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.01628779083668007,
+              "competition": -0.08,
+              "contrast": 0.0,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.10043478260869565
+            }
+          },
+          "elapsed_ms": 0.12209999840706587,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2190658958339206,
+            "nav": 0.19553211160509068,
+            "secondary": 0.20190303020412792,
+            "target": 0.18120352373406046
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.2581735845549807,
+              "heuristic_probability": 0.2190658958339206
+            },
+            "nav": {
+              "foveacast_probability": 0.1957691072736066,
+              "heuristic_probability": 0.19553211160509068
+            },
+            "secondary": {
+              "foveacast_probability": 0.17523665476484163,
+              "heuristic_probability": 0.20190303020412792
+            },
+            "target": {
+              "foveacast_probability": 0.1635259531151543,
+              "heuristic_probability": 0.18120352373406046
+            }
+          },
+          "elapsed_ms": 910.5958000291139,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2746203374538984,
+            "nav": 0.24511845747442337,
+            "secondary": 0.25310502155779546,
+            "target": 0.22715618351388267
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "low-contrast"
+      ]
+    },
+    {
+      "id": "calibration-partially-occluded",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.26270202170967694
+            },
+            "nav": {
+              "stage_1s": 0.1920039218172056
+            },
+            "secondary": {
+              "stage_1s": 0.1685103003017763
+            },
+            "target": {
+              "stage_1s": 0.16318006743973773
+            }
+          },
+          "elapsed_ms": 908.9313999866135,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.26270202170967694,
+            "nav": 0.1920039218172056,
+            "secondary": 0.1685103003017763,
+            "target": 0.16318006743973773
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=881.060ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.04999999999999999,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.0,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.015,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.0,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.030273493507644644,
+              "competition": -0.08,
+              "contrast": 0.015,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.0,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.01628779083668007,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.09,
+              "reading_order": 0.1,
+              "typography": 0.07043478260869565
+            }
+          },
+          "elapsed_ms": 0.12720003724098206,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22520875072404128,
+            "nav": 0.19843965663925536,
+            "secondary": 0.18638438532014787,
+            "target": 0.18579509662625068
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.26270202170967694,
+              "heuristic_probability": 0.22520875072404128
+            },
+            "nav": {
+              "foveacast_probability": 0.1920039218172056,
+              "heuristic_probability": 0.19843965663925536
+            },
+            "secondary": {
+              "foveacast_probability": 0.1685103003017763,
+              "heuristic_probability": 0.18638438532014787
+            },
+            "target": {
+              "foveacast_probability": 0.16318006743973773,
+              "heuristic_probability": 0.18579509662625068
+            }
+          },
+          "elapsed_ms": 909.0586000238545,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2829867534793087,
+            "nav": 0.24934996536924944,
+            "secondary": 0.23420187684276628,
+            "target": 0.2334614043086756
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "occlusion"
+      ]
+    },
+    {
+      "id": "calibration-off-center-target",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.22500654190116387
+            },
+            "nav": {
+              "stage_1s": 0.17683919192986236
+            },
+            "secondary": {
+              "stage_1s": 0.24361703627882886
+            },
+            "target": {
+              "stage_1s": 0.1638846256345905
+            }
+          },
+          "elapsed_ms": 902.7550999890082,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.439797981079933,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22500654190116387,
+            "nav": 0.17683919192986236,
+            "secondary": 0.24361703627882886,
+            "target": 0.16388462563459053
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=873.418ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.034285714285714274,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010285714285714285,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.0327288224738314,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.019287307590040766,
+              "competition": -0.08,
+              "contrast": 0.11314285714285714,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09782608695652174
+            }
+          },
+          "elapsed_ms": 0.12859998969361186,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2133681450944982,
+            "nav": 0.1900859538518532,
+            "secondary": 0.19973111661976195,
+            "target": 0.20031351232176697
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.22500654190116387,
+              "heuristic_probability": 0.2133681450944982
+            },
+            "nav": {
+              "foveacast_probability": 0.17683919192986236,
+              "heuristic_probability": 0.1900859538518532
+            },
+            "secondary": {
+              "foveacast_probability": 0.24361703627882886,
+              "heuristic_probability": 0.19973111661976195
+            },
+            "target": {
+              "foveacast_probability": 0.16388462563459053,
+              "heuristic_probability": 0.20031351232176697
+            }
+          },
+          "elapsed_ms": 902.8836999787018,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.26554882750762915,
+            "nav": 0.23657281244430006,
+            "secondary": 0.24857676768796613,
+            "target": 0.24930159236010463
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "center-bias"
+      ]
+    },
+    {
+      "id": "calibration-large-container",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.2628648151966905
+            },
+            "nav": {
+              "stage_1s": 0.19359466295283714
+            },
+            "secondary": {
+              "stage_1s": 0.16774030275996293
+            },
+            "target": {
+              "stage_1s": 0.16422413634560148
+            }
+          },
+          "elapsed_ms": 935.0331000168808,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2628648151966905,
+            "nav": 0.19359466295283714,
+            "secondary": 0.16774030275996293,
+            "target": 0.16422413634560146
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=902.903ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.04999999999999999,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.015,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.030273493507644644,
+              "competition": -0.08,
+              "contrast": 0.0,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.01628779083668007,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.07043478260869565
+            }
+          },
+          "elapsed_ms": 0.12630003038793802,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22194128274190877,
+            "nav": 0.19556057124683807,
+            "secondary": 0.18094556327769729,
+            "target": 0.2003427274280004
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.2628648151966905,
+              "heuristic_probability": 0.22194128274190877
+            },
+            "nav": {
+              "foveacast_probability": 0.19359466295283714,
+              "heuristic_probability": 0.19556057124683807
+            },
+            "secondary": {
+              "foveacast_probability": 0.16774030275996293,
+              "heuristic_probability": 0.18094556327769729
+            },
+            "target": {
+              "foveacast_probability": 0.16422413634560146,
+              "heuristic_probability": 0.2003427274280004
+            }
+          },
+          "elapsed_ms": 935.1594000472687,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2778467964534119,
+            "nav": 0.24482096148249857,
+            "secondary": 0.22652453147993343,
+            "target": 0.2508077105841561
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "decorative-container"
+      ]
+    },
+    {
+      "id": "calibration-mobile-menu",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.18460310574113428
+            },
+            "nav": {
+              "stage_1s": 0.1979532777526432
+            },
+            "secondary": {
+              "stage_1s": 0.2691208803872005
+            },
+            "target": {
+              "stage_1s": 0.1761138868098913
+            }
+          },
+          "elapsed_ms": 923.4504000050947,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.439797981079933,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.18460310574113428,
+            "nav": 0.1979532777526432,
+            "secondary": 0.2691208803872005,
+            "target": 0.1761138868098913
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=897.673ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07726254445905992,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.017532861476238625,
+              "center_distance": 0.046220363860139384,
+              "competition": -0.08,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.01925176946410516,
+              "center_distance": 0.011843173550269486,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.03521739130434782
+            }
+          },
+          "elapsed_ms": 0.1249000197276473,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2220787957990512,
+            "nav": 0.19655793603102434,
+            "secondary": 0.18584776007544038,
+            "target": 0.19245045269192462
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.18460310574113428,
+              "heuristic_probability": 0.2220787957990512
+            },
+            "nav": {
+              "foveacast_probability": 0.1979532777526432,
+              "heuristic_probability": 0.19655793603102434
+            },
+            "secondary": {
+              "foveacast_probability": 0.2691208803872005,
+              "heuristic_probability": 0.18584776007544038
+            },
+            "target": {
+              "foveacast_probability": 0.1761138868098913,
+              "heuristic_probability": 0.19245045269192462
+            }
+          },
+          "elapsed_ms": 923.5753000248224,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.27866615374888715,
+            "nav": 0.24664238575999772,
+            "secondary": 0.23320317591207965,
+            "target": 0.2414882845790355
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "responsive"
+      ]
+    },
+    {
+      "id": "calibration-semantic-target",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.2220992376035808
+            },
+            "nav": {
+              "stage_1s": 0.1946276086965304
+            },
+            "secondary": {
+              "stage_1s": 0.16323198693072438
+            },
+            "target": {
+              "stage_1s": 0.23021513530315257
+            }
+          },
+          "elapsed_ms": 917.6968999672681,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_3": 0.8656565720663316,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 1.0
+          },
+          "probabilities": {
+            "content": 0.22209923760358077,
+            "nav": 0.1946276086965304,
+            "secondary": 0.16323198693072438,
+            "target": 0.23021513530315257
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=886.049ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.034285714285714274,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010285714285714285,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.0327288224738314,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.027439664549290588,
+              "competition": -0.08,
+              "contrast": 0.04628571428571429,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.06130434782608697
+            }
+          },
+          "elapsed_ms": 0.1294999965466559,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2173223435785247,
+            "nav": 0.19360868021863512,
+            "secondary": 0.20343258985608317,
+            "target": 0.1854934973852669
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.22209923760358077,
+              "heuristic_probability": 0.2173223435785247
+            },
+            "nav": {
+              "foveacast_probability": 0.1946276086965304,
+              "heuristic_probability": 0.19360868021863512
+            },
+            "secondary": {
+              "foveacast_probability": 0.16323198693072438,
+              "heuristic_probability": 0.20343258985608317
+            },
+            "target": {
+              "foveacast_probability": 0.23021513530315257,
+              "heuristic_probability": 0.1854934973852669
+            }
+          },
+          "elapsed_ms": 917.8263999638148,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.271701458397188,
+            "nav": 0.24205408384412505,
+            "secondary": 0.2543361646081418,
+            "target": 0.23190829315054518
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "semantic-vs-visual"
+      ]
+    },
+    {
+      "id": "calibration-late-primary-action",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.26055968503895055
+            },
+            "nav": {
+              "stage_1s": 0.18454370757201677
+            },
+            "secondary": {
+              "stage_1s": 0.17112574873258385
+            },
+            "target": {
+              "stage_1s": 0.16996612069334072
+            }
+          },
+          "elapsed_ms": 902.5523999589495,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.26055968503895055,
+            "nav": 0.18454370757201677,
+            "secondary": 0.17112574873258385,
+            "target": 0.16996612069334072
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=872.587ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07218475863568834,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.030273493507644644,
+              "competition": -0.08,
+              "contrast": 0.08727272727272727,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.0677511330343145,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09000000000000002
+            }
+          },
+          "elapsed_ms": 0.1273000380024314,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2130872821536896,
+            "nav": 0.18955981397421498,
+            "secondary": 0.19217267637640345,
+            "target": 0.20934496943367623
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.26055968503895055,
+              "heuristic_probability": 0.2130872821536896
+            },
+            "nav": {
+              "foveacast_probability": 0.18454370757201677,
+              "heuristic_probability": 0.18955981397421498
+            },
+            "secondary": {
+              "foveacast_probability": 0.17112574873258385,
+              "heuristic_probability": 0.19217267637640345
+            },
+            "target": {
+              "foveacast_probability": 0.16996612069334072,
+              "heuristic_probability": 0.20934496943367623
+            }
+          },
+          "elapsed_ms": 902.679699996952,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2649796379286205,
+            "nav": 0.2357226126544522,
+            "secondary": 0.23897177574992895,
+            "target": 0.2603259736669984
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "calibration",
+      "tags": [
+        "reading-order"
+      ]
+    },
+    {
+      "id": "holdout-primary-cta",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.24519852931952113
+            },
+            "nav": {
+              "stage_1s": 0.19945754506773936
+            },
+            "secondary": {
+              "stage_1s": 0.1658859635352511
+            },
+            "target": {
+              "stage_1s": 0.16515993162583936
+            }
+          },
+          "elapsed_ms": 912.0707999682054,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.24519852931952113,
+            "nav": 0.19945754506773936,
+            "secondary": 0.1658859635352511,
+            "target": 0.16515993162583936
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=882.401ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02687613886698903,
+              "competition": -0.08,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.014059859735414367,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.10173913043478264
+            }
+          },
+          "elapsed_ms": 0.1289999927394092,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.21675406946219475,
+            "nav": 0.1944420650232307,
+            "secondary": 0.18201024372788624,
+            "target": 0.20591448404330942
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.24519852931952113,
+              "heuristic_probability": 0.21675406946219475
+            },
+            "nav": {
+              "foveacast_probability": 0.19945754506773936,
+              "heuristic_probability": 0.1944420650232307
+            },
+            "secondary": {
+              "foveacast_probability": 0.1658859635352511,
+              "heuristic_probability": 0.18201024372788624
+            },
+            "target": {
+              "foveacast_probability": 0.16515993162583936,
+              "heuristic_probability": 0.20591448404330942
+            }
+          },
+          "elapsed_ms": 912.1997999609448,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.27124065920405,
+            "nav": 0.24331997099180933,
+            "secondary": 0.22776309858049662,
+            "target": 0.2576762712236441
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "single-target"
+      ]
+    },
+    {
+      "id": "holdout-competing-actions",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.301184978213028
+            },
+            "nav": {
+              "stage_1s": 0.24755735024347797
+            },
+            "secondary": {
+              "stage_1s": 0.22190574653891953
+            },
+            "target": {
+              "stage_1s": 0.22935192500457446
+            }
+          },
+          "elapsed_ms": 886.1014999565668,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.301184978213028,
+            "nav": 0.247557350243478,
+            "secondary": 0.22190574653891956,
+            "target": 0.2293519250045745
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=852.774ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.039966135142267156,
+              "competition": -0.08,
+              "contrast": 0.1090909090909091,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.1337601056443375,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09130434782608698
+            }
+          },
+          "elapsed_ms": 0.13040000339969993,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_3": 0.9721212198129313,
+            "pairwise_accuracy": 0.8,
+            "top1_accuracy": 1.0
+          },
+          "probabilities": {
+            "content": 0.20738108206513947,
+            "nav": 0.18603390443163442,
+            "secondary": 0.1946356736297107,
+            "target": 0.21975671782542044
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.301184978213028,
+              "heuristic_probability": 0.20738108206513947
+            },
+            "nav": {
+              "foveacast_probability": 0.247557350243478,
+              "heuristic_probability": 0.18603390443163442
+            },
+            "secondary": {
+              "foveacast_probability": 0.22190574653891956,
+              "heuristic_probability": 0.1946356736297107
+            },
+            "target": {
+              "foveacast_probability": 0.2293519250045745,
+              "heuristic_probability": 0.21975671782542044
+            }
+          },
+          "elapsed_ms": 886.2318999599665,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_3": 0.9721212198129313,
+            "pairwise_accuracy": 0.8,
+            "top1_accuracy": 1.0
+          },
+          "probabilities": {
+            "content": 0.2567209556700613,
+            "nav": 0.23029488156359776,
+            "secondary": 0.2409431740066366,
+            "target": 0.27204098875970434
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "competing-cta"
+      ]
+    },
+    {
+      "id": "holdout-dense-navigation",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.18445325724891296
+            },
+            "nav": {
+              "stage_1s": 0.20811539194217343
+            },
+            "secondary": {
+              "stage_1s": 0.27218593511386063
+            },
+            "target": {
+              "stage_1s": 0.16513113636913798
+            }
+          },
+          "elapsed_ms": 897.6232999702916,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.439797981079933,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.18445325724891296,
+            "nav": 0.20811539194217343,
+            "secondary": 0.27218593511386063,
+            "target": 0.16513113636913798
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=871.896ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07726254445905992,
+              "competition": -0.0,
+              "contrast": 0.04999999999999999,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.015,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.017532861476238625,
+              "center_distance": 0.046220363860139384,
+              "competition": -0.08,
+              "contrast": 0.015,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.01925176946410516,
+              "center_distance": 0.016544356609877152,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.06391304347826086
+            }
+          },
+          "elapsed_ms": 0.12669997522607446,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22264485035307321,
+            "nav": 0.19518687262922899,
+            "secondary": 0.18455140406310994,
+            "target": 0.19679151153907176
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.18445325724891296,
+              "heuristic_probability": 0.22264485035307321
+            },
+            "nav": {
+              "foveacast_probability": 0.20811539194217343,
+              "heuristic_probability": 0.19518687262922899
+            },
+            "secondary": {
+              "foveacast_probability": 0.27218593511386063,
+              "heuristic_probability": 0.18455140406310994
+            },
+            "target": {
+              "foveacast_probability": 0.16513113636913798,
+              "heuristic_probability": 0.19679151153907176
+            }
+          },
+          "elapsed_ms": 897.7499999455176,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.27859348833619996,
+            "nav": 0.2442355690552798,
+            "secondary": 0.2309275033927397,
+            "target": 0.24624343921578057
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "dense-navigation"
+      ]
+    },
+    {
+      "id": "holdout-form-submit",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.24922855156741194
+            },
+            "nav": {
+              "stage_1s": 0.19487491536189425
+            },
+            "secondary": {
+              "stage_1s": 0.1646183155415688
+            },
+            "target": {
+              "stage_1s": 0.170879022745255
+            }
+          },
+          "elapsed_ms": 923.6797000048682,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.24922855156741194,
+            "nav": 0.19487491536189425,
+            "secondary": 0.1646183155415688,
+            "target": 0.170879022745255
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=890.355ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02687613886698903,
+              "competition": -0.08,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.06103863781087275,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09652173913043481
+            }
+          },
+          "elapsed_ms": 0.20810001296922565,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.214867243046594,
+            "nav": 0.19274946277820673,
+            "secondary": 0.18042585946867581,
+            "target": 0.2128269333987959
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.24922855156741194,
+              "heuristic_probability": 0.214867243046594
+            },
+            "nav": {
+              "foveacast_probability": 0.19487491536189425,
+              "heuristic_probability": 0.19274946277820673
+            },
+            "secondary": {
+              "foveacast_probability": 0.1646183155415688,
+              "heuristic_probability": 0.18042585946867581
+            },
+            "target": {
+              "foveacast_probability": 0.170879022745255,
+              "heuristic_probability": 0.2128269333987959
+            }
+          },
+          "elapsed_ms": 923.8878000178374,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.26829245388599193,
+            "nav": 0.24067524495931533,
+            "secondary": 0.2252874653901671,
+            "target": 0.2657448357645256
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "form"
+      ]
+    },
+    {
+      "id": "holdout-section-heading",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.21996219406895115
+            },
+            "nav": {
+              "stage_1s": 0.19142125129567292
+            },
+            "secondary": {
+              "stage_1s": 0.16110494541044884
+            },
+            "target": {
+              "stage_1s": 0.22110976112671912
+            }
+          },
+          "elapsed_ms": 928.9298999938183,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_3": 0.8656565720663316,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 1.0
+          },
+          "probabilities": {
+            "content": 0.21996219406895115,
+            "nav": 0.19142125129567292,
+            "secondary": 0.16110494541044884,
+            "target": 0.22110976112671912
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=897.875ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.04444444444444444,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.013333333333333334,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02923595995213974,
+              "competition": -0.08,
+              "contrast": 0.013333333333333334,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.0,
+              "area": 0.037451971688574316,
+              "center_distance": 0.030984741700296626,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09
+            }
+          },
+          "elapsed_ms": 0.13160001253709197,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22327563474900172,
+            "nav": 0.19916255187816648,
+            "secondary": 0.18686938057895452,
+            "target": 0.1854347328800383
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.21996219406895115,
+              "heuristic_probability": 0.22327563474900172
+            },
+            "nav": {
+              "foveacast_probability": 0.19142125129567292,
+              "heuristic_probability": 0.19916255187816648
+            },
+            "secondary": {
+              "foveacast_probability": 0.16110494541044884,
+              "heuristic_probability": 0.18686938057895452
+            },
+            "target": {
+              "foveacast_probability": 0.22110976112671912,
+              "heuristic_probability": 0.1854347328800383
+            }
+          },
+          "elapsed_ms": 929.0615000063553,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.28094092226473355,
+            "nav": 0.25060016543296426,
+            "secondary": 0.23513204287565326,
+            "target": 0.23332686942664888
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "heading"
+      ]
+    },
+    {
+      "id": "holdout-low-contrast-action",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.24106259628932478
+            },
+            "nav": {
+              "stage_1s": 0.21327190325690348
+            },
+            "secondary": {
+              "stage_1s": 0.17100288997830027
+            },
+            "target": {
+              "stage_1s": 0.15597465924387954
+            }
+          },
+          "elapsed_ms": 928.7470999988727,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.24106259628932478,
+            "nav": 0.21327190325690348,
+            "secondary": 0.17100288997830027,
+            "target": 0.15597465924387954
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=892.792ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.04736842105263158,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.025263157894736845,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02687613886698903,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.014059859735414367,
+              "competition": -0.08,
+              "contrast": 0.0,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.10043478260869565
+            }
+          },
+          "elapsed_ms": 0.12470001820474863,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.21787516850091665,
+            "nav": 0.1961034687267545,
+            "secondary": 0.2018062302718698,
+            "target": 0.18132857388929238
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.24106259628932478,
+              "heuristic_probability": 0.21787516850091665
+            },
+            "nav": {
+              "foveacast_probability": 0.21327190325690348,
+              "heuristic_probability": 0.1961034687267545
+            },
+            "secondary": {
+              "foveacast_probability": 0.17100288997830027,
+              "heuristic_probability": 0.2018062302718698
+            },
+            "target": {
+              "foveacast_probability": 0.15597465924387954,
+              "heuristic_probability": 0.18132857388929238
+            }
+          },
+          "elapsed_ms": 928.8718000170775,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.27333019014370974,
+            "nav": 0.24601701407152018,
+            "secondary": 0.25317128001286376,
+            "target": 0.22748151577190628
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "low-contrast"
+      ]
+    },
+    {
+      "id": "holdout-partially-occluded",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.2547340097198894
+            },
+            "nav": {
+              "stage_1s": 0.20346338108173176
+            },
+            "secondary": {
+              "stage_1s": 0.1632711538815678
+            },
+            "target": {
+              "stage_1s": 0.1602670351159563
+            }
+          },
+          "elapsed_ms": 936.9283000123687,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.3333333333333333,
+            "pairwise_accuracy": 0.0,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2547340097198894,
+            "nav": 0.20346338108173176,
+            "secondary": 0.1632711538815678,
+            "target": 0.1602670351159563
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=903.958ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.04999999999999999,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.0,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.015,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.0,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02687613886698903,
+              "competition": -0.08,
+              "contrast": 0.015,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.0,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.017862934059963916,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.09,
+              "reading_order": 0.1,
+              "typography": 0.07043478260869565
+            }
+          },
+          "elapsed_ms": 0.12919999426230788,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22382803818575397,
+            "nav": 0.19888036795632774,
+            "secondary": 0.18616477993122615,
+            "target": 0.18650126080791465
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.2547340097198894,
+              "heuristic_probability": 0.22382803818575397
+            },
+            "nav": {
+              "foveacast_probability": 0.20346338108173176,
+              "heuristic_probability": 0.19888036795632774
+            },
+            "secondary": {
+              "foveacast_probability": 0.1632711538815678,
+              "heuristic_probability": 0.18616477993122615
+            },
+            "target": {
+              "foveacast_probability": 0.1602670351159563,
+              "heuristic_probability": 0.18650126080791465
+            }
+          },
+          "elapsed_ms": 937.057500006631,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2814121563289038,
+            "nav": 0.2500462124929538,
+            "secondary": 0.23405929202428494,
+            "target": 0.23448233915385752
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "occlusion"
+      ]
+    },
+    {
+      "id": "holdout-off-center-target",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.20743094365394266
+            },
+            "nav": {
+              "stage_1s": 0.18896246717587484
+            },
+            "secondary": {
+              "stage_1s": 0.24972191370955032
+            },
+            "target": {
+              "stage_1s": 0.1602579263356417
+            }
+          },
+          "elapsed_ms": 883.1634999951348,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.439797981079933,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.20743094365394263,
+            "nav": 0.1889624671758748,
+            "secondary": 0.24972191370955032,
+            "target": 0.16025792633564168
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=856.623ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.034285714285714274,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010285714285714285,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02923595995213974,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.01902716808963308,
+              "competition": -0.08,
+              "contrast": 0.11314285714285714,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09782608695652174
+            }
+          },
+          "elapsed_ms": 0.12769998284056783,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.21212605651151661,
+            "nav": 0.1905674331444006,
+            "secondary": 0.1995388463098234,
+            "target": 0.20076866291289933
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.20743094365394263,
+              "heuristic_probability": 0.21212605651151661
+            },
+            "nav": {
+              "foveacast_probability": 0.1889624671758748,
+              "heuristic_probability": 0.1905674331444006
+            },
+            "secondary": {
+              "foveacast_probability": 0.24972191370955032,
+              "heuristic_probability": 0.1995388463098234
+            },
+            "target": {
+              "foveacast_probability": 0.16025792633564168,
+              "heuristic_probability": 0.20076866291289933
+            }
+          },
+          "elapsed_ms": 883.2911999779753,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.26416661599144026,
+            "nav": 0.23731904868178336,
+            "secondary": 0.24849140485313437,
+            "target": 0.25002293047364205
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "center-bias"
+      ]
+    },
+    {
+      "id": "holdout-large-container",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.2554773080041253
+            },
+            "nav": {
+              "stage_1s": 0.20619055646236836
+            },
+            "secondary": {
+              "stage_1s": 0.16116069843957292
+            },
+            "target": {
+              "stage_1s": 0.161427906664279
+            }
+          },
+          "elapsed_ms": 923.0853999615647,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2554773080041253,
+            "nav": 0.20619055646236836,
+            "secondary": 0.16116069843957292,
+            "target": 0.16142790666427903
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=887.988ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.04999999999999999,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.015,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02687613886698903,
+              "competition": -0.08,
+              "contrast": 0.0,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.017862934059963916,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.07043478260869565
+            }
+          },
+          "elapsed_ms": 0.1501999795436859,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22056543642073556,
+            "nav": 0.19598141282639303,
+            "secondary": 0.18071993987165574,
+            "target": 0.2010903568745984
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.2554773080041253,
+              "heuristic_probability": 0.22056543642073556
+            },
+            "nav": {
+              "foveacast_probability": 0.20619055646236836,
+              "heuristic_probability": 0.19598141282639303
+            },
+            "secondary": {
+              "foveacast_probability": 0.16116069843957292,
+              "heuristic_probability": 0.18071993987165574
+            },
+            "target": {
+              "foveacast_probability": 0.16142790666427903,
+              "heuristic_probability": 0.2010903568745984
+            }
+          },
+          "elapsed_ms": 923.2355999411084,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.6298989693877386,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.27627414312962606,
+            "nav": 0.24548087758710618,
+            "secondary": 0.2263647801971997,
+            "target": 0.2518801990860681
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "decorative-container"
+      ]
+    },
+    {
+      "id": "holdout-mobile-menu",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.18360772360871017
+            },
+            "nav": {
+              "stage_1s": 0.19982559115106033
+            },
+            "secondary": {
+              "stage_1s": 0.269737853288679
+            },
+            "target": {
+              "stage_1s": 0.17845180819578269
+            }
+          },
+          "elapsed_ms": 901.5980999683961,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.439797981079933,
+            "pairwise_accuracy": 0.4,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.18360772360871017,
+            "nav": 0.19982559115106033,
+            "secondary": 0.269737853288679,
+            "target": 0.17845180819578269
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=876.381ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07726254445905992,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.017532861476238625,
+              "center_distance": 0.046220363860139384,
+              "competition": -0.08,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.01925176946410516,
+              "center_distance": 0.016544356609877152,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.03521739130434782
+            }
+          },
+          "elapsed_ms": 0.12939999578520656,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.22187758060584564,
+            "nav": 0.19637984409328546,
+            "secondary": 0.18567937212639798,
+            "target": 0.19318213550567556
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.18360772360871017,
+              "heuristic_probability": 0.22187758060584564
+            },
+            "nav": {
+              "foveacast_probability": 0.19982559115106033,
+              "heuristic_probability": 0.19637984409328546
+            },
+            "secondary": {
+              "foveacast_probability": 0.269737853288679,
+              "heuristic_probability": 0.18567937212639798
+            },
+            "target": {
+              "foveacast_probability": 0.17845180819578269,
+              "heuristic_probability": 0.19318213550567556
+            }
+          },
+          "elapsed_ms": 901.7274999641813,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.27834940509687334,
+            "nav": 0.24636203724200242,
+            "secondary": 0.2329381032054672,
+            "target": 0.242350454455657
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "responsive"
+      ]
+    },
+    {
+      "id": "holdout-semantic-target",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.17380536504780456
+            },
+            "nav": {
+              "stage_1s": 0.24120825575469243
+            },
+            "secondary": {
+              "stage_1s": 0.16443409120003352
+            },
+            "target": {
+              "stage_1s": 0.25563768556587363
+            }
+          },
+          "elapsed_ms": 945.6696000415832,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_3": 0.8656565720663316,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 1.0
+          },
+          "probabilities": {
+            "content": 0.17380536504780456,
+            "nav": 0.24120825575469243,
+            "secondary": 0.16443409120003355,
+            "target": 0.25563768556587363
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=913.365ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.07726254445905992,
+              "competition": -0.0,
+              "contrast": 0.034285714285714274,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010285714285714285,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.017532861476238625,
+              "center_distance": 0.046220363860139384,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.01925176946410516,
+              "center_distance": 0.03502201488649841,
+              "competition": -0.08,
+              "contrast": 0.04628571428571429,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.06130434782608697
+            }
+          },
+          "elapsed_ms": 0.13479997869580984,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2180869927801178,
+            "nav": 0.19330583091601666,
+            "secondary": 0.20396704837539728,
+            "target": 0.18481030930182882
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.17380536504780456,
+              "heuristic_probability": 0.2180869927801178
+            },
+            "nav": {
+              "foveacast_probability": 0.24120825575469243,
+              "heuristic_probability": 0.19330583091601666
+            },
+            "secondary": {
+              "foveacast_probability": 0.16443409120003355,
+              "heuristic_probability": 0.20396704837539728
+            },
+            "target": {
+              "foveacast_probability": 0.25563768556587363,
+              "heuristic_probability": 0.18481030930182882
+            }
+          },
+          "elapsed_ms": 945.804400020279,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 0.0,
+            "mean_reciprocal_rank": 0.25,
+            "ndcg_at_3": 0.36121211352040195,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.2725507621463816,
+            "nav": 0.24158089793378576,
+            "secondary": 0.2549045854537111,
+            "target": 0.23096375446612158
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "semantic-vs-visual"
+      ]
+    },
+    {
+      "id": "holdout-late-primary-action",
+      "labels": {
+        "content": 1,
+        "nav": 1,
+        "secondary": 2,
+        "target": 3
+      },
+      "providers": {
+        "foveacast": {
+          "components": {
+            "content": {
+              "stage_1s": 0.24753903290711474
+            },
+            "nav": {
+              "stage_1s": 0.19278261076762562
+            },
+            "secondary": {
+              "stage_1s": 0.16780533462535507
+            },
+            "target": {
+              "stage_1s": 0.16876774936708006
+            }
+          },
+          "elapsed_ms": 1056.1055999714881,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.3333333333333333,
+            "ndcg_at_3": 0.5462626288265326,
+            "pairwise_accuracy": 0.2,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.24753903290711474,
+            "nav": 0.19278261076762562,
+            "secondary": 0.1678053346253551,
+            "target": 0.16876774936708008
+          },
+          "provenance": "foveacast-v0.2.0:initial-1s:inference=1022.145ms"
+        },
+        "heuristic": {
+          "components": {
+            "content": {
+              "actionability": 0.0,
+              "area": 0.13087967644084933,
+              "center_distance": 0.06381665514844895,
+              "competition": -0.0,
+              "contrast": 0.036363636363636355,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.025,
+              "typography": 0.12
+            },
+            "nav": {
+              "actionability": 0.14,
+              "area": 0.0,
+              "center_distance": 0.0,
+              "competition": -0.0,
+              "contrast": 0.010909090909090908,
+              "isolation": 0.1,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.05,
+              "typography": 0.06652173913043478
+            },
+            "secondary": {
+              "actionability": 0.14,
+              "area": 0.026835187057633974,
+              "center_distance": 0.02687613886698903,
+              "competition": -0.08,
+              "contrast": 0.08727272727272727,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.07500000000000001,
+              "typography": 0.10173913043478264
+            },
+            "target": {
+              "actionability": 0.14,
+              "area": 0.02895854398382204,
+              "center_distance": 0.06103863781087275,
+              "competition": -0.08,
+              "contrast": 0.12,
+              "isolation": 0.0,
+              "motion": 0.025,
+              "occlusion": -0.045,
+              "reading_order": 0.1,
+              "typography": 0.09000000000000002
+            }
+          },
+          "elapsed_ms": 0.18700002692639828,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.21212359242264925,
+            "nav": 0.19028823520196902,
+            "secondary": 0.19225686252900773,
+            "target": 0.20874351591652682
+          },
+          "provenance": "heuristic-prominence:heuristic-prominence-v1"
+        },
+        "hybrid": {
+          "components": {
+            "content": {
+              "foveacast_probability": 0.24753903290711474,
+              "heuristic_probability": 0.21212359242264925
+            },
+            "nav": {
+              "foveacast_probability": 0.19278261076762562,
+              "heuristic_probability": 0.19028823520196902
+            },
+            "secondary": {
+              "foveacast_probability": 0.1678053346253551,
+              "heuristic_probability": 0.19225686252900773
+            },
+            "target": {
+              "foveacast_probability": 0.16876774936708008,
+              "heuristic_probability": 0.20874351591652682
+            }
+          },
+          "elapsed_ms": 1056.2925999984145,
+          "fallback": false,
+          "metrics": {
+            "hit_rate_at_3": 1.0,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_3": 0.7363636171343382,
+            "pairwise_accuracy": 0.6,
+            "top1_accuracy": 0.0
+          },
+          "probabilities": {
+            "content": 0.26402834164076283,
+            "nav": 0.23685006745510326,
+            "secondary": 0.23930040031308675,
+            "target": 0.25982119059104714
+          },
+          "provenance": "late-fusion-v1:foveacast-weight=0.00"
+        }
+      },
+      "split": "holdout",
+      "tags": [
+        "reading-order"
+      ]
+    }
+  ],
+  "corpus": {
+    "case_count": 24,
+    "split_counts": {
+      "calibration": 12,
+      "holdout": 12
+    },
+    "version": "prominence-corpus-v1"
+  },
+  "decision": {
+    "ground_truth_scope": "controlled human-authored synthetic UI labels",
+    "hybrid_minimum_ndcg_improvement": 0.02,
+    "pairwise_regression_tolerance": 0.01,
+    "rationale": "Neither pure provider dominates and calibrated fusion does not clear the material-improvement threshold.",
+    "recommendation": "keep-both"
+  },
+  "fusion": {
+    "foveacast_weight": 0.0,
+    "method": "normalized-linear-late-fusion",
+    "selected_on": "calibration"
+  },
+  "provenance": {
+    "benchmark_source_sha256": "e7c92006e59e004ddd5f84648c538528a8f25667efed5eeafa357e40736c6ce1",
+    "corpus_sha256": "ee5fb059f0179d80d550995215c02a1df96c661a818e85710f9e9058eac3f7b8",
+    "generated_at_utc": "2026-09-07T10:40:32Z",
+    "git_sha": "b303f4da942679eeb4f41534ff498613350daba6",
+    "model_artifacts": [
+      {
+        "duration": "1s",
+        "filename": "foveacast-v3-1s-fp16.onnx",
+        "kind": "model",
+        "sha256": "4b9fdc2734e36c612a120ab7b0050ae276723160ccc625c6f554e906dd6345d5"
+      },
+      {
+        "duration": "3s",
+        "filename": "foveacast-v3-3s-fp16.onnx",
+        "kind": "model",
+        "sha256": "842a23f97908d146b8749e05f6b220bdb495eae76c75cc7252550825585ef76e"
+      },
+      {
+        "duration": "7s",
+        "filename": "foveacast-v3-7s-fp16.onnx",
+        "kind": "model",
+        "sha256": "cf66388dc6fe5db4712c77cf3929d04380ed73ac963677b8c9de2b6380fb51e0"
+      },
+      {
+        "duration": "1s",
+        "filename": "foveacast-v3-1s-fp16.parity.json",
+        "kind": "parity",
+        "sha256": "2572f301f49bf49ec38bcff57fa1282380726e79f1ce4c9a5cd56f9f4894944b"
+      },
+      {
+        "duration": "3s",
+        "filename": "foveacast-v3-3s-fp16.parity.json",
+        "kind": "parity",
+        "sha256": "3ccbd9da648baaf7c0ddca9fce1e56d92ce71f94de2f2751b2dd2af41c276a20"
+      },
+      {
+        "duration": "7s",
+        "filename": "foveacast-v3-7s-fp16.parity.json",
+        "kind": "parity",
+        "sha256": "16cb94c448a6dc510e7d44d31147634750bb3d1801cfa55daf0bcf83e1d97cca"
+      }
+    ],
+    "working_tree_dirty": true
+  }
+}

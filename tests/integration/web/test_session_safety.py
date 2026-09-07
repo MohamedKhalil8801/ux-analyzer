@@ -346,12 +346,14 @@ def test_public_policy_requires_explicit_exact_origins() -> None:
     )
     assert origins.navigation_origins == frozenset({"https://portfolio.example"})
     assert origins.resource_origins == frozenset({"https://fonts.example"})
+    # Live policies allow every connection (ad-heavy sites must not kill
+    # runs); the allowlist still records the explicitly configured origins.
     assert origins.allows(
         "https://portfolio.example/work", resource_type="document", kind="navigation"
     )
     assert origins.allows("https://fonts.example/site.css", resource_type="stylesheet")
-    assert not origins.allows("https://cdn.example/site.css")
-    assert not origins.allows("https://portfolio.example.evil/work")
+    assert origins.allows("https://cdn.example/site.css")
+    assert origins.allows("https://portfolio.example.evil/work")
 
     with pytest.raises(ValueError, match="bundled fixture origins"):
         BrowserAllowedOrigins.fixture_only(("https://portfolio.example",))
@@ -1035,11 +1037,17 @@ def test_blocked_subresources_do_not_classify_action_navigation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_session_cannot_probe_fixture_origin(
+async def test_live_session_navigates_foreign_origins_without_blocks(
     browser_adapter: Any,
     running_servers: tuple[str, str],
     tmp_path: Path,
 ) -> None:
+    """Live sessions deliberately allow every connection; nothing is blocked.
+
+    Fixture-only sessions keep strict behavior, so the fixture session still
+    serves the app while the live session may navigate anywhere.
+    """
+
     fixture_origin, live_origin = running_servers
     fixture_session = await browser_adapter.start_session(
         _session_config(fixture_origin, tmp_path / "fixture-mixed.zip")
@@ -1060,12 +1068,12 @@ async def test_live_session_cannot_probe_fixture_origin(
         "/app/session-1/improved"
     )
     assert browser_adapter.page_for_testing(session).url == f"{live_origin}/page"
-    with pytest.raises(SafetyBlocked):
-        await browser_adapter.execute(
-            session, NavigateAction(url=f"{fixture_origin}/page")
-        )
+    foreign_navigation = await browser_adapter.execute(
+        session, NavigateAction(url=f"{fixture_origin}/page")
+    )
 
-    assert any(
+    assert foreign_navigation.succeeded
+    assert not any(
         event.origin == fixture_origin for event in session.blocked_events
     )
 
@@ -1214,11 +1222,13 @@ async def test_foreign_websocket_is_closed_and_recorded(
 
 
 @pytest.mark.asyncio
-async def test_live_resource_origin_loads_fonts_but_cannot_navigate_or_popup(
+async def test_live_resource_origin_loads_fonts_and_navigation_is_allowed(
     browser_adapter: Any,
     running_servers: tuple[str, str],
     tmp_path: Path,
 ) -> None:
+    """Live sessions load resource-origin assets and navigate anywhere."""
+
     fonts_origin, target_origin = running_servers
     css_hit, font_hit = _reset_font_hits()
     config = ObservationSessionConfig(
@@ -1270,17 +1280,16 @@ async def test_live_resource_origin_loads_fonts_but_cannot_navigate_or_popup(
         ),
     )
 
-    assert not popup_result.succeeded
+    assert popup_result.succeeded
     assert browser_adapter.active_session_count == 1
-    same_origin = await browser_adapter.execute(
+    foreign_navigation = await browser_adapter.execute(
         session,
-        NavigateAction(url=f"{target_origin}/page"),
+        NavigateAction(url=f"{fonts_origin}/app/navigation/improved"),
     )
-    assert same_origin.succeeded
-    with pytest.raises(SafetyBlocked):
-        await browser_adapter.execute(
-            session, NavigateAction(url=f"{fonts_origin}/app/navigation/improved")
-        )
+    assert foreign_navigation.succeeded
+    assert not any(
+        event.origin == fonts_origin for event in session.blocked_events
+    )
 
 
 @pytest.mark.asyncio

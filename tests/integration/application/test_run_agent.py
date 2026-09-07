@@ -825,6 +825,7 @@ def _spec(
     max_model_calls: int = 64,
     timeout_seconds: float | None = 1,
     sensitive_fixture: bool = False,
+    evaluation_label: str = "Target",
 ) -> object:
     version = ApplicationVersion(
         id="improved",
@@ -855,7 +856,7 @@ def _spec(
         eligible_persona_ids=("persona",),
         expected_evidence=(),
         evaluation_target=ScenarioEvaluationTarget(
-            labels_by_version={"improved": "Target"},
+            labels_by_version={"improved": evaluation_label},
             role="button",
         ),
     )
@@ -4125,3 +4126,148 @@ def test_ux_sample_validity_separates_human_and_automation_budgets(
     validity = _ux_sample_validity(outcome, terminal_reason)  # type: ignore[arg-type]
 
     assert validity == (expected_valid, expected_invalid_reason)
+
+
+@pytest.mark.asyncio
+async def test_target_interaction_counts_as_progress_and_allows_completion(
+    tmp_path: Path,
+) -> None:
+    """Clicking the evaluation target is progress even with no DOM change.
+
+    Regression: a successful click on the verifier target (e.g. a Download CV
+    link that changes nothing in the DOM) previously counted as no progress,
+    so three identical clicks abandoned the run before the model could
+    declare completion.
+    """
+
+    snapshot = _snapshot(
+        "viewport-1",
+        "target",
+        lineage_id="target-lineage",
+        label="Invite teammate",
+    )
+    snapshots = (snapshot, snapshot, snapshot, snapshot)
+    provider = FakeObservationProvider(
+        snapshots,
+        results=(
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
+        ),
+    )
+    bundles = FakeBundleFactory()
+    interact = CognitiveDecision(
+        action={"kind": "interact", "element_id": "target"},
+        reason="Click the target.",
+    )
+    complete = CognitiveDecision(
+        action={"kind": "complete"},
+        reason="Target is visible.",
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent((interact, interact, interact, complete)),
+        FakeVerifier((VerificationResult(verified=True),)),
+        bundles,
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    result = await agent.execute(
+        _spec(max_steps=10, timeout_seconds=None, evaluation_label="Invite teammate")
+    )
+
+    assert result.outcome.kind == "verified-success", result.terminal_reason
+    assert len(provider.executed) == 3
+    assert any(
+        isinstance(event, dict) and event.get("kind") == "target-interaction-progress"
+        for event in bundles.bundle.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_verifier_matches_nonbreaking_space_labels(tmp_path: Path) -> None:
+    """Verifier containment normalizes NBSP so real headings are not hidden."""
+
+    provider = FakeObservationProvider(
+        (_snapshot(label="Muslim\u00a0Pedia"),)
+    )
+    session = await provider.start_session(_config(_spec(), tmp_path))
+    verifier = WebVerifier(
+        VisibleResultVerifierSpec(
+            type="visible-result", text="Muslim Pedia", role="button"
+        ),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: (
+            capture.snapshot
+            if capture.snapshot is not None
+            else (_ for _ in ()).throw(ValueError("missing snapshot"))
+        ),
+    )
+
+    result = await verifier.verify(session)
+
+    assert result.verified
+    assert result.evidence_ids == (
+        "viewport:viewport-1-verification-1:element:target",
+    )
+
+
+class ContextRecordingCognitiveAgent(FakeCognitiveAgent):
+    def __init__(self, decisions: tuple[object, ...] = ()) -> None:
+        super().__init__(decisions)
+        self.contexts: list[CognitiveRunContext] = []
+
+    def update_context(self, context: CognitiveRunContext) -> None:
+        self.contexts.append(context)
+
+
+@pytest.mark.asyncio
+async def test_failed_complete_verification_is_reported_to_next_decision(
+    tmp_path: Path,
+) -> None:
+    """After an unverified completion, the model is told verified=false."""
+
+    provider = FakeObservationProvider(
+        tuple(_snapshot(f"viewport-{index}", "target", lineage_id="target-lineage") for index in range(1, 5)),
+        results=(
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
+            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
+        ),
+    )
+    bundles = FakeBundleFactory()
+    cognitive = ContextRecordingCognitiveAgent(
+        (
+            CognitiveDecision(action={"kind": "complete"}, reason="Claim."),
+            CognitiveDecision(
+                action={"kind": "interact", "element_id": "target"},
+                reason="Explore more.",
+            ),
+            CognitiveDecision(action={"kind": "wait"}, reason="Observe."),
+            CognitiveDecision(action={"kind": "wait"}, reason="Observe."),
+            CognitiveDecision(action={"kind": "wait"}, reason="Observe."),
+            CognitiveDecision(action={"kind": "wait"}, reason="Observe."),
+        )
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        FakeVerifier(()),
+        bundles,
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    result = await agent.execute(
+        _spec(max_steps=8, timeout_seconds=None, evaluation_label="Invite teammate")
+    )
+
+    assert result.outcome.kind == "budget-exhausted", result.terminal_reason
+    complete_feedback = [
+        context.previous_action_result
+        for context in cognitive.contexts
+        if isinstance(context.previous_action_result, dict)
+        and context.previous_action_result.get("verified") is False
+    ]
+    assert complete_feedback, "failed completion must surface verified=false"

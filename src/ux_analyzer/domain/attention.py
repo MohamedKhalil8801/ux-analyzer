@@ -357,9 +357,10 @@ class AttentionState:
         budgets = self.budgets.consume_steps()
         inspected_ids = self.inspected_ids
         if isinstance(action, InspectElement):
-            if action.element_id not in self.noticed_ids:
-                raise ValueError("cannot inspect unnoticed element")
-            if action.element_id not in self.remembered_ids:
+            if (
+                action.element_id not in self.remembered_ids
+                and action.element_id not in self.current_observation_ids
+            ):
                 raise ValueError("cannot inspect unremembered element")
             inspected_ids = inspected_ids | {action.element_id}
         if isinstance(action, InteractWithElement):

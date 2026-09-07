@@ -1348,6 +1348,64 @@ async def test_report_tool_call_retries_transient_invalid_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_report_tool_call_falls_back_on_bare_provider_400() -> None:
+    """Bare 400 with no diagnostic code skips to strict JSON-schema mode.
+
+    opencode go rejects the function-calling transport for some models with
+    a bodyless 400; the client must not retry the rejected transport and
+    instead degrade to strict json_schema mode, which the same endpoint
+    accepts and answers with clean JSON, instead of failing synthesis.
+    """
+
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(400, json={"object": "error"})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "complete": True,
+                                    "evidence_requests": [],
+                                    "findings": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 3, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+
+    result = await client.complete(
+        AnalystResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+
+    assert result.complete is True
+    assert "tools" in requests[0]
+    assert "tools" not in requests[1]
+    response_format = requests[1]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_report_tool_call_falls_back_to_locally_validated_plain_json() -> None:
     requests: list[dict[str, object]] = []
 
@@ -1749,7 +1807,7 @@ async def test_report_role_rejects_ambiguous_content_parts(
 @pytest.mark.parametrize(
     "content",
     [
-        '{"complete":true} {"complete":true}',
+        '{"complete":true} {"complete":false}',
         '{"complete":true} {"complete":}',
         '[{"complete":true,"evidence_requests":[],"candidate_findings":[]}]',
         '{"complete":true} []',
@@ -2458,9 +2516,69 @@ async def test_http_attachment_payload_uses_fresh_message_lists(
 
     assert first["messages"] is not second["messages"]
     assert first["messages"][0] is not second["messages"][0]
+    # Degraded report roles carry the explicit JSON-only re-anchoring message.
+    assert len(first["messages"]) == 2  # type: ignore[arg-type]
     first["messages"].append({"role": "assistant", "content": "mutated"})  # type: ignore[union-attr]
-    assert len(second["messages"]) == 1  # type: ignore[arg-type]
+    first["messages"][1]["content"] = "mutated"  # type: ignore[index]
+    assert len(second["messages"]) == 2  # type: ignore[arg-type]
+    assert str(second["messages"][-1]["content"]).startswith("Return exactly one")  # type: ignore[index,union-attr]
     await http_client.aclose()
+
+
+def test_report_json_accepts_identical_duplicated_object() -> None:
+    """A model that repeats its identical JSON object gets one accepted answer.
+
+    Two different adjacent JSON values stay rejected as ambiguous.
+    """
+
+    identical = json.dumps({"complete": True, "evidence_requests": [], "findings": []})
+    duplicated = identical + "\n" + identical
+    parsed = openai_adapter._report_json_object(duplicated)
+    assert parsed["complete"] is True
+
+    conflicting = '{"complete": true}\n{"complete": false}'
+    with pytest.raises(ValueError, match="exactly one JSON object"):
+        openai_adapter._report_json_object(conflicting)
+
+
+def test_report_json_tolerates_trailing_commas() -> None:
+    """Trailing commas in pretty-printed JSON are recovered, strings preserved."""
+
+    parsed = openai_adapter._report_json_object(
+        '{\n  "complete": true,\n  "evidence_requests": [],\n  "findings": [],\n}'
+    )
+    assert parsed["complete"] is True
+
+    tricky = '{"note": "keep this,}", "complete": true,}'
+    assert openai_adapter._report_json_object(tricky)["complete"] is True
+
+    with pytest.raises(ValueError, match="exactly one JSON object"):
+        openai_adapter._report_json_object(
+            '{"complete": true,} {"complete": false,}'
+        )
+
+
+def test_report_role_parses_content_alongside_null_tool_calls() -> None:
+    """Providers may emit ``tool_calls: null`` with valid plain JSON content.
+
+    Regression: an explicit null was treated as present-but-not-a-list, so a
+    perfectly good structured answer was rejected at content parsing.
+    """
+
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"complete": true, "evidence_requests": [], "findings": []}',
+                    "tool_calls": None,
+                }
+            }
+        ]
+    }
+
+    parsed = openai_adapter._structured_content(body, role=ModelRole.REPORT_ANALYST)
+
+    assert parsed["complete"] is True
 
 
 @pytest.mark.asyncio

@@ -1701,6 +1701,7 @@ def _suggestion_from_checkpoint(value: object) -> ScenarioSuggestion | None:
     if coverage_raw is not None and not isinstance(coverage_raw, list):
         return None
     timeout_raw = budget.get("timeout_seconds")
+    stall_raw = budget.get("stall_timeout_seconds")
     verifier_role = verifier.get("role")
     target_role = target.get("role")
     region_label = target.get("region_label")
@@ -1714,6 +1715,11 @@ def _suggestion_from_checkpoint(value: object) -> ScenarioSuggestion | None:
                 None
                 if timeout_raw is None
                 else float(cast("int | float | str", timeout_raw))
+            ),
+            stall_timeout_seconds=(
+                None
+                if stall_raw is None
+                else float(cast("int | float | str", stall_raw))
             ),
             max_model_calls=int(cast(int, budget.get("max_model_calls", 64))),
         )
@@ -2306,6 +2312,9 @@ def _explore_curated_to_full_scenario(
         "max_observations": _budget_int_if_set(budget.get("max_observations"), 12),
         "max_interactions": _budget_int_if_set(budget.get("max_interactions"), 8),
         "timeout_seconds": _budget_float_seconds(budget.get("timeout_seconds"), 120),
+        "stall_timeout_seconds": _budget_float_seconds(
+            budget.get("stall_timeout_seconds"), 90
+        ),
         "max_model_calls": _budget_int_if_set(budget.get("max_model_calls"), 32),
     }
     return {
@@ -2988,6 +2997,16 @@ def _print_matrix(
     else:
         timeout_summary = f"{next(iter(timeouts)):g}s"
     typer.echo(f"overall run timeout: {timeout_summary}")
+    stalls = {
+        spec.scenario.budget.stall_timeout_seconds for spec in matrix.specs
+    }
+    if stalls == {None}:
+        stall_summary = "none"
+    elif None in stalls or len(stalls) != 1:
+        stall_summary = "mixed"
+    else:
+        stall_summary = f"{next(iter(stalls)):g}s"
+    typer.echo(f"stall timeout (no-progress cutoff): {stall_summary}")
     typer.echo("matrix:")
     for (scenario, version, persona, policy, provider), count in sorted(cells.items()):
         typer.echo(
@@ -3337,7 +3356,7 @@ class _BundleFactory:
                 model_id=self._settings.cognitive_model,
                 endpoint_origin=endpoint_origin,
                 version=provider_version,
-                prompt_version="cognitive-v2",
+                prompt_version="cognitive-v3",
                 schema_version="cognitive-v1",
             )
         ]
@@ -3383,7 +3402,7 @@ class _BundleFactory:
                     if scent_enabled
                     else {}
                 ),
-                "cognitive": "cognitive-v2",
+                "cognitive": "cognitive-v3",
             },
             provider_versions={
                 "observation": "fixture-web-v1",

@@ -48,11 +48,11 @@ Task 13 fake acceptance passed its deterministic orchestration checks, including
 the exact eight-cell matrix, cache/fallback wiring, report redaction, and
 provider identity. It is synthetic acceptance, not real-model or human truth.
 Task 14 real CPU known-screenshot reached model session validation after the
-runtime install but failed before valid inference on symbolic input shape.
-DirectML hardware tests reported no available provider. No real latency, peak
-RSS, output parity, target ranking, completion, or paired regression result
-exists. Six inherited Task 12 CLI resume/completion/provider-comparison tests
-still fail; their impact remains a review blocker and is recorded in the ADR.
+runtime install; later real CPU runs (2026-09-07 addendum in ADR 0001) produced
+valid output and live focused comparisons completed for both providers with
+valid cells. DirectML hardware tests reported no available provider. The
+former six Task 12 CLI resume/completion/provider-comparison test failures are
+resolved (full non-live suite passes 2026-09-07).
 
 ## Pretrained Saliency Provider
 

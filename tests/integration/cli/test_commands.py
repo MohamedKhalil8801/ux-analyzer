@@ -301,6 +301,7 @@ def test_env_check_reports_api_mode_without_secret_value(
     monkeypatch.setenv("UXA_LLM_API_KEY", secret)
     monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
     monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_REPORT_MODEL", "report-model")
     monkeypatch.setenv("UXA_LLM_TIMEOUT_SECONDS", "30")
 
     result = runner.invoke(
@@ -323,6 +324,7 @@ def test_env_check_reports_codex_mode_without_api_key_claim(
     monkeypatch.delenv("UXA_LLM_API_KEY", raising=False)
     monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
     monkeypatch.setenv("UXA_COGNITIVE_MODEL", "cognitive-model")
+    monkeypatch.setenv("UXA_REPORT_MODEL", "report-model")
 
     result = runner.invoke(
         app,
@@ -910,11 +912,11 @@ def test_bundle_manifest_records_active_provider_and_prompt_provenance(
     assert manifest["endpoint_origin"] == "https://llm.example.test"
     assert manifest["provider_versions"]["models"] == "openai-compatible-v1"
     assert manifest["provider_versions"]["prominence"] == expected_provider_version
-    assert manifest["prompt_versions"]["cognitive"] == "cognitive-v2"
+    assert manifest["prompt_versions"]["cognitive"] == "cognitive-v3"
     cognitive_manifest = next(
         item for item in manifest["provider_manifests"] if item["role"] == "cognitive"
     )
-    assert cognitive_manifest["prompt_version"] == "cognitive-v2"
+    assert cognitive_manifest["prompt_version"] == "cognitive-v3"
     assert cognitive_manifest["schema_version"] == "cognitive-v1"
     assert all(
         item["provider_id"] == "openai-compatible-structured"
@@ -1254,7 +1256,7 @@ def test_full_list_bundle_manifest_omits_unused_scent_roles(tmp_path: Path) -> N
     writer.abort("test complete")
 
     assert manifest["model_ids"] == {"cognitive": "cognitive-model"}
-    assert manifest["prompt_versions"] == {"cognitive": "cognitive-v2"}
+    assert manifest["prompt_versions"] == {"cognitive": "cognitive-v3"}
     assert [item["role"] for item in manifest["provider_manifests"]] == ["cognitive"]
 
 

@@ -93,7 +93,8 @@ _DEFAULT_BUDGET = Budget(
     max_steps=20,
     max_observations=12,
     max_interactions=8,
-    timeout_seconds=120,
+    timeout_seconds=None,
+    stall_timeout_seconds=90,
     max_model_calls=32,
 )
 _PROMPT_VERSION = "exploration-synthesis-v1"
@@ -487,6 +488,56 @@ def _redacted(value: str) -> str:
     """Redact forbidden model narrative before strings enter domain objects."""
 
     return redact_forbidden_narrative(value.strip())
+
+
+def _normalized_anchor_text(value: str) -> str:
+    """Whitespace-normalize labels so NBSP variants cannot hide matches."""
+
+    return " ".join(value.replace("\u00a0", " ").split())
+
+
+def _verifier_anchor_supported(
+    verifier: ExplorationVerifierSchema, corpus: CrawlCorpus
+) -> bool:
+    """Require verifier anchors to exist in recorded crawl evidence.
+
+    At least one crawled page must render the verifier text together with
+    every ``all_of`` item. Role is deliberately ignored here: synthesized
+    scenarios never pin one, and runtime verification matches text against
+    any rendered element. This mirrors the runtime visible-result
+    containment check: it rejects phantom targets the explored pages never
+    show. Pages without recorded visible-element evidence cannot prove or
+    disprove an anchor, so a corpus with no such evidence passes without
+    rejection.
+    """
+
+    needle = _normalized_anchor_text(verifier.text)
+    if not needle:
+        return False
+    extra_needles = tuple(
+        _normalized_anchor_text(item) for item in verifier.all_of
+    )
+    supported_any = False
+    for page in corpus.pages:
+        visible = tuple(
+            _normalized_anchor_text(label) for label in page.visible_elements
+        )
+        if not visible:
+            continue
+        supported_any = True
+        headings = tuple(
+            _normalized_anchor_text(heading) for heading in page.headings
+        )
+        combined = (*headings, *visible)
+        if not any(
+            needle in text for text in combined
+        ):
+            continue
+        if all(
+            any(extra in text for text in combined) for extra in extra_needles
+        ):
+            return True
+    return not supported_any
 
 
 # ---------------------------------------------------------------------------
@@ -1089,6 +1140,13 @@ class ExplorationSynthesizer:
             if not schema.verifier.text.strip():
                 audits.append(_rejected_scenario_audit(schema, "empty-verifier-text"))
                 continue
+            # Anchors must exist in the crawl evidence so scenarios never target
+            # text the explored pages never render.
+            if not _verifier_anchor_supported(schema.verifier, corpus):
+                audits.append(
+                    _rejected_scenario_audit(schema, "verifier-anchor-unavailable")
+                )
+                continue
             # all_of unique already validated
             # evaluation_target label non-empty already
             # coverage unique already
@@ -1100,14 +1158,16 @@ class ExplorationSynthesizer:
         suggestions: list[ScenarioSuggestion] = []
         for schema in valid_schemas:
             try:
+                # Role is deliberately not pinned for synthesized scenarios:
+                # exploration evidence records DOM roles, while runtime
+                # verification and evaluation match rendered text against the
+                # accessibility role the observation adapter reports, and the
+                # two mappings can disagree. The general rule is "any kind of
+                # text"; hand-written scenarios may still pin a role.
                 verifier = VisibleResultVerifierSpec(
                     type="visible-result",
                     text=_redacted(schema.verifier.text),
-                    role=(
-                        _redacted(schema.verifier.role)
-                        if schema.verifier.role is not None
-                        else None
-                    ),
+                    role=None,
                     all_of=tuple(_redacted(item) for item in schema.verifier.all_of),
                 )
             except (ValueError, TypeError):
@@ -1119,11 +1179,7 @@ class ExplorationSynthesizer:
                     labels_by_version={
                         "live": _redacted(schema.evaluation_target.label)
                     },
-                    role=(
-                        _redacted(schema.evaluation_target.role)
-                        if schema.evaluation_target.role is not None
-                        else None
-                    ),
+                    role=None,
                     region_label=(
                         _redacted(schema.evaluation_target.region_label)
                         if schema.evaluation_target.region_label is not None
@@ -1155,6 +1211,7 @@ class ExplorationSynthesizer:
                 continue
             suggestions.append(suggestion)
 
+        # Dedup duplicate goals (case-insensitive, stripped); duplicates are
         # Dedup duplicate goals (case-insensitive, stripped); duplicates are
         # audited so the model's rejected output stays traceable.
         seen_goals: set[str] = set()

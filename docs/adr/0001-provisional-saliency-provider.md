@@ -1,6 +1,6 @@
 # ADR 0001: Provisional Saliency Provider
 
-- Status: Proposed
+- Status: Proposed (decision reaffirmed 2026-09-07; promotion still gated)
 - Date: 2026-08-05
 - Scope: Foveacast saliency integration and focused provider comparison
 - Decision owner: UX Analyzer maintainers
@@ -261,20 +261,18 @@ rtk uv run pytest tests/integration/cli/test_commands.py -q
 34 passed
 ```
 
-The final requested non-live, non-DirectML suite must still be rerun after this
-bounded correction batch. Earlier baseline recorded:
+The full non-live verification suite recorded 2026-09-07:
 
 ```text
-rtk uv run pytest -m "not live and not directml" -q
-6 failed, 628 passed, 4 deselected in 136.62s (0:02:16)
+rtk uv run pytest tests/unit tests/integration/application tests/integration/cli \
+  tests/integration/web tests/integration/reporting tests/integration/storage \
+  tests/integration/models -q
+1975 passed, 3 skipped
 ```
 
-Those baseline failures affected resume, direct/legacy bundle compatibility,
-completion aggregation, provider identity consistency, and provider comparison
-reporting. They are addressed by current focused tests; final suite evidence is
-still required. Existing fallback validity checks, report redaction/trust checks,
-and resource/format validation remain required; they do not substitute for
-missing real gate evidence.
+The earlier baseline (6 failed, 628 passed) affected resume, direct/legacy bundle
+compatibility, completion aggregation, provider identity consistency, and
+provider comparison reporting. Those failures are resolved.
 
 Final repository checks also recorded a pre-existing format gap:
 
@@ -292,6 +290,31 @@ exit code: 0
 This docs-only task did not normalize unrelated Python files. The format gap is
 not evidence for or against Foveacast quality, but remains a release concern.
 
+## 2026-09-07 review addendum
+
+Real evidence collected since the review trigger was written:
+
+1. Runtime: `saliency-cpu` installed (`onnxruntime 1.28.0`); `uxa models status
+   foveacast-v0.2.0 --provider cpu` reports `ready` for all six pinned
+   artifacts.
+2. Real CPU latency, measured on the pinned adapter with a run screenshot:
+   ~0.80-0.89 s per viewport across the three sequential sessions (warm),
+   ~0.66 s one-time cold load. Still no peak-RSS budget measurement.
+3. Live focused comparisons (heuristic and foveacast cells side by side) ran
+   three times against a real portfolio site. Final round: 8/8 finalized runs,
+   8/8 valid UX samples, 8/8 verified success, zero saliency fallbacks, zero
+   internal errors, zero provider-caused timeouts.
+4. The controlled prominence benchmark reran against the 24-case corpus:
+   recommendation `keep-both`; calibrated fusion again selected the heuristic
+   endpoint; neither pure provider dominates. See
+   [`docs/validation/2026-09-07-prominence-provider-benchmark/decision.md`](../validation/2026-09-07-prominence-provider-benchmark/decision.md).
+
+Decision impact: none — the decision is reaffirmed. `heuristic-prominence-v1`
+remains the default, Foveacast remains explicit opt-in as a second evidence
+channel (it contributes attention profiles and heatmaps the heuristic cannot),
+and hybrid stays disabled. Promotion to default additionally requires gate
+items 2 (full provenance persistence) and 5 (real latency/RSS budget).
+
 ## Decision and default
 
 | Item | Decision |
@@ -302,7 +325,7 @@ not evidence for or against Foveacast quality, but remains a release concern.
 | CPU | Required execution path; runtime installed, pinned known-screenshot gate passes |
 | DirectML | Optional Windows path; no hardware evidence |
 | Fallback | Operational failures continue with heuristic and invalidate learned comparison |
-| ADR status | Proposed; not Accepted |
+| ADR status | Proposed; decision reaffirmed 2026-09-07 (evidence: keep-both) |
 
 This is a conservative conditional decision. It does not promote Foveacast and
 does not alter provider defaults.
@@ -321,4 +344,6 @@ Reopen this ADR when all of these are available and reviewed:
 
 Only after that review may status become Accepted and a later ADR revision
 consider provisional default promotion. Human calibration and real-user claims
-still require separate evidence.
+still require separate evidence. The 2026-09-07 addendum satisfies items 1, 3,
+4, and 6 for the cells it covers; items 2 (provenance persistence), 5
+(latency/RSS budget), and 7 (DirectML hardware) remain open.

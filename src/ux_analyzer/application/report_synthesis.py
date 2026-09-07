@@ -464,6 +464,11 @@ def _safe_structural_diagnostics(value: Mapping[object, object]) -> dict[str, ob
         item = value.get(name)
         if type(item) is int and 0 <= item <= 1_000_000_000:
             result[name] = item
+    # Bounded static parse-failure message from the transport adapter; the
+    # adapter only emits short static ValueError strings, never content.
+    message = value.get("error_message")
+    if isinstance(message, str) and 0 < len(message) <= 160 and "\n" not in message:
+        result["error_message"] = message
     markers = value.get("response_content_markers")
     allowed_markers = {
         "missing",

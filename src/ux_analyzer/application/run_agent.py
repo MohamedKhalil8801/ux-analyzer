@@ -556,6 +556,166 @@ class _Execution:
     terminal_reason: str | None
 
 
+class _RunStalled(Exception):
+    """Raised when a run recorded no progress heartbeat within its stall budget."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class _WallDeadlineExceeded(Exception):
+    """Raised when the optional wall-clock budget cap elapsed.
+
+    Distinct from :class:`TimeoutError` so that internal timeouts from
+    providers or the browser are never mislabeled as run-budget timeouts.
+    """
+
+
+@dataclass(slots=True)
+class _ProgressHeartbeat:
+    """Tracks wall-clock time since the last recorded run progress.
+
+    A beat records forward motion (completed capture, model call, action, or
+    verification). The run watchdog treats a long silent stretch as a stall.
+    While an operation is in flight (a model call, browser action, capture,
+    or verification), the silent allowance is extended: slow-but-alive work
+    must not be misread as a hang.
+    """
+
+    loop: asyncio.AbstractEventLoop
+    stall_seconds: float | None
+    last_beat: float = field(init=False)
+    in_flight: int = 0
+
+    def __post_init__(self) -> None:
+        self.last_beat = self.loop.time()
+
+    def beat(self) -> None:
+        self.last_beat = self.loop.time()
+
+    def begin_operation(self) -> None:
+        self.in_flight += 1
+
+    def end_operation(self) -> None:
+        self.in_flight = max(0, self.in_flight - 1)
+
+    def idle_seconds(self) -> float:
+        return self.loop.time() - self.last_beat
+
+    def effective_stall_seconds(self) -> float | None:
+        if self.stall_seconds is None:
+            return None
+        if self.in_flight:
+            return max(self.stall_seconds, _INFLIGHT_STALL_SECONDS)
+        return self.stall_seconds
+
+    def stall_remaining(self) -> float | None:
+        if self.stall_seconds is None:
+            return None
+        return self.effective_stall_seconds() - self.idle_seconds()
+
+
+_INFLIGHT_STALL_SECONDS = 240.0
+
+
+@contextmanager
+def _operation_in_flight(
+    progress: _ProgressHeartbeat | None,
+) -> Iterator[None]:
+    """Mark one awaited operation as in-flight work, not a hang."""
+
+    if progress is not None:
+        progress.begin_operation()
+    try:
+        yield
+    finally:
+        if progress is not None:
+            progress.end_operation()
+
+
+def _beat(progress: _ProgressHeartbeat | None) -> None:
+    if progress is not None:
+        progress.beat()
+
+
+def _normalized_target_label(value: str) -> str:
+    """Whitespace-safe casefolded label for evaluation-target matching."""
+
+    return " ".join(value.replace("\u00a0", " ").split()).casefold()
+
+
+async def _cancel_and_wait(task: asyncio.Future[object]) -> None:
+    task.cancel()
+    try:
+        await task
+    except BaseException:  # noqa: BLE001 - cancellation result is irrelevant
+        pass
+
+
+async def _wait_for_run_progress(
+    run_task: asyncio.Future[_Execution],
+    *,
+    heartbeat: _ProgressHeartbeat,
+    wall_deadline: float | None,
+    stall_seconds: float | None,
+    loop: asyncio.AbstractEventLoop,
+) -> _Execution:
+    """Await the run task, ending it only when progress actually stops.
+
+    The task is never cancelled while it keeps producing progress
+    heartbeats. A wall-clock cap (``wall_deadline``) or a silent stretch
+    (``stall_seconds``) cancels it; otherwise the run continues.
+    """
+
+    if wall_deadline is None and stall_seconds is None:
+        return await run_task
+    poll_interval = 0.25
+    while True:
+        now = loop.time()
+        if wall_deadline is not None and now >= wall_deadline:
+            await _cancel_and_wait(run_task)
+            raise _WallDeadlineExceeded
+        remaining_stall = heartbeat.stall_remaining()
+        if remaining_stall is not None and remaining_stall <= 0:
+            await _cancel_and_wait(run_task)
+            raise _RunStalled(
+                f"stalled: no progress for {heartbeat.idle_seconds():.1f}s "
+                f"(stall_timeout_seconds={stall_seconds:g})"
+            )
+        wait = poll_interval
+        if wall_deadline is not None:
+            wait = min(wait, max(0.05, wall_deadline - now))
+        if remaining_stall is not None:
+            wait = min(wait, max(0.05, remaining_stall))
+        try:
+            done, _pending = await asyncio.wait({run_task}, timeout=wait)
+        except asyncio.CancelledError:
+            await _cancel_and_wait(run_task)
+            raise
+        if done:
+            return run_task.result()
+
+
+def _progress_remaining(
+    *,
+    wall_deadline: float | None,
+    heartbeat: _ProgressHeartbeat,
+    loop: asyncio.AbstractEventLoop,
+) -> float | None:
+    """Time budget left for terminal verification, or None when unbounded."""
+
+    caps: list[float] = []
+    if wall_deadline is not None:
+        caps.append(wall_deadline - loop.time())
+    stall_remaining = heartbeat.stall_remaining()
+    if stall_remaining is not None:
+        caps.append(stall_remaining)
+    if not caps:
+        return None
+    return min(caps)
+
+
 @dataclass(frozen=True, slots=True)
 class _CapturedViewport:
     """Local capture data passed to model providers without entering RunState."""
@@ -748,10 +908,11 @@ class RunAgent:
         )
         artifact_checksums: list[ArtifactChecksum] = []
         timeout_seconds = spec.scenario.budget.timeout_seconds
-        deadline = (
-            asyncio.get_running_loop().time() + timeout_seconds
-            if timeout_seconds is not None
-            else None
+        stall_seconds = spec.scenario.budget.stall_timeout_seconds
+        loop = asyncio.get_running_loop()
+        heartbeat = _ProgressHeartbeat(loop=loop, stall_seconds=stall_seconds)
+        wall_deadline = (
+            loop.time() + timeout_seconds if timeout_seconds is not None else None
         )
 
         try:
@@ -770,19 +931,38 @@ class RunAgent:
             )
 
             try:
-                run = self._run(spec, context, writer, artifact_checksums, attempt=attempt)
-                execution = (
-                    await run
-                    if timeout_seconds is None
-                    else await asyncio.wait_for(run, timeout=timeout_seconds)
+                run_task = asyncio.ensure_future(
+                    self._run(
+                        spec,
+                        context,
+                        writer,
+                        artifact_checksums,
+                        attempt=attempt,
+                        progress=heartbeat,
+                    )
                 )
-            except TimeoutError:
+                execution = await _wait_for_run_progress(
+                    run_task,
+                    heartbeat=heartbeat,
+                    wall_deadline=wall_deadline,
+                    stall_seconds=stall_seconds,
+                    loop=loop,
+                )
+            except _WallDeadlineExceeded:
                 execution = _Execution(
                     state=context.state,
                     outcome=TimedOut(),
                     verification=None,
                     agent_claimed_success=False,
                     terminal_reason="run timeout exceeded",
+                )
+            except _RunStalled as stalled:
+                execution = _Execution(
+                    state=context.state,
+                    outcome=TimedOut(),
+                    verification=None,
+                    agent_claimed_success=False,
+                    terminal_reason=stalled.reason,
                 )
             except asyncio.CancelledError:
                 raise
@@ -795,20 +975,24 @@ class RunAgent:
                     terminal_reason=_safe_error_message(error),
                 )
 
-            if deadline is None:
-                with profiler.measure("verification.terminal"):
-                    execution = await self._verify_terminal(
-                        execution,
-                        writer,
-                        context,
-                        artifact_checksums,
-                    )
-            else:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
+            with _operation_in_flight(heartbeat):
+                remaining = _progress_remaining(
+                    wall_deadline=wall_deadline,
+                    heartbeat=heartbeat,
+                    loop=loop,
+                )
+                if remaining is not None and remaining <= 0:
                     execution = _timed_out_execution(
                         execution, writer, context.state_event_ids
                     )
+                elif remaining is None:
+                    with profiler.measure("verification.terminal"):
+                        execution = await self._verify_terminal(
+                            execution,
+                            writer,
+                            context,
+                            artifact_checksums,
+                        )
                 else:
                     try:
                         with profiler.measure("verification.terminal"):
@@ -869,19 +1053,25 @@ class RunAgent:
         artifact_checksums: list[ArtifactChecksum],
         *,
         attempt: int = 0,
+        progress: _ProgressHeartbeat | None = None,
     ) -> _Execution:
         with context.profiler.measure("browser.start_session"):
             session = await self.observation_provider.start_session(
                 self.session_config_factory(spec)
             )
         context.session = session
+        _beat(progress)
         with context.profiler.measure("browser.reset"):
             await self.observation_provider.reset(session)
-        await self._capture(context, writer, artifact_checksums)
+        _beat(progress)
+        with _operation_in_flight(progress):
+            await self._capture(context, writer, artifact_checksums)
+        _beat(progress)
         rng = random.Random(spec.seed + attempt * 997)
         claimed_success = False
 
         while True:
+            _beat(progress)
             application_state = context.application_state
             if context.model_call_count >= spec.scenario.budget.max_model_calls:
                 writer.append_event(
@@ -975,9 +1165,13 @@ class RunAgent:
                 try:
                     context.model_call_count += 1
                     with context.profiler.measure("model.coarse_scent"):
-                        coarse_scent = await self.coarse_scent_evaluator.evaluate(
-                            spec.scenario.goal, snapshot
-                        )
+                        with _operation_in_flight(progress):
+                            coarse_scent = (
+                                await self.coarse_scent_evaluator.evaluate(
+                                    spec.scenario.goal, snapshot
+                                )
+                            )
+                    _beat(progress)
                 except ModelResponseValidationError as error:
                     return self._model_failure(
                         context, writer, error, claimed_success=claimed_success
@@ -1110,11 +1304,13 @@ class RunAgent:
                 try:
                     context.model_call_count += 1
                     with context.profiler.measure("model.full_scent"):
-                        full_scent = await self.full_scent_evaluator.evaluate(
-                            spec.scenario.goal,
-                            context.application_state.attention,
-                            snapshot,
-                        )
+                        with _operation_in_flight(progress):
+                            full_scent = await self.full_scent_evaluator.evaluate(
+                                spec.scenario.goal,
+                                context.application_state.attention,
+                                snapshot,
+                            )
+                    _beat(progress)
                 except ModelResponseValidationError as error:
                     return self._model_failure(
                         context, writer, error, claimed_success=claimed_success
@@ -1163,13 +1359,16 @@ class RunAgent:
             try:
                 if parallel_model_calls:
                     context.model_call_count += 2
-                    full_result, cognitive_result = await self._evaluate_parallel_calls(
-                        context,
-                        spec.scenario.goal,
-                        context.application_state.attention,
-                        snapshot,
-                        observation,
-                    )
+                    with _operation_in_flight(progress):
+                        full_result, cognitive_result = (
+                            await self._evaluate_parallel_calls(
+                                context,
+                                spec.scenario.goal,
+                                context.application_state.attention,
+                                snapshot,
+                                observation,
+                            )
+                        )
                     if isinstance(full_result, BaseException):
                         raise full_result
                     full_scent = cast(tuple[FullScent, ...], full_result)
@@ -1180,9 +1379,10 @@ class RunAgent:
                 else:
                     context.model_call_count += 1
                     with context.profiler.measure("model.cognitive"):
-                        decision = await self.cognitive_agent.decide(
-                            spec.scenario.goal, observation
-                        )
+                        with _operation_in_flight(progress):
+                            decision = await self.cognitive_agent.decide(
+                                spec.scenario.goal, observation
+                            )
             except ModelResponseValidationError as error:
                 return self._model_failure(
                     context, writer, error, claimed_success=claimed_success
@@ -1224,6 +1424,7 @@ class RunAgent:
                         claimed_success=claimed_success,
                     )
                 raise parallel_error
+            _beat(progress)
             decision_sequence = writer.append_event(
                 {
                     "kind": "decision-recorded",
@@ -1361,17 +1562,20 @@ class RunAgent:
                 )
                 _sync_run_attention(context)
                 context.previous_action = _safe_action(validated)
+                with context.profiler.measure("verification.run"):
+                    with _operation_in_flight(progress):
+                        verification = await self._verify(
+                            context, writer, artifact_checksums
+                        )
+                _beat(progress)
+                context.state = verification[0]
                 context.previous_action_result = {
                     "succeeded": True,
                     "state_changed": False,
                     "navigation_occurred": False,
                     "meaningful_progress": False,
+                    "verified": verification[1].verified,
                 }
-                with context.profiler.measure("verification.run"):
-                    verification = await self._verify(
-                        context, writer, artifact_checksums
-                    )
-                context.state = verification[0]
                 if verification[1].verified:
                     return _Execution(
                         state=context.state,
@@ -1424,9 +1628,11 @@ class RunAgent:
                 continue
 
             with context.profiler.measure("browser.execute"):
-                result = await self.observation_provider.execute(
-                    session, validated.platform_action
-                )
+                with _operation_in_flight(progress):
+                    result = await self.observation_provider.execute(
+                        session, validated.platform_action
+                    )
+            _beat(progress)
             context.state = _record(
                 context.state,
                 ActionExecuted(
@@ -1465,7 +1671,9 @@ class RunAgent:
                         "fixture_key": validated.fixture_key,
                     }
                 )
-            await self._capture(context, writer, artifact_checksums)
+            with _operation_in_flight(progress):
+                await self._capture(context, writer, artifact_checksums)
+            _beat(progress)
             current_snapshot = context.state.current_snapshot
             if current_snapshot is None:
                 raise RuntimeError("recapture did not produce a current snapshot")
@@ -1476,6 +1684,29 @@ class RunAgent:
                 navigation_occurred=result.navigation_occurred,
                 fixture_completed=fixture_completed,
             )
+            target_labels = {
+                _normalized_target_label(label)
+                for label in spec.scenario.evaluation_target.labels_by_version.values()
+            }
+            interacted_with_target = False
+            if action_element_id is not None and result.succeeded:
+                acted_label = None
+                try:
+                    acted_label = snapshot.element(action_element_id).label
+                except Exception:  # noqa: BLE001 - unknown targets stay unclassified
+                    acted_label = None
+                if acted_label is not None and (
+                    _normalized_target_label(acted_label) in target_labels
+                ):
+                    interacted_with_target = True
+                    meaningful_progress = True
+                    writer.append_event(
+                        {
+                            "kind": "target-interaction-progress",
+                            "element_id": action_element_id,
+                            "reason": "successful interaction with the evaluation target is progress",
+                        }
+                    )
             cycle_length = None
             if result.succeeded:
                 context.transition_history.append(
@@ -1545,9 +1776,11 @@ class RunAgent:
                 and not _is_visible_result_verifier(spec)
             ):
                 with context.profiler.measure("verification.run"):
-                    verification = await self._verify(
-                        context, writer, artifact_checksums
-                    )
+                    with _operation_in_flight(progress):
+                        verification = await self._verify(
+                            context, writer, artifact_checksums
+                        )
+                _beat(progress)
                 context.state = verification[0]
                 if verification[1].verified:
                     return _Execution(
@@ -1558,7 +1791,7 @@ class RunAgent:
                         terminal_reason=None,
                     )
 
-            if cycle_length is not None:
+            if cycle_length is not None and not interacted_with_target:
                 writer.append_event(
                     {
                         "kind": "repeated-action-cycle",
@@ -2899,7 +3132,7 @@ def _timed_out_execution(
         state=state,
         outcome=TimedOut(),
         verification=result,
-        terminal_reason="run timeout exceeded",
+        terminal_reason=execution.terminal_reason or "run timeout exceeded",
     )
 
 
