@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import shutil
 import sys
 from collections import Counter
@@ -302,6 +303,27 @@ def models_remove(
         typer.echo(f"{model_id}: already absent")
 
 
+def _site_slug(url: str) -> str:
+    """Sanitized hostname slug for nested default output folders."""
+
+    host = urlsplit(url).hostname or "site"
+    slug = re.sub(r"[^a-z0-9]+", "-", host.casefold()).strip("-")
+    return slug or "site"
+
+
+def _resolve_default_output(output: Path | None, project_id: str) -> Path:
+    """Nest benchmark outputs under the git-ignored ``reports/`` parent.
+
+    Each project gets its own folder so multiple experiments never collide
+    in one checkpoint root and stray outputs never scatter across the repo
+    root.
+    """
+
+    if output is not None:
+        return output
+    return Path("reports") / project_id
+
+
 @app.command()
 def validate(
     project: Path,
@@ -345,7 +367,11 @@ def fixture_serve(
 def run(
     project: Path,
     experiment: str = typer.Option("core-pair", "--experiment"),
-    output: Path = typer.Option(Path("reports"), "--output"),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        help="Output directory [default: reports/<project-id>]",
+    ),
     workers: int = typer.Option(1, "--workers"),
     run_count: int | None = typer.Option(None, "--run-count"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -403,7 +429,11 @@ def run_one(
     prominence_provider_id: str = typer.Option(
         "heuristic", "--prominence-provider", "--prominence-provider-id"
     ),
-    output: Path = typer.Option(Path("reports"), "--output"),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        help="Output directory [default: reports/<project-id>]",
+    ),
     fixture_origin: str = typer.Option("http://127.0.0.1:8000", "--fixture-origin"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     check_env: bool = typer.Option(False, "--check-env"),
@@ -424,6 +454,7 @@ def run_one(
         seed=seed,
         prominence_provider_id=prominence_provider_id,
     )
+    output = _resolve_default_output(output, matrix.loaded.project.id)
     settings: OpenAICompatibleSettings | None = None
     if check_env or not dry_run:
         settings = _model_settings_or_exit()
@@ -473,7 +504,11 @@ def run_one(
 def ablate(
     project: Path,
     experiment: str = typer.Option("ablations", "--experiment"),
-    output: Path = typer.Option(Path("reports"), "--output"),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        help="Output directory [default: reports/<project-id>]",
+    ),
     workers: int = typer.Option(1, "--workers"),
     run_count: int | None = typer.Option(None, "--run-count"),
     policy: list[str] = typer.Option([], "--policy"),
@@ -519,15 +554,16 @@ def ablate(
 @app.command()
 def report(
     bundle_root: Path,
-    output: Path = typer.Option(
-        Path("reports") / "report.html",
+    output: Path | None = typer.Option(
+        None,
         "--output",
-        help="Rendered report path (defaults inside the git-ignored reports/ dir)",
+        help="Rendered report path [default: <bundle-root>/report.html]",
     ),
 ) -> None:
     """Regenerate static report from finalized run bundles."""
+    resolved_output = output if output is not None else bundle_root / "report.html"
     try:
-        rendered = render_experiment_report(bundle_root, output)
+        rendered = render_experiment_report(bundle_root, resolved_output)
     except (FileNotFoundError, OSError, ValueError) as error:
         _exit_with_error(f"report failed: {error}")
     typer.echo(f"report generated: {rendered}")
@@ -742,7 +778,11 @@ def _print_slop_evidence(evidence: object) -> None:
 def synthesize(
     project: Path,
     experiment: str = typer.Option(..., "--experiment"),
-    output: Path = typer.Option(Path("reports"), "--output"),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        help="Output directory [default: reports/<project-id>]",
+    ),
 ) -> None:
     """Run report synthesis for finalized experiment evidence."""
     matrix = _resolve_matrix_or_exit(
@@ -751,6 +791,7 @@ def synthesize(
         run_count=None,
         policies=(),
     )
+    output = _resolve_default_output(output, matrix.loaded.project.id)
     _read_json_or_exit(output / "experiment.json")
     try:
         result = _finalized_experiment_result(matrix, output)
@@ -801,8 +842,13 @@ def explore(
     review_port: int | None = typer.Option(
         None, "--review-port", help="Review UI port 1-65535"
     ),
-    output: Path = typer.Option(
-        Path(".uxa-output"), "--output", help="Output directory"
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        help=(
+            "Output directory "
+            "[default: .uxa-output/explore/<site-slug from first starting URL>]"
+        ),
     ),
     project_opt: Path | None = typer.Option(
         None, "--project", help="Base project YAML (alternative to positional)"
@@ -934,6 +980,11 @@ def explore(
         )
     if effective_depth == 0 and effective_max_pages < len(normalized_starts):
         _exit_with_error("max_pages must be >= number of start URLs when depth is 0")
+    # Nest exploration workspaces under one git-ignored parent so per-site
+    # folders never scatter across the repository root.
+    output = output or (
+        Path(".uxa-output") / "explore" / _site_slug(normalized_starts[0])
+    )
     # Dry-run: print crawl matrix + synthesis token estimate without browser/model
     if dry_run:
         # Validate model not required, just print
@@ -2553,7 +2604,7 @@ def _run_experiment_command(
     *,
     project: Path,
     experiment_id: str,
-    output: Path,
+    output: Path | None,
     workers: int,
     run_count: int | None,
     policies: Sequence[str],
@@ -2583,6 +2634,7 @@ def _run_experiment_command(
         policies=policies,
         extra_resource_origins=extra_resource_origins or None,
     )
+    output = _resolve_default_output(output, matrix.loaded.project.id)
     settings: OpenAICompatibleSettings | None = None
     if check_env or not dry_run:
         # Report synthesis is best-effort. Keep missing report-role settings

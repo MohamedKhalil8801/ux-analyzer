@@ -173,17 +173,18 @@ cython_debug/
 # Local Codebase Memory index
 .codebase-memory/
 
-# Local benchmark and live smoke output
+# Generated local output parents — every CLI output nests inside one of these
+# so per-run folders never scatter across the repository root:
+# - .uxa-output/explore/<site-slug>/  exploration workspaces
+# - .uxa-output/fix-export-<ts>/     generated fix-export packages
+# - reports/<project-id>/            benchmark bundles, reports, synthesis
+# - .uxa-live-smoke*/                live smoke output
 .uxa-output/
 .uxa-live-smoke/
 .uxa-live-smoke-*/
-
-# Generated fix-export packages (default now lives under .uxa-output/)
-fix-export-*/
 /fix-export-verification/
-
-# Local exploration scratch
-/.portfolio-explore/
+fix-export-*/
+/reports/
 
 # PyPI configuration file
 .pypirc
@@ -194,13 +195,11 @@ fix-export-*/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-/reports
-/.uxa-explore
-
-# Impeccable design-tool artifacts
-.impeccable/review/
-.impeccable/config.local.json
 /.claude
 /.codex
 /.cursor
 /.grok
+
+# Impeccable design-tool artifacts
+.impeccable/review/
+.impeccable/config.local.json
