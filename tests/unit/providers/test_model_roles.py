@@ -116,6 +116,7 @@ def test_cognitive_prompt_requires_grounded_navigation() -> None:
     assert "Do not infer unseen destinations" in prompt
     assert "unrelated navigation" in prompt
     assert "state_changed" in prompt
+    assert "target_engaged" in prompt
     assert "complete" in prompt
     assert "report-result" not in prompt
     assert "expected answer" not in prompt.lower()

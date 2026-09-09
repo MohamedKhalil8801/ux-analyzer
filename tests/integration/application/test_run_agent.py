@@ -4336,3 +4336,58 @@ async def test_failed_complete_verification_is_reported_to_next_decision(
         and context.previous_action_result.get("verified") is False
     ]
     assert complete_feedback, "failed completion must surface verified=false"
+
+@pytest.mark.asyncio
+async def test_target_interaction_surfaces_target_engaged_to_next_decision(
+    tmp_path: Path,
+) -> None:
+    """Acting on the goal's own control is reported as target_engaged.
+
+    Regression: a "Download CV" link whose click leaves the page unchanged
+    reported only state_changed: false, so the model read a successful
+    interaction with the target as a failed attempt and looped on it until
+    the run was abandoned, never declaring completion.
+    """
+
+    snapshot = _snapshot(
+        "viewport-1",
+        "target",
+        lineage_id="target-lineage",
+        label="Invite teammate",
+    )
+    provider = FakeObservationProvider(
+        (snapshot, snapshot, snapshot, snapshot),
+        results=(PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),),
+    )
+    cognitive = ContextRecordingCognitiveAgent(
+        (
+            CognitiveDecision(
+                action={"kind": "interact", "element_id": "target"},
+                reason="Click the target.",
+            ),
+            CognitiveDecision(action={"kind": "wait"}, reason="Observe."),
+        )
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        FakeVerifier(()),
+        FakeBundleFactory(),
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    await agent.execute(
+        _spec(max_steps=8, timeout_seconds=None, evaluation_label="Invite teammate")
+    )
+
+    engaged = [
+        context.previous_action_result
+        for context in cognitive.contexts
+        if isinstance(context.previous_action_result, dict)
+        and context.previous_action_result.get("target_engaged") is True
+    ]
+    assert engaged, "interacting with the evaluation target must report target_engaged"
+    assert engaged[0]["succeeded"] is True
+    # The semantic truth is still reported alongside it.
+    assert engaged[0]["state_changed"] is False

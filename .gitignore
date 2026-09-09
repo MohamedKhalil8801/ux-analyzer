@@ -199,6 +199,7 @@ fix-export-*/
 /.codex
 /.cursor
 /.grok
+/.workbuddy-ai
 
 # Impeccable design-tool artifacts
 .impeccable/review/

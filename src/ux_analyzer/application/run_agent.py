@@ -1814,6 +1814,12 @@ class RunAgent:
                 "navigation_occurred": result.navigation_occurred,
                 "meaningful_progress": meaningful_progress,
                 "error": result.error,
+                # The control that carries the goal was acted on. Its outcome
+                # is frequently external to the page (a download, a mailto, a
+                # new tab), so the interface legitimately stays unchanged and
+                # the model is told so rather than left to read
+                # state_changed: false as a failed attempt.
+                "target_engaged": interacted_with_target,
             }
             if deferred_abandonment:
                 context.no_progress_count += 1
