@@ -4391,3 +4391,76 @@ async def test_target_interaction_surfaces_target_engaged_to_next_decision(
     assert engaged[0]["succeeded"] is True
     # The semantic truth is still reported alongside it.
     assert engaged[0]["state_changed"] is False
+
+class CompletesOnTargetEngaged(FakeCognitiveAgent):
+    """Stands in for the cognitive-v3 rule: complete once the goal control
+    has been engaged, instead of reading state_changed: false as a failure
+    and retrying the same click until the run is abandoned.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(())
+        self.contexts: list[CognitiveRunContext] = []
+
+    def update_context(self, context: CognitiveRunContext) -> None:
+        self.contexts.append(context)
+
+    async def decide(self, goal: str, observation: ProgressiveObservation) -> object:
+        feedback = self.contexts[-1].previous_action_result if self.contexts else None
+        if isinstance(feedback, dict) and feedback.get("target_engaged") is True:
+            return CognitiveDecision(action={"kind": "complete"}, reason="Goal control acted on.")
+        return CognitiveDecision(
+            action={"kind": "interact", "element_id": "target"},
+            reason="Click the goal control.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_goal_target_click_completes_without_a_page_change(
+    tmp_path: Path,
+) -> None:
+    """A run reaches completion after clicking the goal's own control.
+
+    Replay of complete-download-cv: the click succeeds, the page
+    legitimately does not change, and target_engaged is the only signal
+    telling the next decision that the goal was satisfied. Without it the
+    model re-reads state_changed: false as a failed attempt, retries the
+    same control, trips the anti-repeat guard, and the run ends abandoned
+    without ever proposing complete.
+    """
+
+    snapshot = _snapshot(
+        "viewport-1",
+        "target",
+        lineage_id="target-lineage",
+        label="Download CV",
+    )
+    provider = FakeObservationProvider(
+        (snapshot, snapshot, snapshot),
+        results=(PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),),
+    )
+    cognitive = CompletesOnTargetEngaged()
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        FakeVerifier((VerificationResult(verified=True, evidence_ids=("v1",)),)),
+        FakeBundleFactory(),
+        result_evaluator=lambda candidate: replace(
+            candidate,
+            metrics=evaluate_run(candidate, EvaluationTarget("target")),
+        ),
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    result = await agent.execute(
+        _spec(max_steps=8, timeout_seconds=None, evaluation_label="Download CV")
+    )
+
+    assert result.outcome.kind == "verified-success", result.terminal_reason
+    assert result.agent_claimed_success is True
+    assert any(
+        isinstance(context.previous_action_result, dict)
+        and context.previous_action_result.get("target_engaged") is True
+        for context in cognitive.contexts
+    )
