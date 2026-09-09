@@ -2295,6 +2295,15 @@ def _budget_float_seconds(value: Any, default: float) -> float:
     return default if seconds == 0 else seconds
 
 
+def _budget_float_seconds_or_none(value: Any) -> float | None:
+    """Parsed seconds or None; runs without a wall cap rely on stall cutoffs."""
+
+    if value is None or value == "":
+        return None
+    seconds = float(value)
+    return None if seconds == 0 else seconds
+
+
 def _explore_curated_to_full_scenario(
     item: dict[str, Any], app_version_id: str, eligible_personas: tuple[str, ...]
 ) -> dict[str, Any]:
@@ -2360,9 +2369,12 @@ def _explore_curated_to_full_scenario(
     )
     budget_norm: dict[str, Any] = {
         "max_steps": _budget_int_from_text(budget.get("max_steps", ""), 20),
-        "max_observations": _budget_int_if_set(budget.get("max_observations"), 12),
+        "max_observations": _budget_int_if_set(budget.get("max_observations"), 18),
         "max_interactions": _budget_int_if_set(budget.get("max_interactions"), 8),
-        "timeout_seconds": _budget_float_seconds(budget.get("timeout_seconds"), 120),
+        # Explorer-generated scenarios run progress-based: no wall-clock cap.
+        "timeout_seconds": _budget_float_seconds_or_none(
+            budget.get("timeout_seconds")
+        ),
         "stall_timeout_seconds": _budget_float_seconds(
             budget.get("stall_timeout_seconds"), 90
         ),

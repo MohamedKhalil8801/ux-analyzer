@@ -772,6 +772,7 @@ class _RunContext:
     consecutive_action_count: int = 0
     no_progress_count: int = 0
     deferred_wait_pending: bool = False
+    no_change_interaction_element_id: object | None = None
     transition_history: list[TransitionProgressSignature] = field(
         default_factory=lambda: list[TransitionProgressSignature]()
     )
@@ -1447,6 +1448,74 @@ class RunAgent:
             if claim:
                 writer.append_event({"kind": "agent-claim", "claimed_success": True})
 
+            # Anti-repeat guard: the cognitive prompt forbids repeating a
+            # semantic action whose previous execution left the interface
+            # unchanged; the boundary enforces it with explicit rejection
+            # feedback instead of silently executing a no-op again. Element
+            # identity uses the snapshot-stable semantic identity, not the
+            # per-capture element ID (recaptures re-label the same node).
+            proposed_action = getattr(decision, "action", decision)
+            proposed_kind = getattr(proposed_action, "kind", None)
+            proposed_element_id = getattr(proposed_action, "element_id", None)
+            if (
+                isinstance(proposed_element_id, str)
+                and context.no_change_interaction_element_id is not None
+                and proposed_kind
+                in {"interact", "interact-with-element", "type-fixture"}
+            ):
+                try:
+                    proposed_identity = element_progress_identity(
+                        snapshot, snapshot.element(proposed_element_id)
+                    )
+                except (KeyError, ValueError):
+                    proposed_identity = None
+                if proposed_identity == context.no_change_interaction_element_id:
+                    writer.append_event(
+                        {
+                            "kind": "action-rejected",
+                            "element_id": proposed_element_id,
+                            "reason": "previous interaction on this element succeeded without changing the interface; repeating it cannot progress the task",
+                        }
+                    )
+                    # Surface the rejection in the next cognitive decision's
+                    # previous-action feedback so the model adapts instead of
+                    # insisting on the same no-op.
+                    context.previous_action = {
+                        "kind": str(proposed_kind),
+                        "element_id": proposed_element_id,
+                    }
+                    context.previous_action_result = {
+                        "succeeded": False,
+                        "state_changed": False,
+                        "navigation_occurred": False,
+                        "meaningful_progress": False,
+                        "error": (
+                            "repeat rejected: the previous interaction on "
+                            "this element produced no interface change"
+                        ),
+                    }
+                    context.application_state = _require_application_state(
+                        apply_failure(
+                            context.application_state,
+                            reason="repeated-no-change-interaction",
+                            config=self.state_update_config,
+                            memory_policy=self.memory_policy,
+                        )
+                    )
+                    _sync_run_attention(context)
+                    if context.application_state.abandoned:
+                        return _Execution(
+                            state=context.state,
+                            outcome=AgentAbandoned(
+                                reason=context.application_state.abandonment_reason
+                                or "invalid action threshold crossed"
+                            ),
+                            verification=None,
+                            agent_claimed_success=claimed_success,
+                            terminal_reason=context.application_state.abandonment_reason,
+                        )
+                    continue
+
             deferred_abandonment = False
             try:
                 with context.profiler.measure("action.validate"):
@@ -1625,6 +1694,7 @@ class RunAgent:
                 context.no_progress_count = 0
                 context.last_action_fingerprint = None
                 context.consecutive_action_count = 0
+                context.no_change_interaction_element_id = None
                 continue
 
             with context.profiler.measure("browser.execute"):
@@ -1699,7 +1769,6 @@ class RunAgent:
                     _normalized_target_label(acted_label) in target_labels
                 ):
                     interacted_with_target = True
-                    meaningful_progress = True
                     writer.append_event(
                         {
                             "kind": "target-interaction-progress",
@@ -1720,6 +1789,25 @@ class RunAgent:
                 cycle_length = repeated_cycle_length(context.transition_history)
             else:
                 context.transition_history.clear()
+            if (
+                result.succeeded
+                and isinstance(validated.domain_action, InteractWithElement)
+                and not result.navigation_occurred
+                and not meaningful_progress
+            ):
+                # The adapter's state_changed heuristic can report True for
+                # focus/scroll side effects; semantic snapshot comparison is
+                # the reliable "interface did not change" signal.
+                try:
+                    context.no_change_interaction_element_id = (
+                        element_progress_identity(
+                            snapshot, snapshot.element(action_element_id)
+                        )
+                    )
+                except (KeyError, ValueError):
+                    context.no_change_interaction_element_id = None
+            else:
+                context.no_change_interaction_element_id = None
             context.previous_action_result = {
                 "succeeded": result.succeeded,
                 "state_changed": result.state_changed,
@@ -1746,6 +1834,20 @@ class RunAgent:
                             "reason": "abandonment was deferred for bounded re-observation",
                         }
                     )
+            elif interacted_with_target:
+                # A successful interaction with the evaluation target never
+                # reads as "stuck": the no-progress counter resets so the run
+                # cannot be abandoned for absent app feedback. Repeated
+                # identical target clicks still accumulate their own
+                # patience counter (see stalled_out below) so a loop stays
+                # bounded. The model still sees the semantic truth
+                # (state_changed) through previous_action_result above.
+                context.no_progress_count = 0
+                if context.last_action_fingerprint == action_fingerprint:
+                    context.consecutive_action_count += 1
+                else:
+                    context.last_action_fingerprint = action_fingerprint
+                    context.consecutive_action_count = 1
             elif meaningful_progress:
                 context.no_progress_count = 0
                 context.last_action_fingerprint = None
@@ -1809,8 +1911,10 @@ class RunAgent:
                     terminal_reason="repeated semantic action cycle detected",
                 )
 
+            target_patience = 5 if interacted_with_target else 3
             stalled_out = (
-                context.consecutive_action_count >= 3 or context.no_progress_count >= 5
+                context.consecutive_action_count >= target_patience
+                or context.no_progress_count >= 5
             )
             if not meaningful_progress and stalled_out:
                 if context.consecutive_action_count >= 3:

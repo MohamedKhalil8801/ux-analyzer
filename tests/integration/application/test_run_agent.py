@@ -3070,10 +3070,10 @@ async def test_finite_timeout_bounds_terminal_verification(tmp_path: Path) -> No
         ),
         BlockingVerifier((VerificationResult(verified=False),)),
         bundles,
-        timeout_seconds=0.01,
+        timeout_seconds=0.5,
     )
 
-    result = await agent.execute(_spec(timeout_seconds=0.01))
+    result = await agent.execute(_spec(timeout_seconds=0.5))
 
     assert result.outcome.kind == "agent-abandoned"
     assert result.verification.verified is False
@@ -4132,12 +4132,14 @@ def test_ux_sample_validity_separates_human_and_automation_budgets(
 async def test_target_interaction_counts_as_progress_and_allows_completion(
     tmp_path: Path,
 ) -> None:
-    """Clicking the evaluation target is progress even with no DOM change.
+    """The first target click is patience; identical repeats get rejected.
 
     Regression: a successful click on the verifier target (e.g. a Download CV
     link that changes nothing in the DOM) previously counted as no progress,
     so three identical clicks abandoned the run before the model could
-    declare completion.
+    declare completion. Now the first click is protected from no-progress
+    abandonment, identical repeats are rejected with explicit feedback, and
+    the model still gets its chance to declare completion.
     """
 
     snapshot = _snapshot(
@@ -4149,11 +4151,7 @@ async def test_target_interaction_counts_as_progress_and_allows_completion(
     snapshots = (snapshot, snapshot, snapshot, snapshot)
     provider = FakeObservationProvider(
         snapshots,
-        results=(
-            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
-            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
-            PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),
-        ),
+        results=(PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),),
     )
     bundles = FakeBundleFactory()
     interact = CognitiveDecision(
@@ -4178,11 +4176,78 @@ async def test_target_interaction_counts_as_progress_and_allows_completion(
     )
 
     assert result.outcome.kind == "verified-success", result.terminal_reason
-    assert len(provider.executed) == 3
+    assert len(provider.executed) == 1
+    rejections = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict) and event.get("kind") == "action-rejected"
+    ]
+    assert len(rejections) == 2
     assert any(
         isinstance(event, dict) and event.get("kind") == "target-interaction-progress"
         for event in bundles.bundle.events
     )
+
+
+@pytest.mark.asyncio
+async def test_no_change_interaction_repeat_is_rejected_with_feedback(
+    tmp_path: Path,
+) -> None:
+    """Repeating an interaction that changed nothing is rejected at the boundary.
+
+    The first click succeeds silently (no interface change). The model repeats
+    it; the boundary rejects the repeat with explicit feedback instead of
+    silently executing another no-op, and the platform executes it only once.
+    """
+
+    snapshot = _snapshot(
+        "viewport-1",
+        "target",
+        lineage_id="target-lineage",
+        label="Invite teammate",
+    )
+    snapshots = (snapshot, snapshot, snapshot, snapshot)
+    provider = FakeObservationProvider(
+        snapshots,
+        results=(PlatformActionResult(True, "http://fixture.test", 1, state_changed=False),),
+    )
+    bundles = FakeBundleFactory()
+    cognitive = ContextRecordingCognitiveAgent(
+        (
+            CognitiveDecision(
+                action={"kind": "interact", "element_id": "target"},
+                reason="Click the target.",
+            ),
+            CognitiveDecision(
+                action={"kind": "interact", "element_id": "target"},
+                reason="Click it again.",
+            ),
+            CognitiveDecision(action={"kind": "complete"}, reason="Done."),
+        )
+    )
+    agent = _agent(
+        tmp_path,
+        provider,
+        cognitive,
+        FakeVerifier((VerificationResult(verified=True),)),
+        bundles,
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    result = await agent.execute(
+        _spec(max_steps=8, timeout_seconds=None, evaluation_label="Invite teammate")
+    )
+
+    assert result.outcome.kind == "verified-success", result.terminal_reason
+    assert len(provider.executed) == 1
+    rejections = [
+        event
+        for event in bundles.bundle.events
+        if isinstance(event, dict)
+        and event.get("kind") == "action-rejected"
+        and "previous interaction" in event.get("reason", "")
+    ]
+    assert len(rejections) == 1
 
 
 @pytest.mark.asyncio
