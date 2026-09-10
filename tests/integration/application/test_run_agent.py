@@ -3349,6 +3349,79 @@ async def test_visible_verification_capture_is_persisted_once_with_exact_screens
 
 
 @pytest.mark.asyncio
+async def test_visible_verifier_falls_back_to_page_text_when_viewport_snapshot_misses_target(
+    tmp_path: Path,
+) -> None:
+    """Regression: the discover-muslim-pedia-features scenario reached the
+    Muslim Pedia section header, but the verifier text lived in a feature
+    card several viewports below. The viewport snapshot did not contain the
+    text, yet the rendered page text did. The page-text fallback unblocks
+    such scenarios without weakening the viewport-snapshot primary path.
+    """
+
+    class PageTextProvider(FakeObservationProvider):
+        async def capture(self, session: SessionHandle) -> ObservationCapture:  # type: ignore[override]
+            base = await super().capture(session)
+            page_text = (
+                "ACT 01 Muslim Pedia An all-in-one Muslim app for iOS. "
+                "Rendering engine A live vector Quran engine Ported "
+                "DigitalKhatt, a TypeScript calligraphy engine, to Flutter."
+            )
+            return replace(base, page_text=page_text)
+
+    spec = _spec()
+    provider = PageTextProvider((_snapshot(),))
+    session = await provider.start_session(_config(spec, tmp_path))
+    verifier = WebVerifier(
+        VisibleResultVerifierSpec(
+            type="visible-result", text="A live vector Quran engine"
+        ),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot
+        if capture.snapshot is not None
+        else (_ for _ in ()).throw(ValueError("missing snapshot")),
+    )
+
+    result = await verifier.verify(session)
+
+    assert result.verified
+    assert any(eid.endswith(":page-text") for eid in result.evidence_ids)
+    assert result.details == "page-text result matched"
+
+
+@pytest.mark.asyncio
+async def test_visible_verifier_does_not_use_page_text_when_target_is_absent(
+    tmp_path: Path,
+) -> None:
+    """The page-text fallback must not promote verification when the target
+    is genuinely absent from the document.
+    """
+
+    class PageTextProvider(FakeObservationProvider):
+        async def capture(self, session: SessionHandle) -> ObservationCapture:  # type: ignore[override]
+            base = await super().capture(session)
+            return replace(base, page_text="Header Subhead footer text")
+
+    spec = _spec()
+    provider = PageTextProvider((_snapshot(),))
+    session = await provider.start_session(_config(spec, tmp_path))
+    verifier = WebVerifier(
+        VisibleResultVerifierSpec(
+            type="visible-result", text="Nowhere to be found"
+        ),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot
+        if capture.snapshot is not None
+        else (_ for _ in ()).throw(ValueError("missing snapshot")),
+    )
+
+    result = await verifier.verify(session)
+
+    assert not result.verified
+    assert result.details == "persona-visible result not found"
+
+
+@pytest.mark.asyncio
 async def test_verification_capture_reusing_viewport_id_gets_distinct_identity(
     tmp_path: Path,
 ) -> None:

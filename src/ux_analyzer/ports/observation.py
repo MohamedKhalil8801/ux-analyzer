@@ -110,6 +110,11 @@ class ObservationCapture:
     viewport: ViewportSize
     screenshot: bytes
     snapshot: ViewportSnapshot | None = None
+    # Full rendered text of the document (i.e. ``document.body.innerText`` at
+    # capture time). Optional so existing tests / fakes can leave it unset;
+    # verifiers that need to look beyond the current viewport use it as a
+    # "page text" fallback when the viewport snapshot alone does not match.
+    page_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

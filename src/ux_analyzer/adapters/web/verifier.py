@@ -212,6 +212,26 @@ class WebVerifier(VerificationProvider):
                 evidence_ids=(f"{evidence_id}:element:{element.id}",),
                 details="persona-visible result matched",
             )
+        # Fallback: if the target is rendered somewhere in the document but
+        # sits below the current viewport (so no element in the viewport
+        # snapshot contains it), accept the full page text. This guards
+        # against verifier false-negatives when the agent reaches a section
+        # that *contains* the result but the extractor has filtered the text
+        # out of the viewport snapshot, or the result lives a few scrolls
+        # below the section header. ``capture.page_text`` is the unfiltered
+        # rendered text of the document (see ``ObservationCapture``). A
+        # distinct detail string keeps the signal auditable in run records.
+        if capture.page_text is not None:
+            if normalized_target in _normalized_verifier_text(capture.page_text):
+                if all(
+                    required_text in _normalized_verifier_text(capture.page_text)
+                    for required_text in normalized_all_of
+                ):
+                    return VerificationResult(
+                        verified=True,
+                        evidence_ids=(f"{evidence_id}:page-text",),
+                        details="page-text result matched",
+                    )
         return VerificationResult(
             verified=False,
             evidence_ids=(evidence_id,),

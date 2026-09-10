@@ -301,6 +301,20 @@ class PlaywrightSessionAdapter:
         try:
             screenshot = await managed.page.screenshot(type="png")
             managed.capture_index += 1
+            # ``document.body.innerText`` returns the rendered text as the user
+            # would see it if they scrolled, which is exactly the "page text"
+            # the verifier needs when the visible-result text lives below the
+            # current viewport. ``display: none`` content is excluded, but
+            # off-screen content is included. The evaluate is wrapped so a
+            # navigation race or page eval failure cannot break capture — the
+            # viewport snapshot alone remains authoritative.
+            page_text: str | None
+            try:
+                page_text = await managed.page.evaluate(
+                    "() => document.body && document.body.innerText"
+                )
+            except BaseException:  # noqa: BLE001 - capture must not fail
+                page_text = None
             return ObservationCapture(
                 session_id=session.session_id,
                 viewport_id=f"{session.session_id}-viewport-{managed.capture_index}",
@@ -308,6 +322,7 @@ class PlaywrightSessionAdapter:
                 title=await managed.page.title(),
                 viewport=session.viewport,
                 screenshot=screenshot,
+                page_text=page_text if isinstance(page_text, str) else None,
             )
         except asyncio.CancelledError as cancellation:
             try:

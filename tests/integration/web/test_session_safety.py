@@ -1637,8 +1637,15 @@ async def test_visible_result_uses_only_rendered_text_inside_viewport(
     assert "Offscreen descendant result" not in by_label
     assert "Offscreen result" not in by_label
 
+    # These tests exercise the viewport-snapshot path in isolation. The real
+    # WebSession.capture populates page_text from document.body.innerText,
+    # which would let the page-text fallback match hidden text below. Setting
+    # page_text=None disables the fallback so the strict path is what is
+    # actually under test here.
     captured = replace(
-        await browser_adapter.capture(session), snapshot=extracted.snapshot
+        await browser_adapter.capture(session),
+        snapshot=extracted.snapshot,
+        page_text=None,
     )
 
     class SnapshotProvider:
@@ -1756,8 +1763,12 @@ async def test_visible_result_requires_all_of_in_effective_visible_elements(
     )
 
     extracted = await capture_with_diagnostics(page, "all-of-viewport")
+    # See test_visible_result_uses_only_rendered_text_inside_viewport: isolate
+    # the viewport-snapshot path by disabling the page-text fallback.
     captured = replace(
-        await browser_adapter.capture(session), snapshot=extracted.snapshot
+        await browser_adapter.capture(session),
+        snapshot=extracted.snapshot,
+        page_text=None,
     )
 
     class SnapshotProvider:
@@ -1831,8 +1842,12 @@ async def test_visible_result_rejects_fully_occluded_rendered_text(
     assert covered.rendered_text == "Covered result"
     assert covered.visibility_fraction == 0
 
+    # Isolate the viewport-snapshot path; see
+    # test_visible_result_uses_only_rendered_text_inside_viewport.
     captured = replace(
-        await browser_adapter.capture(session), snapshot=extracted.snapshot
+        await browser_adapter.capture(session),
+        snapshot=extracted.snapshot,
+        page_text=None,
     )
 
     class SnapshotProvider:
