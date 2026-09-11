@@ -204,3 +204,4 @@ fix-export-*/
 # Impeccable design-tool artifacts
 .impeccable/review/
 .impeccable/config.local.json
+/.freebuff
