@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +27,7 @@ from ux_analyzer.adapters.web.network_policy import (
     NetworkPolicy,
     abort_route,
 )
+from ux_analyzer.analysis.page_capture import TAP_INSTRUMENTATION_JS
 from ux_analyzer.ports.artifacts import BundleStateError, sanitize_artifact_content
 from ux_analyzer.ports.observation import (
     BackAction,
@@ -211,6 +212,7 @@ class PlaywrightSessionAdapter:
                 })();
                 """
             )
+            await context.add_init_script(TAP_INSTRUMENTATION_JS)
             await context.tracing.start(
                 screenshots=True,
                 snapshots=True,
@@ -315,6 +317,28 @@ class PlaywrightSessionAdapter:
                 )
             except BaseException:  # noqa: BLE001 - capture must not fail
                 page_text = None
+            # Perceivable colour signals for opt-in state-change verification.
+            # The document/body computed background is what a sighted user sees
+            # as the page "theme"; the viewport background is the sampled
+            # dominant colour of the current screen. Wrapped so a page eval
+            # failure never breaks capture.
+            colours: Mapping[str, object] | None
+            try:
+                colours = await managed.page.evaluate(
+                    """() => {
+                        const read = (el) => {
+                            if (!el) return null;
+                            const bg = getComputedStyle(el).backgroundColor;
+                            return bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : null;
+                        };
+                        return {
+                            document_background: read(document.documentElement),
+                            body_background: read(document.body),
+                        };
+                    }"""
+                )
+            except BaseException:  # noqa: BLE001 - capture must not fail
+                colours = None
             return ObservationCapture(
                 session_id=session.session_id,
                 viewport_id=f"{session.session_id}-viewport-{managed.capture_index}",
@@ -323,6 +347,9 @@ class PlaywrightSessionAdapter:
                 viewport=session.viewport,
                 screenshot=screenshot,
                 page_text=page_text if isinstance(page_text, str) else None,
+                document_background=_optional_colour(colours, "document_background"),
+                body_background=_optional_colour(colours, "body_background"),
+                viewport_background=await _viewport_background(managed.page),
             )
         except asyncio.CancelledError as cancellation:
             try:
@@ -832,6 +859,57 @@ async def _shielded_cleanup(awaitable: Awaitable[None]) -> None:
         raise cancellation from cleanup_error
     if cleanup_error is not None:
         raise cleanup_error
+
+
+def _optional_colour(colours: Mapping[str, object] | None, key: str) -> str | None:
+    """Read one optional CSS colour string from an evaluated colour mapping."""
+
+    if colours is None:
+        return None
+    value = colours.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+async def _viewport_background(page: Page) -> str | None:
+    """Sample the dominant background colour of the current viewport.
+
+    Uses a coarse CSS-pixel grid over the viewport and reports the most common
+    opaque ``backgroundColor``. A coarse sample is deliberate: it is what a
+    sighted user perceives as "the screen colour" and it is stable against
+    anti-aliasing at element edges. Failures return ``None`` so capture never
+    breaks.
+    """
+
+    try:
+        value = await page.evaluate(
+            """() => {
+                const step = 32;
+                const counts = new Map();
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                for (let y = step / 2; y < h; y += step) {
+                    for (let x = step / 2; x < w; x += step) {
+                        const el = document.elementFromPoint(x, y);
+                        if (!el) continue;
+                        const bg = getComputedStyle(el).backgroundColor;
+                        if (!bg || bg === 'rgba(0, 0, 0, 0)') continue;
+                        counts.set(bg, (counts.get(bg) || 0) + 1);
+                    }
+                }
+                let best = null;
+                let bestCount = 0;
+                for (const [colour, count] of counts) {
+                    if (count > bestCount) {
+                        best = colour;
+                        bestCount = count;
+                    }
+                }
+                return best;
+            }"""
+        )
+    except BaseException:  # noqa: BLE001 - capture must not fail
+        return None
+    return value if isinstance(value, str) and value else None
 
 
 def _center(bounds: object) -> tuple[float, float]:

@@ -82,6 +82,13 @@ class CrawlFrontier:
 # document.scrollHeight.
 _BOTTOM_EPSILON_PX = 2.0
 
+# Bounded region-name capture. Regions are named landmarks (header, nav,
+# main, footer, labelled sections); a page never needs more than this many
+# for evaluation-target validation, and a fixed cap keeps the corpus digest
+# deterministic across captures.
+_REGIONS_PER_PAGE = 12
+_REGION_LABEL_TRUNC = 80
+
 _SCROLL_METRICS_JS = (
     "() => ({"
     "y: window.scrollY,"
@@ -308,15 +315,18 @@ class ExplorationCrawler:
                 headings: tuple[str, ...]
                 screenshot_digest: str | None
                 visible_elements: tuple[str, ...] = ()
+                region_labels: tuple[str, ...] = ()
                 try:
                     title, headings, screenshot_digest, visible_elements = await self._capture_page(
                         page, viewport_id
                     )
+                    region_labels = await self._safe_region_labels(page)
                 except Exception:
                     title = "Untitled"
                     headings = ()
                     screenshot_digest = None
                     visible_elements = ()
+                    region_labels = ()
 
                 # Guarantee non-empty title for domain validation
                 if not title.strip():  # pyright: ignore[reportUnknownMemberType]
@@ -330,7 +340,6 @@ class ExplorationCrawler:
                 visible_elements = _merge_visible_labels(
                     visible_elements, scroll_labels
                 )
-
                 # --- link extraction (same-origin <a href> absolute links) ---
                 raw_links: list[str]
                 try:
@@ -375,6 +384,7 @@ class ExplorationCrawler:
                         screenshot_digest=screenshot_digest,
                         discovered_links=discovered_tuple,
                         visible_elements=visible_elements,
+                        region_labels=region_labels,
                     )
                 except Exception:
                     # Fallback for edge title/heading validation
@@ -389,6 +399,7 @@ class ExplorationCrawler:
                         screenshot_digest=screenshot_digest,
                         discovered_links=discovered_tuple,
                         visible_elements=tuple(x for x in visible_elements if isinstance(x, str)),  # pyright: ignore[reportUnknownVariableType,reportUnnecessaryIsInstance]
+                        region_labels=tuple(r for r in region_labels if isinstance(r, str)),  # pyright: ignore[reportUnknownVariableType,reportUnnecessaryIsInstance]
                     )
                 pages.append(crawl_page)
 
@@ -749,8 +760,62 @@ class ExplorationCrawler:
                     return cleaned
         return ()
 
-    async def _extract_links(self, page: Any) -> list[str]:
-        # Extract same-origin <a href> absolute links via page.evaluate extracting anchors.
+    async def _safe_region_labels(self, page: Any) -> tuple[str, ...]:
+        # Capture named landmark/section labels so synthesized scenarios can be
+        # validated against real region names. Deterministic: DOM order, first
+        # label wins, empties dropped, truncated and capped. Never raises.
+        with suppress(Exception):
+            raw = await page.evaluate(  # type: ignore[no-untyped-call,reportUnknownMemberType,reportUnknownVariableType]
+                "() => {"
+                "  const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();"
+                "  const named = (n) => {"
+                "    const aria = clean(n.getAttribute && n.getAttribute('aria-label'));"
+                "    if (aria) return aria;"
+                "    const labelled = clean(n.getAttribute && n.getAttribute('aria-labelledby'));"
+                "    const ids = labelled.split(' ').filter(Boolean);"
+                "    if (ids.length) {"
+                "      const text = ids.map((id) => {"
+                "        const el = document.getElementById(id);"
+                "        return el ? clean(el.textContent) : '';"
+                "      }).filter(Boolean).join(' ');"
+                "      if (text) return text;"
+                "    }"
+                "    const h = n.querySelector && n.querySelector('h1,h2,h3,h4,h5,h6');"
+                "    if (h) { const t = clean(h.innerText); if (t) return t; }"
+                "    return '';"
+                "  };"
+                "  const nodes = Array.from(document.querySelectorAll("
+                "    'header, nav, main, aside, footer, section[aria-label], "
+                "section[aria-labelledby], [role=region], [role=banner], "
+                "div[aria-label], div[aria-labelledby]'" 
+                "  ));"
+                "  const out = []; const seen = new Set();"
+                "  for (const n of nodes) {"
+                "    const label = named(n);"
+                "    if (!label) continue;"
+                "    const key = label.toLowerCase();"
+                "    if (seen.has(key)) continue;"
+                "    seen.add(key); out.push(label);"
+                "    if (out.length >= 12) break;"
+                "  }"
+                "  return out;"
+                "}"""
+            )
+            if isinstance(raw, list):
+                labels: list[str] = []
+                for item in raw:  # pyright: ignore[reportUnknownVariableType]
+                    if not isinstance(item, str):
+                        continue
+                    label = " ".join(item.split())[:_REGION_LABEL_TRUNC]
+                    if not label:
+                        continue
+                    labels.append(label)
+                    if len(labels) >= _REGIONS_PER_PAGE:
+                        break
+                return tuple(labels)
+        return ()
+
+    async def _extract_links(self, page: Any) -> list[str]:        # Extract same-origin <a href> absolute links via page.evaluate extracting anchors.
         raw = await page.evaluate(  # type: ignore[no-untyped-call,reportUnknownMemberType,reportUnknownVariableType]
             "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href)"
         )

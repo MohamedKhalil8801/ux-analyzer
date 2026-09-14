@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Protocol, cast
@@ -10,6 +12,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from ux_analyzer.domain.benchmark import (
+    ColourChangeVerifierSpec,
     FixtureInputs,
     FixtureStateVerifierSpec,
     VerifierOperator,
@@ -81,6 +84,14 @@ class HttpFixtureStateClient:
 
 SnapshotExtractor = Callable[[ObservationCapture], ViewportSnapshot]
 
+#: Colour signals compared by the perceivable-state-change verifier, paired
+#: with the ``ObservationCapture`` attribute that supplies each one.
+_COLOUR_SIGNALS: tuple[str, ...] = (
+    "document_background",
+    "body_background",
+    "viewport_background",
+)
+
 
 class WebVerifier(VerificationProvider):
     """Dispatch typed scenario verification without trusting agent claims."""
@@ -94,6 +105,7 @@ class WebVerifier(VerificationProvider):
         fixture_control_origin: str | None = None,
         observation_provider: ObservationProvider | None = None,
         snapshot_extractor: SnapshotExtractor | None = None,
+        baseline_capture: ObservationCapture | None = None,
     ) -> None:
         self.spec = spec
         self._fixture_inputs = _fixture_values(fixture_inputs)
@@ -106,6 +118,7 @@ class WebVerifier(VerificationProvider):
             self._fixture_state_client = HttpFixtureStateClient(fixture_control_origin)
         self._observation_provider = observation_provider
         self._snapshot_extractor = snapshot_extractor
+        self._baseline_capture = baseline_capture
         self._last_capture: ObservationCapture | None = None
         self._last_snapshot: ViewportSnapshot | None = None
         self._verification_capture_count = 0
@@ -114,11 +127,34 @@ class WebVerifier(VerificationProvider):
                 raise ValueError("fixture-state verification needs fixture inputs")
             if self._fixture_state_client is None:
                 raise ValueError("fixture-state verification needs state client")
+        elif isinstance(spec, ColourChangeVerifierSpec):
+            # The baseline is deliberately NOT required here: the run agent
+            # seeds it from the run's pre-action capture via set_baseline()
+            # after the browser session starts (see run_agent._execute), so a
+            # verifier built before any capture exists (the CLI path) must be
+            # constructible. verify() enforces the baseline itself.
+            if observation_provider is None:
+                raise ValueError("colour-change verification needs observation provider")
         else:
             if observation_provider is None or snapshot_extractor is None:
                 raise ValueError(
                     "visible-result verification needs observation provider and extractor"
                 )
+
+    @property
+    def baseline_capture(self) -> ObservationCapture | None:
+        """The pre-action capture compared against during colour verification.
+
+        Set at construction or via :meth:`set_baseline` so the same verifier
+        instance can be reused across a run.
+        """
+
+        return self._baseline_capture
+
+    def set_baseline(self, capture: ObservationCapture) -> None:
+        """Record the pre-action capture used as the colour-change baseline."""
+
+        self._baseline_capture = capture
 
     @property
     def last_capture(self) -> ObservationCapture | None:
@@ -133,6 +169,8 @@ class WebVerifier(VerificationProvider):
         self._last_snapshot = None
         if isinstance(self.spec, FixtureStateVerifierSpec):
             return await self._verify_fixture_state(session, self.spec)
+        if isinstance(self.spec, ColourChangeVerifierSpec):
+            return await self._verify_colour_change(session, self.spec)
         return await self._verify_visible_result(session, self.spec)
 
     async def _verify_fixture_state(
@@ -160,6 +198,85 @@ class WebVerifier(VerificationProvider):
             verified=verified,
             evidence_ids=(evidence_id,),
             details=details,
+        )
+
+    async def _verify_colour_change(
+        self,
+        session: SessionHandle,
+        spec: ColourChangeVerifierSpec,
+    ) -> VerificationResult:
+        """Verify a *perceivable* state change instead of a new text result.
+
+        A theme toggle produces no new persona-visible text, so text matching
+        can never confirm it. This mode compares the verification-time capture
+        against the baseline capture on signals a sighted user genuinely
+        perceives — the computed background of the document root and body, and
+        the dominant background colour of the viewport — and requires at least
+        one signal to differ *materially* (``spec.threshold``). The before and
+        after values are recorded so a reviewer can audit exactly why it
+        passed.
+        """
+
+        if self._observation_provider is None:
+            raise WebVerificationError("colour-change verifier is not configured")
+        baseline = self._baseline_capture
+        if baseline is None:
+            raise WebVerificationError("colour-change verifier lacks a baseline")
+        capture = await self._observation_provider.capture(session)
+        self._verification_capture_count += 1
+        verification_viewport_id = (
+            f"{capture.viewport_id}-verification-{self._verification_capture_count}"
+        )
+        capture = replace(capture, viewport_id=verification_viewport_id)
+        if self._snapshot_extractor is not None:
+            snapshot = _relabel_snapshot(
+                self._snapshot_extractor(capture), verification_viewport_id
+            )
+            capture = replace(capture, snapshot=snapshot)
+            self._last_snapshot = snapshot
+        self._last_capture = capture
+
+        before_state: dict[str, object] = {}
+        after_state: dict[str, object] = {}
+        changed: list[str] = []
+        for signal in _COLOUR_SIGNALS:
+            before_value = getattr(baseline, signal, None)
+            after_value = getattr(capture, signal, None)
+            before_state[signal] = before_value
+            after_state[signal] = after_value
+            distance = _colour_distance(before_value, after_value)
+            before_state[f"{signal}_distance"] = distance
+            if distance is not None and distance >= spec.threshold:
+                changed.append(signal)
+
+        # Screenshot identity is a supporting signal only: identical bytes mean
+        # nothing changed, but different bytes alone are NOT sufficient (hover
+        # flicker changes pixels without changing theme). It is recorded for
+        # audit, never used to pass.
+        baseline_screenshot = getattr(baseline, "screenshot", None)
+        before_state["screenshot_sha256"] = _screenshot_digest(baseline_screenshot)
+        after_state["screenshot_sha256"] = _screenshot_digest(capture.screenshot)
+        before_state["threshold"] = spec.threshold
+        after_state["threshold"] = spec.threshold
+
+        evidence_id = f"viewport:{verification_viewport_id}"
+        if changed:
+            return VerificationResult(
+                verified=True,
+                evidence_ids=(f"{evidence_id}:colour-change",),
+                details=(
+                    "material colour change matched on "
+                    + ", ".join(sorted(changed))
+                ),
+                before_state=before_state,
+                after_state=after_state,
+            )
+        return VerificationResult(
+            verified=False,
+            evidence_ids=(evidence_id,),
+            details="no material colour change detected",
+            before_state=before_state,
+            after_state=after_state,
         )
 
     async def _verify_visible_result(
@@ -241,6 +358,7 @@ class WebVerifier(VerificationProvider):
 
 FixtureStateWebVerifier = WebVerifier
 VisibleResultWebVerifier = WebVerifier
+ColourChangeWebVerifier = WebVerifier
 
 
 def _normalized_verifier_text(value: str) -> str:
@@ -251,6 +369,76 @@ def _normalized_verifier_text(value: str) -> str:
     """
 
     return " ".join(value.replace("\u00a0", " ").split())
+
+
+def _screenshot_digest(screenshot: object) -> str | None:
+    if not isinstance(screenshot, (bytes, bytearray)):
+        return None
+    return hashlib.sha256(bytes(screenshot)).hexdigest()
+
+
+def _colour_distance(before: object, after: object) -> float | None:
+    """Per-channel Euclidean RGB distance between two CSS colour strings.
+
+    Returns ``None`` when either side is unavailable or cannot be parsed as an
+    opaque RGB colour, so an unavailable signal can never count as a material
+    change.
+    """
+
+    before_rgb = _parse_rgb(before)
+    after_rgb = _parse_rgb(after)
+    if before_rgb is None or after_rgb is None:
+        return None
+    return math.sqrt(
+        sum((a - b) ** 2 for a, b in zip(after_rgb, before_rgb, strict=True))
+    )
+
+
+def _parse_rgb(value: object) -> tuple[int, int, int] | None:
+    """Parse ``rgb(r, g, b)`` / ``rgba(r, g, b, a)`` / ``#rrggbb`` strings.
+
+    Fully transparent colours (``alpha == 0``) return ``None``: a transparent
+    background is not a perceivable surface colour.
+    """
+
+    if not isinstance(value, str):
+        return None
+    text = value.strip().casefold()
+    if text.startswith("#"):
+        digits = text[1:]
+        if len(digits) == 3:
+            digits = "".join(channel * 2 for channel in digits)
+        if len(digits) != 6:
+            return None
+        try:
+            return (
+                int(digits[0:2], 16),
+                int(digits[2:4], 16),
+                int(digits[4:6], 16),
+            )
+        except ValueError:
+            return None
+    if not text.startswith(("rgb(", "rgba(")):
+        return None
+    inner = text[text.index("(") + 1 : text.rindex(")")]
+    parts = [part.strip() for part in inner.split(",")]
+    if len(parts) not in (3, 4):
+        return None
+    if len(parts) == 4:
+        try:
+            if float(parts[3]) == 0.0:
+                return None
+        except ValueError:
+            return None
+    channels: list[int] = []
+    for part in parts[:3]:
+        try:
+            channels.append(int(round(float(part))))
+        except ValueError:
+            return None
+    if any(channel < 0 or channel > 255 for channel in channels):
+        return None
+    return channels[0], channels[1], channels[2]
 
 
 def _relabel_snapshot(

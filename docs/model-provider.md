@@ -18,6 +18,8 @@ UXA_LLM_API_KEY        secret sent as Bearer authorization header
 UXA_SCENT_MODEL        model ID for coarse and full scent roles
 UXA_COGNITIVE_MODEL    model ID for cognitive role
 UXA_REPORT_MODEL       model ID for the four report-synthesis roles
+UXA_REDESIGN_MODEL     optional model ID for the two redesign roles; falls
+                       back to UXA_REPORT_MODEL when unset
 UXA_LLM_TIMEOUT_SECONDS
                        positive model-call timeout in seconds; none, off, or
                        unlimited disables the model-call timeout
@@ -35,6 +37,7 @@ $env:UXA_LLM_API_KEY = "<api-key>"
 $env:UXA_SCENT_MODEL = "<scent-model-id>"
 $env:UXA_COGNITIVE_MODEL = "<cognitive-model-id>"
 $env:UXA_REPORT_MODEL = "<report-model-id>"
+$env:UXA_REDESIGN_MODEL = "<redesign-model-id>"
 ```
 
 Codex mode is opt-in. Set `UXA_LLM_MODE=codex`, keep the two model variables,
@@ -86,6 +89,39 @@ attempt is `accepted` or `no-issues`.
 synthesis artifacts, resolves only independently verifiable evidence links, and
 never calls a model. The report can therefore be regenerated without network
 access or credentials.
+
+## Creative Redesign Contract
+
+The creative redesign pipeline (ADR 0007) is deliberately separate from report
+synthesis. It never reads the run evidence corpus and produces no verified
+claims: its output is a set of design proposals that are model estimates about
+captured pages. `UXA_REDESIGN_MODEL` selects the model for the two isolated
+roles; when unset, both roles use `UXA_REPORT_MODEL`, so one vision-capable
+structured-output model can serve everything.
+
+- **Redesign proposer** receives the segmented page captures (images attached
+  in order with y-offsets), each page's trimmed DOM/copy inventory, and the
+  published redesign principle pack. It returns proposals with a page URL,
+  category, observation, rationale, concrete change, principle IDs, impact,
+  effort, section references into the capture, and a per-page understanding
+  (intent and audience, always labeled an inference).
+- **Redesign critic/merger** receives the proposer's candidates plus the same
+  pack and captures digest. It kills or merges conflicting proposals with
+  recorded reasons, adds cross-page consistency notes, and emits the final
+  proposal set. Deliberate-choice checks are mandatory for grouping,
+  unification, simplification, and relocation proposals so intentional design
+  is not flagged as an accident.
+
+Both roles use fresh, isolated message tuples and the same transport behavior
+as the report roles (structured tool-call responses in API mode, evidence-file
+serialization under Codex). Deterministic validation enforces the proposal
+schema, principle-ID membership, unique IDs, and section references that resolve
+into the capture; violations make the attempt `rejected` or `unavailable` and
+are recorded with reasons. Attempts are immutable under
+`<output>/redesign/<attempt-id>/` and carry a `captures_digest` binding the
+proposal set to the exact capture it read. Impact and effort are model
+estimates stamped as such in the report; they are never presented as measured
+facts.
 
 ## Saliency Execution Providers
 
@@ -236,6 +272,12 @@ Strict mode requests JSON Schema response format. If provider returns a 400
 that identifies unsupported `response_format`, `json_schema`, `strict`, or
 `unsupported` behavior, client retries the logical call in `json_object` mode
 and validates the returned JSON locally with Pydantic.
+
+Redesign roles (ADR 0007) share the report-role transport behavior: they start
+in tool-call mode, degrade tool-call → strict → json-object when a response
+fails local validation (not only on coded 400s), reuse the tolerant report
+JSON recovery parser in degraded modes, and re-anchor the output contract with
+an explicit final user message.
 
 Accepted structured responses must contain one JSON object matching the role
 schema. Unknown element IDs, duplicate score IDs, and full-scent scores for

@@ -6,3 +6,14 @@ Fix Export takes its findings from exactly the list report.html renders — revi
 
 - **Require Accepted Synthesis** (rejected): safest, but blocks exporting usable fallback/deterministic findings from runs whose model review was unavailable, and duplicates validation the report already performed.
 - **Export whatever the report shows, with unavailable-evidence markers** (chosen): single source of truth, no silent divergence between report and export.
+
+## Update 2026-09-13: Redesign-tab proposals are exportable
+
+The Redesign tab renders accepted design proposals (model estimates from
+`redesign/` attempts). `load_report_findings` now includes them as findings
+with `evidence_class="model-estimate"` and `reproducibility="model-dependent"`,
+so they appear in fix exports exactly like the other report tabs. Severity is
+projected from the proposal's model-inferred impact (high/medium/low) purely
+for ordering; the package's Limitations section restates that proposals are
+model estimates, not run evidence, so the fixer applies them as design
+suggestions rather than confirmed defects.

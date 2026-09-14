@@ -46,6 +46,7 @@
       <a class="view-tab" href="#view-findings">{{ "Recorded signals" if using_fallback else "Findings" }}</a>
       {% if ux_audit %}<a class="view-tab" href="#view-audit">Page findings</a>{% endif %}
       {% if pagespeed %}<a class="view-tab" href="#view-performance">Performance</a>{% endif %}
+      <a class="view-tab" href="#view-redesign">Redesign</a>
       <a class="view-tab" href="#view-evidence">Evidence desk</a>
     </nav>
 
@@ -686,6 +687,124 @@
   </div>
   {% endif %}
 
+  <div class="view" id="view-redesign" hidden>
+    <section
+      id="redesign-proposals"
+      class="report-section ux-redesign"
+      aria-labelledby="redesign-title"
+      data-redesign-state="{{ redesign.state }}"
+    >
+      <div class="report-section-heading">
+        <div>
+          <h2 id="redesign-title">Design proposals</h2>
+        </div>
+        <span class="redesign-state redesign-state-{{ redesign.state }}">{{ redesign.state_label }}</span>
+      </div>
+      <p class="summary-assessment">
+        Design proposals are model estimates produced from the captured pages and
+        the published redesign principles — they are not run-evidence findings and
+        they carry no verification status. Impact and effort are model estimates
+        (Flag-pair ink), not measured values.
+      </p>
+      {% if redesign.capture_truncated %}
+      <p class="redesign-capture-limitation fallback-notice">
+        Model estimates cover only the first {{ redesign.capture_note_height }}px of each
+        page; content below the capture limit was not captured and was not shown to
+        the model.
+      </p>
+      {% endif %}
+      {% if redesign.state == "accepted" and redesign.proposals %}
+      {% if redesign.page_understanding %}
+      <div class="redesign-understanding">
+        {% for page in redesign.page_understanding %}
+        <div class="redesign-understanding-page">
+          <h3 class="redesign-understanding-url">{{ page.url }}</h3>
+          <p class="redesign-understanding-intent"><strong>Intent:</strong> {{ page.intent }}</p>
+          <p class="redesign-understanding-audience"><strong>Inferred audience (model inference):</strong> {{ page.audience_inference }}</p>
+          <p class="redesign-understanding-relationships"><strong>Section relationships:</strong> {{ page.section_relationships }}</p>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div class="redesign-filters" data-redesign-filters>
+        <div class="redesign-filter-group" role="group" aria-label="Filter by category">
+          <span class="redesign-filter-label">Category:</span>
+          {% for category in redesign.categories %}
+          <button type="button" class="redesign-filter-chip" data-filter-category="{{ category }}">{{ category }}</button>
+          {% endfor %}
+        </div>
+        <div class="redesign-filter-group" role="group" aria-label="Filter by page">
+          <span class="redesign-filter-label">Page:</span>
+          {% for page_url in redesign.page_urls %}
+          <button type="button" class="redesign-filter-chip" data-filter-page="{{ page_url }}">{{ page_url }}</button>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="redesign-proposal-list">
+        {% for proposal in redesign.proposals %}
+        <article class="proposal-card" data-category="{{ proposal.category }}" data-page-url="{{ proposal.page_url }}">
+          <div class="proposal-card-header">
+            <span class="proposal-impact-effort">Impact: {{ proposal.impact }} · Effort: {{ proposal.effort }}</span>
+            <span class="proposal-category">{{ proposal.category }}</span>
+          </div>
+          <h3 class="proposal-title">{{ proposal.title }}</h3>
+          <p class="proposal-page">{{ proposal.page_url }}</p>
+          <div class="proposal-grid">
+            <div class="proposal-field"><h4>Observation</h4><p>{{ proposal.observation }}</p></div>
+            <div class="proposal-field"><h4>Rationale</h4><p>{{ proposal.rationale }}</p></div>
+            <div class="proposal-field"><h4>Change</h4><p>{{ proposal.change }}</p></div>
+            <div class="proposal-field">
+              <h4>Principles</h4>
+              <p>{{ proposal.principle_ids | join(", ") }}</p>
+            </div>
+          </div>
+          {% if proposal.deliberate_choice_check %}
+          <p class="proposal-deliberate">Deliberate-choice note: {{ proposal.deliberate_choice_check.pattern }} — {{ proposal.deliberate_choice_check.rationale }}</p>
+          {% endif %}
+          {% if proposal.also_affects %}
+          <p class="proposal-also-affects"><strong>Also affects:</strong> {{ proposal.also_affects | join(", ") }}</p>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% if redesign.consistency_notes %}
+      <div class="redesign-consistency-notes">
+        <h3>Cross-page consistency notes</h3>
+        <ul class="redesign-consistency-list">
+          {% for note in redesign.consistency_notes %}
+          <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% if redesign.pack_version %}
+      <p class="redesign-pack-version">Principle pack version: {{ redesign.pack_version }}</p>
+      {% endif %}
+      {% else %}
+      <div class="redesign-placeholder fallback-notice">
+        <p>{{ redesign.placeholder_text }}</p>
+        {% if redesign.reasons %}
+        <ul class="redesign-reasons">
+          {% for reason in redesign.reasons %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+      {% if redesign.consistency_notes %}
+      <div class="redesign-consistency-notes">
+        <h3>Cross-page consistency notes</h3>
+        <ul class="redesign-consistency-list">
+          {% for note in redesign.consistency_notes %}
+          <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% endif %}
+    </section>
+  </div>
+
   <div class="view" id="view-findings" hidden>
 
         <section id="priority-findings" class="report-section" aria-labelledby="priority-findings-title">
@@ -979,7 +1098,7 @@
               <td data-metric="model-calls">{{ row.model_calls }}</td>
               <td data-metric="analysis-latency">{{ row.analysis_latency }}</td>
               <td data-metric="analysis-tokens">{{ row.analysis_tokens }}</td>
-              <td><span class="status-pill {{ row.status_class }}">{{ row.outcome }}</span></td>
+              <td><span class="status-pill {{ row.status_class }}">{{ row.status_label }}</span></td>
               <td>{{ row.stage }}</td>
               <td>{{ "verified" if row.verified else "not verified" }}</td>
               <td>{{ row.failure_reason }}</td>
@@ -1001,12 +1120,18 @@
               <thead><tr><th scope="col">Scenario</th><th scope="col">Persona</th><th scope="col">Policy</th><th scope="col">Prominence provider</th><th scope="col">Model trial</th><th scope="col">Reproducibility</th><th scope="col">Version</th><th scope="col">Runs</th><th scope="col">Verified</th><th scope="col">Discovery cost</th><th scope="col">Task seconds</th><th scope="col">Model calls</th><th scope="col">Latency ms</th><th scope="col">Tokens</th></tr></thead>
               <tbody>
               {% for row in comparison_rows %}
-                 <tr><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td data-metric="prominence-provider">{{ row.prominence_provider_id }}</td><td data-metric="model-trial">{{ row.model_trial }}</td><td data-metric="reproducibility">{{ row.reproducibility_label }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.estimated_task_seconds) if row.estimated_task_seconds is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.model_calls) if row.model_calls is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_latency_ms) if row.analysis_latency_ms is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_tokens) if row.analysis_tokens is not none else "unavailable" }}</td></tr>
+                 <tr data-scenario-id="{{ row.scenario_id }}" data-version-id="{{ row.version_id }}"><td>{{ row.scenario_label }}</td><td>{{ row.persona_label }}</td><td>{{ row.policy }}</td><td data-metric="prominence-provider">{{ row.prominence_provider_id }}</td><td data-metric="model-trial">{{ row.model_trial }}</td><td data-metric="reproducibility">{{ row.reproducibility_label }}</td><td>{{ row.version_label }}</td><td>{{ row.run_count }}</td><td>{{ "%.0f%%" | format(row.verified_rate * 100) }}</td><td>{{ row.discovery_cost if row.discovery_cost is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.estimated_task_seconds) if row.estimated_task_seconds is not none else "unavailable" }}</td><td>{{ "%.1f" | format(row.model_calls) if row.model_calls is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_latency_ms) if row.analysis_latency_ms is not none else "unavailable" }}</td><td>{{ "%.0f" | format(row.analysis_tokens) if row.analysis_tokens is not none else "unavailable" }}</td></tr>
               {% else %}
                  <tr><td colspan="14">Aggregate metrics unavailable.</td></tr>
               {% endfor %}
               </tbody>
             </table>
+            {% if aggregate_exclusions %}
+            <p class="method-note aggregate-exclusions" id="aggregate-exclusions">
+              Excluded from the aggregate comparison:
+              {% for exclusion in aggregate_exclusions %}{{ exclusion.scenario_label }} ({{ exclusion.scenario_id }}), {{ exclusion.version_label }} &mdash; {{ exclusion.reason }}{% if not loop.last %}; {% endif %}{% endfor %}.
+            </p>
+            {% endif %}
           </div>
           <div class="table-wrap">
             <table id="gate-table">
@@ -1174,6 +1299,7 @@
   </main>
 
   <script type="application/json" id="report-data">{{ report_json | safe }}</script>
+  {% if data_sources %}<script type="application/json" id="data-sources">{{ data_sources | tojson }}</script>{% endif %}
   <script>
   {% if compact_index %}
   {{ index_javascript | safe }}

@@ -9,6 +9,7 @@ from ux_analyzer.analysis.performance import analyze_performance
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_client(route_map: dict[str, tuple[int, str]]) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         from urllib.parse import urlparse
@@ -31,7 +32,9 @@ def _make_client(route_map: dict[str, tuple[int, str]]) -> httpx.AsyncClient:
                 if key_path not in path:
                     continue
             headers = {"content-type": "text/html"}
-            return httpx.Response(status_code=status, text=body, request=request, headers=headers)
+            return httpx.Response(
+                status_code=status, text=body, request=request, headers=headers
+            )
         return httpx.Response(status_code=404, text="Not Found", request=request)
 
     transport = httpx.MockTransport(handler)
@@ -67,7 +70,9 @@ async def test_perfect_no_issues():
     client = _make_client(routes)
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
-    assert issues == [], f"expected no issues, got {[(i.check_id, i.title) for i in issues]}"
+    assert issues == [], (
+        f"expected no issues, got {[(i.check_id, i.title) for i in issues]}"
+    )
 
 
 @pytest.mark.asyncio
@@ -169,7 +174,10 @@ async def test_render_blocking_script_in_head():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.check_id == "render_blocking" and i.evidence["blocking_scripts"] >= 1 for i in issues)
+    assert any(
+        i.check_id == "render_blocking" and i.evidence["blocking_scripts"] >= 1
+        for i in issues
+    )
 
 
 @pytest.mark.asyncio
@@ -200,7 +208,9 @@ async def test_render_blocking_module_not_counted():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
-    assert not any(i.check_id == "render_blocking" for i in issues), "module script should be deferred, not blocking"
+    assert not any(i.check_id == "render_blocking" for i in issues), (
+        "module script should be deferred, not blocking"
+    )
 
 
 @pytest.mark.asyncio
@@ -245,7 +255,10 @@ async def test_render_blocking_import():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
-    assert any(i.check_id == "render_blocking" and i.evidence["import_count"] == 1 for i in issues)
+    assert any(
+        i.check_id == "render_blocking" and i.evidence["import_count"] == 1
+        for i in issues
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +442,10 @@ async def test_lcp_largest_selection():
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
     # LCP is large.jpg which is lazy -> should flag
-    assert any(i.check_id == "lcp_lazy" and "large.jpg" in i.evidence["lcp_src"] for i in issues)
+    assert any(
+        i.check_id == "lcp_lazy" and "large.jpg" in i.evidence["lcp_src"]
+        for i in issues
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +462,9 @@ async def test_preload_lcp_missing():
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
     assert any(i.check_id == "preload_lcp" and i.severity == "critical" for i in issues)
-    assert any("Preload Largest" in i.title for i in issues if i.check_id == "preload_lcp")
+    assert any(
+        "Preload Largest" in i.title for i in issues if i.check_id == "preload_lcp"
+    )
 
 
 @pytest.mark.asyncio
@@ -502,7 +520,9 @@ async def test_preload_duplicate_not_double():
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
     assert any(i.check_id == "preload_lcp" for i in issues)
-    assert not any(i.check_id == "slow_lcp" for i in issues), "slow_lcp should be suppressed when preload_lcp already flags same src (deduplication)"
+    assert not any(i.check_id == "slow_lcp" for i in issues), (
+        "slow_lcp should be suppressed when preload_lcp already flags same src (deduplication)"
+    )
 
 
 @pytest.mark.asyncio
@@ -517,7 +537,9 @@ async def test_preload_lcp_svg_never_a_candidate():
     client = _make_client({"https://example.com/": (200, html)})
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
-    assert not any(i.check_id in ("preload_lcp", "lcp_lazy", "slow_lcp") for i in issues)
+    assert not any(
+        i.check_id in ("preload_lcp", "lcp_lazy", "slow_lcp") for i in issues
+    )
 
 
 @pytest.mark.asyncio
@@ -747,7 +769,9 @@ async def test_network_error_graceful():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("mock", request=request)
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://example.com")
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.com"
+    )
     issues = await analyze_performance("https://example.com/", client=client)
     await client.aclose()
     assert issues == []
@@ -776,3 +800,136 @@ async def test_import_without_side_effects():
     assert hasattr(mod, "analyze_performance")
     assert hasattr(mod, "analyze_performance_sync")
     assert hasattr(mod, "PerformanceIssue")
+
+
+# ---------------------------------------------------------------------------
+# offending resources are named in evidence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_main_thread_evidence_names_offending_scripts():
+    html = """<!doctype html><html><head>
+<script>
+(function(){window.requestAnimationFrame(function tick(){requestAnimationFrame(tick)});})();
+</script>
+<script src="/assets/vendor.js"></script>
+<link rel="stylesheet" href="/assets/main.css">
+</head><body><p>Content</p></body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    mt = [i for i in issues if i.check_id == "main_thread"][0]
+    detail = mt.evidence["blocking_script_detail"]
+    # external offender is named by URL
+    assert any(d.get("src") == "/assets/vendor.js" for d in detail)
+    # inline offender carries a greppable preview + markers instead of "<inline>"
+    inline = [d for d in detail if d.get("inline")]
+    assert inline and "requestAnimationFrame" in inline[0]["preview"]
+    assert "requestAnimationFrame" in inline[0]["markers"]
+    # description names the offenders too
+    assert "/assets/vendor.js" in mt.description
+    assert "requestAnimationFrame" in mt.description
+
+
+@pytest.mark.asyncio
+async def test_tti_and_inp_evidence_names_offending_scripts():
+    html = """<!doctype html><html><head>
+<script>
+(function(){window.setInterval(function(){}, 1000);})();
+</script>
+<script src="/assets/bundle.js"></script>
+</head><body><p>Content</p></body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    tti = [i for i in issues if i.check_id == "tti"][0]
+    assert any(
+        d.get("src") == "/assets/bundle.js"
+        for d in tti.evidence["blocking_script_detail"]
+    )
+    assert "/assets/bundle.js" in tti.description
+    inp = [i for i in issues if i.check_id == "inp"][0]
+    assert any(
+        d.get("src") == "/assets/bundle.js"
+        for d in inp.evidence["blocking_script_detail"]
+    )
+    assert "/assets/bundle.js" in inp.description
+
+
+@pytest.mark.asyncio
+async def test_render_blocking_evidence_names_inline_scripts():
+    html = """<!doctype html><html><head>
+<script>window.__cfg = {mode: "dark"};</script>
+<link rel="stylesheet" href="/assets/site.css">
+</head><body><p>Content</p></body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    rb = [i for i in issues if i.check_id == "render_blocking"][0]
+    assert rb.evidence["stylesheet_hrefs"] == ["/assets/site.css"]
+    inline = [d for d in rb.evidence["blocking_script_detail"] if d.get("inline")]
+    assert inline and '__cfg = {mode: "dark"}' in inline[0]["preview"]
+    assert "site.css" in rb.description
+
+
+@pytest.mark.asyncio
+async def test_font_display_evidence_names_families():
+    html = """<!doctype html><html><head>
+<style>@font-face {font-family:Acme;src:url(acme.woff2)} @font-face {font-family:Brand;src:url(brand.woff2);font-display:swap}</style>
+</head><body><p>Content</p></body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    fd = [i for i in issues if i.check_id == "font_display"][0]
+    assert fd.evidence["font_families_affected"] == ["Acme"]
+    assert "Acme" in fd.description
+
+
+# ---------------------------------------------------------------------------
+# data scripts (JSON-LD, import maps, templates) are not executable JS
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_json_ld_is_not_blocking_or_large_inline():
+    html = """<!doctype html><html><head>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Person","@id":"#person","name":"Jane Doe"}]}</script>
+<script>window.__cfg = {mode: "dark"};</script>
+<link rel="stylesheet" href="/assets/site.css">
+</head><body><p>Content</p></body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    ids = {i.check_id for i in issues}
+    # JSON-LD does not block the main thread, delay TTI, or hurt INP
+    assert "main_thread" not in ids
+    assert "tti" not in ids
+    assert "inp" not in ids
+    rb = [i for i in issues if i.check_id == "render_blocking"][0]
+    assert rb.evidence["blocking_scripts"] == 1
+    detail = rb.evidence["blocking_script_detail"]
+    assert len(detail) == 1
+    assert detail[0]["inline"] and "__cfg" in detail[0]["preview"]
+    assert not any("schema.org" in d.get("preview", "") for d in detail)
+
+
+@pytest.mark.asyncio
+async def test_json_ld_large_block_does_not_flag_main_thread():
+    # A giant JSON-LD block used to be miscounted as a large inline script.
+    payload = (
+        '{"@context":"https://schema.org","@graph":['
+        + "".join(f'{{"@type":"Place","name":"Place {i}"}},' for i in range(200))
+        + "]}"
+    )
+    html = f"""<!doctype html><html><head>
+<script type="application/ld+json">{payload}</script>
+</head><body><p>Content</p></body></html>"""
+    client = _make_client({"https://example.com/": (200, html)})
+    issues = await analyze_performance("https://example.com/", client=client)
+    await client.aclose()
+    ids = {i.check_id for i in issues}
+    assert "main_thread" not in ids
+    assert "tti" not in ids
+    assert "inp" not in ids
+    assert "render_blocking" not in ids

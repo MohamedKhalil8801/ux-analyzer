@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 
@@ -150,6 +152,11 @@ class ElementSnapshot:
     local_contrast: float | None = None
     occlusion_fraction: float | None = None
     rendered_text: str | None = None
+    # Whether this element paints a non-text graphic a sighted user can see
+    # (an icon). ``None`` means the capture did not report it (older
+    # payloads). Used only to decide whether an element with no rendered text
+    # is still perceivable; it never contributes to the persona label.
+    has_visible_graphic: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -173,6 +180,55 @@ class ElementSnapshot:
         """Explicit vocabulary alias for snapshot identity."""
 
         return self.id
+
+
+_PERCEIVABLE_ACTIONS: Mapping[ElementRole, str] = MappingProxyType(
+    {
+        ElementRole.BUTTON: "button",
+        ElementRole.LINK: "link",
+        ElementRole.CHECKBOX: "checkbox",
+        ElementRole.INPUT: "field",
+        ElementRole.TAB: "tab",
+        ElementRole.MENU: "menu item",
+    }
+)
+
+
+def _bearing(bounds: BoundingBox, viewport_width: float | None = None) -> str:
+    """Describe where an element sits the way a person would say it out loud.
+
+    Only horizontal placement is inferred here: the capture does not
+    guarantee a viewport height, so vertical placement is deliberately left
+    unstated rather than guessed wrong.
+    """
+
+    if viewport_width is None or viewport_width <= 0:
+        return "on the page"
+    center = bounds.x + bounds.width / 2
+    if center < viewport_width / 3:
+        return "on the left"
+    if center > viewport_width * 2 / 3:
+        return "on the right"
+    return "in the middle"
+
+
+def _perceivable_identity(snapshot: ElementSnapshot) -> str:
+    """Describe an unlabelled control using only sighted-user information.
+
+    Used when an element renders no text of its own (a typical icon-only
+    button). It reports the control's role, its approximate bearing, and its
+    size — all of which a sighted user perceives directly. It must never
+    substitute ``snapshot.label`` (the author's accessible name) or any other
+    markup-only attribute, because those are unavailable to a sighted user.
+    """
+
+    action = _PERCEIVABLE_ACTIONS.get(ElementRole(snapshot.role), "control")
+    width = round(snapshot.bounds.width)
+    height = round(snapshot.bounds.height)
+    return (
+        f"unlabelled {action} {_bearing(snapshot.bounds)} "
+        f"({width}x{height} px)"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,16 +256,28 @@ class PersonaVisibleElement:
 
     @classmethod
     def from_snapshot(cls, snapshot: ElementSnapshot) -> PersonaVisibleElement:
-        """Project one private snapshot into persona-visible data."""
+        """Project one private snapshot into persona-visible data.
 
+        The projection must never hand the persona knowledge a sighted user
+        would not have. In particular the author's accessible name is *not*
+        a substitute for visible text: it exists for assistive technology and
+        is invisible to a sighted user, so leaking it would make the simulated
+        user smarter than the human it stands in for.
+
+        ``rendered_text`` distinguishes "renders no text" (``""``/``None``)
+        from "renders text". When a control renders no text at all, the
+        persona is given a description of what a sighted user would actually
+        perceive — its role and its position on the page — instead of a name
+        only the markup knows. This keeps an icon-only control identifiable
+        without revealing anything hidden.
+        """
+
+        rendered = (snapshot.rendered_text or "").strip()
+        label = rendered or _perceivable_identity(snapshot)
         return cls(
             id=snapshot.id,
             role=ElementRole(snapshot.role),
-            label=(
-                snapshot.rendered_text
-                if snapshot.rendered_text is not None
-                else snapshot.label
-            ),
+            label=label,
             bounds=snapshot.bounds,
             visibility_fraction=snapshot.visibility_fraction,
             actionable=snapshot.actionable,

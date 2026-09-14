@@ -51,3 +51,15 @@ _Avoid_: bug report, ticket dump
 **Fixer Workflow**:
 The fixed multi-step protocol embedded in a fix export that an external agent follows for each issue: reproduce the problem, write failing tests, choose a solution, load skills, implement, verify, run critique loops, and report final status including blockers.
 _Avoid_: agent prompt, remediation guide
+
+**Design Proposal**:
+A model-generated, schema-validated suggestion to improve a page's structure, visual design, copy, or accessibility, produced by the redesign pipeline and citing page and section references from persisted page captures. A design proposal is always labeled a model estimate, is distinct from a UX finding, and never claims run-evidence status.
+_Avoid_: suggestion, redesign finding, creative idea
+
+**Redesign Principle Pack**:
+A versioned, static, interpretive set of design principles — perception and grouping (Gestalt), hierarchy and consistency, usability heuristics, accessibility anchors, and copy/tone guidance — used by the redesign pipeline to name and explain design proposals. Like the UX Principle Pack, it is not evidence and cannot establish that an issue exists or how severe it is.
+_Avoid_: Laws of UX verdict, heuristic proof
+
+**Redesign Attempt Status**:
+The explicit outcome of a redesign pass, distinguishing an accepted set of design proposals from a valid conclusion that no proposals were warranted, from unavailable or invalid attempts, and from attempts rejected by validation. Mirrors the Synthesis Status pattern for the redesign pipeline.
+_Avoid_: redesign state, tab status

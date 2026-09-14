@@ -14,6 +14,7 @@ from ux_analyzer.domain.attention import (
     CoarseScent,
     PersonaObservation,
     ProgressiveObservation,
+    _persona_can_perceive,
 )
 from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.providers.prominence import ProminenceResult
@@ -152,14 +153,19 @@ class ProgressiveAttentionPolicy:
             raise ValueError("recovery_level must not be negative")
         score_by_id = _score_map(scores, snapshot)
         scent_by_id = _scent_map(coarse_scent, snapshot)
+        # Perceptibility, not text presence: an icon-only control renders no
+        # text of its own yet is plainly visible to a sighted user, so it must
+        # remain a sampleable candidate. Requiring rendered text here made
+        # such controls unreachable — the agent could not choose to inspect a
+        # control it never sampled. The predicate also refuses controls that
+        # paint nothing at all (a visually hidden only child), so it does not
+        # admit invisible elements. How the control is *described* is decided
+        # by PersonaVisibleElement.from_snapshot, which reports only what a
+        # sighted user perceives.
         visible_ids = {
             element.id
             for element in snapshot.elements
-            if element.visibility_fraction > 0
-            and (
-                element.rendered_text is None
-                or bool(element.rendered_text.strip())
-            )
+            if _persona_can_perceive(element)
         }
         candidates = tuple(
             _candidate(

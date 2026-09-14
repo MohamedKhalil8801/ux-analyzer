@@ -47,6 +47,25 @@ roles remain separate. `UXA_REPORT_MODEL` is required for live report synthesis
 when the project enables it; use a structured-output vision-capable model when
 the evidence corpus contains screenshots or heatmaps.
 
+### Creative redesign (model estimates)
+
+`uxa redesign <output>` generates design proposals — model estimates, never
+run-evidence findings — from the shared crawled-corpus page capture
+(ADR 0007). The two roles (proposer, critic/merger) share the report model by
+default; set `UXA_REDESIGN_MODEL` to override, falling back to
+`UXA_REPORT_MODEL`. The pass loads the persisted `page-capture.json` sidecar
+when fresh, otherwise captures pages itself with the same bounded page list the
+audit uses (`UXA_REDESIGN_MAX_PAGES`, default 10; per-page height cap
+`UXA_REDESIGN_MAX_PAGE_HEIGHT`, default 12000 px). Attempts are immutable under
+`<output>/redesign/`, and the report renders them on a dedicated Redesign tab
+with impact×effort stamped as model estimates.
+
+After a completed experiment, set `UXA_REDESIGN_ENABLED=1` to run the redesign
+pass automatically (best-effort; failures never fail the experiment).
+`UXA_REPORT_SYNTHESIS_ENABLED` similarly overrides the project YAML's
+report-synthesis gate when set (truthy enables, falsey disables, unset keeps
+YAML behavior).
+
 Run core benchmark:
 
 ```powershell
@@ -111,6 +130,7 @@ uv run pytest tests/live/test_openai_endpoint.py -m live -q
 | `uxa explore [PROJECT] --auto-accept --output DIR` | Explore without the review UI; accepts all suggestions and writes immutable artifacts plus a runnable generated project. |
 | `uxa explore [PROJECT] --dry-run` | Print crawl matrix estimate (starts/depth/pages/scenarios) and synthesis token estimate without browser or model. |
 | `uxa report BUNDLE_ROOT --output FILE` | Render finalized bundles into static HTML. |
+| `uxa redesign OUTPUT [--pages URL ...] [--audience TEXT] [--max-pages N]` | Generate model-estimate design proposals from a persisted or fresh page capture. Writes an immutable attempt under `OUTPUT/redesign/`. |
 | `uxa inspect-run RUN_DIR` | Print terminal outcome, verification, claim, and artifact paths. |
 
 Supported policies:
@@ -206,8 +226,8 @@ the directional gate described in [evaluation docs](docs/domain-model.md).
 
 | Mode | Required configuration | Transport |
 | --- | --- | --- |
-| `api` | `UXA_LLM_MODE`, `UXA_LLM_BASE_URL`, `UXA_LLM_API_KEY`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`; `UXA_REPORT_MODEL` when synthesis is enabled | OpenAI-compatible HTTP transport |
-| `codex` | `UXA_LLM_MODE`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`, logged-in Codex CLI; report model when synthesis is enabled | `codex exec` subprocess transport |
+| `api` | `UXA_LLM_MODE`, `UXA_LLM_BASE_URL`, `UXA_LLM_API_KEY`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`; `UXA_REPORT_MODEL` when synthesis is enabled; `UXA_REDESIGN_MODEL` (optional, falls back to `UXA_REPORT_MODEL`) for `uxa redesign` | OpenAI-compatible HTTP transport |
+| `codex` | `UXA_LLM_MODE`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`, logged-in Codex CLI; report model when synthesis is enabled; redesign model optional as in `api` | `codex exec` subprocess transport |
 
 Codex mode is opt-in. Codex must already be installed, logged in, and available
 as `codex` on `PATH`. Account mode does not read or print credentials.

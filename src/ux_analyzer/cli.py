@@ -16,12 +16,15 @@ from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import httpx
 import typer
+
+if TYPE_CHECKING:
+    from ux_analyzer.analysis.project_audit import CaptureMaterialsHook
 import yaml
 from pydantic import TypeAdapter
 
@@ -179,6 +182,9 @@ from ux_analyzer.storage.exploration_artifacts import (
     ExplorationArtifactError,
     ExplorationArtifactStore,
     exploration_digest,
+)
+from ux_analyzer.storage.redesign_artifacts import (
+    new_attempt_id as new_redesign_attempt_id,
 )
 from ux_analyzer.storage.run_bundle import (
     FilesystemRunBundleWriter,
@@ -344,7 +350,7 @@ def validate(
     typer.echo(f"config digest: {loaded.config_digest}")
     if check_env:
         _model_settings_or_exit(
-            report_synthesis_enabled=loaded.runtime.report_synthesis.enabled
+            report_synthesis_enabled=(check_env and _synthesis_gate(loaded))
         )
 
 
@@ -559,6 +565,27 @@ def report(
         "--output",
         help="Rendered report path [default: <bundle-root>/report.html]",
     ),
+    serve: bool = typer.Option(
+        False,
+        "--serve",
+        help=(
+            "Serve the report over loopback HTTP after rendering. Live sidecar "
+            "views (Page findings, Performance) refetch ux-audit.json / "
+            "pagespeed.json at page load, which browsers block on file:// URLs."
+        ),
+    ),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        min=1,
+        max=65535,
+        help="Port for --serve [default: ephemeral]",
+    ),
+    open_browser: bool = typer.Option(
+        True,
+        "--browser/--no-browser",
+        help="Open the served report in the browser",
+    ),
 ) -> None:
     """Regenerate static report from finalized run bundles."""
     resolved_output = output if output is not None else bundle_root / "report.html"
@@ -567,6 +594,17 @@ def report(
     except (FileNotFoundError, OSError, ValueError) as error:
         _exit_with_error(f"report failed: {error}")
     typer.echo(f"report generated: {rendered}")
+    if serve:
+        from ux_analyzer.reporting.serve import serve_report
+
+        try:
+            serve_report(
+                resolved_output.parent,
+                port=port,
+                open_browser=open_browser,
+            )
+        except OSError as error:
+            _exit_with_error(f"report serve failed: {error}")
 
 
 @app.command()
@@ -660,15 +698,16 @@ def pagespeed(
             )
             failed = entry["audits"]["totals"]["failed"]
             opportunities = entry["opportunities"]
-            total_savings_ms = sum(
-                o["savings_ms"] or 0 for o in opportunities
-            )
-            total_savings_bytes = sum(
-                o["savings_bytes"] or 0 for o in opportunities
-            )
+            total_savings_ms = sum(o["savings_ms"] or 0 for o in opportunities)
+            total_savings_bytes = sum(o["savings_bytes"] or 0 for o in opportunities)
             typer.secho(
                 f"  {strategy_name}: {categories}",
-                fg="green" if all(c["score_percent"] and c["score_percent"] >= 90 for c in entry["categories"]) else "yellow",
+                fg="green"
+                if all(
+                    c["score_percent"] and c["score_percent"] >= 90
+                    for c in entry["categories"]
+                )
+                else "yellow",
             )
             typer.echo(
                 f"    audits: {failed} failed, {entry['audits']['totals']['passed']} passed; "
@@ -688,8 +727,12 @@ def pagespeed(
 @app.command()
 def slop(
     source: str = typer.Argument(..., help="URL or local HTML file to score"),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of pretty output"),
-    copy: bool = typer.Option(False, "--copy", help="Also score the copy axis (9 patterns)"),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit JSON instead of pretty output"
+    ),
+    copy: bool = typer.Option(
+        False, "--copy", help="Also score the copy axis (9 patterns)"
+    ),
 ) -> None:
     """Score any page against the 27-rule AI-design-slop fingerprint.
 
@@ -771,7 +814,9 @@ def _print_slop_evidence(evidence: object) -> None:
         elif isinstance(value, (int, float, bool)):
             typer.echo(f"      {key}: {value}")
         elif isinstance(value, list) and value:
-            typer.echo(f"      {key}: {_ascii(json.dumps(value, ensure_ascii=False)[:220])}")
+            typer.echo(
+                f"      {key}: {_ascii(json.dumps(value, ensure_ascii=False)[:220])}"
+            )
 
 
 @app.command()
@@ -1430,9 +1475,7 @@ def _explore_bootstrap_applications(
             "https://fonts.gstatic.com",
         )
         # Keep origin first for determinism; dedup via dict preserves order.
-        resource_origins = tuple(
-            dict.fromkeys((origin, *_default_resource_origins))
-        )
+        resource_origins = tuple(dict.fromkeys((origin, *_default_resource_origins)))
         version = ApplicationVersion(
             id=f"{app_id}-live",
             kind=ApplicationVersionKind.LIVE,
@@ -1687,9 +1730,10 @@ def _corpus_from_checkpoint(value: object) -> CrawlCorpus | None:
         headings_raw = page_payload.get("headings", ())
         links_raw = page_payload.get("discovered_links", ())
         elements_raw = page_payload.get("visible_elements", ())
+        regions_raw = page_payload.get("region_labels", ())
         if not isinstance(headings_raw, list) or not isinstance(links_raw, list):
             return None
-        if not isinstance(elements_raw, list):
+        if not isinstance(elements_raw, list) or not isinstance(regions_raw, list):
             return None
         try:
             pages.append(
@@ -1709,6 +1753,9 @@ def _corpus_from_checkpoint(value: object) -> CrawlCorpus | None:
                     ),
                     visible_elements=tuple(
                         str(item) for item in cast(list[object], elements_raw)
+                    ),
+                    region_labels=tuple(
+                        str(item) for item in cast(list[object], regions_raw)
                     ),
                 )
             )
@@ -1903,7 +1950,9 @@ async def _explore_run_synthesizer(
         # Only the latter must be surfaced as an error so the user sees why
         # the review would be empty.
         if not result.suggestions and result.status != "ok":
-            reason = "; ".join(result.limitations) if result.limitations else result.status
+            reason = (
+                "; ".join(result.limitations) if result.limitations else result.status
+            )
             raise RuntimeError(reason)
         return tuple(result.suggestions)
     finally:
@@ -1964,9 +2013,7 @@ def _explore_materialize_project(
                 ]
         elif persona_selection.mode in {"existing", "suggested"}:
             persona_ids_for_exp = [
-                pid.strip()
-                for pid in persona_selection.persona_ids
-                if pid.strip()
+                pid.strip() for pid in persona_selection.persona_ids if pid.strip()
             ]
             if not persona_ids_for_exp:
                 persona_ids_for_exp = [p.id for p in existing_personas]
@@ -2372,9 +2419,7 @@ def _explore_curated_to_full_scenario(
         "max_observations": _budget_int_if_set(budget.get("max_observations"), 18),
         "max_interactions": _budget_int_if_set(budget.get("max_interactions"), 8),
         # Explorer-generated scenarios run progress-based: no wall-clock cap.
-        "timeout_seconds": _budget_float_seconds_or_none(
-            budget.get("timeout_seconds")
-        ),
+        "timeout_seconds": _budget_float_seconds_or_none(budget.get("timeout_seconds")),
         "stall_timeout_seconds": _budget_float_seconds(
             budget.get("stall_timeout_seconds"), 90
         ),
@@ -2501,9 +2546,7 @@ def export(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     assignments = {
-        issue.finding_id: default_name
-        for issue in selected
-        if default_name is not None
+        issue.finding_id: default_name for issue in selected if default_name is not None
     }
     assignments.update(per_issue)
     notes_text: str | None = None
@@ -2584,8 +2627,7 @@ def _negotiate_live_origin_gaps(
         if not gaps:
             return flagged
         merged_gaps = {
-            version_id: gap - set(allow_origin)
-            for version_id, gap in gaps.items()
+            version_id: gap - set(allow_origin) for version_id, gap in gaps.items()
         }
         selected = _select_extra_origins(
             {key: value for key, value in merged_gaps.items() if value},
@@ -2653,9 +2695,7 @@ def _run_experiment_command(
         # from preventing deterministic experiment execution and fallback rendering.
         settings = _model_settings_or_exit(
             report_synthesis_enabled=(
-                check_env
-                and matrix.loaded.runtime.report_synthesis.enabled
-                and not no_synthesis
+                check_env and _synthesis_gate(matrix.loaded) and not no_synthesis
             )
         )
     _print_matrix(
@@ -2714,7 +2754,8 @@ def _run_experiment_command(
     )
     _write_ux_audit(output=output, results=result.results)
     _write_pagespeed(output=output, results=result.results)
-    if matrix.loaded.runtime.report_synthesis.enabled and not no_synthesis:
+    _run_auto_redesign(output=output, results=result.results)
+    if _synthesis_gate(matrix.loaded) and not no_synthesis:
         synthesis_result = result
         try:
             if resume:
@@ -2902,10 +2943,13 @@ def _select_extra_origins(
             echo(f"  [{version_id}] {origin}")
     echo("blocked requests abort runs with outcome 'safety-blocked'.")
     for _attempt in range(3):
-        answer = prompt(
-            "allow these origins for this run? "
-            "[a]ll / [s]elect numbers / [n]one: "
-        ).strip().casefold()
+        answer = (
+            prompt(
+                "allow these origins for this run? [a]ll / [s]elect numbers / [n]one: "
+            )
+            .strip()
+            .casefold()
+        )
         if answer in {"a", "all", "y", "yes"}:
             return {version_id: set(gap) for version_id, gap in gaps.items()}
         if answer in {"n", "none", ""}:
@@ -2930,8 +2974,7 @@ def _select_extra_origins(
             echo(f"numbers must be between 1 and {len(flat)}.")
             continue
         return {
-            version_id: frozenset(origins)
-            for version_id, origins in selected.items()
+            version_id: frozenset(origins) for version_id, origins in selected.items()
         }
     echo("no selection after three attempts; continuing without extra origins.")
     return {}
@@ -3061,9 +3104,7 @@ def _print_matrix(
     else:
         timeout_summary = f"{next(iter(timeouts)):g}s"
     typer.echo(f"overall run timeout: {timeout_summary}")
-    stalls = {
-        spec.scenario.budget.stall_timeout_seconds for spec in matrix.specs
-    }
+    stalls = {spec.scenario.budget.stall_timeout_seconds for spec in matrix.specs}
     if stalls == {None}:
         stall_summary = "none"
     elif None in stalls or len(stalls) != 1:
@@ -3077,6 +3118,24 @@ def _print_matrix(
             f"- {scenario}/{version}/{persona}/{policy}: {count} runs "
             f"(prominence-provider={provider})"
         )
+
+
+def _synthesis_gate(loaded: LoadedProject) -> bool:
+    """Decide whether report synthesis runs for this project.
+
+    ``UXA_REPORT_SYNTHESIS_ENABLED`` overrides the YAML gate when set to a
+    non-empty value (truthy values enable, falsey disable); empty or unset
+    keeps current behavior — the project's
+    ``evaluation.report_synthesis.enabled`` decides. Treating an empty value
+    as unset matters because ``load_dotenv`` turns a ``VAR=`` line in
+    ``.env.example`` into an empty string, which must not silently flip the
+    gate.
+    """
+
+    raw = os.environ.get("UXA_REPORT_SYNTHESIS_ENABLED", "").strip()
+    if raw:
+        return raw.lower() not in {"0", "false", "no", "off"}
+    return loaded.runtime.report_synthesis.enabled
 
 
 def _model_settings_or_exit(
@@ -4100,6 +4159,7 @@ def _complete_experiment(
     )
     _write_ux_audit(output=output, results=result.results)
     _write_pagespeed(output=output, results=result.results)
+    _run_auto_redesign(output=output, results=result.results)
     report_path = output / "report.html"
     if render_report:
         report_path = _render_completed_report(output=output)
@@ -4120,12 +4180,75 @@ def _ux_audit_start_urls(results: Sequence[object]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(urls))
 
 
-def _ux_audit_sync(urls: Sequence[str]) -> dict[str, Any]:
+def _exploration_corpus_for_page_list(
+    output: Path,
+) -> Mapping[str, object] | None:
+    """Crawl corpus from the newest finalized exploration attempt, if any.
+
+    Best-effort by contract: any error reading the artifact yields ``None``
+    so the shared page list falls back to start URLs alone.
+    """
+
+    try:
+        store = ExplorationArtifactStore(output)
+        index = store.get_index()
+        records = index.get("attempts")
+        finalized = ()
+        if isinstance(records, Sequence) and not isinstance(records, (str, bytes)):
+            finalized = tuple(
+                cast(Mapping[str, object], record)
+                for record in cast(Sequence[object], records)
+                if isinstance(record, Mapping)
+                and str(cast(Mapping[str, object], record).get("status", ""))
+                in {"succeeded", "partial", "completed"}
+            )
+        if not finalized:
+            return None
+        attempt_id = str(finalized[-1].get("attempt_id", ""))
+        if not attempt_id:
+            return None
+        loaded = store.load_attempt(attempt_id)
+        corpus_value = loaded.get("corpus")
+        if isinstance(corpus_value, Mapping):
+            return cast(Mapping[str, object], corpus_value)
+    except Exception:  # noqa: BLE001 - page-list widening is best-effort
+        return None
+    return None
+
+
+def _audit_page_urls(
+    *,
+    output: Path,
+    results: Sequence[object],
+    cap: int,
+) -> tuple[str, ...]:
+    """Shared deterministic page list for the audit (ADR 0007).
+
+    Start URLs first, then BFS discovery order from a finalized exploration
+    attempt's crawl corpus when one exists (page findings may then cover more
+    URLs than start URLs — the renderer renders whatever the audit contains).
+    The list stays exactly the start URLs when no finalized attempt exists.
+    Resolution is best-effort: an unreadable exploration artifact leaves the
+    start URLs unchanged instead of failing the audit.
+    """
+
+    from ux_analyzer.analysis.page_capture import resolve_redesign_page_list
+
+    start_urls = _ux_audit_start_urls(results)
+    if not start_urls:
+        return ()
+    corpus = _exploration_corpus_for_page_list(output)
+    return resolve_redesign_page_list(corpus, start_urls, cap=cap)
+
+
+def _ux_audit_sync(
+    urls: Sequence[str], *, capture_hook: CaptureMaterialsHook | None = None
+) -> dict[str, Any]:
     """Indirection so tests can stub the live audit without network."""
 
     from ux_analyzer.analysis.project_audit import audit_urls_sync
 
-    return audit_urls_sync(urls)
+    return audit_urls_sync(urls, capture_hook=capture_hook)
 
 
 def _write_ux_audit(output: Path, results: Sequence[object]) -> Path | None:
@@ -4135,19 +4258,45 @@ def _write_ux_audit(output: Path, results: Sequence[object]) -> Path | None:
     recorded inside ``ux-audit.json`` as bounded error entries instead.
     """
 
+    from ux_analyzer.analysis.page_capture import (
+        PAGE_CAPTURE_FILENAME,
+        PAGE_CAPTURE_SCHEMA,
+        audit_capture_hook,
+        max_pages_from_env,
+    )
     from ux_analyzer.analysis.project_audit import AUDIT_FILENAME
 
-    urls = _ux_audit_start_urls(results)
+    captures: dict[str, dict[str, object]] = {}
+    capture_hook = audit_capture_hook(captures)
+    urls = _audit_page_urls(output=output, results=results, cap=max_pages_from_env())
     if not urls:
         return None
     try:
-        report = _ux_audit_sync(urls)
+        report = _ux_audit_sync(urls, capture_hook=capture_hook)
     except Exception as error:  # noqa: BLE001 - audit must not fail a run
         typer.echo(
             f"warning: live-page audit unavailable: {type(error).__name__}: {error}",
             err=True,
         )
         return None
+    captured_pages = [
+        entry["payload"]
+        for entry in captures.values()
+        if entry.get("status") == "captured"
+    ]
+    if captured_pages:
+        document = {
+            "schema": PAGE_CAPTURE_SCHEMA,
+            "pages": captured_pages,
+        }
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+            _atomic_json_write(output / PAGE_CAPTURE_FILENAME, document)
+        except (OSError, TypeError, ValueError) as error:
+            typer.echo(
+                f"warning: could not persist {PAGE_CAPTURE_FILENAME}: {error}",
+                err=True,
+            )
     destination = output / AUDIT_FILENAME
     try:
         output.mkdir(parents=True, exist_ok=True)
@@ -4215,13 +4364,381 @@ def _write_pagespeed(output: Path, results: Sequence[object]) -> Path | None:
         output.mkdir(parents=True, exist_ok=True)
         _atomic_json_write(destination, report)
     except (OSError, TypeError, ValueError) as error:
-        typer.echo(f"warning: could not persist {PAGESPEED_FILENAME}: {error}", err=True)
+        typer.echo(
+            f"warning: could not persist {PAGESPEED_FILENAME}: {error}", err=True
+        )
         return None
     typer.echo(
         f"pagespeed: {report.get('ok_strategy_count', 0)} report(s) for "
         f"{report.get('url_count', 0)} URL(s); see {PAGESPEED_FILENAME} and report.html"
     )
     return destination
+
+
+def _capture_page(url: str, *, max_page_height: int | None = None) -> dict[str, object]:
+    """Indirection so tests can stub the standalone capture without a browser."""
+
+    from ux_analyzer.analysis.page_capture import capture_page
+
+    return capture_page(url, max_page_height=max_page_height)
+
+
+async def _run_redesign_pass(
+    captures: Mapping[str, Mapping[str, object]],
+    *,
+    audience: str,
+    settings: OpenAICompatibleSettings,
+):
+    """Run one redesign pass through the two ADR 0007 model roles."""
+
+    from dataclasses import asdict, replace
+
+    from ux_analyzer.application.redesign import run_redesign_pass
+    from ux_analyzer.providers.redesign import (
+        RedesignCriticMerger,
+        RedesignProposer,
+    )
+    from ux_analyzer.providers.redesign_principles import (
+        REDESIGN_PRINCIPLE_PACK_VERSION,
+        redesign_principle_ids,
+        redesign_principle_pack,
+    )
+
+    http_client = httpx.AsyncClient(timeout=settings.timeout_seconds)
+    try:
+        client = create_structured_model_client(
+            settings,
+            http_client=http_client,
+            call_limiter=asyncio.Semaphore(settings.max_concurrent_calls),
+        )
+        outcome = await run_redesign_pass(
+            captures,
+            audience=audience,
+            proposer=RedesignProposer(
+                client,
+                model=settings.model_for_role(ModelRole.REDESIGN_PROPOSER),
+            ),
+            critic=RedesignCriticMerger(
+                client,
+                model=settings.model_for_role(ModelRole.REDESIGN_CRITIC_MERGER),
+            ),
+            attempt_id=new_redesign_attempt_id(),
+            principle_pack=[asdict(item) for item in redesign_principle_pack()],
+            principle_ids=redesign_principle_ids(),
+            principle_pack_version=REDESIGN_PRINCIPLE_PACK_VERSION,
+        )
+        records = tuple(getattr(client, "records", ()) or ())
+        if records:
+            # Attach sanitized transport records so the publisher can persist
+            # them next to the payload (failure debugging without payloads).
+            outcome = replace(outcome, model_call_records=records)
+        return outcome
+    finally:
+        await http_client.aclose()
+
+
+def _redesign_settings_or_exit() -> OpenAICompatibleSettings:
+    """Model settings for the redesign roles; missing names exit loudly."""
+
+    try:
+        return OpenAICompatibleSettings.from_env()
+    except ModelConfigurationError as error:
+        typer.echo(f"model environment error: {error}")
+        raise typer.Exit(1) from error
+
+
+def _redesign_captures(
+    *,
+    output: Path,
+    pages: tuple[str, ...],
+) -> dict[str, dict[str, object]]:
+    """Load captures from the persisted sidecar, re-capturing what is missing.
+
+    Fresh sidecar pages never trigger a browser; only pages absent from the
+    sidecar (or captured before effective tap-target geometry landed) are
+    captured with a dedicated pass, and the sidecar is updated so the next
+    run stays on the shared single-pass path (ADR 0007).
+    """
+
+    from ux_analyzer.analysis.page_capture import (
+        PAGE_CAPTURE_SCHEMA,
+        capture_reports_effective_tap_boxes,
+        load_page_capture,
+        max_page_height_from_env,
+        sidecar_captures_by_url,
+    )
+
+    captures = sidecar_captures_by_url(load_page_capture(output) or {})
+    # Pages captured before effective tap-target measurement (no tap_box on
+    # interactive entries) cannot validate hit-target claims against the
+    # real tappable surface, so they are stale for the redesign consumer.
+    missing = tuple(
+        url
+        for url in pages
+        if url not in captures or not capture_reports_effective_tap_boxes(captures[url])
+    )
+    if missing:
+        # Same env semantics as the capture module: unset, unparseable, or
+        # non-positive values fall back to the default cap (never crash).
+        max_page_height = max_page_height_from_env()
+        for url in missing:
+            captures[url] = _capture_page(url, max_page_height=max_page_height)
+        document = {
+            "schema": PAGE_CAPTURE_SCHEMA,
+            "pages": [captures[url] for url in pages if url in captures],
+        }
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+            _atomic_json_write(output / "page-capture.json", document)
+        except (OSError, TypeError, ValueError) as error:
+            typer.echo(
+                f"warning: could not persist page-capture.json: {error}",
+                err=True,
+            )
+    return captures
+
+
+def _persist_redesign_outcome(outcome: object, *, output: Path) -> None:
+    """Publish one pass outcome; publication failures surface as warnings."""
+
+    from ux_analyzer.storage.redesign_artifacts import (
+        RedesignArtifactError,
+        RedesignAttemptStore,
+    )
+
+    store = RedesignAttemptStore(output)
+    try:
+        store.publish(outcome.attempt, captures_digest=outcome.captures_digest)  # type: ignore[attr-defined]
+    except RedesignArtifactError as error:
+        typer.echo(f"warning: redesign attempt not persisted: {error}", err=True)
+        return
+    records = getattr(outcome, "model_call_records", ())
+    attempt_id = str(getattr(outcome.attempt, "attempt_id", ""))  # type: ignore[attr-defined]
+    if not records or not attempt_id:
+        return
+    # Sanitized transport audit records next to the payload: role, model,
+    # attempts, latency, retries, and failure diagnostics — no request or
+    # response payloads — so a terminal model failure stays debuggable.
+    destination = output / "redesign" / attempt_id
+    try:
+        _atomic_json_write(
+            destination / "model-calls.json",
+            {
+                "schema": "redesign-model-calls-v1",
+                "model_calls": [
+                    {
+                        "role": record.role.value,
+                        "model": record.model,
+                        "endpoint_origin": record.endpoint_origin,
+                        "schema_version": record.schema_version,
+                        "attempts": record.attempts,
+                        "latency_ms": record.latency_ms,
+                        "token_usage": {
+                            "prompt_tokens": record.token_usage.prompt_tokens,
+                            "completion_tokens": record.token_usage.completion_tokens,
+                            "total_tokens": record.token_usage.total_tokens,
+                        },
+                        "retries": [
+                            {
+                                "reason": retry.reason,
+                                "attempt": retry.attempt,
+                                "status_code": retry.status_code,
+                                "delay_seconds": retry.delay_seconds,
+                            }
+                            for retry in record.retries
+                        ],
+                        "failure": _redesign_failure_record(record.response),
+                    }
+                    for record in records
+                ],
+            },
+        )
+    except (OSError, TypeError, ValueError) as error:
+        typer.echo(
+            f"warning: could not persist redesign model-calls.json: {error}",
+            err=True,
+        )
+
+
+def _redesign_failure_record(response: object) -> dict[str, object] | None:
+    """Safe failure metadata from a terminal transport record response."""
+
+    if not isinstance(response, Mapping):
+        return None
+    mapping = cast(Mapping[str, object], response)
+    failure = mapping.get("failure")
+    if not isinstance(failure, str):
+        return None
+    record: dict[str, object] = {"reason": failure}
+    provider = mapping.get("provider")
+    if isinstance(provider, Mapping):
+        provider_mapping = cast(Mapping[str, object], provider)
+        for key in ("status_code", "error_code", "error_type", "request_id"):
+            value = provider_mapping.get(key)
+            if isinstance(value, (str, int)):
+                record[key] = value
+    diagnostics = mapping.get("diagnostics")
+    if isinstance(diagnostics, Mapping):
+        record["diagnostics"] = cast(Mapping[str, object], diagnostics)
+    return record
+
+
+def _run_auto_redesign(
+    *,
+    output: Path,
+    results: Sequence[object],
+) -> None:
+    """Best-effort redesign attempt after a completed experiment.
+
+    Gated by ``UXA_REDESIGN_ENABLED`` (default off). Resolves the shared
+    page list, reuses the audit's persisted ``page-capture.json`` sidecar
+    pages, and runs one redesign pass; every failure path mirrors the
+    audit's best-effort warnings and never fails the run.
+    """
+
+    if os.environ.get("UXA_REDESIGN_ENABLED", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    try:
+        settings = _redesign_settings_or_exit()
+    except typer.Exit:
+        typer.echo(
+            "warning: redesign enabled but model environment incomplete; skipping",
+            err=True,
+        )
+        return
+    from ux_analyzer.analysis.page_capture import max_pages_from_env
+
+    pages = _audit_page_urls(output=output, results=results, cap=max_pages_from_env())
+    if not pages:
+        return
+    try:
+        captures = _redesign_captures(output=output, pages=pages)
+        if not captures:
+            typer.echo("warning: redesign skipped; no page captures", err=True)
+            return
+        outcome = asyncio.run(
+            _run_redesign_pass(captures, audience="", settings=settings)
+        )
+        _persist_redesign_outcome(outcome, output=output)
+        status = outcome.attempt.status.value  # type: ignore[attr-defined]
+        typer.echo(f"redesign attempt: {status}; see redesign/ and report.html")
+    except typer.Exit:
+        raise
+    except Exception as error:  # noqa: BLE001 - redesign must not fail a run
+        typer.echo(
+            f"warning: redesign unavailable: {type(error).__name__}: {error}",
+            err=True,
+        )
+
+
+@app.command("redesign")
+def redesign_command(
+    output: Path = typer.Argument(..., help="Experiment output directory"),
+    pages: list[str] = typer.Option(
+        [],
+        "--pages",
+        help="Explicit page URLs (repeatable); overrides the resolved page list.",
+    ),
+    extra_pages: list[str] | None = typer.Argument(
+        None,
+        help="Optional bare page URLs appended to --pages (``--pages URL ...``).",
+    ),
+    audience: str = typer.Option(
+        "",
+        "--audience",
+        help="Optional operator context; the model still infers and states its own audience.",
+    ),
+    max_pages: int | None = typer.Option(
+        None,
+        "--max-pages",
+        help="Page-list cap [default: UXA_REDESIGN_MAX_PAGES or 10].",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Resolve and print the page list without running models.",
+    ),
+) -> None:
+    """Propose creative redesign improvements from persisted page captures.
+
+    Reads the shared ``page-capture.json`` sidecar when fresh; only missing
+    pages get a dedicated capture pass. Publishes an immutable attempt under
+    ``<output>/redesign/<attempt-id>/``.
+    """
+
+    from ux_analyzer.analysis.page_capture import (
+        fresh_capture_urls,
+        max_pages_from_env,
+        normalize_capture_url,
+        resolve_redesign_page_list,
+    )
+    from ux_analyzer.domain.redesign import RedesignAttemptStatus
+    from ux_analyzer.storage.redesign_artifacts import RedesignAttemptStore
+
+    cap = max_pages if max_pages is not None else max_pages_from_env()
+    if pages or extra_pages:
+        # Explicit URLs take the same canonical form as the resolved list
+        # (fragment stripped, host lowercased, default port elided) so they
+        # hit the persisted sidecar instead of re-capturing a near-duplicate
+        # key; the cap applies so --max-pages is honored here too.
+        normalized: list[str] = []
+        for raw_url in [*pages, *(extra_pages or ())]:
+            try:
+                normalized.append(normalize_capture_url(raw_url))
+            except ValueError as error:
+                _exit_with_error(f"invalid page URL {raw_url!r}: {error}")
+        resolved_pages = tuple(dict.fromkeys(normalized))[:cap]
+    else:
+        exploration_corpus = _exploration_corpus_for_page_list(output)
+        resolved_pages = resolve_redesign_page_list(
+            exploration_corpus,
+            fresh_capture_urls(output),
+            cap=cap,
+        )
+        if not resolved_pages:
+            resolved_pages = fresh_capture_urls(output)[:cap]
+    if not resolved_pages:
+        _exit_with_error(
+            "no page captures available: provide --pages or run an experiment "
+            "or exploration first"
+        )
+    if dry_run:
+        typer.echo(f"redesign dry-run: {len(resolved_pages)} page(s)")
+        for url in resolved_pages:
+            typer.echo(f"- {url}")
+        return
+    settings = _redesign_settings_or_exit()
+    try:
+        captures = _redesign_captures(output=output, pages=resolved_pages)
+    except Exception as error:  # noqa: BLE001 - capture failures are loud but bounded
+        _exit_with_error(
+            f"redesign failed: capture unavailable: {type(error).__name__}: {error}"
+        )
+    if not captures:
+        _exit_with_error("redesign failed: no page captures available")
+    try:
+        outcome = asyncio.run(
+            _run_redesign_pass(captures, audience=audience, settings=settings)
+        )
+    except Exception as error:  # noqa: BLE001 - surfaced as attempt status
+        _exit_with_error(f"redesign failed: {type(error).__name__}: {error}")
+    _persist_redesign_outcome(outcome, output=output)
+    status = outcome.attempt.status
+    typer.echo(f"redesign attempt: {status.value}")
+    if status is RedesignAttemptStatus.REJECTED:
+        for reason in outcome.attempt.rejection_reasons:
+            typer.echo(f"- rejected: {reason}", err=True)
+    if status is RedesignAttemptStatus.UNAVAILABLE:
+        typer.echo(f"- unavailable: {outcome.attempt.unavailable_reason}", err=True)
+    store = RedesignAttemptStore(output)
+    selection = store.newest_valid_attempt()
+    for note in selection.skipped:
+        typer.echo(f"warning: {note}", err=True)
 
 
 def complete_experiment(

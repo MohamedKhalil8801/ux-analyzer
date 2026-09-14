@@ -85,6 +85,14 @@ _REPORT_ROLES = frozenset(
         ModelRole.REPORT_ADJUDICATOR,
     }
 )
+# ADR 0007: redesign roles share the report model (UXA_REDESIGN_MODEL with
+# UXA_REPORT_MODEL fallback) and the report role transport behavior.
+_REDESIGN_ROLES = frozenset(
+    {
+        ModelRole.REDESIGN_PROPOSER,
+        ModelRole.REDESIGN_CRITIC_MERGER,
+    }
+)
 _SAFE_FINISH_REASONS = frozenset(
     {"stop", "length", "tool_calls", "function_call", "content_filter"}
 )
@@ -262,7 +270,7 @@ def _reasoning_effort(
     role_value = ModelRole(role)
     if role_value is ModelRole.COGNITIVE:
         return settings.cognitive_reasoning_effort
-    if role_value in _REPORT_ROLES:
+    if role_value in _REPORT_ROLES or role_value in _REDESIGN_ROLES:
         return settings.report_reasoning_effort
     return settings.scent_reasoning_effort
 
@@ -416,6 +424,7 @@ class OpenAICompatibleSettings:
     report_model: str | None = None
     report_reasoning_effort: str | None = None
     session_id: str | None = None
+    redesign_model: str | None = None
 
     def __post_init__(self) -> None:
         normalized_mode = _normalize_llm_mode(self.mode)
@@ -438,6 +447,8 @@ class OpenAICompatibleSettings:
                 raise ModelConfigurationError(f"{name} must not be empty")
         if self.report_model is not None and not self.report_model:
             raise ModelConfigurationError("report_model must not be empty")
+        if self.redesign_model is not None and not self.redesign_model:
+            raise ModelConfigurationError("redesign_model must not be empty")
         for name in (
             "scent_reasoning_effort",
             "cognitive_reasoning_effort",
@@ -519,6 +530,11 @@ class OpenAICompatibleSettings:
             scent_model=values["UXA_SCENT_MODEL"],
             cognitive_model=values["UXA_COGNITIVE_MODEL"],
             report_model=values.get("UXA_REPORT_MODEL") or None,
+            redesign_model=(
+                values.get("UXA_REDESIGN_MODEL")
+                or values.get("UXA_REPORT_MODEL")
+                or None
+            ),
             mode=mode,
             scent_reasoning_effort=(
                 values.get("UXA_LLM_SCENT_REASONING_EFFORT") or None
@@ -585,6 +601,9 @@ class OpenAICompatibleSettings:
             raise ModelConfigurationError(
                 "report_model is required for report synthesis"
             )
+        redesign_model_value = value.get("redesign_model")
+        if redesign_model_value is not None and not str(redesign_model_value).strip():
+            raise ModelConfigurationError("redesign_model must not be empty")
         return cls(
             base_url=base_url,
             api_key=api_key,
@@ -592,6 +611,9 @@ class OpenAICompatibleSettings:
             cognitive_model=str(value["cognitive_model"]),
             report_model=(
                 None if report_model_value is None else str(report_model_value)
+            ),
+            redesign_model=(
+                None if redesign_model_value is None else str(redesign_model_value)
             ),
             mode=mode,
             scent_reasoning_effort=(
@@ -627,6 +649,7 @@ class OpenAICompatibleSettings:
             f"scent_model={self.scent_model!r}, "
             f"cognitive_model={self.cognitive_model!r}, "
             f"report_model={self.report_model!r}, "
+            f"redesign_model={self.redesign_model!r}, "
             f"scent_reasoning_effort={self.scent_reasoning_effort!r}, "
             f"cognitive_reasoning_effort={self.cognitive_reasoning_effort!r}, "
             f"report_reasoning_effort={self.report_reasoning_effort!r}, "
@@ -641,6 +664,14 @@ class OpenAICompatibleSettings:
             if self.report_model is None:
                 raise ModelConfigurationError(
                     "report_model is required for report roles"
+                )
+            return self.report_model
+        if role_value in _REDESIGN_ROLES:
+            if self.redesign_model is not None:
+                return self.redesign_model
+            if self.report_model is None:
+                raise ModelConfigurationError(
+                    "redesign_model or report_model is required for redesign roles"
                 )
             return self.report_model
         if role_value in {ModelRole.COARSE_SCENT, ModelRole.FULL_SCENT}:
@@ -1066,7 +1097,9 @@ def _structured_content(
     role: ModelRole | None = None,
 ) -> object:
     tool_calls = _response_message_tool_calls(body)
-    if role in _REPORT_ROLES and tool_calls is not _MISSING_RESPONSE_CONTENT:
+    if (
+        role in _REPORT_ROLES or role in _REDESIGN_ROLES
+    ) and tool_calls is not _MISSING_RESPONSE_CONTENT:
         if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
             raise ValueError("response message tool calls are not a list")
         calls = cast(Sequence[object], tool_calls)
@@ -1099,7 +1132,11 @@ def _structured_content(
     content_text = _text_content_stream(cast(object, content))
     if content_text is None:
         raise ValueError("response message has no JSON content")
-    if role in _REPORT_ROLES:
+    if role in _REPORT_ROLES or role in _REDESIGN_ROLES:
+        # ADR 0007: redesign roles share the report role transport behavior,
+        # including the tolerant recovery parser (fenced JSON, trailing
+        # commas, duplicated identical objects); the parsed object is still
+        # schema-validated locally.
         return _report_json_object(content_text)
     return _strict_json_object(content_text)
 
@@ -1430,7 +1467,7 @@ def _normalize_report_output(role: ModelRole, parsed: object) -> object:
 
 def _response_mode(role: ModelRole) -> str:
     role_value = ModelRole(role)
-    if role_value in _REPORT_ROLES:
+    if role_value in _REPORT_ROLES or role_value in _REDESIGN_ROLES:
         return "tool-call"
     if role_value is ModelRole.COGNITIVE:
         return "json-object"
@@ -1438,7 +1475,13 @@ def _response_mode(role: ModelRole) -> str:
 
 
 def _report_tool_name(role: ModelRole) -> str:
-    role_name = ModelRole(role).value.replace("report-", "").replace("-", "_")
+    role_value = ModelRole(role)
+    if role_value in _REDESIGN_ROLES:
+        # ADR 0007: redesign roles share the tool-call transport with a
+        # redesign-prefixed tool name (e.g. uxa_redesign_proposer).
+        role_name = role_value.value.replace("redesign-", "").replace("-", "_")
+        return f"uxa_redesign_{role_name}"
+    role_name = role_value.value.replace("report-", "").replace("-", "_")
     return f"uxa_report_{role_name}"
 
 
@@ -1828,7 +1871,17 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 )
                 last_reason = "invalid structured output"
                 if attempts < retry_policy.max_attempts:
-                    if mode == "tool-call":
+                    if role_value in _REDESIGN_ROLES:
+                        # ADR 0007: redesign roles degrade tool-call → strict
+                        # → json-object. Unlike report roles they skip the
+                        # recovery parser, so a provider that answers the
+                        # function-calling transport with plain content would
+                        # otherwise exhaust every attempt in one mode.
+                        if mode == "tool-call":
+                            mode = "strict"
+                        elif mode == "strict":
+                            mode = "json-object"
+                    elif mode == "tool-call":
                         mode = "json-object"
                     retries.append(
                         self._retry(
@@ -1858,7 +1911,12 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 )
                 last_reason = "invalid structured output"
                 if attempts < retry_policy.max_attempts:
-                    if mode == "tool-call":
+                    if role_value in _REDESIGN_ROLES:
+                        if mode == "tool-call":
+                            mode = "strict"
+                        elif mode == "strict":
+                            mode = "json-object"
+                    elif mode == "tool-call":
                         mode = "json-object"
                     retries.append(
                         self._retry(
@@ -1955,10 +2013,12 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
     ) -> dict[str, object]:
         role_value = ModelRole(role)
         effective_messages = messages
-        if role_value in _REPORT_ROLES and mode != "tool-call":
-            # Degraded report transports lose the tool-call contract; some
-            # models then answer with prose around a fenced JSON object.
-            # Re-anchor the output contract explicitly.
+        if (
+            role_value in _REPORT_ROLES or role_value in _REDESIGN_ROLES
+        ) and mode != "tool-call":
+            # Degraded report and redesign transports lose the tool-call
+            # contract; some models then answer with prose around a fenced
+            # JSON object. Re-anchor the output contract explicitly.
             effective_messages = (
                 *messages,
                 ChatMessage(

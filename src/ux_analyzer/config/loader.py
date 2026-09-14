@@ -17,6 +17,7 @@ from ux_analyzer.application.evaluation import DiscoveryCostConfig
 from ux_analyzer.application.state_updates import StateUpdateConfig
 from ux_analyzer.config.models import (
     ApplicationModel,
+    ColourChangeVerifierModel,
     ExperimentModel,
     FixtureStateVerifierModel,
     FrozenExpectationDocumentModel,
@@ -30,6 +31,7 @@ from ux_analyzer.domain.benchmark import (
     ApplicationVersionKind,
     BenchmarkProject,
     Budget,
+    ColourChangeVerifierSpec,
     ExperimentDefinition,
     ExperimentPolicy,
     FixtureInputs,
@@ -350,7 +352,11 @@ def _reject_unsupported_verifier_types(raw_config: dict[object, object]) -> None
             continue
         verifier_mapping = cast(dict[object, object], verifier)
         verifier_type = verifier_mapping.get("type")
-        if verifier_type not in {"fixture-state", "visible-result"}:
+        if verifier_type not in {
+            "fixture-state",
+            "visible-result",
+            "colour-change",
+        }:
             raise ProjectConfigError(f"unsupported verifier type: {verifier_type!r}")
 
 
@@ -591,6 +597,11 @@ def _to_scenario(scenario: ScenarioModel) -> Scenario:
             field=scenario.verifier.field,
             operator=VerifierOperator(scenario.verifier.operator),
             expected_fixture_key=scenario.verifier.expected_fixture_key,
+        )
+    elif isinstance(scenario.verifier, ColourChangeVerifierModel):
+        verifier = ColourChangeVerifierSpec(
+            type=scenario.verifier.type,
+            threshold=scenario.verifier.threshold,
         )
     else:
         verifier = VisibleResultVerifierSpec(

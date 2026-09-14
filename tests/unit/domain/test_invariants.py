@@ -224,8 +224,32 @@ def test_persona_projection_uses_rendered_text_without_aria_fallback() -> None:
     aria_only = replace(aria_only, rendered_text="")
     synthetic = element_snapshot(noticed_label="Synthetic label")
 
-    assert viewport_snapshot(elements=(aria_only,)).persona_visible_elements()[0].label == ""
-    assert viewport_snapshot(elements=(synthetic,)).persona_visible_elements()[0].label == "Synthetic label"
+    # An empty rendered_text means the control renders no text of its own (an
+    # icon-only button). The accessible name must NOT be projected: it exists
+    # for assistive technology, is invisible to a sighted user, and leaking it
+    # would make the simulated user smarter than the human it stands in for.
+    # The persona instead gets a description of what a sighted user perceives
+    # — the control's role, bearing, and size. See
+    # tests/unit/test_report_review_regressions.py for the regression this
+    # guards. The label must still be non-empty so the control is identifiable.
+    aria_visible = viewport_snapshot(
+        elements=(aria_only,)
+    ).persona_visible_elements()[0]
+    assert "Switch dark theme" not in aria_visible.label
+    assert aria_visible.label.strip() != ""
+    assert "button" in aria_visible.label
+
+    # A control that renders its own text keeps that text verbatim; the
+    # fallback only applies when nothing is rendered.
+    rendered = replace(
+        element_snapshot(noticed_label="Synthetic label"), rendered_text="Download CV"
+    )
+    assert (
+        viewport_snapshot(elements=(rendered,))
+        .persona_visible_elements()[0]
+        .label
+        == "Download CV"
+    )
 
 
 def test_persona_region_projection_uses_rendered_label_with_synthetic_fallback() -> None:

@@ -1456,4 +1456,44 @@
   })(focusEvidenceDestination);
   window.addEventListener("hashchange", function () { routeView(true); });
   routeView(true);
+
+  // --- Redesign proposal filters (report-local; no network, no model calls) ---
+  var redesignRoot = document.querySelector("[data-redesign-filters]");
+  if (redesignRoot) {
+    var redesignSection = redesignRoot.closest("section");
+    var proposalCards = redesignSection
+      ? Array.prototype.slice.call(redesignSection.querySelectorAll(".proposal-card"))
+      : [];
+    var activeCategory = "";
+    var activePage = "";
+    function redesignApplyFilters() {
+      proposalCards.forEach(function (card) {
+        var categoryMatch = !activeCategory || card.getAttribute("data-category") === activeCategory;
+        var pageMatch = !activePage || card.getAttribute("data-page-url") === activePage;
+        card.hidden = !(categoryMatch && pageMatch);
+      });
+      redesignRoot.querySelectorAll(".redesign-filter-chip").forEach(function (chip) {
+        var isCategory = chip.hasAttribute("data-filter-category");
+        var active = isCategory
+          ? chip.getAttribute("data-filter-category") === activeCategory
+          : chip.getAttribute("data-filter-page") === activePage;
+        chip.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+    redesignRoot.addEventListener("click", function (event) {
+      var chip = event.target.closest(".redesign-filter-chip");
+      if (!chip) return;
+      var isCategory = chip.hasAttribute("data-filter-category");
+      var value = isCategory
+        ? chip.getAttribute("data-filter-category")
+        : chip.getAttribute("data-filter-page");
+      if (isCategory) {
+        activeCategory = activeCategory === value ? "" : value;
+      } else {
+        activePage = activePage === value ? "" : value;
+      }
+      redesignApplyFilters();
+    });
+    redesignApplyFilters();
+  }
 }());

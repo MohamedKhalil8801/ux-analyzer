@@ -89,6 +89,43 @@ async def dashboard(
     )
 
 
+_TAP_TARGETS_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tap targets fixture</title>
+  <link rel="stylesheet" href="/static/tap-targets.css">
+</head>
+<body style="margin:0">
+  <!-- Standalone small control: effective tap surface is itself. -->
+  <button id="solo">Solo button</button>
+  <!-- Clickable card whose handler is bound with addEventListener from an
+       external script (the fixture middleware's CSP blocks inline scripts
+       and styles): children inside it have the card's box as their
+       effective tap surface, not their own. -->
+  <div id="card">
+    <button id="child">Child button</button>
+    <span>Card copy</span>
+  </div>
+  <script src="/static/tap-targets.js"></script>
+</body>
+</html>
+"""
+
+
+@app.get(
+    "/app/{session_id}/{version}/tap-targets", response_class=HTMLResponse
+)
+async def tap_targets_page(
+    request: Request,
+    session_id: str,
+    version: str,
+) -> HTMLResponse:
+    del request, session_id
+    _check_version(version)
+    return HTMLResponse(_TAP_TARGETS_HTML)
+
+
 @app.get("/app/{session_id}/{version}/team", response_class=HTMLResponse)
 async def team_page(
     request: Request,

@@ -52,6 +52,7 @@ class RawElementFact:
     destination_url: str | None
     region_ordinals: tuple[int, ...]
     label_for: str | None
+    has_visible_graphic: bool | None = None
 
 
 def build_regions_and_edges(

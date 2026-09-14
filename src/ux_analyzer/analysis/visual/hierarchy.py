@@ -2,7 +2,8 @@
 
 Flags broken shared edges between same-role sibling blocks, ragged mixed
 text alignment, overlapping blocks, flat visual hierarchies without a focal
-point, inverted emphasis (secondary text larger than its primary label),
+point, inverted emphasis (secondary label rendered larger than the primary
+text it annotates),
 and undifferentiated uniform text blocks. All thresholds are generic
 (no per-site knowledge).
 """
@@ -30,7 +31,7 @@ _SECTION_DRIFT = 12.0  # px tolerance for major full-width sections
 _CRITICAL_DRIFT = 80.0  # px offset that means a broken layout
 _OVERLAP_FRAC = 0.25  # intersect/min-area fraction meaning real overlap
 _TITLE_RATIO = 1.15  # max/body size ratio below which a title is "flat"
-_EMPHASIS_RATIO = 1.15  # meta/primary size ratio meaning "larger"
+_EMPHASIS_RATIO = 1.15  # secondary/primary size ratio meaning "outweighs"
 _MIN_GROUP = 3  # smallest sibling group worth judging
 _HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _MAX_ISSUES = 12
@@ -322,6 +323,22 @@ def _is_in_nav_landmark(snapshot: Snapshot, node: SNode) -> bool:
     cur: SNode | None = node
     while cur is not None:
         if cur.tag in {"nav", "header"}:
+            return True
+        cur = by_index.get(cur.parent) if cur.parent >= 0 else None
+    return False
+
+
+def _has_heading_ancestor(snapshot: Snapshot, node: SNode) -> bool:
+    """True when the node is a heading or lives under one.
+
+    Mirrors ``_is_in_nav_landmark``: the flagged text leaf is frequently an
+    inner ``span`` of an ``h1``/``h2``, so the heading guard must inspect the
+    whole ancestor chain rather than the node's own tag.
+    """
+    by_index = {n.i: n for n in snapshot.nodes}
+    cur: SNode | None = node
+    while cur is not None:
+        if cur.tag in _HEADINGS:
             return True
         cur = by_index.get(cur.parent) if cur.parent >= 0 else None
     return False
@@ -781,6 +798,30 @@ def _px_or(raw: str, default: float) -> float:
 def _inverted_emphasis_issues(
     snapshot: Snapshot, flagged: set[int]
 ) -> list[VisualIssue]:
+    """Flag a small label node that a larger neighbour visually outranks.
+
+    Role semantics (option (a): field names kept, referents chosen by what is
+    *measured*, never by DOM order). The emitted ``primary`` is the LARGER,
+    visually dominant node and the emitted ``secondary`` is the smaller
+    supporting label beside it, so the evidence satisfies
+
+        ``primary_font_px > secondary_font_px``
+
+    for every emitted issue — the same invariant the size guard enforces
+    (``outlier_size > label_size``). The names are assigned from the measured
+    sizes at emission time rather than from sibling order. The previous code
+    emitted the DOM-earlier node as ``primary`` and the larger later node as
+    ``secondary``, producing reports that called a 153.6px display heading
+    "secondary" while labelling its 13.44px eyebrow "primary".
+
+    The finding describes the inverted emphasis the check measures: text
+    authored as a supporting label is rendered larger than the primary text
+    it belongs to, so the primary/secondary roles read backwards.
+
+    A node is skipped when it or any ancestor is a heading tag: a display
+    title behaving as the visual focal point is correct hierarchy, even
+    when the flagged leaf is an inner ``span`` of that heading.
+    """
     issues: list[VisualIssue] = []
     leaf_order = {n.i: k for k, n in enumerate(snapshot.nodes)}
     text_parents = {
@@ -799,63 +840,78 @@ def _inverted_emphasis_issues(
                 first = min(texts, key=lambda t: leaf_order[t.i])
                 reps.append((kid, first))
         for a_idx in range(len(reps)):
-            _, primary = reps[a_idx]
-            if _is_in_nav_landmark(snapshot, primary):
+            _, label = reps[a_idx]
+            if _is_in_nav_landmark(snapshot, label):
                 continue
-            ps = _px_or(primary.style("font-size"), 16.0)
+            label_size = _px_or(label.style("font-size"), 16.0)
             for b_idx in range(a_idx + 1, len(reps)):
-                _, secondary = reps[b_idx]
-                if secondary.i in flagged:
+                _, outlier = reps[b_idx]
+                if outlier.i in flagged:
                     continue
-                if _is_in_nav_landmark(snapshot, secondary):
+                if _is_in_nav_landmark(snapshot, outlier):
                     continue
-                ss = _px_or(secondary.style("font-size"), 16.0)
-                if ss <= ps * _EMPHASIS_RATIO or ss - ps < 2:
+                outlier_size = _px_or(outlier.style("font-size"), 16.0)
+                if outlier_size <= label_size * _EMPHASIS_RATIO or outlier_size - label_size < 2:
                     continue
-                # only metadata-looking text counts as "secondary": short,
-                # non-heading support content such as timestamps or bylines.
-                sec_words = len(secondary.text.split())
-                if (
-                    secondary.tag in _HEADINGS
-                    or (sec_words > 5 and len(secondary.text.strip()) > 24)
-                ):
+                # A heading (or a node living under one) is the deliberate
+                # focal point; the smaller text next to it is a caption, not
+                # an inverted label. Check the whole ancestor chain: the
+                # flagged node is often an inner `span` of `<h1>`.
+                if _has_heading_ancestor(snapshot, outlier):
+                    continue
+                # Only metadata-looking text counts as support text: short,
+                # non-heading content such as timestamps or bylines.
+                outlier_words = len(outlier.text.split())
+                if outlier_words > 5 and len(outlier.text.strip()) > 24:
                     continue
                 # If some other element in the unit is both larger and at
                 # least as heavy, the unit already has a real focal point
                 # and the small bold first node is just an eyebrow label.
                 if any(
-                    _px_or(t.style("font-size"), 16.0) >= ss
-                    and _fw(t) >= _fw(primary)
+                    _px_or(t.style("font-size"), 16.0) >= outlier_size
+                    and _fw(t) >= _fw(label)
                     for k, (_, t) in enumerate(reps)
                     if k not in (a_idx, b_idx)
                 ):
                     continue
+                # The larger node must look demoted relative to the label
+                # (lighter weight or dimmer) for the emphasis to read as
+                # inverted; equal-weight bigger text is just a larger
+                # sibling, not a role swap.
                 demoted = (
-                    _fw(secondary) < _fw(primary)
-                    or _opacity(secondary) <= 0.95
+                    _fw(outlier) < _fw(label)
+                    or _opacity(outlier) <= 0.95
                 )
                 looks_primary = (
-                    _fw(primary) >= 500
-                    or primary.tag in _HEADINGS
+                    _fw(label) >= 500
+                    or label.tag in _HEADINGS
                     or a_idx == 0
                 )
                 if not demoted or not looks_primary:
                     continue
-                flagged.add(secondary.i)
+                flagged.add(outlier.i)
+                # Emit roles by size, not DOM order: the larger node is the
+                # "primary" (the element whose rendered emphasis dominates)
+                # and the smaller node is the "secondary" supporting label it
+                # outranks — so `primary_font_px > secondary_font_px` always.
+                primary, secondary = outlier, label
+                primary_size, secondary_size = outlier_size, label_size
                 issues.append(
                     VisualIssue(
                         fundamental="visual-hierarchy",
                         check_id=CHECK_INVERTED,
-                        title="Secondary text outweighs its primary label",
+                        title="Inverted emphasis: a label is outscaled by its text",
                         description=(
-                            "Supporting/meta text is rendered noticeably "
-                            "larger than the primary label it belongs to, "
-                            "inverting the emphasis order."
+                            "Short supporting/meta text is rendered noticeably "
+                            "larger than the label it annotates, inverting the "
+                            "emphasis order. The larger element is reported as "
+                            "primary_font_px (it visually dominates) and the "
+                            "smaller subordinate label as secondary_font_px."
                         ),
                         severity="medium",
                         evidence={
-                            "primary_font_px": ps,
-                            "secondary_font_px": ss,
+                            "primary_font_px": primary_size,
+                            "secondary_font_px": secondary_size,
                             "primary_weight": _fw(primary),
                             "secondary_weight": _fw(secondary),
                         },

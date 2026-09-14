@@ -49,7 +49,10 @@ from ux_analyzer.domain.attention import (
     PersonaObservation,
     Wait,
 )
-from ux_analyzer.domain.benchmark import VisibleResultVerifierSpec
+from ux_analyzer.domain.benchmark import (
+    ColourChangeVerifierSpec,
+    VisibleResultVerifierSpec,
+)
 from ux_analyzer.domain.findings import Finding
 from ux_analyzer.domain.interface import (
     PrivateExecutionReference,
@@ -73,6 +76,7 @@ from ux_analyzer.domain.run import (
     RunState,
     RunTerminated,
     TimedOut,
+    VerificationFailed,
     VerificationRecorded,
     VerificationResult,
     VerifiedSuccess,
@@ -120,6 +124,21 @@ if TYPE_CHECKING:
 
 _ATTENTION_EXHAUSTED_MESSAGE = "no unobserved visible elements remain"
 _ATTENTION_EXHAUSTED_REASON = "all visible elements examined without progress"
+
+#: How many further attempts are allowed after verification has failed on the
+#: same evaluation target before the run stops. Small and explicit so a failed
+#: verification bounds the subsequent search instead of letting the agent burn
+#: the whole attention budget drifting. Named (not a magic literal) so the
+#: policy is auditable in one place.
+MAX_ATTEMPTS_AFTER_VERIFICATION_FAILURE = 2
+
+#: Human-readable terminal reason for :class:`VerificationFailed`. Distinct
+#: from ordinary budget exhaustion so a reader can tell "we tried, verification
+#: kept failing, we stopped" apart from "we ran out of budget while working".
+_VERIFICATION_FAILED_REASON = (
+    "verification failed on the evaluation target and the bounded "
+    "retry allowance was exhausted"
+)
 _HUMAN_BUDGET_TERMINAL_REASONS = frozenset(
     {
         "attention budget exhausted",
@@ -527,6 +546,24 @@ class RunResult:
 
         return self.agent_claimed_success
 
+    @property
+    def agent_claim_contradicted(self) -> bool:
+        """Whether a self-claim stands contradicted by a negative verification.
+
+        The claim is preserved as evidence, but a run whose independent
+        verification returned ``verified: false`` must not read as a success.
+        This flag is derived from the recorded verification so it cannot be
+        bypassed by any caller that constructs a result.
+        """
+
+        return self.agent_claimed_success and not self.verification.verified
+
+    @property
+    def agent_claimed_success_qualified(self) -> bool:
+        """The claim only stands qualified when verification agrees with it."""
+
+        return self.agent_claimed_success and self.verification.verified
+
     def to_persistence_dict(self) -> dict[str, object]:
         """Return result fields with explicit public evidence persistence."""
 
@@ -535,6 +572,8 @@ class RunResult:
             "outcome": self.outcome,
             "verification": self.verification,
             "agent_claimed_success": self.agent_claimed_success,
+            "agent_claim_contradicted": self.agent_claim_contradicted,
+            "agent_claimed_success_qualified": self.agent_claimed_success_qualified,
             "state": self.state,
             "bundle_path": self.bundle_path,
             "terminal_reason": self.terminal_reason,
@@ -771,6 +810,12 @@ class _RunContext:
     last_action_fingerprint: tuple[object, ...] | None = None
     consecutive_action_count: int = 0
     no_progress_count: int = 0
+    #: Number of failed verifications observed on the evaluation target. Bounds
+    #: the post-failure search so a dead-end cannot consume the whole budget.
+    verification_failure_count: int = 0
+    #: Set once a negative verification has been recorded for a self-claim, so
+    #: the contradiction is surfaced exactly once.
+    claim_contradiction_recorded: bool = False
     deferred_wait_pending: bool = False
     no_change_interaction_element_id: object | None = None
     transition_history: list[TransitionProgressSignature] = field(
@@ -1068,6 +1113,16 @@ class RunAgent:
         with _operation_in_flight(progress):
             await self._capture(context, writer, artifact_checksums)
         _beat(progress)
+        # Seed the perceivable-state-change baseline from the pre-action
+        # capture. The opt-in colour-change verifier compares against this, so
+        # it must be recorded before any action mutates the interface. Other
+        # verifier types ignore this baseline entirely.
+        if (
+            isinstance(spec.scenario.verifier, ColourChangeVerifierSpec)
+            and context.current_capture is not None
+            and hasattr(self.verifier, "set_baseline")
+        ):
+            self.verifier.set_baseline(context.current_capture.capture)
         rng = random.Random(spec.seed + attempt * 997)
         claimed_success = False
 
@@ -1653,6 +1708,22 @@ class RunAgent:
                         agent_claimed_success=claimed_success,
                         terminal_reason=None,
                     )
+                # A negative verification must bound the subsequent search.
+                # Count the failure and, once the small allowance is spent,
+                # stop with a terminal state that is explicitly distinct from
+                # ordinary budget exhaustion.
+                _record_claim_contradiction(
+                    context, writer, claimed_success=claimed_success
+                )
+                context.verification_failure_count += 1
+                if _verification_failure_exhausted(context, writer):
+                    return _Execution(
+                        state=context.state,
+                        outcome=VerificationFailed(reason=_VERIFICATION_FAILED_REASON),
+                        verification=verification[1],
+                        agent_claimed_success=claimed_success,
+                        terminal_reason=_VERIFICATION_FAILED_REASON,
+                    )
                 if context.application_state.budgets.steps <= 0:
                     return _Execution(
                         state=context.state,
@@ -1897,6 +1968,21 @@ class RunAgent:
                         verification=verification[1],
                         agent_claimed_success=claimed_success,
                         terminal_reason=None,
+                    )
+                # Same bounded post-failure response as the explicit-complete
+                # path: a failed verification must tighten, never loosen, the
+                # remaining search.
+                _record_claim_contradiction(
+                    context, writer, claimed_success=claimed_success
+                )
+                context.verification_failure_count += 1
+                if _verification_failure_exhausted(context, writer):
+                    return _Execution(
+                        state=context.state,
+                        outcome=VerificationFailed(reason=_VERIFICATION_FAILED_REASON),
+                        verification=verification[1],
+                        agent_claimed_success=claimed_success,
+                        terminal_reason=_VERIFICATION_FAILED_REASON,
                     )
 
             if cycle_length is not None and not interacted_with_target:
@@ -2376,6 +2462,13 @@ class RunAgent:
             verified=False,
             details="independent verification unavailable",
         )
+        # Enforce the invariant at the single point where the terminal outcome
+        # is fixed: a run whose verification returned ``verified: false`` must
+        # never report ``verified-success``. This is belt-and-braces over the
+        # per-branch guards so no future branch can leak a false success.
+        outcome = execution.outcome
+        if not verification.verified and outcome.kind == "verified-success":
+            outcome = VerificationFailed(reason=_VERIFICATION_FAILED_REASON)
         state = execution.state
         if state.verification is None:
             state = _record(
@@ -2399,7 +2492,7 @@ class RunAgent:
                 known_artifacts.add(identity)
         manifests = self._provider_manifests(spec)
         terminal = RunTerminated(
-            outcome=execution.outcome,
+            outcome=outcome,
             verification=verification,
             provider_manifests=manifests,
             configuration_digest=spec.config_digest,
@@ -2414,7 +2507,7 @@ class RunAgent:
             raise
 
         ux_sample_valid, ux_sample_invalid_reason = _ux_sample_validity(
-            execution.outcome,
+            outcome,
             execution.terminal_reason,
         )
         if context.saliency_fallback_reason is not None:
@@ -2425,7 +2518,7 @@ class RunAgent:
             )
         result = RunResult(
             run_id=spec.run_id,
-            outcome=execution.outcome,
+            outcome=outcome,
             verification=verification,
             agent_claimed_success=execution.agent_claimed_success,
             state=final_state,
@@ -2893,6 +2986,53 @@ def _has_unobserved_visible_element(
 
 def _is_visible_result_verifier(spec: RunSpec) -> bool:
     return isinstance(spec.scenario.verifier, VisibleResultVerifierSpec)
+
+
+def _verification_failure_exhausted(
+    context: _RunContext, writer: RunBundleWriter
+) -> bool:
+    """Whether the bounded post-verification-failure allowance is spent.
+
+    Emits the discriminating timeline event exactly once, when the allowance is
+    first exceeded, so the run record explains why the run stopped.
+    """
+
+    if context.verification_failure_count <= MAX_ATTEMPTS_AFTER_VERIFICATION_FAILURE:
+        return False
+    writer.append_event(
+        {
+            "kind": "verification-failure-exhausted",
+            "failures": context.verification_failure_count,
+            "limit": MAX_ATTEMPTS_AFTER_VERIFICATION_FAILURE,
+            "reason": _VERIFICATION_FAILED_REASON,
+        }
+    )
+    return True
+
+
+def _record_claim_contradiction(
+    context: _RunContext, writer: RunBundleWriter, *, claimed_success: bool
+) -> None:
+    """Surface a self-claim that a negative verification has contradicted.
+
+    The claim itself is preserved as evidence — the model genuinely believed it
+    had succeeded — but it must never stand unqualified. Recording the
+    contradiction explicitly means no downstream consumer (report renderer,
+    metrics, evaluation) can mistake the run for a success.
+    """
+
+    if not claimed_success or context.claim_contradiction_recorded:
+        return
+    context.claim_contradiction_recorded = True
+    writer.append_event(
+        {
+            "kind": "agent-claim-contradicted",
+            "claimed_success": True,
+            "verified": False,
+            "reason": "the agent claimed success but independent verification "
+            "could not confirm a persona-visible result",
+        }
+    )
 
 
 def _accept_abandonment(context: _RunContext, spec: RunSpec) -> bool:

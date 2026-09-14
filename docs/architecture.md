@@ -222,6 +222,32 @@ recorded event, viewport or element snapshot, metric, replay sequence,
 screenshot, or heatmap artifact. The renderer resolves those links locally and
 opens the corresponding playback workspace; `uxa report` never calls a model.
 
+## Creative redesign boundary (model estimates)
+
+The creative redesign pipeline is a second, deliberately separate post-run
+flow. It never touches the run evidence corpus: it reads only the shared
+crawled-corpus page capture (ADR 0007 — one browser pass per page shared by
+the audit and the redesign, persisted as the versioned `page-capture.json`
+sidecar) and the published redesign principle pack. Its output is a set of
+design proposals that are model estimates, never verified claims:
+
+```text
+crawled-corpus page capture (shared sidecar)
+    -> redesign proposer: per-page proposals + page understanding (inference)
+    -> redesign critic/merger: kills/merges with reasons, consistency notes
+    -> deterministic schema/guardrail validation
+    -> immutable redesign attempt (<output>/redesign/<attempt-id>/)
+    -> offline report Redesign tab (impact x effort stamped as model estimates)
+```
+
+The two roles run in fresh isolated contexts sharing only the capture digest
+and principle pack. Deliberate-choice checks are required for grouping,
+unification, simplification, and relocation proposals. The pipeline is gated
+by `UXA_REDESIGN_ENABLED` (auto mode) or the `uxa redesign` command; failures
+are best-effort and never fail the experiment. The report renders proposals on
+a dedicated tab that labels impact and effort as model estimates (Flag-pair
+ink) and separates them visually and textually from evidence-grounded findings.
+
 Task 10-11 ledger note: the Task 12 scenarios use event, expectation, and
 verification references, so they do not exercise saliency artifact navigation
 or generic ranked-element target validation. The existing renderer validation

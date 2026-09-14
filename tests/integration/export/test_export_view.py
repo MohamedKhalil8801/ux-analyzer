@@ -1,4 +1,4 @@
-﻿"""Integration tests for the public report-findings view."""
+"""Integration tests for the public report-findings view."""
 
 from __future__ import annotations
 
@@ -13,6 +13,16 @@ import pytest
 import ux_analyzer.reporting.renderer as renderer
 from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntry
 from ux_analyzer.domain.findings import EvidenceClass
+from ux_analyzer.domain.redesign import (
+    DeliberateChoiceCheck,
+    DesignCategory,
+    DesignProposal,
+    Effort,
+    Impact,
+    RedesignAttempt,
+    RedesignAttemptStatus,
+    SectionReference,
+)
 from ux_analyzer.domain.synthesis import (
     CANONICAL_SYNTHESIS_ROLES,
     EvidenceRef,
@@ -22,6 +32,7 @@ from ux_analyzer.domain.synthesis import (
     SynthesisStatus,
 )
 from ux_analyzer.reporting.renderer import load_report_findings
+from ux_analyzer.storage.redesign_artifacts import RedesignAttemptStore
 from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
 
 
@@ -518,6 +529,7 @@ def synthesis_bundle(tmp_path: Path) -> Path:
     )
     _write_ux_audit(tmp_path)
     _write_pagespeed(tmp_path)
+    _write_redesign(tmp_path)
     return tmp_path
 
 
@@ -538,6 +550,64 @@ def fallback_bundle(tmp_path: Path) -> Path:
     _write_ux_audit(tmp_path)
     _write_pagespeed(tmp_path)
     return tmp_path
+
+
+def _write_redesign(root: Path) -> None:
+    """Publish an accepted redesign attempt (two proposals)."""
+
+    attempt = RedesignAttempt(
+        attempt_id="redesign-20260913T120000Z-deadbeef",
+        status=RedesignAttemptStatus.ACCEPTED,
+        pack_version="ux-foundations-v1",
+        proposals=(
+            DesignProposal(
+                proposal_id="proposal-1",
+                page_url="https://app.example.test/",
+                category=DesignCategory.SIMPLIFICATION,
+                title="Increase tap target size for footer social links",
+                observation="Footer social links render as small, tightly spaced taps.",
+                rationale="Targets below 44px are unreliable for touch input.",
+                change="Enlarge footer link padding to a 44px minimum tap target.",
+                principle_ids=("wcag-target-size-2.5.8",),
+                impact=Impact.MEDIUM,
+                effort=Effort.SMALL,
+                section_refs=(
+                    SectionReference(
+                        url="https://app.example.test/",
+                        section_label="footer",
+                        box={"x": 0.1, "y": 0.9, "width": 0.8, "height": 0.05},
+                        summary="Footer social links",
+                    ),
+                ),
+                also_affects=("https://app.example.test/contact",),
+                deliberate_choice_check=DeliberateChoiceCheck(
+                    pattern="kept-small-target",
+                    rationale="Footer is secondary, but WCAG still applies.",
+                ),
+            ),
+            DesignProposal(
+                proposal_id="proposal-2",
+                page_url="https://app.example.test/",
+                category=DesignCategory.COPY,
+                title="Clarify the hero call-to-action label",
+                observation="The hero button label is ambiguous.",
+                rationale="Specific verbs set clearer expectations.",
+                change="Rename the hero button to an explicit action verb.",
+                principle_ids=("copy-writing",),
+                impact=Impact.LOW,
+                effort=Effort.MEDIUM,
+                section_refs=(
+                    SectionReference(
+                        url="https://app.example.test/",
+                        section_label="hero",
+                        box={"x": 0.2, "y": 0.2, "width": 0.6, "height": 0.1},
+                        summary="Hero section",
+                    ),
+                ),
+            ),
+        ),
+    )
+    RedesignAttemptStore(root).publish(attempt)
 
 
 def _write_ux_audit(root: Path) -> None:
@@ -785,9 +855,7 @@ def test_page_audit_issues_mirror_the_page_findings_tab(
     view = load_report_findings(synthesis_bundle)
 
     audit_findings = [
-        finding
-        for finding in view["findings"]
-        if finding.get("source") == "page-audit"
+        finding for finding in view["findings"] if finding.get("source") == "page-audit"
     ]
     by_id = {finding["finding_id"]: finding for finding in audit_findings}
     assert set(by_id) == {"audit:json_ld", "audit:img_alt"}
@@ -805,9 +873,7 @@ def test_page_audit_issues_mirror_the_page_findings_tab(
         "img.logo",
         "img.hero",
     ]
-    assert alt["detail"]["Instance 2"]["element_selectors"] == [
-        "img.footer-mark"
-    ]
+    assert alt["detail"]["Instance 2"]["element_selectors"] == ["img.footer-mark"]
     assert alt["issue"] == (
         "Images missing alt text — 2 occurrences recorded by the static "
         "audit of https://app.example.test/."
@@ -827,9 +893,7 @@ def test_slop_card_becomes_one_ai_slop_finding(synthesis_bundle: Path) -> None:
     view = load_report_findings(synthesis_bundle)
 
     slop = next(
-        finding
-        for finding in view["findings"]
-        if finding.get("source") == "ai-slop"
+        finding for finding in view["findings"] if finding.get("source") == "ai-slop"
     )
     assert slop["finding_id"] == "slop:https-app-example-test"
     assert slop["severity"] == "low"
@@ -848,9 +912,7 @@ def test_pagespeed_findings_mirror_the_performance_tab(
     view = load_report_findings(synthesis_bundle)
 
     performance = [
-        finding
-        for finding in view["findings"]
-        if finding.get("source") == "pagespeed"
+        finding for finding in view["findings"] if finding.get("source") == "pagespeed"
     ]
     by_id = {finding["finding_id"]: finding for finding in performance}
     assert set(by_id) == {
@@ -888,10 +950,55 @@ def test_pagespeed_findings_mirror_the_performance_tab(
         }
     ]
     unminified = by_id["pagespeed:mobile:opportunity:unminified-css"]
-    assert unminified["detail"]["Detected files"] == (
-        "none recorded by Lighthouse"
-    )
+    assert unminified["detail"]["Detected files"] == ("none recorded by Lighthouse")
     assert "pagespeed:mobile:opportunity:redirects" not in by_id
+
+
+def test_design_proposals_mirror_the_redesign_tab(
+    synthesis_bundle: Path,
+) -> None:
+    view = load_report_findings(synthesis_bundle)
+
+    redesign = [
+        finding for finding in view["findings"] if finding.get("source") == "redesign"
+    ]
+    by_id = {finding["finding_id"]: finding for finding in redesign}
+    assert set(by_id) == {"redesign:proposal-1", "redesign:proposal-2"}
+
+    first = by_id["redesign:proposal-1"]
+    assert first["title"] == "Increase tap target size for footer social links"
+    assert first["severity"] == "medium"
+    assert first["category"] == "design"
+    assert first["evidence_class"] == "model-estimate"
+    assert first["reproducibility"] == "model-dependent"
+    assert "design proposal" in first["issue"]
+    assert first["affected_surfaces"] == [
+        "https://app.example.test/",
+        "https://app.example.test/contact",
+    ]
+    assert first["principles"] == ["wcag-target-size-2.5.8"]
+    assert first["fixes"] == [
+        "Enlarge footer link padding to a 44px minimum tap target."
+    ]
+    assert first["impact"] == (
+        "Model estimate: Medium impact, Small effort (Flag-pair ink, not "
+        "measured values)."
+    )
+    assert first["root_cause"] == "Targets below 44px are unreliable for touch input."
+    detail = first["detail"]
+    assert detail["URL"] == "https://app.example.test/"
+    assert detail["Design category"] == "simplification"
+    assert detail["Impact (model estimate)"] == "medium"
+    assert detail["Effort (model estimate)"] == "small"
+    assert detail["Deliberate choice"] == {
+        "Pattern": "kept-small-target",
+        "Rationale": "Footer is secondary, but WCAG still applies.",
+    }
+    assert any("not run-evidence findings" in item for item in first["limitations"])
+
+    second = by_id["redesign:proposal-2"]
+    assert second["severity"] == "low"
+    assert "Deliberate choice" not in second["detail"]
 
 
 def test_all_mapped_findings_have_unique_ids_and_resolved_evidence(
@@ -902,7 +1009,12 @@ def test_all_mapped_findings_have_unique_ids_and_resolved_evidence(
     ids = [finding["finding_id"] for finding in view["findings"]]
     assert len(ids) == len(set(ids))
     for finding in view["findings"]:
-        if finding.get("source") in ("page-audit", "ai-slop", "pagespeed"):
+        if finding.get("source") in (
+            "page-audit",
+            "ai-slop",
+            "pagespeed",
+            "redesign",
+        ):
             assert finding["evidence_refs"] == []
             assert isinstance(finding["detail"], dict)
 
@@ -916,8 +1028,7 @@ def test_fallback_findings_are_excluded_from_export(
     ids = [finding["finding_id"] for finding in view["findings"]]
     assert ids, "deterministic page facts still export"
     assert all(
-        finding_id.startswith(("audit:", "slop:", "pagespeed:"))
-        for finding_id in ids
+        finding_id.startswith(("audit:", "slop:", "pagespeed:")) for finding_id in ids
     )
     assert not any(
         finding.get("limitations")

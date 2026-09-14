@@ -98,7 +98,10 @@ def test_ux_audit_start_urls_collected_and_deduplicated() -> None:
 def test_write_ux_audit_persists_report(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_sync(urls: object) -> dict[str, Any]:
+    def fake_sync(
+        urls: object, *, capture_hook: object | None = None
+    ) -> dict[str, Any]:
+        del capture_hook
         return {
             "schema_version": AUDIT_SCHEMA_VERSION,
             "total_issues": 1,
@@ -129,6 +132,85 @@ def test_write_ux_audit_persists_report(
     payload = json.loads(destination.read_text(encoding="utf-8"))
     assert payload["total_issues"] == 1
     assert payload["urls"][0]["issues"][0]["title"] == "robots.txt not found"
+
+
+def test_write_ux_audit_persists_page_capture_sidecar(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shared audit pass leaves a page-capture.json beside the audit."""
+
+    import io as _io
+
+    from PIL import Image
+
+    from ux_analyzer.analysis.project_audit import CaptureMaterials
+
+    buffer = _io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 10, 10)).save(buffer, format="PNG")
+    png_bytes = buffer.getvalue()
+
+    def fake_sync(
+        urls: object, *, capture_hook: object | None = None
+    ) -> dict[str, Any]:
+        if capture_hook is not None:
+            capture_hook(
+                "https://a.example/",
+                CaptureMaterials(
+                    url="https://a.example/",
+                    png_bytes=png_bytes,
+                    title="Sidecar",
+                    document_height=8,
+                    page=None,
+                ),
+            )
+        return {
+            "schema_version": AUDIT_SCHEMA_VERSION,
+            "total_issues": 0,
+            "urls": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(cli, "_ux_audit_sync", fake_sync)
+    destination = cli._write_ux_audit(
+        tmp_path,
+        (_result_with_start_url("https://a.example/"),),
+    )
+    assert destination is not None
+    sidecar = tmp_path / "page-capture.json"
+    assert sidecar.exists()
+    document = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert document["schema"] == "page-capture-v2"
+    assert len(document["pages"]) == 1
+    page = document["pages"][0]
+    assert page["url"] == "https://a.example/"
+    assert page["title"] == "Sidecar"
+    assert page["segments"][0]["data_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_write_ux_audit_tolerates_capture_errors(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Capture failures never block the audit or leave a partial sidecar."""
+
+    def fake_sync(
+        urls: object, *, capture_hook: object | None = None
+    ) -> dict[str, Any]:
+        if capture_hook is not None:
+            capture_hook("https://a.example/", object())  # unusable materials
+        return {
+            "schema_version": AUDIT_SCHEMA_VERSION,
+            "total_issues": 0,
+            "urls": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(cli, "_ux_audit_sync", fake_sync)
+    destination = cli._write_ux_audit(
+        tmp_path,
+        (_result_with_start_url("https://a.example/"),),
+    )
+    assert destination is not None
+    assert not (tmp_path / "page-capture.json").exists()
 
 
 def test_write_ux_audit_skips_when_no_urls(tmp_path: Any) -> None:

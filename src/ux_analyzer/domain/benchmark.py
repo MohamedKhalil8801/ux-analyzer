@@ -334,7 +334,37 @@ class VisibleResultVerifierSpec(VerifierSpecBase):
         object.__setattr__(self, "all_of", all_of)
 
 
-type VerifierSpec = FixtureStateVerifierSpec | VisibleResultVerifierSpec
+@dataclass(frozen=True, slots=True)
+class ColourChangeVerifierSpec(VerifierSpecBase):
+    """Verifier for a perceivable visual state change rather than new text.
+
+    Some legitimate outcomes produce no new persona-visible text at all — a
+    light/dark theme toggle being the canonical example. This opt-in mode
+    instead compares the verification-time capture against a baseline capture
+    on signals a sighted user genuinely perceives: the computed background of
+    the document root and the body, and the dominant background colour of the
+    viewport. At least one signal must differ *materially* (see
+    ``DEFAULT_COLOUR_CHANGE_THRESHOLD``); sub-threshold noise such as hover
+    flicker, focus rings or a 1-2 unit colour wobble must not pass.
+
+    This spec is a separate discriminator (``type == "colour-change"``) so
+    existing ``visible-result`` semantics stay untouched.
+    """
+
+    #: Minimum per-channel Euclidean RGB distance required to count a signal
+    #: as materially changed. Chosen well above anti-aliasing/rounding noise
+    #: (which stays within a few units) but well below any real theme flip
+    #: (which is typically 100+ units on every channel).
+    threshold: float = 32.0
+
+    def __post_init__(self) -> None:
+        if self.threshold <= 0:
+            raise ValueError("colour-change threshold must be greater than zero")
+
+
+type VerifierSpec = (
+    FixtureStateVerifierSpec | VisibleResultVerifierSpec | ColourChangeVerifierSpec
+)
 
 
 @dataclass(frozen=True, slots=True)

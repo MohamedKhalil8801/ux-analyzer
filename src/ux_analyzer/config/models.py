@@ -130,8 +130,13 @@ class VisibleResultVerifierModel(_ConfigModel):
         return all_of
 
 
+class ColourChangeVerifierModel(_ConfigModel):
+    type: Literal["colour-change"]
+    threshold: float = Field(default=32.0, gt=0)
+
+
 VerifierModel = Annotated[
-    FixtureStateVerifierModel | VisibleResultVerifierModel,
+    FixtureStateVerifierModel | VisibleResultVerifierModel | ColourChangeVerifierModel,
     Field(discriminator="type"),
 ]
 

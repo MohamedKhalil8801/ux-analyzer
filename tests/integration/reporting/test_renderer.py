@@ -2257,7 +2257,9 @@ def test_renderer_no_issues_lists_named_scope_with_run_links(tmp_path: Path) -> 
         encoding="utf-8"
     )
     scope = html[
-        html.index('data-no-issues-scope="true"') : html.index('id="evidence-workspace"')
+        html.index('data-no-issues-scope="true"') : html.index(
+            'id="evidence-workspace"'
+        )
     ]
 
     assert "Invite / Improved / Workspace administrator" in scope
@@ -2462,7 +2464,16 @@ def test_renderer_embeds_sanitized_replay_evidence_and_controls(tmp_path: Path) 
     assert "secret-token" not in html
     assert "data-testid=secret" not in html
     assert "<img src=x onerror" not in html
-    assert "fetch(" not in html
+    # Live sidecar hydration is the report's only network access: a single
+    # guarded fetch call site in live-views.js, driven by the #data-sources
+    # config. The config always advertises the conventional sibling sidecar
+    # paths (this bundle has no sidecar files), so a sidecar that appears
+    # after rendering still hydrates on the next page load; with no files
+    # the fetch fails harmlessly at load time.
+    assert html.count("fetch(") == 1
+    assert '"ux_audit": "ux-audit.json"' in html
+    assert '"pagespeed": "pagespeed.json"' in html
+    assert 'id="ux-audit"' not in html
     assert '<link rel="stylesheet"' not in html
     assert "<script src=" not in html
 
@@ -3953,9 +3964,7 @@ def test_renderer_renders_ux_audit_section_from_persisted_file(
         ],
         "errors": [],
     }
-    (tmp_path / "ux-audit.json").write_text(
-        json.dumps(audit_payload), encoding="utf-8"
-    )
+    (tmp_path / "ux-audit.json").write_text(json.dumps(audit_payload), encoding="utf-8")
 
     html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
         encoding="utf-8"
@@ -3976,6 +3985,9 @@ def test_renderer_omits_ux_audit_section_without_file(tmp_path: Path) -> None:
     )
 
     assert 'id="ux-audit"' not in html
+    # The config still advertises the conventional sidecar path so a file
+    # that appears after rendering hydrates on the next reload.
+    assert '"ux_audit": "ux-audit.json"' in html
 
 
 def test_renderer_ignores_malformed_ux_audit_file(tmp_path: Path) -> None:

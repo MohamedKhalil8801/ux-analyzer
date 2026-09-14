@@ -25,6 +25,8 @@ class ModelRole(StrEnum):
     REPORT_EVIDENCE_AUDITOR = "report-evidence-auditor"
     REPORT_PATTERN_REVIEWER = "report-pattern-reviewer"
     REPORT_ADJUDICATOR = "report-adjudicator"
+    REDESIGN_PROPOSER = "redesign-proposer"
+    REDESIGN_CRITIC_MERGER = "redesign-critic-merger"
 
     # ADR 0003 legacy names remain source-compatible but never serialize.
     UX_ANALYST = REPORT_ANALYST

@@ -6,7 +6,9 @@ import asyncio
 import base64
 import hashlib
 import io
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from typing import Any
 
 from ux_analyzer.analysis.accessibility import analyze_accessibility
@@ -17,6 +19,150 @@ from ux_analyzer.analysis.performance import analyze_performance
 
 AUDIT_SCHEMA_VERSION = "ux-audit-v1"
 AUDIT_FILENAME = "ux-audit.json"
+
+# Shared user agent for every browser pass (audit and standalone capture) so
+# UA-dependent pages render identically between the shared and fallback paths.
+AUDIT_USER_AGENT = (
+    "Mozilla/5.0 SlopDetector/1.0 (+https://github.com/ravidsrk/slop-detect)"
+)
+
+# Settle behavior shared with the redesign page capture (plan Task 3): one
+# canonical implementation so the audit and the capture sidecar observe the
+# same settled page.
+SETTLE_SCROLL_JS = (
+    "async () => { const step = window.innerHeight * 0.8;"
+    " const limit = document.documentElement.scrollHeight;"
+    " for (let y = 0; y <= limit; y += step)"
+    " { window.scrollTo(0, y); await new Promise(r => setTimeout(r, 120)); }"
+    " window.scrollTo(0, 0);"
+    " await new Promise(r => setTimeout(r, 350)); }"
+)
+
+IMAGES_READY_JS = (
+    "() => { return Promise.all(Array.from(document.images).map(img => img.complete"
+    " ? Promise.resolve() : new Promise(r => { img.addEventListener('load', () => r(true),"
+    " {once:true}); img.addEventListener('error', () => r(true), {once:true});"
+    " setTimeout(() => r(true), 3000); }))); }"
+)
+
+
+def settle_page(page: Any) -> None:
+    """Settle a Playwright page: fonts, images, scroll-warm, final pause.
+
+    Shared by the live audit and the redesign page capture so both see the
+    same finished page (fonts ready, images decoded, lazy content revealed).
+    """
+
+    page.wait_for_timeout(2000)
+    try:
+        page.wait_for_function(
+            "() => document.fonts.ready.then(() => true)", timeout=5000
+        )
+    except Exception:
+        pass
+    try:
+        page.evaluate(IMAGES_READY_JS)
+    except Exception:
+        pass
+    # Scroll-warm the page so scroll-reveal animations and lazy content
+    # finish before capture: capturing mid-reveal produced washed-out
+    # "empty element" crops.
+    try:
+        page.evaluate(SETTLE_SCROLL_JS)
+    except Exception:
+        pass
+    page.wait_for_timeout(800)
+
+
+def encode_region_jpeg(
+    image: Any,
+    *,
+    max_segment_bytes: int = 640 * 1024,
+) -> str:
+    """Encode one RGB image as a bounded JPEG data URL.
+
+    Quality stepping (80/70/60/50) keeps most frames under the byte bound;
+    when even the floor quality overshoots, the region is downscaled so the
+    per-segment bound is hard rather than soft (the region keeps its
+    geometry intent but gives up pixel density).
+    """
+
+    from PIL import Image
+
+    encoded = ""
+    candidate: Any = image
+    for quality in range(80, 49, -10):
+        buffer = io.BytesIO()
+        candidate.save(buffer, format="JPEG", quality=quality, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        if len(encoded) <= max_segment_bytes:
+            return f"data:image/jpeg;base64,{encoded}"
+    scale = 1.0
+    while len(encoded) > max_segment_bytes and scale > 0.05:
+        scale *= 0.7
+        smaller = candidate.resize(
+            (
+                max(1, int(candidate.width * scale)),
+                max(1, int(candidate.height * scale)),
+            ),
+            Image.LANCZOS,
+        )
+        buffer = io.BytesIO()
+        smaller.save(buffer, format="JPEG", quality=50, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def slice_full_page_png(
+    png_bytes: bytes,
+    *,
+    offsets: Sequence[tuple[int, int]],
+    max_segment_bytes: int = 640 * 1024,
+) -> list[str]:
+    """Slice one full-page PNG into bounded JPEG data-URL segments.
+
+    Shared by the audit's capture pass and the standalone redesign capture
+    (~2000px-tall crops cut from one full-page render). Scroll-position
+    captures instead encode each viewport shot directly (see
+    ``page_capture.build_scroll_capture_payload``).
+    """
+
+    from PIL import Image
+
+    full = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    segments: list[str] = []
+    for offset, height in offsets:
+        crop = full.crop((0, offset, full.width, min(offset + height, full.height)))
+        segments.append(
+            encode_region_jpeg(crop, max_segment_bytes=max_segment_bytes)
+        )
+    return segments
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureMaterials:
+    """Raw in-session materials for the shared page capture (ADR 0007).
+
+    Produced inside the audit's own settled browser session so the redesign
+    capture needs no second launch. ``page`` is the live Playwright page;
+    hooks run synchronously on the same thread and may evaluate inventory
+    JavaScript on it.
+    """
+
+    url: str
+    png_bytes: bytes
+    title: str
+    document_height: int
+    page: Any = None
+
+
+CaptureMaterialsHook = Callable[[str, CaptureMaterials], None]
+
+# Threaded from ``audit_urls`` into the visual analyzer's browser session so
+# one pass per page serves both the audit and the capture sidecar.
+_capture_materials_hook: ContextVar[CaptureMaterialsHook | None] = ContextVar(
+    "capture_materials_hook", default=None
+)
 
 
 async def _visual_analyze(url: str) -> list[Any]:
@@ -41,35 +187,12 @@ async def _visual_analyze(url: str) -> list[Any]:
                 ctx = browser.new_context(
                     viewport={"width": 1280, "height": 800},
                     device_scale_factor=1,
-                    user_agent="Mozilla/5.0 SlopDetector/1.0 (+https://github.com/ravidsrk/slop-detect)",
+                    user_agent=AUDIT_USER_AGENT,
                 )
                 page = ctx.new_page()
                 try:
                     page.goto(url, wait_until="networkidle", timeout=60000)
-                    page.wait_for_timeout(2000)
-                    try:
-                        page.wait_for_function("() => document.fonts.ready.then(() => true)", timeout=5000)
-                    except Exception:
-                        pass
-                    try:
-                        page.evaluate("() => { return Promise.all(Array.from(document.images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.addEventListener('load', () => r(true), {once:true}); img.addEventListener('error', () => r(true), {once:true}); setTimeout(() => r(true), 3000); }))); }")
-                    except Exception:
-                        pass
-                    # Scroll-warm the page so scroll-reveal animations and
-                    # lazy content finish before the snapshot: capturing
-                    # mid-reveal produced washed-out "empty element" crops.
-                    try:
-                        page.evaluate(
-                            "async () => { const step = window.innerHeight * 0.8;"
-                            " const limit = document.documentElement.scrollHeight;"
-                            " for (let y = 0; y <= limit; y += step)"
-                            " { window.scrollTo(0, y); await new Promise(r => setTimeout(r, 120)); }"
-                            " window.scrollTo(0, 0);"
-                            " await new Promise(r => setTimeout(r, 350)); }"
-                        )
-                    except Exception:
-                        pass
-                    page.wait_for_timeout(800)
+                    settle_page(page)
                     style_props = ["display","position","flex-direction","justify-content","align-items","gap","row-gap","column-gap","grid-template-columns","font-family","font-size","font-weight","font-style","line-height","letter-spacing","text-transform","text-align","text-decoration-line","color","background-color","background-image","background-clip","backdrop-filter","-webkit-backdrop-filter","filter","margin-top","margin-right","margin-bottom","margin-left","padding-top","padding-right","padding-bottom","padding-left","border-top-width","border-right-width","border-bottom-width","border-left-width","border-top-color","border-right-color","border-bottom-color","border-left-color","border-radius","opacity","width","height","box-shadow","grid-column","transform","perspective"]
                     snapshot_js = """
                     (props) => {
@@ -141,6 +264,29 @@ async def _visual_analyze(url: str) -> list[Any]:
                     try:
                         png_bytes = page.screenshot(full_page=True, type="png")
                         full_img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+                        try:
+                            materials_hook = _capture_materials_hook.get()
+                            if materials_hook is not None:
+                                materials_hook(
+                                    url,
+                                    CaptureMaterials(
+                                        url=url,
+                                        png_bytes=png_bytes,
+                                        title=str(page.title() or ""),
+                                        document_height=int(
+                                            page.evaluate(
+                                                "() => document.documentElement.scrollHeight"
+                                            )
+                                        ),
+                                        page=page,
+                                    ),
+                                )
+                        except Exception:
+                            # Capture is best-effort (ADR 0007): a failing
+                            # hook must never fail the audit. Hooks that
+                            # need to surface failures record them in their
+                            # own closure state.
+                            pass
                     except Exception:
                         full_img = None
                     for issue in issues:
@@ -436,18 +582,38 @@ async def audit_url(url: str) -> dict[str, Any]:
     return report
 
 
-async def audit_urls(urls: Sequence[str]) -> dict[str, Any]:
+async def audit_urls(
+    urls: Sequence[str], *, capture_hook: CaptureMaterialsHook | None = None
+) -> dict[str, Any]:
+    """Audit each URL; optionally share one capture hook per page session.
+
+    The hook (plan Task 3, ADR 0007) receives the audit's own settled browser
+    session materials inside the visual analyzer's pass — one browser pass
+    per page serves both the audit and the ``page-capture.json`` sidecar.
+    Hook failures are swallowed by the session (capture is best-effort) and
+    never raised into the audit; hooks record their own status.
+    """
+
     unique_urls = tuple(dict.fromkeys(url for url in urls if url))
     url_reports: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for url in unique_urls:
+        token: Token[CaptureMaterialsHook | None] | None = None
+        if capture_hook is not None:
+            token = _capture_materials_hook.set(capture_hook)
         try:
-            url_reports.append(await audit_url(url))
+            report = await audit_url(url)
+            url_reports.append(report)
         except Exception as error:
             errors.append({"url": url, "error": f"{type(error).__name__}: {error}"[:512]})
+        finally:
+            if token is not None:
+                _capture_materials_hook.reset(token)
     total = sum(report["total"] for report in url_reports)
     return {"schema_version": AUDIT_SCHEMA_VERSION, "total_issues": total, "urls": url_reports, "errors": errors}
 
 
-def audit_urls_sync(urls: Sequence[str]) -> dict[str, Any]:
-    return asyncio.run(audit_urls(urls))
+def audit_urls_sync(
+    urls: Sequence[str], *, capture_hook: CaptureMaterialsHook | None = None
+) -> dict[str, Any]:
+    return asyncio.run(audit_urls(urls, capture_hook=capture_hook))

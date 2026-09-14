@@ -179,6 +179,7 @@ _SAFE_OUTCOMES = frozenset(
         "verified-success",
         "agent-abandoned",
         "budget-exhausted",
+        "verification-failed",
         "timed-out",
         "provider-failure",
         "model-failure",
@@ -1763,7 +1764,7 @@ class EvidenceCorpusBuilder:
         evaluable = explicit_validity is True or (
             explicit_validity is not False
             and outcome_kind
-            in {"verified-success", "agent-abandoned", "budget-exhausted"}
+            in {"verified-success", "agent-abandoned", "budget-exhausted", "verification-failed"}
         )
         _check_identity(
             f"manifest for {run_id}",

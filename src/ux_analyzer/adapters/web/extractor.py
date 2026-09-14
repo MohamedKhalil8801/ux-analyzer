@@ -112,6 +112,7 @@ async def capture_with_diagnostics(
                     role=_domain_role(raw_element.role, raw_element.tag),
                     label=raw_element.label,
                     rendered_text=raw_element.rendered_text,
+                    has_visible_graphic=raw_element.has_visible_graphic,
                     bounds=bounds,
                     visibility_fraction=effective_fraction,
                     actionable=raw_element.actionable,
@@ -274,6 +275,7 @@ def _element_fact(payload: object) -> RawElementFact:
         role=_required_string(item.get("role"), "element role"),
         label=_required_string(item.get("label"), "element label"),
         rendered_text=_rendered_text(item.get("renderedText")),
+        has_visible_graphic=_optional_bool(item.get("hasVisibleGraphic")),
         hidden_label=_optional_string(item.get("hiddenLabel")),
         bounds=bounds,
         visible_bounds=(
@@ -341,6 +343,16 @@ def _rendered_text(value: object) -> str:
     return " ".join(value.split())
 
 
+def _optional_bool(value: object) -> bool | None:
+    """Parse an optional boolean fact, tolerating older payloads."""
+
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError("optional flag must be boolean or null")
+    return value
+
+
 def _optional_string(value: object) -> str | None:
     if value is None:
         return None
@@ -402,6 +414,16 @@ EVALUATION_PAYLOAD = r"""
     }
     return true;
   };
+  // Visual-only variant of styleVisible: ignores aria-hidden and the hidden\n  // attribute, because those describe assistive-technology exposure, not\n  // whether pixels reach the screen. A decorative icon (aria-hidden=true,\n  // e.g. a theme-toggle moon/sun SVG) is exactly what a sighted user sees;\n  // conflating AT-hiding with visual hiding would drop every icon-only\n  // control from the persona's view. Only computed geometry may hide a\n  // graphic here: display/visibility/opacity on an ancestor chain.
+  const visualStyleVisible = (node) => {
+    if (!(node instanceof Element)) return false;
+    for (let ancestor = node; ancestor instanceof Element; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+      if (Number.parseFloat(style.opacity) === 0) return false;
+    }
+    return true;
+  };
   const zeroAlpha = (value) => {
     const normalized = clean(value).toLowerCase();
     if (normalized === 'transparent') return true;
@@ -446,10 +468,10 @@ EVALUATION_PAYLOAD = r"""
     }
     return false;
   };
-  const visibleGeometry = (node) => {
+  const visibleGeometry = (node, predicate = styleVisible) => {
     const bounds = node.getBoundingClientRect();
     const original = {x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height};
-    if (area(original) <= 0 || !styleVisible(node)) return {bounds: original, visibleBounds: null};
+    if (area(original) <= 0 || !predicate(node)) return {bounds: original, visibleBounds: null};
     let visible = intersect(original, viewportRect);
     for (let ancestor = node.parentElement; ancestor instanceof Element && visible; ancestor = ancestor.parentElement) {
       const style = getComputedStyle(ancestor);
@@ -571,6 +593,33 @@ EVALUATION_PAYLOAD = r"""
     const ids = clean(node.getAttribute('aria-labelledby')).split(' ').filter(Boolean);
     return clean(ids.map((id) => document.getElementById(id)?.innerText || '').join(' '));
   };
+  // A sighted user can tell an icon-only button apart from an empty (or
+  // visually-hidden-only) one: the former paints something. This reports
+  // whether the node paints any non-text graphic with real rendered area —
+  // an <svg>, an <img>, a canvas, or an icon-font glyph. It is intentionally
+  // geometric, not markup-attribute based: a 1x1 clipped or fully clipped
+  // graphic does not count, and no aria/data attribute can influence it.
+  const hasVisibleGraphic = (node) => {
+    const graphicTags = new Set(['svg', 'img', 'canvas', 'picture', 'video', 'use']);
+    for (const candidate of node.querySelectorAll('*')) {
+      const tag = candidate.tagName.toLowerCase();
+      const isGraphic = graphicTags.has(tag)
+        || (tag === 'i' && candidate.textContent === '')
+        || candidate.getAttribute('role') === 'img';
+      if (!isGraphic) continue;
+      // Visual-only visibility: an aria-hidden icon still paints pixels and
+      // is still what a sighted user sees, so it must count. Computed
+      // geometry (display/visibility/opacity) is the only thing that can
+      // hide it.
+      if (!visualStyleVisible(candidate)) continue;
+      const geometry = visibleGeometry(candidate, visualStyleVisible);
+      if (!geometry.visibleBounds) continue;
+      // Require a genuinely perceptible glyph, not a decorative sliver.
+      if (geometry.visibleBounds.width < 8 || geometry.visibleBounds.height < 8) continue;
+      return true;
+    }
+    return false;
+  };
   const associatedLabel = (node) => {
     if (!(node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement)) return '';
     return clean(Array.from(node.labels || []).map((label) => visibleText(label)).join(' '));
@@ -680,6 +729,7 @@ EVALUATION_PAYLOAD = r"""
       role,
       label,
       renderedText: rendered,
+      hasVisibleGraphic: hasVisibleGraphic(node),
       hiddenLabel: clean(node.getAttribute('data-hidden-label')) || null,
       bounds: geometry.bounds,
       visibleBounds: geometry.visibleBounds,

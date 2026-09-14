@@ -37,6 +37,7 @@ from ux_analyzer.domain.benchmark import (
     ApplicationVersion,
     ApplicationVersionKind,
     Budget,
+    ColourChangeVerifierSpec,
     ExperimentPolicy,
     FixtureInputs,
     FixtureStateVerifierSpec,
@@ -888,6 +889,16 @@ def _config(spec: object, tmp_path: Path) -> ObservationSessionConfig:
         test_account_id=AccountId("test-run"),
         viewport=ViewportSize(width=1024, height=768),
         trace_path=tmp_path / "trace.zip",
+    )
+
+
+def _session_handle() -> SessionHandle:
+    return SessionHandle(
+        session_id="run-1",
+        test_account_id=AccountId("test-run"),
+        viewport=ViewportSize(width=1024, height=768),
+        trace_path=Path("trace.zip"),
+        blocked_events=[],
     )
 
 
@@ -2233,6 +2244,125 @@ async def test_unverified_explicit_complete_remains_claimed_false_success(
 
 
 @pytest.mark.asyncio
+async def test_negative_verification_qualifies_agent_claim_in_result_and_timeline(
+    tmp_path: Path,
+) -> None:
+    """A self-claim must never outrank a negative verification.
+
+    The agent completes, the independent verifier cannot confirm any
+    persona-visible result, and the run then keeps searching until the budget
+    is gone. The recorded result must not read like a success: the claim is
+    preserved for audit, but the outcome cannot be ``verified-success`` and the
+    contradiction must be surfaced explicitly in the payload and an event.
+    """
+
+    provider = FakeObservationProvider(
+        (_snapshot(), _snapshot("viewport-2"), _snapshot("viewport-3"))
+    )
+    verifier = FakeVerifier((VerificationResult(verified=False),))
+    bundles = FakeBundleFactory()
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(
+            tuple(
+                [
+                    CognitiveDecision(
+                        action={"kind": "complete"}, reason="I believe it worked."
+                    ),
+                    *(
+                        CognitiveDecision(
+                            action={"kind": "inspect", "element_id": "target"},
+                            reason="Keep looking.",
+                        )
+                        for _ in range(20)
+                    ),
+                ]
+            )
+        ),
+        verifier,
+        bundles,
+        result_evaluator=lambda candidate: replace(
+            candidate,
+            metrics=evaluate_run(candidate, EvaluationTarget("target")),
+        ),
+    )
+
+    result = await agent.execute(_spec(timeout_seconds=None))
+
+    assert result.verification.verified is False
+    # The claim is preserved as evidence...
+    assert result.agent_claimed_success is True
+    # ...but it must not stand unqualified, and the outcome is never success.
+    assert getattr(result, "agent_claim_contradicted", False) is True
+    assert result.agent_claimed_success_qualified is False
+    assert result.outcome.kind != "verified-success"
+    # The contradiction is visible in the bundle timeline.
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "agent-claim-contradicted"
+        and event.get("verified") is False
+        for event in bundles.bundle.events
+    )
+    assert bundles.bundle.final_result is not None
+    persisted = bundles.bundle.final_result
+    assert persisted.agent_claim_contradicted is True
+
+
+@pytest.mark.asyncio
+async def test_repeated_verification_failure_terminates_with_distinct_outcome(
+    tmp_path: Path,
+) -> None:
+    """Failed verification must bound the subsequent search.
+
+    Once verification has failed on the evaluation target, only a small
+    bounded number of further attempts are allowed, and the run stops with a
+    terminal state that is distinguishable from ordinary budget exhaustion so
+    a reader can tell "we tried and verification kept failing" apart from "we
+    ran out of budget while still working".
+    """
+
+    attempts = 40
+    provider = FakeObservationProvider(
+        tuple(_snapshot(f"viewport-{index}") for index in range(attempts + 2))
+    )
+    verifier = FakeVerifier((VerificationResult(verified=False),))
+    bundles = FakeBundleFactory()
+    # The agent keeps re-proposing completion; each attempt triggers an
+    # independent verification that cannot confirm a persona-visible result.
+    # Without a bound the run would consume the whole attention budget.
+    drift: list[object] = [
+        CognitiveDecision(
+            action={"kind": "complete"}, reason="I believe it worked."
+        )
+        for _ in range(attempts)
+    ]
+    agent = _agent(
+        tmp_path,
+        provider,
+        FakeCognitiveAgent(tuple(drift)),
+        verifier,
+        bundles,
+        attention_policy=RepeatingAttentionPolicy(),
+    )
+
+    result = await agent.execute(_spec(max_steps=attempts + 2, timeout_seconds=None))
+
+    assert result.outcome.kind == "verification-failed"
+    assert result.outcome.kind != "budget-exhausted"
+    assert result.terminal_reason is not None
+    assert "verification" in result.terminal_reason.casefold()
+    assert "budget" not in result.terminal_reason.casefold()
+    assert any(
+        isinstance(event, dict)
+        and event.get("kind") == "verification-failure-exhausted"
+        for event in bundles.bundle.events
+    )
+    # We stopped early rather than consuming the whole attention budget.
+    assert verifier.calls < attempts
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure", "outcome"),
     [
@@ -3282,8 +3412,118 @@ async def test_web_verifier_clears_last_capture_before_each_verification(
 
 
 @pytest.mark.asyncio
-async def test_visible_verification_capture_is_persisted_once_with_exact_screenshot(
+async def test_colour_change_verifier_detects_material_theme_flip_and_rejects_noise(
     tmp_path: Path,
+) -> None:
+    """A perceivable visual state change must be verifiable without new text.
+
+    A theme toggle produces no new persona-visible text, so a text verifier can
+    never confirm it. The opt-in colour-change mode compares verification-time
+    document/body computed colours against a baseline capture and requires a
+    *material* difference. Sub-threshold noise (a 1-unit wobble, hover flicker)
+    must never pass.
+    """
+
+    def _capture(
+        *, document_background: str, body_background: str, viewport_background: str
+    ) -> ObservationCapture:
+        snapshot = _snapshot()
+        return ObservationCapture(
+            session_id="run-1",
+            viewport_id=snapshot.id,
+            url="http://fixture.test/app/run/improved",
+            title="Fixture",
+            viewport=ViewportSize(width=1024, height=768),
+            screenshot=b"shot",
+            snapshot=snapshot,
+            document_background=document_background,
+            body_background=body_background,
+            viewport_background=viewport_background,
+        )
+
+    class ColourProvider:
+        def __init__(self, captures: tuple[ObservationCapture, ...]) -> None:
+            self.captures = list(captures)
+
+        async def start_session(self, config: ObservationSessionConfig) -> SessionHandle:
+            del config
+            raise NotImplementedError
+
+        async def capture(self, session: SessionHandle) -> ObservationCapture:
+            del session
+            return self.captures.pop(0)
+
+    # 1) A real light -> dark theme flip is a material change and must verify.
+    baseline = _capture(
+        document_background="#ffffff",
+        body_background="#ffffff",
+        viewport_background="#ffffff",
+    )
+    flipped = _capture(
+        document_background="#111418",
+        body_background="#111418",
+        viewport_background="#111418",
+    )
+    provider = ColourProvider((flipped,))
+    verifier = WebVerifier(
+        ColourChangeVerifierSpec(type="colour-change"),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot,
+        baseline_capture=baseline,
+    )
+    result = await verifier.verify(_session_handle())
+    assert result.verified
+    assert result.details is not None and "colour" in result.details.casefold()
+    assert result.before_state is not None and result.after_state is not None
+    assert result.before_state["document_background"] == "#ffffff"
+    assert result.after_state["document_background"] == "#111418"
+
+    # 2) A sub-threshold wobble must NOT verify.
+    noise = _capture(
+        document_background="#fefefe",
+        body_background="#ffffff",
+        viewport_background="#fdfdfd",
+    )
+    provider = ColourProvider((noise,))
+    verifier = WebVerifier(
+        ColourChangeVerifierSpec(type="colour-change"),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot,
+        baseline_capture=baseline,
+    )
+    result = await verifier.verify(_session_handle())
+    assert not result.verified
+    assert result.before_state is not None and result.after_state is not None
+
+
+@pytest.mark.asyncio
+async def test_visible_result_verifier_semantics_are_unchanged_by_colour_mode(
+    tmp_path: Path,
+) -> None:
+    """Existing visible-result scenarios must behave byte-identically."""
+
+    spec = _spec()
+    provider = FakeObservationProvider((_snapshot(),))
+    session = await provider.start_session(_config(spec, tmp_path))
+    verifier = WebVerifier(
+        VisibleResultVerifierSpec(type="visible-result", text="Invite", role="button"),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot
+        if capture.snapshot is not None
+        else (_ for _ in ()).throw(ValueError("missing snapshot")),
+    )
+
+    result = await verifier.verify(session)
+
+    assert result.verified
+    assert result.evidence_ids == ("viewport:viewport-1-verification-1:element:target",)
+    assert result.details == "persona-visible result matched"
+    assert result.before_state is None
+    assert result.after_state is None
+
+
+@pytest.mark.asyncio
+async def test_visible_verification_capture_is_persisted_once_with_exact_screenshot(    tmp_path: Path,
 ) -> None:
     initial = _snapshot()
     verified_snapshot = _snapshot("verification-viewport", element_id="result", label="Sent")
@@ -4537,3 +4777,74 @@ async def test_goal_target_click_completes_without_a_page_change(
         and context.previous_action_result.get("target_engaged") is True
         for context in cognitive.contexts
     )
+
+
+@pytest.mark.asyncio
+async def test_colour_change_verifier_is_constructible_without_baseline() -> None:
+    """The CLI construction path must not demand a baseline up front.
+
+    The run agent seeds the colour-change baseline from the run's *pre-action
+    capture* (``ColourChangeVerifierSpec.set_baseline``) after the browser
+    session starts, so a constructor that rejects ``baseline_capture=None``
+    makes the opt-in verifier unusable in every real run: the CLI builds the
+    verifier before any capture exists. Construction must succeed without a
+    baseline; the requirement is enforced at ``verify()`` time instead.
+    """
+
+    from ux_analyzer.ports.observation import ObservationCapture
+    from ux_analyzer.adapters.web.verifier import WebVerifier
+    from ux_analyzer.adapters.web.verifier import WebVerificationError
+    from ux_analyzer.ports.observation import ViewportSize
+
+    def _colour_capture(*, background: str) -> ObservationCapture:
+        snapshot = _snapshot()
+        return ObservationCapture(
+            session_id="run-1",
+            viewport_id=snapshot.id,
+            url="http://fixture.test/app/run/improved",
+            title="Fixture",
+            viewport=ViewportSize(width=1024, height=768),
+            screenshot=b"shot",
+            snapshot=snapshot,
+            document_background=background,
+            body_background=background,
+            viewport_background=background,
+        )
+
+    class ColourProvider:
+        def __init__(self, captures: tuple[ObservationCapture, ...]) -> None:
+            self.captures = list(captures)
+
+        async def start_session(self, config: ObservationSessionConfig) -> SessionHandle:
+            del config
+            raise NotImplementedError
+
+        async def capture(self, session: SessionHandle) -> ObservationCapture:
+            del session
+            if not self.captures:
+                raise AssertionError("no captures left")
+            return self.captures.pop(0)
+
+    baseline = _colour_capture(background="#ffffff")
+    flipped = _colour_capture(background="#111418")
+    provider = ColourProvider((flipped,))
+
+    # Construction without a baseline: must NOT raise (the CLI path).
+    verifier = WebVerifier(
+        ColourChangeVerifierSpec(type="colour-change"),
+        observation_provider=provider,
+        snapshot_extractor=lambda capture: capture.snapshot,
+    )
+
+    # verify() before any baseline is defined must fail loudly, not silently
+    # compare against nothing.
+    with pytest.raises(WebVerificationError, match="baseline"):
+        await verifier.verify(_session_handle())
+
+    # After the run agent seeds the baseline from the pre-action capture, the
+    # same instance verifies a real theme flip.
+    verifier.set_baseline(baseline)
+    result = await verifier.verify(_session_handle())
+    assert result.verified
+    assert result.before_state["document_background"] == "#ffffff"
+    assert result.after_state["document_background"] == "#111418"

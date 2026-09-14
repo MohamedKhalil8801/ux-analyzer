@@ -540,6 +540,84 @@ def _verifier_anchor_supported(
     return not supported_any
 
 
+def _evaluation_target_label_supported(label: str, corpus: CrawlCorpus) -> bool:
+    """Require an ``evaluation_target.label`` to exist in recorded crawl evidence.
+
+    At evaluation time the target label is matched against recorded element
+    labels, so a label no captured page ever rendered can only ever produce
+    ``EvaluationEvidenceUnavailable`` — wasted work and a misleading report
+    row. This mirrors ``_verifier_anchor_supported``: substring containment
+    against normalized headings and visible-element labels, role ignored.
+
+    Fail-open when there is no evidence: a corpus where no page recorded
+    visible elements cannot prove or disprove a label, so such a corpus
+    passes without rejection.
+    """
+
+    needle = _normalized_anchor_text(label)
+    if not needle:
+        return False
+    supported_any = False
+    for page in corpus.pages:
+        visible = tuple(
+            _normalized_anchor_text(item) for item in page.visible_elements
+        )
+        if not visible:
+            continue
+        supported_any = True
+        headings = tuple(
+            _normalized_anchor_text(heading) for heading in page.headings
+        )
+        if any(needle in text for text in (*headings, *visible)):
+            return True
+    return not supported_any
+
+
+def _evaluation_target_region_supported(region_label: str, corpus: CrawlCorpus) -> bool:
+    """Require an ``evaluation_target.region_label`` to be a recorded region name.
+
+    Observed defect: the explorer emitted ``region_label: "Main work showcase"``
+    for a page whose real sections were "Muslim Pedia", "Open Prayer Times" and
+    "PAIR Systems". The scenario was executed and only failed at evaluation
+    time with ``EvaluationEvidenceUnavailable``.
+
+    Validation is against ``CrawlPage.region_labels`` — the named landmarks and
+    labelled sections captured during the crawl. When a page recorded no region
+    labels but did record headings or visible-element labels, those are used as
+    the candidate region names: on these sites a section's heading *is* the
+    region label. Normalization goes through ``_normalized_anchor_text`` so NBSP
+    variants cannot hide a match, and an exact normalized match is required
+    because evaluation compares region names for equality, not containment.
+
+    Fail-open when there is no evidence: a page with neither region labels nor
+    any heading/visible-element evidence cannot prove or disprove a region name
+    (a corpus crawled before region capture recorded none), so such a corpus
+    passes without rejection rather than rejecting every scenario.
+    """
+
+    needle = _normalized_anchor_text(region_label)
+    if not needle:
+        return False
+    supported_any = False
+    for page in corpus.pages:
+        candidates = (
+            tuple(
+                _normalized_anchor_text(item) for item in page.region_labels
+            )
+            if page.region_labels
+            else tuple(
+                _normalized_anchor_text(item)
+                for item in (*page.headings, *page.visible_elements)
+            )
+        )
+        if not candidates:
+            continue
+        supported_any = True
+        if needle in candidates:
+            return True
+    return not supported_any
+
+
 # ---------------------------------------------------------------------------
 # Helpers: compression
 # ---------------------------------------------------------------------------
@@ -1145,6 +1223,28 @@ class ExplorationSynthesizer:
             if not _verifier_anchor_supported(schema.verifier, corpus):
                 audits.append(
                     _rejected_scenario_audit(schema, "verifier-anchor-unavailable")
+                )
+                continue
+            # The evaluation target is matched against recorded snapshots at
+            # evaluation time; a label or region name the crawl never recorded
+            # can only ever fail there, so reject it now instead.
+            if not _evaluation_target_label_supported(
+                schema.evaluation_target.label, corpus
+            ):
+                audits.append(
+                    _rejected_scenario_audit(
+                        schema, "evaluation-target-label-unavailable"
+                    )
+                )
+                continue
+            region_label = schema.evaluation_target.region_label
+            if region_label is not None and not _evaluation_target_region_supported(
+                region_label, corpus
+            ):
+                audits.append(
+                    _rejected_scenario_audit(
+                        schema, "evaluation-target-region-unavailable"
+                    )
                 )
                 continue
             # all_of unique already validated

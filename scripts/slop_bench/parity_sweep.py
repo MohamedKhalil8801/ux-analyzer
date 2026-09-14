@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parents[1] / "src"))
 
 from corpus import CORPUS  # noqa: E402
+
 from ux_analyzer.analysis.slop.pipeline import analyze_slop  # noqa: E402
 from ux_analyzer.analysis.visual.snapshot import snapshot_from_dict  # noqa: E402
 

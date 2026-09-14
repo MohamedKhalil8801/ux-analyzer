@@ -1,4 +1,4 @@
-﻿"""Performance detector.
+"""Performance detector.
 
 Covers TheUXBites performance slice and Markswebb slowness classes 4.1/4.2.
 
@@ -185,11 +185,40 @@ def _blocking_stylesheets(parser: _PerfParser) -> list[dict[str, str]]:
     return out
 
 
+def _is_data_script(script: dict) -> bool:
+    """True for <script type=...> that holds data, not executed JS.
+
+    JSON-LD, JSON, import maps, speculation rules and template blocks are
+    parsed as data by the browser - they never run on the main thread, so
+    they cannot block rendering, TTI or INP.
+    """
+    typ = (script.get("attrs") or {}).get("type", "").strip().lower()
+    if not typ:
+        return False
+    typ = typ.split(";")[0].strip()
+    return typ in {
+        "application/ld+json",
+        "application/json",
+        "application/importmap+json",
+        "importmap",
+        "speculationrules",
+        "text/template",
+        "text/x-template",
+        "text/html",
+    }
+
+
 def _blocking_scripts(parser: _PerfParser) -> list[dict]:
-    """Scripts in <head> without async/defer/module (modules are deferred by default)."""
+    """Scripts in <head> without async/defer/module (modules are deferred by default).
+
+    Data scripts (JSON-LD, import maps, templates) are excluded: they are not
+    executed, so they cannot block rendering or the main thread.
+    """
     out: list[dict] = []
     for s in parser.scripts:
         if not s["in_head"]:
+            continue
+        if _is_data_script(s):
             continue
         attrs = s["attrs"]
         if "async" in attrs or "defer" in attrs:
@@ -212,11 +241,106 @@ def _import_count(parser: _PerfParser) -> int:
 
 
 def _external_scripts(parser: _PerfParser) -> list[dict]:
-    return [s for s in parser.scripts if s["attrs"].get("src", "").strip()]
+    return [
+        s
+        for s in parser.scripts
+        if s["attrs"].get("src", "").strip() and not _is_data_script(s)
+    ]
 
 
 def _large_inline_scripts(parser: _PerfParser, threshold: int = 1024) -> list[dict]:
-    return [s for s in parser.scripts if len(s["content"]) > threshold]
+    return [
+        s
+        for s in parser.scripts
+        if not _is_data_script(s)
+        and not s["attrs"].get("src", "").strip()
+        and len(s["content"]) > threshold
+    ]
+
+
+# ---------------------------------------------------------------------------
+# offending-resource descriptions
+# ---------------------------------------------------------------------------
+_MAIN_THREAD_APIS = (
+    "requestAnimationFrame",
+    "setInterval",
+    "setTimeout",
+    "performance.mark",
+    "performance.measure",
+    "addEventListener",
+    "fetch(",
+    "XMLHttpRequest",
+    "document.write",
+    "new MutationObserver",
+)
+
+
+_IMPORT_URI_RE = re.compile(
+    r"@import\s+(?:url\s*\(\s*)?(?:\"([^\"]+)\"|'([^']+)'|([^\"'\s);]+))",
+    re.IGNORECASE,
+)
+
+
+def _script_markers(content: str) -> list[str]:
+    """Notable main-thread APIs referenced by an inline script (deduped)."""
+    found: list[str] = []
+    for api in _MAIN_THREAD_APIS:
+        if api in content:
+            found.append(api)
+    return found
+
+
+def _describe_script(script: dict, preview_chars: int = 160) -> dict[str, object]:
+    """Stable, greppable identifier for an offending script.
+
+    External scripts are identified by URL. Inline scripts have no URL, so
+    they are identified by size, a short content preview, and the notable
+    main-thread APIs they call - enough to locate them in the raw HTML.
+    """
+    attrs = script.get("attrs") or {}
+    content = script.get("content") or ""
+    src = (attrs.get("src") or "").strip()
+    base: dict[str, object] = {
+        "in_head": bool(script.get("in_head", False)),
+        "bytes": len(content),
+    }
+    if src:
+        base["src"] = src[:300]
+    else:
+        # Collapse only the head so huge inlined bundles stay cheap to preview.
+        head = re.sub(r"\s+", " ", content[: preview_chars * 2]).strip()
+        base["inline"] = True
+        base["preview"] = head[:preview_chars]
+        markers = _script_markers(content)
+        if markers:
+            base["markers"] = markers[:8]
+    return base
+
+
+def _import_uris(parser: _PerfParser) -> list[str]:
+    """Extract the actual @import targets, e.g. 'theme.css'."""
+    uris: list[str] = []
+    for stylesheet in parser.styles_contents:
+        for match in _IMPORT_URI_RE.finditer(stylesheet):
+            uri = next((g for g in match.groups() if g), "").strip()
+            if uri:
+                uris.append(uri[:200])
+    return uris
+
+
+def _culprit_summary(scripts: list[dict], limit: int = 3) -> str:
+    """Human-readable one-liner naming the offending scripts for a description."""
+    parts: list[str] = []
+    for s in scripts[:limit]:
+        attrs = s.get("attrs") or {}
+        src = (attrs.get("src") or "").strip()
+        content = s.get("content") or ""
+        if src:
+            parts.append(src[:120])
+        else:
+            preview = re.sub(r"\s+", " ", content[:240]).strip()
+            parts.append(f"inline script ({len(content)} chars): {preview[:90]}…")
+    return "; ".join(parts)
 
 
 def _find_lcp_image(parser: _PerfParser) -> dict[str, str] | None:
@@ -346,12 +470,23 @@ def _has_user_timing(parser: _PerfParser) -> bool:
     return False
 
 
-def _font_display_missing(parser: _PerfParser) -> bool:
-    for c in parser.styles_contents:
-        low = c.lower()
-        if "@font-face" in low and "font-display" not in low:
-            return True
-    return False
+def _font_faces_without_display(parser: _PerfParser) -> list[str]:
+    """Name the @font-face families that skip font-display."""
+    families: list[str] = []
+    for stylesheet in parser.styles_contents:
+        for match in re.finditer(
+            r"@font-face\s*\{([^}]*)\}", stylesheet, re.IGNORECASE
+        ):
+            block = match.group(1)
+            if "font-display" in block.lower():
+                continue
+            fm = re.search(
+                r"font-family\s*:\s*[\"']?([^\"';]+?)[\"']?\s*;", block, re.IGNORECASE
+            )
+            families.append(
+                (fm.group(1).strip() if fm else "<unnamed @font-face>")[:120]
+            )
+    return families
 
 
 # ---------------------------------------------------------------------------
@@ -373,13 +508,31 @@ def _check_render_blocking(parser: _PerfParser) -> PerformanceIssue | None:
         "import_count": imports,
         "total_blocking": total,
         "stylesheet_hrefs": [link.get("href", "")[:200] for link in blocking_css],
-        "script_srcs": [s["attrs"].get("src", "")[:200] or "<inline>" for s in blocking_js],
+        "script_srcs": [
+            s["attrs"].get("src", "")[:200] or "<inline>" for s in blocking_js
+        ],
+        "blocking_script_detail": [_describe_script(s) for s in blocking_js],
+        "import_uris": _import_uris(parser),
     }
+    offending_parts: list[str] = []
+    if blocking_css:
+        offending_parts.append(
+            "stylesheets: "
+            + ", ".join(link.get("href", "")[:120] for link in blocking_css[:3])
+        )
+    if blocking_js:
+        offending_parts.append("scripts: " + _culprit_summary(blocking_js))
+    if imports:
+        offending_parts.append(
+            "@import targets: " + ", ".join(_import_uris(parser)[:3])
+        )
+    offenders = "; ".join(offending_parts)
     return PerformanceIssue(
         title="Render-blocking resources slow page display",
         description=(
             f"Found {total} render-blocking resources ({len(blocking_css)} stylesheets, "
             f"{len(blocking_js)} head scripts, {imports} @import). "
+            f"Offending files: {offenders}. "
             "These delay first paint and also cause 'Render-blocking resources delay page load'. "
             "Scripts with type=module or async/defer are excluded: they are deferred by default "
             "and do not block rendering. "
@@ -408,17 +561,33 @@ def _check_unused_js(parser: _PerfParser) -> PerformanceIssue | None:
     )
     # literal: flag if >2 blocking or >3 total
     if blocking_external > 2 or total_external > 3:
+        blocking_objs = [
+            s
+            for s in parser.scripts
+            if s["attrs"].get("src", "").strip()
+            and s["in_head"]
+            and "async" not in s["attrs"]
+            and "defer" not in s["attrs"]
+            and s["attrs"].get("type", "").lower() != "module"
+        ]
         evidence = {
             "total_external_js": total_external,
             "blocking_external_js": blocking_external,
             "threshold_blocking": 2,
             "threshold_total": 3,
-            "srcs": [s["attrs"].get("src", "")[:200] for s in _external_scripts(parser)][:5],
+            "srcs": [
+                s["attrs"].get("src", "")[:200] for s in _external_scripts(parser)
+            ][:10],
+            "blocking_script_detail": [_describe_script(s) for s in blocking_objs],
+            "all_external_scripts": [
+                _describe_script(s) for s in _external_scripts(parser)
+            ][:10],
         }
         return PerformanceIssue(
             title="Unused JavaScript slows page load",
             description=(
                 f"Page loads {total_external} external JavaScript files with {blocking_external} render-blocking. "
+                f"Render-blocking scripts: {_culprit_summary(blocking_objs)}. "
                 "Large bundles or unused JS increase parse/compile cost and TTI."
             ),
             severity="medium",
@@ -454,11 +623,44 @@ def _check_main_thread(parser: _PerfParser) -> PerformanceIssue | None:
             "blocking_external_js": blocking_external,
             "blocking_total": blocking_all,
             "total_scripts": len(parser.scripts),
+            "large_inline_scripts": [_describe_script(s) for s in large],
+            "blocking_script_detail": [
+                _describe_script(s) for s in _blocking_scripts(parser)
+            ],
         }
+        offenders: list[str] = []
+        if large:
+            preview = re.sub(r"\s+", " ", large[0]["content"][:240]).strip()
+            offenders.append(
+                f"a {len(large[0]['content'])}-char inline script starting "
+                f"'{preview[:100]}…' (notable APIs: {', '.join(_script_markers(large[0]['content'])) or 'none'})"
+            )
+        if blocking_external > 0:
+            blockers = [
+                s
+                for s in parser.scripts
+                if s["attrs"].get("src", "").strip()
+                and s["in_head"]
+                and "async" not in s["attrs"]
+                and "defer" not in s["attrs"]
+                and s["attrs"].get("type", "").lower() != "module"
+            ]
+            offenders.append("render-blocking externals: " + _culprit_summary(blockers))
+        if blocking_all - blocking_external > 0:
+            inlines = [
+                s
+                for s in _blocking_scripts(parser)
+                if not s["attrs"].get("src", "").strip()
+            ]
+            offenders.append("blocking inline scripts: " + _culprit_summary(inlines))
+        culprit_line = (
+            ("Offending scripts: " + "; ".join(offenders) + ". ") if offenders else ""
+        )
         return PerformanceIssue(
             title="Main thread blocks user interaction",
             description=(
                 "Main thread is blocked by large or synchronous JavaScript, increasing input delay and risking 'Main thread is overloaded'. "
+                f"{culprit_line}"
                 "Long tasks block interaction (INP) and delay interactivity. "
                 "Typical causes: continuously-running requestAnimationFrame animation loops, "
                 "large bundle evaluation, and long event handlers — profile long tasks and "
@@ -482,11 +684,31 @@ def _check_network_dependency(parser: _PerfParser) -> PerformanceIssue | None:
             "blocking_stylesheets": len(blocking_css),
             "blocking_scripts": len(blocking_js),
             "import_count": imports,
+            "blocking_stylesheet_hrefs": [
+                link.get("href", "")[:200] for link in blocking_css
+            ],
+            "blocking_script_detail": [_describe_script(s) for s in blocking_js],
+            "import_uris": _import_uris(parser),
         }
         return PerformanceIssue(
             title="Network dependency tree",
             description=(
                 f"Critical request chain depth is {depth} (stylesheets {len(blocking_css)} + scripts {len(blocking_js)} + imports {imports}). "
+                "Offending files: "
+                + (
+                    "stylesheets "
+                    + ", ".join(link.get("href", "")[:120] for link in blocking_css[:3])
+                    + "; "
+                    if blocking_css
+                    else ""
+                )
+                + (
+                    "scripts " + _culprit_summary(blocking_js) + "; "
+                    if blocking_js
+                    else ""
+                )
+                + ("@import " + ", ".join(_import_uris(parser)[:3]) if imports else "")
+                + ". "
                 "Deep chains delay discovery of LCP and other resources."
             ),
             severity="medium",
@@ -510,7 +732,7 @@ def _check_lcp_lazy(parser: _PerfParser) -> PerformanceIssue | None:
         }
         return PerformanceIssue(
             title="Largest image is unnecessarily lazy-loaded",
-            description="The likely Largest Contentful Paint image has loading=\"lazy\", which defers its load and hurts LCP.",
+            description='The likely Largest Contentful Paint image has loading="lazy", which defers its load and hurts LCP.',
             severity="critical",
             evidence=evidence,
             check_id="lcp_lazy",
@@ -533,7 +755,7 @@ def _check_preload_lcp(parser: _PerfParser) -> PerformanceIssue | None:
         return PerformanceIssue(
             title="Preload Largest Contentful Paint image",
             description=(
-                "Largest image is not preloaded and lacks fetchpriority=\"high\". "
+                'Largest image is not preloaded and lacks fetchpriority="high". '
                 "This also covers 'LCP request discovery' â€“ late discovery delays LCP."
             ),
             severity="critical",
@@ -549,7 +771,11 @@ def _check_slow_lcp(parser: _PerfParser) -> PerformanceIssue | None:
     lcp = _find_lcp_image(parser)
     if lcp is None:
         return None
-    blocking_total = len(_blocking_stylesheets(parser)) + len(_blocking_scripts(parser)) + _import_count(parser)
+    blocking_total = (
+        len(_blocking_stylesheets(parser))
+        + len(_blocking_scripts(parser))
+        + _import_count(parser)
+    )
     has_preload = _has_preload_for_lcp(parser, lcp)
     lcp_lazy = lcp.get("loading", "").lower() == "lazy"
     # Deduplicate: if LCP is lazy or missing preload, preload_lcp/lcp_lazy already
@@ -557,10 +783,30 @@ def _check_slow_lcp(parser: _PerfParser) -> PerformanceIssue | None:
     if not has_preload or lcp_lazy:
         return None
     if blocking_total >= 2:
-        evidence = {"total_blocking": blocking_total, "lcp_src": lcp.get("src", "")[:300]}
+        blocking_css = _blocking_stylesheets(parser)
+        blocking_js = _blocking_scripts(parser)
+        evidence = {
+            "total_blocking": blocking_total,
+            "lcp_src": lcp.get("src", "")[:300],
+            "blocking_stylesheet_hrefs": [
+                link.get("href", "")[:200] for link in blocking_css
+            ],
+            "blocking_script_detail": [_describe_script(s) for s in blocking_js],
+            "import_uris": _import_uris(parser),
+        }
         return PerformanceIssue(
             title="Slow largest content paint",
-            description="Blocking resources delay LCP even without explicit LCP hint issues.",
+            description=(
+                "Blocking resources delay LCP even without explicit LCP hint issues. "
+                "Blockers: stylesheets "
+                + (
+                    ", ".join(link.get("href", "")[:120] for link in blocking_css[:3])
+                    or "none"
+                )
+                + "; scripts "
+                + _culprit_summary(blocking_js)
+                + "."
+            ),
             severity="medium",
             evidence=evidence,
             check_id="slow_lcp",
@@ -578,11 +824,14 @@ def _check_tti(parser: _PerfParser) -> PerformanceIssue | None:
             "blocking_scripts": len(blocking_scripts),
             "large_inline": len(large),
             "total_external": len(_external_scripts(parser)),
+            "blocking_script_detail": [_describe_script(s) for s in blocking_scripts],
+            "large_inline_scripts": [_describe_script(s) for s in large],
         }
         return PerformanceIssue(
             title="Page takes too long to become interactive",
             description=(
                 "Too much blocking JavaScript or large inline scripts delay Time to Interactive. "
+                f"Offending scripts: {_culprit_summary(blocking_scripts + large)}. "
                 "Common root causes: continuously-running requestAnimationFrame loops "
                 "(canvas particles, cursor followers, carousels) that never let the main "
                 "thread go quiet, plus long tasks from the main bundle — pause offscreen "
@@ -606,11 +855,14 @@ def _check_inp(parser: _PerfParser) -> PerformanceIssue | None:
             "large_inline": len(large),
             "blocking_scripts": len(blocking_scripts),
             "total_scripts": len(parser.scripts),
+            "blocking_script_detail": [_describe_script(s) for s in blocking_scripts],
+            "large_inline_scripts": [_describe_script(s) for s in large],
         }
         return PerformanceIssue(
             title="INP breakdown",
             description=(
                 "Long input delay potential due to main-thread blocking JS. "
+                f"Offending scripts: {_culprit_summary(blocking_scripts + large)}. "
                 "Also covers 'Long input delay potential'. "
                 "Typical causes: continuously-running requestAnimationFrame loops and "
                 "long tasks — pause offscreen animations and chunk heavy work."
@@ -627,16 +879,22 @@ def _check_resource_hints(parser: _PerfParser) -> PerformanceIssue | None:
         evidence = {
             "needs_font_preconnect": True,
             "has_preconnect_gapis": any(
-                "fonts.googleapis.com" in link.get("href", "") and "preconnect" in link.get("rel", "") for link in parser.links
+                "fonts.googleapis.com" in link.get("href", "")
+                and "preconnect" in link.get("rel", "")
+                for link in parser.links
             ),
             "has_preconnect_gstatic": any(
-                "fonts.gstatic.com" in link.get("href", "") and "preconnect" in link.get("rel", "") for link in parser.links
+                "fonts.gstatic.com" in link.get("href", "")
+                and "preconnect" in link.get("rel", "")
+                for link in parser.links
             ),
-            "links": [link for link in parser.links if "preconnect" in link.get("rel", "")][:3],
+            "links": [
+                link for link in parser.links if "preconnect" in link.get("rel", "")
+            ][:3],
         }
         return PerformanceIssue(
             title="Missing resource hints for fonts",
-            description="Page loads Google Fonts but lacks <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\"> (and fonts.googleapis.com), delaying font discovery.",
+            description='Page loads Google Fonts but lacks <link rel="preconnect" href="https://fonts.gstatic.com"> (and fonts.googleapis.com), delaying font discovery.',
             severity="low",
             evidence=evidence,
             check_id="resource_hints",
@@ -664,7 +922,10 @@ def _check_image_dimensions(parser: _PerfParser) -> PerformanceIssue | None:
 
 def _check_user_timing(parser: _PerfParser) -> PerformanceIssue | None:
     if not _has_user_timing(parser):
-        evidence = {"has_performance_mark": False, "suggestion": "Add performance.mark/measure for User Timing"}
+        evidence = {
+            "has_performance_mark": False,
+            "suggestion": "Add performance.mark/measure for User Timing",
+        }
         return PerformanceIssue(
             title="User Timing marks and measures",
             description=(
@@ -681,11 +942,21 @@ def _check_user_timing(parser: _PerfParser) -> PerformanceIssue | None:
 
 
 def _check_font_display(parser: _PerfParser) -> PerformanceIssue | None:
-    if _font_display_missing(parser):
-        evidence = {"has_font_face": True, "has_font_display": False}
+    missing_families = _font_faces_without_display(parser)
+    if missing_families:
+        evidence = {
+            "has_font_face": True,
+            "has_font_display": False,
+            "font_families_affected": missing_families,
+            "suggestion": 'Add font-display: swap to each @font-face (e.g. "font-display: swap;") to avoid FOIT.',
+        }
         return PerformanceIssue(
             title="Font display not optimized",
-            description="@font-face without font-display: swap causes invisible text during font load (FOIT).",
+            description=(
+                f"{len(missing_families)} @font-face rule(s) without font-display: swap "
+                f"({', '.join(missing_families[:5])}). "
+                "Invisible text during font load (FOIT) delays the perceived paint."
+            ),
             severity="low",
             evidence=evidence,
             check_id="font_display",
@@ -696,7 +967,9 @@ def _check_font_display(parser: _PerfParser) -> PerformanceIssue | None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-async def analyze_performance(url: str, client: httpx.AsyncClient | None = None) -> list[PerformanceIssue]:
+async def analyze_performance(
+    url: str, client: httpx.AsyncClient | None = None
+) -> list[PerformanceIssue]:
     """Run performance heuristics deterministically.
 
     Args:
@@ -801,4 +1074,3 @@ def analyze_performance_sync(url: str) -> list[PerformanceIssue]:
             fut = executor.submit(asyncio.run, analyze_performance(url))
             return fut.result()
     return asyncio.run(analyze_performance(url))
-

@@ -61,6 +61,97 @@ async def test_capture_filters_hidden_zero_size_and_below_fold_content(
 
 
 @pytest.mark.asyncio
+async def test_capture_sees_icon_only_button_whose_icons_are_aria_hidden() -> None:
+    """An icon-only button paints a graphic even when its icons are aria-hidden.
+
+    Mirrors the live ``#themeToggle`` on the reviewed site: a 44x44 button
+    whose only payload is two decorative ``aria-hidden`` SVGs (a sun and a
+    moon). ``aria-hidden`` tells assistive technology to skip the icon; it
+    does NOT stop the icon from being painted, and a sighted user sees it.
+    The extractor must therefore record ``has_visible_graphic=True`` so the
+    persona-perception layer keeps the control (and does not treat it as an
+    empty or visually-hidden-only box). The live stylesheet sizes the icons
+    to 21x21px; that is why the ``svg`` rules are replicated here.
+    """
+
+    async with async_playwright() as playwright:
+        browser: Browser = await playwright.chromium.launch()
+        try:
+            page: Page = await browser.new_page(
+                viewport={"width": 1280, "height": 800}
+            )
+            await page.set_content(
+                """<!doctype html>
+                <html lang="en">
+                  <head>
+                    <meta charset="utf-8">
+                    <style>
+                      body { margin: 0; color: #17212b; background: #f5f7f9; }
+                      header { padding: 12px; display: flex; align-items: center; }
+                      .theme-toggle {
+                        width: 44px; height: 44px; display: inline-grid;
+                        place-items: center; border: 1px solid #68737d;
+                        border-radius: 100px; background: none;
+                      }
+                      .theme-toggle svg { width: 21px; height: 21px; }
+                      .theme-toggle__sun { display: none; }
+                      .theme-toggle__moon { display: block; }
+                    </style>
+                  </head>
+                  <body>
+                    <header>
+                      <button
+                        class="theme-toggle"
+                        id="theme-toggle-fixture"
+                        type="button"
+                        aria-pressed="false"
+                        aria-label="Switch to dark theme"
+                        title="Toggle theme"
+                      >
+                        <svg class="theme-toggle__sun" viewBox="0 0 24 24" aria-hidden="true">
+                          <circle cx="12" cy="12" r="4" />
+                          <path d="M12 2.8v2.2M12 19v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6" />
+                        </svg>
+                        <svg class="theme-toggle__moon" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M20.5 14.4A8.2 8.2 0 1 1 9.6 3.5a6.4 6.4 0 0 0 10.9 10.9z" />
+                        </svg>
+                      </button>
+                    </header>
+                  </body>
+                </html>
+                """
+            )
+            snapshot = await capture(page, "viewport-icon-toggle")
+        finally:
+            await browser.close()
+
+    toggle = next(
+        (e for e in snapshot.elements if e.label == "Switch to dark theme"),
+        None,
+    )
+    assert toggle is not None, (
+        "the icon-only theme toggle was dropped from the snapshot; "
+        "has_visible_graphic must be True for its aria-hidden but painted icons"
+    )
+    assert toggle.rendered_text == ""
+    assert toggle.has_visible_graphic is True
+
+    persona = next(
+        (e for e in snapshot.persona_visible_elements() if e.id == toggle.id),
+        None,
+    )
+    assert persona is not None, (
+        "the icon-only theme toggle disappeared from the persona-visible "
+        "projection; the control is imperceivable to the simulation"
+    )
+    assert persona.label.strip() != ""
+    assert "Switch to dark theme" not in persona.label, (
+        "the author's aria-label leaked into the persona-visible label; the "
+        "persona must recognise the control by role/position only"
+    )
+
+
+@pytest.mark.asyncio
 async def test_capture_records_partial_visibility_and_occlusion(
     extraction_page: Page,
 ) -> None:

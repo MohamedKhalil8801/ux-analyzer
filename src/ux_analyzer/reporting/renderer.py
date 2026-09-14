@@ -12,6 +12,7 @@ import os
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
@@ -31,10 +32,17 @@ from ux_analyzer.application.evidence_corpus import (
     validate_evidence_refs,
 )
 from ux_analyzer.domain.findings import EvidenceClass
+from ux_analyzer.domain.redesign import (
+    DesignProposal,
+)
 from ux_analyzer.domain.synthesis import EvidenceRef, SynthesisAttempt, SynthesisStatus
 from ux_analyzer.ports.artifacts import (
     validate_saliency_artifact_path,
     validate_timeline_event_order,
+)
+from ux_analyzer.storage.redesign_artifacts import (
+    RedesignAttemptSelection,
+    RedesignAttemptStore,
 )
 from ux_analyzer.storage.run_bundle import (
     SecureDirectoryHandle,
@@ -170,6 +178,37 @@ def load_saliency_replay(
     )
 
 
+def _data_sources_config(
+    root: Path, relative_to: Path, experiment: Mapping[str, Any] | None = None
+) -> dict[str, object] | None:
+    """Live sidecar config for a rendered report page.
+
+    Maps each renderer-backed view to the JSON sidecar that carries its
+    data, expressed relative to the rendered page itself (so run pages in
+    a subdirectory get ``../``-prefixed paths). The browser refetches these
+    sidecars on load, letting a regenerated sidecar (e.g. ux-audit.json)
+    update the report without re-rendering report.html.
+
+    The conventional paths are advertised unconditionally (sibling files
+    of the rendered page), so a sidecar that appears or is regenerated
+    *after* the report was rendered still hydrates on the next page load.
+    If the file is absent or malformed the fetch fails harmlessly at load
+    time and the server-embedded content (if any) stays in place.
+    """
+    sources: dict[str, str] = {}
+    for key, filename in (
+        ("ux_audit", "ux-audit.json"),
+        ("pagespeed", "pagespeed.json"),
+    ):
+        sources[key] = os.path.relpath(root / filename, relative_to).replace("\\", "/")
+    if not sources:
+        return None
+    return {
+        "sources": sources,
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
 def render_experiment_report(
     bundle_root: Path,
     output_path: Path,
@@ -201,7 +240,10 @@ def render_experiment_report(
         create=True,
     ) as output_parent:
         if _estimated_full_report_bytes(experiment) <= threshold:
-            full_context = _report_context(experiment)
+            full_context = _report_context(
+                experiment,
+                data_sources=_data_sources_config(root, destination.parent, experiment),
+            )
             single_html = _render_html(
                 full_context,
                 "Attention-guided experiment replay",
@@ -226,6 +268,7 @@ def render_experiment_report(
                 experiment,
                 include_run_payload=False,
                 run_links=run_links,
+                data_sources=_data_sources_config(root, output_parent.path, experiment),
             )
             _publish_report_text(
                 output_parent,
@@ -237,6 +280,9 @@ def render_experiment_report(
                     {**experiment, "runs": [run]},
                     run_links={run["run_id"]: ""},
                     run_scope=frozenset({run["run_id"]}),
+                    data_sources=_data_sources_config(
+                        root, run_parent.path, experiment
+                    ),
                 )
                 run_title = (
                     f"{run.get('scenario_label', 'Website')} | "
@@ -261,11 +307,12 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
     """Return the exportable findings a report presents, for fix exports.
 
     Reviewed synthesis findings when a valid attempt is published, plus the
-    Page findings tab (static audit + AI-slop card) and the Performance tab
-    (Lighthouse audits and opportunities). Deterministic fallback findings
-    ("Recorded interaction needs review …") are excluded: they are
-    unconfirmed inferences from a simulated run, not established issues.
-    See docs/adr/0006-fix-export-mirrors-report-findings.md.
+    Page findings tab (static audit + AI-slop card), the Performance tab
+    (Lighthouse audits and opportunities), and the Redesign tab (accepted
+    design proposals, exported as model-estimate findings). Deterministic
+    fallback findings ("Recorded interaction needs review …") are excluded:
+    they are unconfirmed inferences from a simulated run, not established
+    issues. See docs/adr/0006-fix-export-mirrors-report-findings.md.
     """
 
     root = Path(bundle_root)
@@ -278,6 +325,7 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
     used_ids = {str(finding.get("finding_id", "")) for finding in findings}
     findings = findings + _page_audit_findings(experiment.get("ux_audit"), used_ids)
     findings = findings + _pagespeed_findings(experiment.get("pagespeed"), used_ids)
+    findings = findings + _redesign_findings(root, used_ids)
     return {
         "bundle_root": root,
         "synthesis_status": _text(synthesis.get("synthesis_status")),
@@ -288,9 +336,7 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
             else _text(synthesis.get("attempt_id"))
         ),
         "findings": findings,
-        "limitations": [
-            _text(item) for item in synthesis.get("limitations", [])
-        ],
+        "limitations": [_text(item) for item in synthesis.get("limitations", [])],
     }
 
 
@@ -342,9 +388,7 @@ def _strip_data_uris(value: object) -> object:
 def _decode_data_uri(value: str) -> tuple[bytes, str] | None:
     """Decode an inline image data URI into (bytes, file suffix)."""
 
-    match = re.match(
-        r"data:image/(png|jpeg|jpg|webp);base64,(.*)", value, re.DOTALL
-    )
+    match = re.match(r"data:image/(png|jpeg|jpg|webp);base64,(.*)", value, re.DOTALL)
     if match is None:
         return None
     suffixes = {"jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "webp": ".webp"}
@@ -410,24 +454,29 @@ def _static_finding(
     limitations: list[str] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     reproducibility: str = "deterministic",
+    evidence_class: str = "recorded-page-fact",
+    principles: list[str] | None = None,
+    impact: str = "",
+    root_cause: str = "",
+    fixes: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "finding_id": finding_id,
         "title": title,
         "issue": issue,
-        "impact": "",
-        "root_cause": "",
-        "fixes": [],
+        "impact": impact,
+        "root_cause": root_cause,
+        "fixes": fixes or [],
         "severity": severity,
         "category": category,
         "evidence_refs": [],
         "evidence_targets": [],
         "affected_surfaces": affected_surfaces or [],
-        "principles": [],
+        "principles": principles or [],
         "counterevidence": [],
         "limitations": limitations or [],
         "reviewer_state": "recorded",
-        "evidence_class": "recorded-page-fact",
+        "evidence_class": evidence_class,
         "reproducibility": reproducibility,
         "severity_justification": "",
         "reviewer_notes": [],
@@ -614,9 +663,7 @@ def _slop_findings(
             ):
                 detail[f"Copy pattern {pattern_number} evidence"] = {
                     str(key): value
-                    for key, value in cast(
-                        "Mapping[object, object]", evidence
-                    ).items()
+                    for key, value in cast("Mapping[object, object]", evidence).items()
                     if key != "triggered"
                 }
     detail["Annotated evidence"] = (
@@ -640,9 +687,7 @@ def _slop_findings(
     ]
 
 
-def _pagespeed_findings(
-    pagespeed: object, used: set[str]
-) -> list[dict[str, Any]]:
+def _pagespeed_findings(pagespeed: object, used: set[str]) -> list[dict[str, Any]]:
     """Mirror the report's Performance tab: failed audits + opportunities.
 
     Zero-savings opportunities (passing audits Lighthouse still lists) are
@@ -692,9 +737,7 @@ def _pagespeed_findings(
     return findings
 
 
-def _detected_files_detail(
-    detail: dict[str, Any], raw_items: object
-) -> None:
+def _detected_files_detail(detail: dict[str, Any], raw_items: object) -> None:
     """Record the per-file facts a Lighthouse result lists, if any."""
 
     files = [
@@ -705,9 +748,7 @@ def _detected_files_detail(
         }
         for item in _list_of_mappings(raw_items)
     ]
-    detail["Detected files"] = (
-        files if files else "none recorded by Lighthouse"
-    )
+    detail["Detected files"] = files if files else "none recorded by Lighthouse"
 
 
 def _zero_savings(savings_ms: object, savings_bytes: object) -> bool:
@@ -757,9 +798,11 @@ def _pagespeed_audit_findings(
             issue = f"Lighthouse diagnostic '{title}' ({strategy}) on {url}."
         elif isinstance(score_percent, int):
             severity = (
-                "high" if score_percent < 50 else
-                "medium" if score_percent < 90 else
-                "low"
+                "high"
+                if score_percent < 50
+                else "medium"
+                if score_percent < 90
+                else "low"
             )
             issue = (
                 f"Failed Lighthouse audit '{title}' ({strategy}) scored "
@@ -767,9 +810,7 @@ def _pagespeed_audit_findings(
             )
         else:
             severity = "medium"
-            issue = (
-                f"Failed Lighthouse audit '{title}' ({strategy}) on {url}."
-            )
+            issue = f"Failed Lighthouse audit '{title}' ({strategy}) on {url}."
         detail: dict[str, Any] = {
             "URL": url,
             "Strategy": strategy,
@@ -806,9 +847,7 @@ def _pagespeed_audit_findings(
                 "pagespeed",
                 detail,
                 affected_surfaces=[url],
-                limitations=[
-                    "Verbatim Lighthouse result; scores vary between runs."
-                ],
+                limitations=["Verbatim Lighthouse result; scores vary between runs."],
                 reproducibility="lab-run",
             )
         )
@@ -866,9 +905,7 @@ def _pagespeed_opportunity_findings(
                 "pagespeed",
                 detail,
                 affected_surfaces=[url],
-                limitations=[
-                    "Verbatim Lighthouse result; scores vary between runs."
-                ],
+                limitations=["Verbatim Lighthouse result; scores vary between runs."],
                 reproducibility="lab-run",
             )
         )
@@ -878,6 +915,90 @@ def _pagespeed_opportunity_findings(
 def _slug_fallback(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
     return slug[:48]
+
+
+_REDESIGN_IMPACT_SEVERITY = {"high": "high", "medium": "medium", "low": "low"}
+
+
+def _redesign_findings(root: Path, used: set[str]) -> list[dict[str, Any]]:
+    """Mirror the report's Redesign tab: accepted design proposals.
+
+    Proposals are model estimates, never run evidence, so their findings
+    carry ``evidence_class="model-estimate"`` and
+    ``reproducibility="model-dependent"``; severity is projected from the
+    proposal's model-inferred impact so the export keeps the report's
+    ordering intent without claiming measured confidence.
+    """
+
+    view = _load_redesign(root)
+    if view.get("state") != "accepted":
+        return []
+    findings: list[dict[str, Any]] = []
+    for raw in _list_of_mappings(view.get("proposals")):
+        proposal = cast("Mapping[str, Any]", raw)
+        title = _text(proposal.get("title"))
+        if not title:
+            continue
+        proposal_id = _text(proposal.get("proposal_id"), _slug_fallback(title))
+        page_url = _text(proposal.get("page_url"), "unspecified page")
+        impact = _text(proposal.get("impact"), "medium")
+        effort = _text(proposal.get("effort"), "medium")
+        category = _text(proposal.get("category"))
+        observation = _text(proposal.get("observation"))
+        rationale = _text(proposal.get("rationale"))
+        change = _text(proposal.get("change"))
+        principle_ids = [
+            _text(item) for item in proposal.get("principle_ids", ()) if _text(item)
+        ]
+        deliberate = proposal.get("deliberate_choice_check")
+        detail: dict[str, Any] = {
+            "URL": page_url,
+            "Design category": category or "unspecified",
+            "Impact (model estimate)": impact,
+            "Effort (model estimate)": effort,
+        }
+        if principle_ids:
+            detail["Related principles"] = principle_ids
+        if isinstance(deliberate, Mapping):
+            detail["Deliberate choice"] = {
+                "Pattern": _text(deliberate.get("pattern")),
+                "Rationale": _text(deliberate.get("rationale")),
+            }
+        affected = [page_url]
+        affected.extend(_strings(proposal.get("also_affects")))
+        affected = list(dict.fromkeys(affected))
+        findings.append(
+            _static_finding(
+                _unique_finding_id(f"redesign:{proposal_id}", used),
+                title,
+                (
+                    f"{observation or title} — design proposal from the "
+                    f"Redesign tab (model estimate for {page_url})."
+                ),
+                _REDESIGN_IMPACT_SEVERITY.get(impact, "medium"),
+                "design",
+                "redesign",
+                detail,
+                affected_surfaces=affected,
+                principles=principle_ids,
+                impact=(
+                    f"Model estimate: {impact.capitalize()} impact, "
+                    f"{effort.capitalize()} effort (Flag-pair ink, not "
+                    "measured values)."
+                ),
+                root_cause=rationale,
+                fixes=[change] if change else [],
+                limitations=[
+                    "Design proposals are model estimates produced from the "
+                    "captured pages and published redesign principles — they "
+                    "are not run-evidence findings and carry no verification "
+                    "status."
+                ],
+                evidence_class="model-estimate",
+                reproducibility="model-dependent",
+            )
+        )
+    return findings
 
 
 _PAGESPEED_SAVED_FILENAME = "pagespeed-report.html"
@@ -976,7 +1097,9 @@ def _publish_pagespeed_saved_report(
     """Write the offline saved-report replica beside the rendered report."""
     pagespeed = experiment.get("pagespeed")
     pagespeed_mapping = (
-        cast(Mapping[str, object], pagespeed) if isinstance(pagespeed, Mapping) else None
+        cast(Mapping[str, object], pagespeed)
+        if isinstance(pagespeed, Mapping)
+        else None
     )
     if pagespeed_mapping is None or not pagespeed_mapping.get("url_reports"):
         return None
@@ -1045,7 +1168,7 @@ def _oversized_run_html(title: str, threshold: int) -> str:
         '<!doctype html><html lang="en"><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>Replay omitted: {title}</title>"
-        '<style>body{{margin:0;padding:24px;background:#f7f6f2;color:#1d1f23;'
+        "<style>body{{margin:0;padding:24px;background:#f7f6f2;color:#1d1f23;"
         'font:16px/1.5 "Public Sans","Segoe UI",system-ui,sans-serif}}'
         "h1{{font-size:1.4rem;letter-spacing:-.01em}}</style>"
         f"<h1>{escaped_title}</h1>"
@@ -1077,13 +1200,16 @@ def _load_experiment(root: Path) -> dict[str, Any]:
             _merge_failure(existing, failure)
     if not runs:
         raise ValueError(f"no run or failure evidence found under {root}")
+    _apply_experiment_run_identity(runs, summary)
     ordered_runs = tuple(sorted(runs, key=lambda item: item["run_id"]))
     gate_rows = _gate_rows(summary, ordered_runs)
     synthesis, synthesis_artifact_bytes = _load_synthesis(root, ordered_runs)
+    comparison_rows, aggregate_exclusions = _comparison_rows(ordered_runs)
     return {
         "runs": ordered_runs,
         "run_rows": _run_overview_rows(ordered_runs, gate_rows),
-        "comparison_rows": _comparison_rows(ordered_runs),
+        "comparison_rows": comparison_rows,
+        "aggregate_exclusions": aggregate_exclusions,
         "provider_comparisons": _provider_comparisons(ordered_runs),
         "gate_rows": gate_rows,
         "failure_rows": [run for run in ordered_runs if run["failed"]],
@@ -1096,15 +1222,192 @@ def _load_experiment(root: Path) -> dict[str, Any]:
         "_synthesis_artifact_bytes": synthesis_artifact_bytes,
         "ux_audit": _load_ux_audit(root),
         "pagespeed": _load_pagespeed(root),
+        "redesign": _load_redesign(root),
     }
 
 
 _UX_AUDIT_MAX_BYTES = 2 * 1024 * 1024
 _UX_AUDIT_SCHEMA = "ux-audit-v1"
+# A legitimate sidecar is pages x segments x bounded base64 pixels: at the
+# plan's defaults (10 pages x up to 6 segments x 640KB) that is tens of MB,
+# and the truncation note must still render. 96MB covers ~25 default-height
+# pages while keeping the offline report read bounded.
+_REDESIGN_SIDECAR_MAX_BYTES = 96 * 1024 * 1024
+_PAGE_CAPTURE_SCHEMA = "page-capture-v2"
+_REDESIGN_IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
+_REDESIGN_EFFORT_ORDER = {"small": 0, "medium": 1, "large": 2}
+_REDESIGN_STATE_LABELS = {
+    "accepted": "Model estimates",
+    "no-proposals": "No proposals",
+    "unavailable": "Unavailable",
+    "rejected": "Rejected",
+}
 _UX_AUDIT_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info"})
 _UX_AUDIT_CATEGORIES = frozenset(
     {"GEO", "meta-semantic", "performance", "accessibility", "imagery", "visual"}
 )
+
+
+def _redesign_proposal_view(proposal: DesignProposal) -> dict[str, Any]:
+    deliberate = proposal.deliberate_choice_check
+    return {
+        "proposal_id": proposal.proposal_id,
+        "page_url": proposal.page_url,
+        "category": proposal.category.value,
+        "title": proposal.title,
+        "observation": proposal.observation,
+        "rationale": proposal.rationale,
+        "change": proposal.change,
+        "principle_ids": list(proposal.principle_ids),
+        "impact": proposal.impact.value,
+        "effort": proposal.effort.value,
+        "also_affects": list(proposal.also_affects),
+        "deliberate_choice_check": (
+            {
+                "pattern": deliberate.pattern,
+                "rationale": deliberate.rationale,
+            }
+            if deliberate is not None
+            else None
+        ),
+    }
+
+
+def _redesign_capture_truncation(root: Path) -> tuple[bool, int]:
+    """Whether any captured page hit the height cap, and that cap in px."""
+
+    path = root / "page-capture.json"
+    if not path.is_file() or secure_is_link_or_reparse(path):
+        return False, 0
+    try:
+        raw = secure_read_bytes(
+            path,
+            "page capture sidecar",
+            max_bytes=_REDESIGN_SIDECAR_MAX_BYTES,
+        )
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, RuntimeError, ValueError, UnicodeError):
+        return False, 0
+    if not isinstance(value, Mapping):
+        return False, 0
+    document = cast(dict[str, object], value)
+    if document.get("schema") != _PAGE_CAPTURE_SCHEMA:
+        return False, 0
+    pages = document.get("pages")
+    if not isinstance(pages, list):
+        return False, 0
+    truncated_height = 0
+    for raw_page in cast("list[object]", pages):
+        if not isinstance(raw_page, Mapping):
+            continue
+        page = cast(Mapping[str, object], raw_page)
+        if page.get("schema") != _PAGE_CAPTURE_SCHEMA:
+            continue
+        if page.get("truncated") is not True:
+            continue
+        height = page.get("captured_height")
+        if isinstance(height, bool) or not isinstance(height, int):
+            continue
+        if height > 0:
+            truncated_height = max(truncated_height, height)
+    return truncated_height > 0, truncated_height
+
+
+def _load_redesign(root: Path) -> dict[str, Any]:
+    """Load the newest valid redesign attempt for the report tab (bounded).
+
+    Attempts are model estimates, never run evidence: the view is projected
+    defensively so malformed or oversized attempts degrade to a placeholder
+    instead of failing the report.
+    """
+
+    try:
+        selection = RedesignAttemptStore(root).newest_valid_attempt()
+    except (OSError, RuntimeError, ValueError):
+        selection = RedesignAttemptSelection(None)
+    attempt = selection.attempt
+    context: dict[str, Any] = {
+        "state": "missing",
+        "state_label": "Not generated",
+        "proposals": [],
+        "page_understanding": [],
+        "consistency_notes": [],
+        "categories": [],
+        "page_urls": [],
+        "pack_version": "",
+        "capture_truncated": False,
+        "capture_note_height": 0,
+        "placeholder_text": (
+            "No redesign attempt was generated for this experiment. "
+            "Run `uxa redesign <output>` or set UXA_REDESIGN_ENABLED=1 to "
+            "generate one after the experiment completes."
+        ),
+        "reasons": [],
+    }
+    if attempt is None:
+        if selection.skipped:
+            context["reasons"] = [
+                f"{len(selection.skipped)} newer redesign attempt(s) were corrupt "
+                "and are not shown."
+            ]
+        return context
+    state = attempt.status.value
+    context["state"] = state
+    context["state_label"] = _REDESIGN_STATE_LABELS.get(state, state)
+    context["pack_version"] = attempt.pack_version
+    if state in {"no-proposals", "unavailable", "rejected"}:
+        # Consistency notes survive these states (e.g. a rejected attempt
+        # whose critic still produced notes) and render in the placeholder.
+        context["consistency_notes"] = list(attempt.consistency_notes)
+        if state == "no-proposals":
+            context["placeholder_text"] = (
+                "The redesign pass completed but the model proposed no changes."
+            )
+        elif state == "unavailable":
+            context["placeholder_text"] = (
+                attempt.unavailable_reason
+                or "The redesign pass could not produce results."
+            )
+        else:
+            context["placeholder_text"] = (
+                "The redesign pass was rejected during validation."
+            )
+            context["reasons"] = list(attempt.rejection_reasons)
+        truncated, height = _redesign_capture_truncation(root)
+        context["capture_truncated"] = truncated
+        context["capture_note_height"] = height
+        return context
+    proposals_view = [
+        _redesign_proposal_view(proposal)
+        for proposal in sorted(
+            attempt.proposals,
+            key=lambda item: (
+                _REDESIGN_IMPACT_ORDER.get(item.impact.value, 3),
+                _REDESIGN_EFFORT_ORDER.get(item.effort.value, 3),
+                item.proposal_id,
+            ),
+        )
+    ]
+    context["proposals"] = proposals_view
+    context["page_understanding"] = [
+        {
+            "url": item.page_url,
+            "intent": item.intent,
+            "audience_inference": item.audience_inference,
+            "section_relationships": item.section_relationships,
+        }
+        for item in attempt.page_understanding
+    ]
+    context["consistency_notes"] = list(attempt.consistency_notes)
+    context["categories"] = sorted({item["category"] for item in proposals_view})
+    context["page_urls"] = sorted(
+        {item["page_url"] for item in proposals_view}
+        | {affected for item in proposals_view for affected in item["also_affects"]}
+    )
+    truncated, height = _redesign_capture_truncation(root)
+    context["capture_truncated"] = truncated
+    context["capture_note_height"] = height
+    return context
 
 
 def _load_ux_audit(root: Path) -> dict[str, Any] | None:
@@ -1442,9 +1745,7 @@ def _pagespeed_field_data(value: object) -> dict[str, Any] | None:
     metrics: dict[str, dict[str, Any]] = {}
     raw_metrics = field_data.get("metrics")
     if isinstance(raw_metrics, Mapping):
-        for metric_id, raw_metric in cast(
-            Mapping[str, object], raw_metrics
-        ).items():
+        for metric_id, raw_metric in cast(Mapping[str, object], raw_metrics).items():
             if not isinstance(raw_metric, Mapping):
                 continue
             metric = cast(Mapping[str, object], raw_metric)
@@ -1471,7 +1772,15 @@ def _opportunity_items(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for raw_item in _list_of_mappings(raw.get("items")):
         item: dict[str, Any] = {}
-        for key in ("url", "totalBytes", "wastedBytes", "wastedMs", "responseTime", "transferSize", "requestCount"):
+        for key in (
+            "url",
+            "totalBytes",
+            "wastedBytes",
+            "wastedMs",
+            "responseTime",
+            "transferSize",
+            "requestCount",
+        ):
             value = raw_item.get(key)
             if isinstance(value, str) and key == "url":
                 item[key] = value
@@ -1576,11 +1885,7 @@ def _slop_copy_block(copy: object) -> dict[str, Any]:
         "patternsTotal": copy.get("patternsTotal")
         if isinstance(copy.get("patternsTotal"), int)
         else 9,
-        "patterns": [
-            _slop_pattern_row(p)
-            for p in patterns
-            if isinstance(p, Mapping)
-        ],
+        "patterns": [_slop_pattern_row(p) for p in patterns if isinstance(p, Mapping)],
     }
 
 
@@ -1882,9 +2187,7 @@ def _fallback_element_label(run: Mapping[str, Any], element_id: str) -> str:
         for snapshot in _list_of_mappings(run.get("snapshots")):
             for element in _list_of_mappings(snapshot.get("elements")):
                 if _text(element.get("id")) == element_id:
-                    label = _text(
-                        element.get("label"), "recorded interaction target"
-                    )
+                    label = _text(element.get("label"), "recorded interaction target")
                     if "<" not in label and ">" not in label:
                         return label
                     return (
@@ -1967,7 +2270,8 @@ def _fallback_finding_copy(
         fix = f'Inspect the linked evidence for "{target}" before making a product change.'
     return {
         "title": title,
-        "issue": issue + " This statement is based on recorded evidence from the linked replay.",
+        "issue": issue
+        + " This statement is based on recorded evidence from the linked replay.",
         "impact": impact,
         "root_cause": cause,
         "fix": fix,
@@ -2025,7 +2329,9 @@ def _fallback_evidence_target(
                 "run_id": run_id,
                 "metric_id": metric_id,
                 "surface_label": _first_string(
-                    run.get("scenario_label"), run.get("scenario_id"), "Recorded website"
+                    run.get("scenario_label"),
+                    run.get("scenario_id"),
+                    "Recorded website",
                 ),
             }
 
@@ -2638,9 +2944,7 @@ def _humanize_evidence_detail(value: object) -> object:
                 result[key_text] = _humanize_evidence_detail(item)
         return _safe_value(result)
     if isinstance(value, list):
-        return [
-            _humanize_evidence_detail(item) for item in cast(list[object], value)
-        ]
+        return [_humanize_evidence_detail(item) for item in cast(list[object], value)]
     if isinstance(value, tuple):
         return [
             _humanize_evidence_detail(item) for item in cast(tuple[object, ...], value)
@@ -3156,7 +3460,13 @@ def _load_run(path: Path) -> dict[str, Any]:
     ux_sample_valid = (
         explicit_validity
         if isinstance(explicit_validity, bool)
-        else outcome in {"verified-success", "agent-abandoned", "budget-exhausted"}
+        else outcome
+        in {
+            "verified-success",
+            "agent-abandoned",
+            "budget-exhausted",
+            "verification-failed",
+        }
         and not evaluation_failure_reason
     )
     ux_sample_invalid_reason = _optional_text(result.get("ux_sample_invalid_reason"))
@@ -3253,6 +3563,7 @@ def _load_run(path: Path) -> dict[str, Any]:
         "comparison_valid": comparison_valid,
         "failure_reason": failure_reason,
         "status_class": _status_class(outcome, stage, terminal_state, trusted),
+        "status_label": _status_label(outcome, stage, terminal_state, trusted),
         "failed": not trusted or stage != "complete",
         "trusted": trusted,
         "integrity_failures": integrity_failures,
@@ -3287,6 +3598,7 @@ def _report_context(
     include_run_payload: bool = True,
     run_links: dict[str, str] | None = None,
     run_scope: frozenset[str] | None = None,
+    data_sources: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     runs: list[dict[str, Any]] = []
     for source in _list_of_mappings(experiment["runs"]):
@@ -3320,6 +3632,7 @@ def _report_context(
                     "failure_reason",
                     "comparison_valid",
                     "status_class",
+                    "status_label",
                     "failed",
                     "trusted",
                     "metrics",
@@ -3373,6 +3686,27 @@ def _report_context(
     ux_audit = ux_audit if isinstance(ux_audit, Mapping) else None
     pagespeed = experiment.get("pagespeed")
     pagespeed = pagespeed if isinstance(pagespeed, Mapping) else None
+    redesign_value = experiment.get("redesign")
+    redesign: dict[str, Any] = (
+        cast(dict[str, Any], redesign_value)
+        if isinstance(redesign_value, Mapping)
+        else {
+            "state": "missing",
+            "state_label": "Not generated",
+            "proposals": [],
+            "page_understanding": [],
+            "consistency_notes": [],
+            "categories": [],
+            "page_urls": [],
+            "pack_version": "",
+            "capture_truncated": False,
+            "capture_note_height": 0,
+            "placeholder_text": (
+                "No redesign attempt was generated for this experiment."
+            ),
+            "reasons": [],
+        }
+    )
     if synthesis.get("using_fallback"):
         runs = _project_fallback_run_findings(runs, synthesis.get("findings"))
     concise_index_fallback = (
@@ -3384,6 +3718,7 @@ def _report_context(
         "runs": runs,
         "run_rows": experiment["run_rows"],
         "comparison_rows": experiment["comparison_rows"],
+        "aggregate_exclusions": experiment["aggregate_exclusions"],
         "provider_comparisons": provider_comparisons,
         "gate_rows": experiment["gate_rows"],
         "failure_rows": failure_rows,
@@ -3398,6 +3733,7 @@ def _report_context(
         "runs": runs,
         "run_rows": experiment["run_rows"],
         "comparison_rows": experiment["comparison_rows"],
+        "aggregate_exclusions": experiment["aggregate_exclusions"],
         "provider_comparisons": provider_comparisons,
         "gate_rows": experiment["gate_rows"],
         "failure_rows": failure_rows,
@@ -3409,7 +3745,9 @@ def _report_context(
         "synthesis_status": synthesis["synthesis_status"],
         "ux_audit": ux_audit,
         "pagespeed": pagespeed,
+        "redesign": dict(redesign),
         "report_json": _safe_json(report_payload),
+        "data_sources": data_sources,
     }
 
 
@@ -3468,6 +3806,14 @@ def _render_html(context: dict[str, Any], title: str) -> str:
     index_javascript = (template_root / "static" / "report-index.js").read_text(
         encoding="utf-8"
     )
+    # Live sidecar hydration is shared by both entry points: it fetches
+    # ux-audit.json / pagespeed.json at page load so regenerating a sidecar
+    # updates the report without re-rendering report.html.
+    live_views = (template_root / "static" / "live-views.js").read_text(
+        encoding="utf-8"
+    )
+    javascript = javascript + "\n" + live_views
+    index_javascript = index_javascript + "\n" + live_views
     return template.render(
         title=title,
         css=css,
@@ -4563,12 +4909,98 @@ def _findings(result: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
     return findings, limitations
 
 
-def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _apply_experiment_run_identity(
+    runs: list[dict[str, Any]], summary: dict[str, Any]
+) -> None:
+    """Adopt the authoritative evaluated identity recorded in ``experiment.json``.
+
+    ``run_metrics`` is the evaluated, versioned record written by ``uxa
+    experiment``. A bundle's own ``result.json`` is the run's self-report; when
+    the two disagree the experiment record wins, so the comparison table, the
+    aggregate table and the record can never disagree about which scenario a
+    row belongs to.
+    """
+
+    records = {
+        _text(record.get("run_id")): record
+        for record in _list_of_mappings(summary.get("run_metrics"))
+        if _optional_text(record.get("run_id")) is not None
+    }
+    for run in runs:
+        record = records.get(run["run_id"])
+        if record is None:
+            continue
+        for key, source in (
+            ("scenario_id", "scenario_id"),
+            ("version_id", "application_version_id"),
+            ("persona_id", "persona_id"),
+            ("policy", "policy"),
+            ("prominence_provider_id", "prominence_provider_id"),
+        ):
+            value = _optional_text(record.get(source))
+            if value is not None and value != run[key]:
+                run[key] = value
+                label_key = key[: -len("_id")] + "_label" if key.endswith("_id") else ""
+                if label_key:
+                    run[label_key] = value.replace("-", " ").title()
+        if _is_number(record.get("model_trial")):
+            run["model_trial"] = int(_number(record.get("model_trial"), 0))
+        if _is_number(record.get("seed")):
+            run["seed"] = int(_number(record.get("seed"), 0))
+
+
+def _aggregate_exclusion_reason(run: dict[str, Any]) -> str | None:
+    """Explain why a run cannot contribute to the aggregate comparison table.
+
+    Returns ``None`` when the run is a valid aggregate sample. Each cause gets
+    its own wording so the reader can tell an evaluation failure from a
+    tampered bundle from a run that simply recorded no metrics.
+    """
+
+    if not run["trusted"]:
+        if run["terminal_state"] == "crashed":
+            return "bundle is not trusted: the run crashed"
+        if run["terminal_state"] == "partial":
+            return "bundle is not trusted: the run is incomplete"
+        if run["integrity_failures"]:
+            return f"bundle is not trusted: {run['integrity_failures'][0]}"
+        return "bundle is not trusted"
+    if run["stage"] == "evaluation" or run["evaluation_failure_reason"]:
+        reason = run["evaluation_failure_reason"] or run["failure_reason"]
+        return f"verification failed: {reason}" if reason else "verification failed"
+    if not run["comparison_valid"]:
+        reason = run["ux_sample_invalid_reason"] or run["failure_reason"]
+        return (
+            f"run is not a valid comparison sample: {reason}"
+            if reason
+            else "run is not a valid comparison sample"
+        )
+    if not run["metrics"]:
+        return "no comparison metrics were recorded for this run"
+    return None
+
+
+def _comparison_rows(
+    runs: tuple[dict[str, Any], ...],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     groups: dict[tuple[str, str, str, str, str, int], list[dict[str, Any]]] = (
         defaultdict(list)
     )
+    exclusions: list[dict[str, Any]] = []
     for run in runs:
         if not run["trusted"] or not run["comparison_valid"] or not run["metrics"]:
+            reason = _aggregate_exclusion_reason(run)
+            if reason is not None:
+                exclusions.append(
+                    {
+                        "run_id": run["run_id"],
+                        "scenario_id": run["scenario_id"],
+                        "scenario_label": run["scenario_label"],
+                        "version_id": run["version_id"],
+                        "version_label": run["version_label"],
+                        "reason": reason,
+                    }
+                )
             continue
         groups[
             (
@@ -4622,7 +5054,7 @@ def _comparison_rows(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 ),
             }
         )
-    return rows
+    return rows, exclusions
 
 
 def _provider_comparisons(runs: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
@@ -4902,6 +5334,7 @@ def _run_overview_rows(
                 "gate_status": gate["label"],
                 "gate_reason": gate["reason"],
                 "status_class": run["status_class"],
+                "status_label": run["status_label"],
             }
         )
     return rows
@@ -5374,6 +5807,9 @@ def _merge_failure(run: dict[str, Any], failure: dict[str, Any]) -> None:
     run["status_class"] = _status_class(
         run["outcome"], run["stage"], run["terminal_state"], run["trusted"]
     )
+    run["status_label"] = _status_label(
+        run["outcome"], run["stage"], run["terminal_state"], run["trusted"]
+    )
     for target, source in (
         ("scenario_id", "scenario_id"),
         ("version_id", "application_version_id"),
@@ -5393,6 +5829,9 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
     version_id = _text(failure.get("application_version_id"), "unknown")
     persona_id = _text(failure.get("persona_id"), "unknown")
     prominence_provider_id = _text(failure.get("prominence_provider_id"), "heuristic")
+    outcome = _text(failure.get("error_type"), "failed")
+    stage = _text(failure.get("stage"), "execution")
+    terminal_state = _text(failure.get("terminal_state"), "failed")
     return {
         "run_id": run_id,
         "bundle_path": "",
@@ -5410,11 +5849,11 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
         "persona_label": persona_id.replace("-", " ").title(),
         "policy": _text(failure.get("policy"), "unknown"),
         "prominence_provider_id": prominence_provider_id,
-        "outcome": _text(failure.get("error_type"), "failed"),
+        "outcome": outcome,
         "verified": False,
         "claimed": False,
-        "terminal_state": _text(failure.get("terminal_state"), "failed"),
-        "stage": _text(failure.get("stage"), "execution"),
+        "terminal_state": terminal_state,
+        "stage": stage,
         "terminal_reason": (
             None
             if _text(failure.get("stage"), "execution") == "evaluation"
@@ -5429,7 +5868,8 @@ def _failed_run(failure: dict[str, Any]) -> dict[str, Any]:
         "ux_sample_invalid_reason": "execution-failure",
         "comparison_valid": False,
         "failure_reason": _text(failure.get("reason"), "run failed"),
-        "status_class": "status-untrusted",
+        "status_class": _status_class(outcome, stage, terminal_state, False),
+        "status_label": _status_label(outcome, stage, terminal_state, False),
         "failed": True,
         "trusted": False,
         "integrity_failures": [],
@@ -5492,6 +5932,32 @@ def _status_class(outcome: str, stage: str, terminal_state: str, trusted: bool) 
     if outcome in {"provider-failure", "model-failure", "internal-error"}:
         return "status-error"
     return "status-terminal"
+
+
+def _status_label(outcome: str, stage: str, terminal_state: str, trusted: bool) -> str:
+    """Visible text for a run's status pill.
+
+    Derived from the same inputs as :func:`_status_class` so the colour and
+    the wording can never contradict each other: a run that failed evaluation
+    must not read as a verified success just because the raw outcome string
+    still says ``verified-success``.
+    """
+
+    if not trusted or terminal_state in {"partial", "crashed", "untrusted"}:
+        if terminal_state == "crashed":
+            return "Run crashed"
+        if terminal_state == "partial":
+            return "Run incomplete"
+        return "Untrusted run"
+    if stage == "evaluation":
+        return "Evaluation failed"
+    if outcome == "verified-success":
+        return "Verified success"
+    if outcome == "timed-out":
+        return "Timed out"
+    if outcome in {"provider-failure", "model-failure", "internal-error"}:
+        return "Execution error"
+    return outcome.replace("-", " ").strip().capitalize() or "Terminal"
 
 
 def _safe_json(value: object) -> str:

@@ -393,6 +393,7 @@ def _page_mapping(page: CrawlPage) -> dict[str, object]:
         "headings": list(page.headings),
         "normalized_url": page.normalized_url,
         "origin": page.origin,
+        "region_labels": list(page.region_labels),
         "screenshot_digest": page.screenshot_digest,
         "title": page.title,
         "url": page.url,

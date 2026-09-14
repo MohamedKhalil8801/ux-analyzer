@@ -469,16 +469,42 @@ def test_sparse_snapshot_falls_back_to_element_sampling() -> None:
     assert selection.observation.region_context is None
 
 
-def test_blank_rendered_text_is_not_selected_as_persona_visible() -> None:
-    blank = replace(_element("blank"), rendered_text="   ")
+def test_blank_rendered_text_control_is_still_persona_visible() -> None:
+    """A control with no rendered text is still perceivable and selectable.
+
+    This replaces an earlier expectation that whitespace-only ``rendered_text``
+    excluded the element from the persona-visible pool. That exclusion deleted
+    every icon-only control: a 44x44 theme toggle renders no text of its own,
+    so it could never be sampled, inspected, or reported by the agent — while
+    the verifier still evaluated the run against it. Absence of text is not
+    absence of a control.
+
+    The element is described by
+    ``PersonaVisibleElement.from_snapshot`` using only what a sighted user
+    perceives (role, bearing, size), never the author's accessible name.
+    """
+
+    blank = replace(
+        _element("blank"),
+        rendered_text="   ",
+        has_visible_graphic=True,
+        label="Switch to light theme",
+    )
     snapshot = ViewportSnapshot(id="viewport-1", elements=(blank,))
 
-    with pytest.raises(ValueError, match="no unobserved visible elements remain"):
-        ProgressiveAttentionPolicy(
-            AttentionPolicyConfig(batch_size=1)
-        ).next_observation(
-            _state(), snapshot, _scores("blank"), (), random.Random(1)
-        )
+    selection = ProgressiveAttentionPolicy(
+        AttentionPolicyConfig(batch_size=1)
+    ).next_observation(
+        _state(), snapshot, _scores("blank"), (), random.Random(1)
+    )
+
+    assert selection.selected_ids == ("blank",)
+    projected = selection.observation.newly_revealed_elements[0]
+    assert projected.label.strip() != ""
+    assert "button" in projected.label
+    assert "Switch to light theme" not in projected.label, (
+        "the author's accessible name must not reach the persona"
+    )
 
 
 @pytest.mark.parametrize("batch_size", [1, 2, 3])

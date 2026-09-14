@@ -148,24 +148,12 @@ class ProgressiveObservation:
             newly_revealed_elements=tuple(
                 PersonaVisibleElement.from_snapshot(element_by_id[element_id])
                 for element_id in newly_revealed_ids
-                if (
-                    element_by_id[element_id].visibility_fraction > 0
-                    and (
-                        element_by_id[element_id].rendered_text is None
-                        or bool(element_by_id[element_id].rendered_text.strip())
-                    )
-                )
+                if _persona_can_perceive(element_by_id[element_id])
             ),
             remembered_elements=tuple(
                 PersonaVisibleElement.from_snapshot(element_by_id[element_id])
                 for element_id in remembered_ids
-                if (
-                    element_by_id[element_id].visibility_fraction > 0
-                    and (
-                        element_by_id[element_id].rendered_text is None
-                        or bool(element_by_id[element_id].rendered_text.strip())
-                    )
-                )
+                if _persona_can_perceive(element_by_id[element_id])
             ),
             region_context=region_context,
         )
@@ -205,12 +193,47 @@ class CompleteObservation:
             newly_revealed_elements=tuple(
                 PersonaVisibleElement.from_snapshot(element)
                 for element in snapshot.elements
-                if element.visibility_fraction > 0
+                if _persona_can_perceive(element)
             ),
         )
 
 
 type PersonaObservation = ProgressiveObservation | CompleteObservation
+
+
+def _persona_can_perceive(element: ElementSnapshot) -> bool:
+    """Whether a sighted simulated user could perceive this element at all.
+
+    The rule is a strict superset of the behaviour it replaces: every element
+    the old filter admitted is still admitted, plus icon-only controls that
+    were wrongly dropped.
+
+    ``rendered_text`` is a tri-state and each branch matters:
+
+    * ``None`` — the capture did not report text at all. Treated as
+      perceivable, preserving long-standing behaviour for callers and older
+      payloads that never set the field.
+    * non-empty — the element renders text, so a sighted user reads it.
+    * ``""``/whitespace — text was measured and there is none. The element is
+      perceivable only if it paints a non-text graphic (an icon).
+
+    The icon test is what fixes the defect: a 44x44 theme toggle renders no
+    text, so the old filter silently deleted it from every observation while
+    the verifier still evaluated the run against it. It is deliberately
+    geometric (``has_visible_graphic`` comes from rendered bounds with a
+    minimum perceptible size), so no markup attribute or accessible name can
+    make an invisible control appear — a button whose only child is
+    ``sr-only`` or fully clipped paints nothing and stays hidden, which is the
+    same guard that keeps hidden labels out of the persona's view.
+    """
+
+    if element.visibility_fraction <= 0:
+        return False
+    if element.rendered_text is None:
+        return True
+    if element.rendered_text.strip():
+        return True
+    return element.has_visible_graphic is True
 
 
 @dataclass(frozen=True, slots=True)

@@ -161,6 +161,21 @@ class RecordingClient:
                 return str(visible[0]), None
             return f"Visible result {self.calls}", None
 
+        def _pack_target_label(page: dict[str, Any], fallback: str) -> str:
+            """Anchor the evaluation target in the same evidence the model saw.
+
+            A real model picks a label the crawl rendered; an invented label
+            can only fail at evaluation time and is rejected at synthesis time.
+            """
+
+            headings = page.get("headings") or []
+            visible = page.get("visible_elements") or []
+            if headings:
+                return str(headings[0])
+            if visible:
+                return str(visible[0])
+            return fallback
+
         scenarios = []
         for i in range(min(len(urls), max_s)):
             page = next(
@@ -169,8 +184,10 @@ class RecordingClient:
             )
             if page is None:
                 anchor, anchor_role = f"Visible result {i + 1}", None
+                target_label = f"Visible result {i + 1}"
             else:
                 anchor, anchor_role = _pack_anchor(page)
+                target_label = _pack_target_label(page, anchor)
             scenarios.append(
                 {
                     "id": f"scenario-{i + 1}",
@@ -183,7 +200,7 @@ class RecordingClient:
                         "role": anchor_role,
                     },
                     "evaluation_target": {
-                        "label": f"Target {i + 1}",
+                        "label": target_label,
                         "role": "heading",
                     },
                     "rationale": f"Rationale {i + 1} covering discovery",
@@ -199,8 +216,10 @@ class RecordingClient:
             )
             if page is None:
                 anchor, anchor_role = f"Visible result {idx}", None
+                target_label = f"Visible result {idx}"
             else:
                 anchor, anchor_role = _pack_anchor(page)
+                target_label = _pack_target_label(page, anchor)
             scenarios.append(
                 {
                     "id": f"scenario-{idx}",
@@ -212,7 +231,7 @@ class RecordingClient:
                         "text": anchor,
                         "role": anchor_role,
                     },
-                    "evaluation_target": {"label": f"Target {idx}"},
+                    "evaluation_target": {"label": target_label},
                     "rationale": f"Rationale {idx}",
                     "coverage": ["navigation"],
                 }

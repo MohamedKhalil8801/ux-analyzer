@@ -115,6 +115,15 @@ class ObservationCapture:
     # verifiers that need to look beyond the current viewport use it as a
     # "page text" fallback when the viewport snapshot alone does not match.
     page_text: str | None = None
+    # Perceivable colour signals sampled at capture time, as opaque CSS colour
+    # strings (typically ``rgb(r, g, b)``). They exist so an opt-in verifier can
+    # confirm a *visual state change* (e.g. a light/dark theme flip) that
+    # produces no new persona-visible text. Optional so existing tests / fakes
+    # can leave them unset; a verifier that needs them treats ``None`` as
+    # "signal unavailable" rather than as a value.
+    document_background: str | None = None
+    body_background: str | None = None
+    viewport_background: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

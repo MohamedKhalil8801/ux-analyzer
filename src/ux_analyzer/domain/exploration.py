@@ -70,6 +70,7 @@ _CORPUS_PAGE_FIELDS = (
     "headings",
     "normalized_url",
     "origin",
+    "region_labels",
     "screenshot_digest",
     "title",
     "url",
@@ -87,6 +88,7 @@ def _corpus_page_payload(page: CrawlPage) -> dict[str, object]:
         "headings": list(page.headings),
         "normalized_url": page.normalized_url,
         "origin": page.origin,
+        "region_labels": list(page.region_labels),
         "screenshot_digest": page.screenshot_digest,
         "title": page.title,
         "url": page.url,
@@ -245,6 +247,7 @@ class CrawlPage:
     screenshot_digest: str | None = None
     discovered_links: tuple[str, ...] = ()
     visible_elements: tuple[str, ...] = ()
+    region_labels: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # url validation
@@ -302,6 +305,14 @@ class CrawlPage:
             if type(ve) is not str or not ve.strip():
                 raise ValueError("visible element label must not be empty")
         object.__setattr__(self, "visible_elements", vels)
+        # region_labels (captured region names, bounded like headings)
+        if isinstance(self.region_labels, (str, bytes)):
+            raise TypeError("region_labels must be a collection of strings")
+        regions = tuple(self.region_labels)  # type: ignore[arg-type]
+        for region in regions:
+            if type(region) is not str:
+                raise TypeError("region label must be a string")
+        object.__setattr__(self, "region_labels", regions)
 
 
 @dataclass(frozen=True, slots=True)

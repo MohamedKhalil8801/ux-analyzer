@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Literal
 
 from ux_analyzer.domain.attention import (
@@ -32,12 +34,25 @@ class VerificationResult:
     verified: bool
     evidence_ids: tuple[str, ...] = ()
     details: str | None = None
+    #: Audit trail for a perceivable-state-change decision: the observed colour
+    #: signals before and after the action. ``None`` for verifiers that do not
+    #: use a baseline (e.g. text matching or fixture state).
+    before_state: Mapping[str, object] | None = None
+    after_state: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         evidence_ids = tuple(self.evidence_ids)
         if len(evidence_ids) != len(set(evidence_ids)):
             raise ValueError("verification contains duplicate evidence ID")
         object.__setattr__(self, "evidence_ids", evidence_ids)
+        if self.before_state is not None:
+            object.__setattr__(
+                self, "before_state", MappingProxyType(dict(self.before_state))
+            )
+        if self.after_state is not None:
+            object.__setattr__(
+                self, "after_state", MappingProxyType(dict(self.after_state))
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +130,7 @@ class RunOutcomeKind(StrEnum):
     VERIFIED_SUCCESS = "verified-success"
     AGENT_ABANDONED = "agent-abandoned"
     BUDGET_EXHAUSTED = "budget-exhausted"
+    VERIFICATION_FAILED = "verification-failed"
     TIMED_OUT = "timed-out"
     PROVIDER_FAILURE = "provider-failure"
     MODEL_FAILURE = "model-failure"
@@ -131,6 +147,7 @@ class RunEventKind(StrEnum):
     ACTION_PROPOSED = "action-proposed"
     ACTION_EXECUTED = "action-executed"
     VERIFICATION_RECORDED = "verification-recorded"
+    AGENT_CLAIM_CONTRADICTED = "agent-claim-contradicted"
     RUN_TERMINATED = "run-terminated"
 
 
@@ -148,6 +165,19 @@ class AgentAbandoned:
 @dataclass(frozen=True, slots=True)
 class BudgetExhausted:
     kind: Literal["budget-exhausted"] = "budget-exhausted"
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationFailed:
+    """Terminal state for a run stopped because verification kept failing.
+
+    Deliberately distinct from :class:`BudgetExhausted` so a reader can tell
+    "we tried, verification kept failing, we stopped" apart from "we ran out
+    of budget while still working".
+    """
+
+    kind: Literal["verification-failed"] = "verification-failed"
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +213,7 @@ type RunOutcome = (
     VerifiedSuccess
     | AgentAbandoned
     | BudgetExhausted
+    | VerificationFailed
     | TimedOut
     | ProviderFailure
     | ModelFailure
