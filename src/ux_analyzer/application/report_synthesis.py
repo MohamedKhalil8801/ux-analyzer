@@ -582,6 +582,7 @@ _DIAGNOSTIC_SCHEMA_FIELDS = frozenset(
         "reproducibility",
         "severity_justification",
         "reviewer_notes",
+        "finding_kind",
         "objection_id",
         "objection_type",
         "message",
@@ -1990,6 +1991,10 @@ class ReportSynthesisService:
                     f"Final finding {model.finding_id} failed deterministic publication validation: {self._safe_validation_reason(error)}."
                 )
                 continue
+            # The analyst owns the finding's kind. The adjudicator rewrites prose
+            # and severity but must not reclassify a product issue as a scenario
+            # defect or the reverse, so inherit the reviewed classification.
+            finding = replace(finding, finding_kind=reviewed.finding_kind)
             if not final_finding_preserves_candidate(
                 finding,
                 reviewed,
