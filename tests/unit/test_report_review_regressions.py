@@ -233,7 +233,11 @@ def test_synthesized_scenario_region_label_must_exist_in_corpus() -> None:
     from ux_analyzer.application.exploration_synthesizer import (
         _evaluation_target_region_supported,
     )
-    from ux_analyzer.domain.exploration import CrawlCorpus, CrawlPage, normalize_crawl_url
+    from ux_analyzer.domain.exploration import (
+        CrawlCorpus,
+        CrawlPage,
+        normalize_crawl_url,
+    )
 
     page = CrawlPage(
         url="https://example.test/",
@@ -266,7 +270,11 @@ def test_synthesized_scenario_labels_must_exist_in_corpus() -> None:
     from ux_analyzer.application.exploration_synthesizer import (
         _evaluation_target_label_supported,
     )
-    from ux_analyzer.domain.exploration import CrawlCorpus, CrawlPage, normalize_crawl_url
+    from ux_analyzer.domain.exploration import (
+        CrawlCorpus,
+        CrawlPage,
+        normalize_crawl_url,
+    )
 
     page = CrawlPage(
         url="https://example.test/",
@@ -299,7 +307,11 @@ def test_curated_scenario_with_unsupported_region_is_reported() -> None:
     from typing import Any
 
     from ux_analyzer.application.exploration_synthesizer import ExplorationSynthesizer
-    from ux_analyzer.domain.exploration import CrawlCorpus, CrawlPage, normalize_crawl_url
+    from ux_analyzer.domain.exploration import (
+        CrawlCorpus,
+        CrawlPage,
+        normalize_crawl_url,
+    )
     from ux_analyzer.ports.models import ChatMessage
 
     page = CrawlPage(
@@ -387,8 +399,8 @@ def test_inverted_emphasis_names_the_larger_element_as_primary() -> None:
     every hit, and the report calls the headline the supporting text.
     """
 
-    from ux_analyzer.analysis.visual.hierarchy import analyze_hierarchy
     from tests.unit.analysis.visual.test_hierarchy import _node, _snap
+    from ux_analyzer.analysis.visual.hierarchy import analyze_hierarchy
 
     nodes = [_node(0, -1, 0, "section")]
     nodes.append(
@@ -441,8 +453,8 @@ def test_inverted_emphasis_does_not_fire_on_display_title_and_eyebrow() -> None:
     ``span``, so the guard never sees a heading tag.
     """
 
-    from ux_analyzer.analysis.visual.hierarchy import analyze_hierarchy
     from tests.unit.analysis.visual.test_hierarchy import _node, _snap
+    from ux_analyzer.analysis.visual.hierarchy import analyze_hierarchy
 
     nodes = [_node(0, -1, 0, "section")]
     nodes.append(

@@ -222,7 +222,6 @@ def test_private_execution_reference_is_not_serialized_to_agent() -> None:
 def test_persona_projection_uses_rendered_text_without_aria_fallback() -> None:
     aria_only = element_snapshot(noticed_label="Switch dark theme")
     aria_only = replace(aria_only, rendered_text="")
-    synthetic = element_snapshot(noticed_label="Synthetic label")
 
     # An empty rendered_text means the control renders no text of its own (an
     # icon-only button). The accessible name must NOT be projected: it exists

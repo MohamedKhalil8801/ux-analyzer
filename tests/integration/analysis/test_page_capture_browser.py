@@ -244,7 +244,6 @@ def test_capture_includes_description_list_group_titles() -> None:
     from starlette.routing import Route
 
     from tests.e2e.test_demo_benchmark import _free_port
-
     from ux_analyzer.analysis.page_capture import capture_page
 
     skills_html = """<!doctype html>

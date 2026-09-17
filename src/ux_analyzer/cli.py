@@ -1906,7 +1906,7 @@ async def _explore_run_crawler(
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(headless=True, args=["--allow-insecure-localhost"])
         try:
             context = await browser.new_context()
             page = await context.new_page()
@@ -3561,7 +3561,7 @@ async def _execute_matrix(
 
     origin = _fixture_origin(fixture_origin)
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=True, args=["--allow-insecure-localhost"])
         client_http = httpx.AsyncClient(timeout=settings.timeout_seconds)
         fixture_http = httpx.AsyncClient(timeout=30.0)
         model_call_limiter = asyncio.Semaphore(settings.max_concurrent_calls)

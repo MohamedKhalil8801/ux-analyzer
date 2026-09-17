@@ -183,7 +183,7 @@ def extract_snapshot(
         else source
     )
     with sync_playwright() as p:
-        b = p.chromium.launch()
+        b = p.chromium.launch(args=["--allow-insecure-localhost"])
         ctx = b.new_context(
             viewport={"width": viewport_width, "height": viewport_height},
             user_agent=_SLOP_UA,

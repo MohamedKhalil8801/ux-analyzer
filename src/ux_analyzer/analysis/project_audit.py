@@ -183,7 +183,7 @@ async def _visual_analyze(url: str) -> list[Any]:
             from PIL import Image, ImageDraw
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
-                browser = p.chromium.launch()
+                browser = p.chromium.launch(args=["--allow-insecure-localhost"])
                 ctx = browser.new_context(
                     viewport={"width": 1280, "height": 800},
                     device_scale_factor=1,

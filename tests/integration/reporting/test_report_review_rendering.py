@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 
 from tests.integration.reporting.test_renderer import _write_json, _write_run
-
 from ux_analyzer.reporting.renderer import render_experiment_report
 
 # ---------------------------------------------------------------------------

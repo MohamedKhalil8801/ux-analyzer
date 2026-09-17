@@ -603,8 +603,12 @@ class _FakeChromium:
         self._urls = urls
         self._bodies = bodies
         self._browser: _FakeBrowser | None = None
+        self.launch_args: tuple[object, ...] = ()
 
-    def launch(self) -> _FakeBrowser:
+    # Playwright passes launch kwargs (e.g. --allow-insecure-localhost args);
+    # the double only records them so tests can assert the launch request.
+    def launch(self, *args: object, **kwargs: object) -> _FakeBrowser:
+        self.launch_args = args
         self._browser = _FakeBrowser(self._urls, self._bodies)
         return self._browser
 
@@ -1050,7 +1054,9 @@ class TestSavedScoreExtraction:
                 self.closed = True
 
         class _Chromium:
-            def launch(self) -> _Browser:
+            # Playwright passes launch kwargs (e.g. --allow-insecure-localhost
+            # args); the double ignores them.
+            def launch(self, *args: object, **kwargs: object) -> _Browser:
                 return _Browser()
 
         class _Playwright:

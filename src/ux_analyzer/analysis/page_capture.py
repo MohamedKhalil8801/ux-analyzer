@@ -719,7 +719,7 @@ def run_capture_with_own_session(
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(args=["--allow-insecure-localhost"])
         try:
             from playwright.sync_api import ViewportSize as _ViewportSize
 
@@ -778,7 +778,7 @@ def run_scroll_capture_with_own_session(
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(args=["--allow-insecure-localhost"])
         try:
             from playwright.sync_api import ViewportSize as _ViewportSize
 

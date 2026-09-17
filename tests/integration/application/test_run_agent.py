@@ -4791,10 +4791,8 @@ async def test_colour_change_verifier_is_constructible_without_baseline() -> Non
     baseline; the requirement is enforced at ``verify()`` time instead.
     """
 
-    from ux_analyzer.ports.observation import ObservationCapture
-    from ux_analyzer.adapters.web.verifier import WebVerifier
-    from ux_analyzer.adapters.web.verifier import WebVerificationError
-    from ux_analyzer.ports.observation import ViewportSize
+    from ux_analyzer.adapters.web.verifier import WebVerificationError, WebVerifier
+    from ux_analyzer.ports.observation import ObservationCapture, ViewportSize
 
     def _colour_capture(*, background: str) -> ObservationCapture:
         snapshot = _snapshot()

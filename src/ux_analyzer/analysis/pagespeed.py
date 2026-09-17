@@ -193,7 +193,7 @@ def resolve_pagespeed_web_saved_link(
     start_link = pagespeed_web_url(url)
     deadline = time.monotonic() + max(1.0, timeout_seconds)
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(args=["--allow-insecure-localhost"])
         try:
             context = browser.new_context()
             page = context.new_page()
@@ -288,7 +288,7 @@ def extract_pagespeed_web_saved_scores(
 
     deadline = time.monotonic() + max(1.0, timeout_seconds)
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(args=["--allow-insecure-localhost"])
         try:
             page = browser.new_context().new_page()
             try:
