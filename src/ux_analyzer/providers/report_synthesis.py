@@ -2614,7 +2614,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v8"
+    prompt_version = "report-analyst-v9"
     response_schema = AnalystResponse
 
     @property
@@ -2631,8 +2631,27 @@ class ReportAnalyst(_ReportRole):
             "behavior or outcome evidence. A verified completion does not prove the "
             "interface was easy to use. Before concluding that no material issue was "
             "established, inspect behavior and outcome metrics across every run, "
-            "including wrong actions, discovery rank and cost, feedback, ambiguity, "
-            "hierarchy, and below-fold signals. On the first round, start with the "
+            "hierarchy, and below-fold signals. Beyond those signals, look for "
+            "run-level friction that page-level or visual review cannot see: steps the "
+            "recorded action sequence repeats, backtracks through, or takes without "
+            "advancing the goal, so a shorter path exists; related options, controls, "
+            "or states a persona would expect together that the recorded path had to "
+            "hunt for across regions, pages, or viewports; and behavior that deviates "
+            "from the frozen expectation's reference path without offering a clearer "
+            "alternate route. Name every redundant, missing, or misplaced step from "
+            "the recorded sequence, never from intuition. "
+            "Judge the scenario itself as well as the product. Set finding_kind to "
+            "scenario-defect when the recorded run shows the scenario specification "
+            "is at fault rather than the interface: the goal is ambiguous or "
+            "contradicts the verifier, the declared start state or fixture input is "
+            "missing, the verifier text or role cannot occur on any reachable page, "
+            "the named target does not exist or is outside the configured origins, "
+            "or the budget cannot cover the steps the goal requires. A "
+            "scenario-defect finding still needs delivered evidence and a concrete "
+            "fix, but its fix corrects the scenario specification and its "
+            "severity_justification describes the run's validity rather than product "
+            "harm. Use finding_kind ux-issue for every product problem. Never report "
+            "the same observation under both kinds. On the first round, start with the "
             "recommended_first_pass_handles when present. On the second round, request "
             "recommended_second_pass_handles when present; they pair a friction run's "
             "first interaction with its page and selected element. Do not request both "
@@ -2773,7 +2792,7 @@ class ReportAdjudicator(_ReportRole):
     """Resolve reviewer objections and write plain-language final findings."""
 
     role = ModelRole.REPORT_ADJUDICATOR
-    prompt_version = "report-adjudicator-v4"
+    prompt_version = "report-adjudicator-v5"
     response_schema = AdjudicationResponse
 
     @property
@@ -2783,7 +2802,9 @@ class ReportAdjudicator(_ReportRole):
             "findings. Consolidate repeated findings only when their shared root cause "
             "and affected surfaces are supported. Publish only findings with supported "
             "evidence, concrete fixes, justified severity, and explicit resolutions for "
-            "every objection."
+            "every objection. Preserve each finding's finding_kind exactly as the "
+            "analyst set it, and keep a scenario-defect finding's fix aimed at the "
+            "scenario specification rather than the interface."
         )
 
     async def adjudicate(

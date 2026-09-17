@@ -21,6 +21,7 @@ from ux_analyzer.application.report_synthesis import (
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
+    FindingKind,
     ObjectionSeverity,
     SynthesisStatus,
 )
@@ -2063,3 +2064,23 @@ async def test_no_issues_requires_valid_completion_provenance_for_every_role(
     assert attempt.status is SynthesisStatus.REJECTED
     assert not attempt.findings
     assert any("completion receipts" in item for item in attempt.limitations)
+
+
+@pytest.mark.asyncio
+async def test_adjudicator_cannot_reclassify_a_scenario_defect(tmp_path: Path) -> None:
+    """The analyst owns the classification, so a scenario defect that the
+    adjudicator rewrites as a product issue still publishes as a defect."""
+
+    candidate = _candidate().model_copy(
+        update={"finding_kind": FindingKind.SCENARIO_DEFECT}
+    )
+    drifted = candidate.model_copy(update={"finding_kind": FindingKind.UX_ISSUE})
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[drifted])],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert attempt.findings[0].finding_kind is FindingKind.SCENARIO_DEFECT
