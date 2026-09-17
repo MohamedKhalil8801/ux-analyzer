@@ -39,6 +39,18 @@
 {% set synthesis_status = synthesis.synthesis_status | default("missing") %}
 {% set using_fallback = synthesis.using_fallback if synthesis.using_fallback is defined else true %}
 {% set tested_scope = synthesis.tested_scope if synthesis.tested_scope is defined else {} %}
+{# Findings blame either the product (ux-issue) or the scenario spec
+   (scenario-defect). Keep them apart so a broken test never reads as a product
+   defect, and so Fix first only lists real product work. #}
+{% set ux_findings = [] %}
+{% set scenario_findings = [] %}
+{% for finding in synthesis.findings %}
+  {% if finding.get("finding_kind", "ux-issue") == "scenario-defect" %}
+    {% set _ = scenario_findings.append(finding) %}
+  {% else %}
+    {% set _ = ux_findings.append(finding) %}
+  {% endif %}
+{% endfor %}
     <p id="evidence-context" class="evidence-context" role="status" hidden></p>
 
     <nav class="view-rail" aria-label="Report sections">
@@ -104,7 +116,7 @@
       >
         <header class="finding-header">
           <div>
-            <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }} priority</span>
+            <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }}{% if finding.get("finding_kind") == "scenario-defect" %} severity{% else %} priority{% endif %}</span>
             <h3>{{ finding.title }}</h3>
           </div>
           <span class="confidence-label">{{ confidence_label(finding.confidence) }}</span>
@@ -254,6 +266,9 @@
           {% else %}
           <span class="dash-card-line empty">No findings recorded.</span>
           {% endfor %}
+          {% if not using_fallback and scenario_findings %}
+          <span class="dash-card-line">{{ scenario_findings | length }} scenario problem{{ "s" if scenario_findings | length != 1 }} detected.</span>
+          {% endif %}
           <span class="dash-card-cta">{{ "Review signals" if using_fallback else "Review findings" }}</span>
         </a>
         {% if ux_audit %}
@@ -812,7 +827,7 @@
         <div>
           <h2 id="priority-findings-title">{{ "Recorded signals requiring manual review" if using_fallback else "Priority findings" }}</h2>
         </div>
-        <span class="finding-count">{{ synthesis.findings | length }} {{ "recorded" if using_fallback else "accepted" }}</span>
+        <span class="finding-count">{{ ux_findings | length }} {{ "recorded" if using_fallback else "accepted" }}{% if scenario_findings %} + {{ scenario_findings | length }} scenario{% endif %}</span>
       </div>
       {% if synthesis.findings %}
         {% if using_fallback %}
@@ -922,10 +937,23 @@
           </details>
         {% else %}
           {% for severity in ("critical", "high", "medium", "low") %}
-            {% for finding in synthesis.findings if finding.severity == severity %}
+            {% for finding in ux_findings if finding.severity == severity %}
               {{ render_finding(finding) }}
             {% endfor %}
           {% endfor %}
+          {% if scenario_findings %}
+          <div class="scenario-defect-group" data-scenario-defects="true">
+            <h3 class="scenario-defect-title">Scenario problems</h3>
+            <p class="scenario-defect-lede">
+              These runs failed or stalled because the scenario specification is at
+              fault, not the interface. Correct the test before reading the run as a
+              product signal.
+            </p>
+            {% for finding in scenario_findings %}
+              {{ render_finding(finding) }}
+            {% endfor %}
+          </div>
+          {% endif %}
         {% endif %}
       {% else %}
       <p class="empty-conclusion">
@@ -949,10 +977,10 @@
           <h2 id="fix-first-title">{{ "Check first" if using_fallback else "Fix first" }}</h2>
         </div>
       </div>
-      {% if synthesis.findings and not using_fallback %}
+      {% if ux_findings and not using_fallback %}
       <ol class="fix-first-list">
         {% for severity in ("critical", "high", "medium", "low") %}
-          {% for finding in synthesis.findings if finding.severity == severity %}
+          {% for finding in ux_findings if finding.severity == severity %}
           <li>
             <a href="#finding-{{ finding.finding_id }}">
               <span class="severity-label severity-{{ finding.severity }}">{{ finding.severity | title }}</span>

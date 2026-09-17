@@ -506,8 +506,9 @@ def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any
         viewport = url_report.get("viewport")
         environment: dict[str, Any] = {}
         if isinstance(viewport, Mapping):
-            width = viewport.get("width")
-            height = viewport.get("height")
+            viewport_map = cast(Mapping[str, object], viewport)
+            width = viewport_map.get("width")
+            height = viewport_map.get("height")
             if isinstance(width, int) and isinstance(height, int):
                 environment["Viewport"] = f"{width}x{height}"
         theme = _text(url_report.get("theme"))
@@ -960,9 +961,10 @@ def _redesign_findings(root: Path, used: set[str]) -> list[dict[str, Any]]:
         if principle_ids:
             detail["Related principles"] = principle_ids
         if isinstance(deliberate, Mapping):
+            deliberate_map = cast(Mapping[str, object], deliberate)
             detail["Deliberate choice"] = {
-                "Pattern": _text(deliberate.get("pattern")),
-                "Rationale": _text(deliberate.get("rationale")),
+                "Pattern": _text(deliberate_map.get("pattern")),
+                "Rationale": _text(deliberate_map.get("rationale")),
             }
         affected = [page_url]
         affected.extend(_strings(proposal.get("also_affects")))
@@ -1066,12 +1068,10 @@ def _render_pagespeed_saved_html(pagespeed: dict[str, Any]) -> str:
         undefined=StrictUndefined,
     )
     template = environment.get_template("pagespeed_saved.html.j2")
-    context_pagespeed = cast(dict[str, Any], dict(pagespeed))
+    context_pagespeed = dict(pagespeed)
     projected_urls: list[dict[str, Any]] = []
-    for raw_url_report in cast(list[object], context_pagespeed["url_reports"]):
-        if not isinstance(raw_url_report, Mapping):
-            continue
-        url_report = cast(dict[str, Any], dict(raw_url_report))
+    for raw_url_report in _list_of_mappings(context_pagespeed.get("url_reports")):
+        url_report = dict(raw_url_report)
         strategies_raw = url_report.get("strategies")
         strategies: dict[str, Any] = {}
         if isinstance(strategies_raw, Mapping):
@@ -1080,7 +1080,7 @@ def _render_pagespeed_saved_html(pagespeed: dict[str, Any]) -> str:
             ).items():
                 if not isinstance(raw_strategy, Mapping):
                     continue
-                strategy = cast(dict[str, Any], dict(raw_strategy))
+                strategy = dict(cast(Mapping[str, object], raw_strategy))
                 strategy["core_metrics"] = _pagespeed_core_metrics(
                     cast(Mapping[str, Any], raw_strategy)
                 )
@@ -1480,37 +1480,38 @@ def _load_ux_audit(root: Path) -> dict[str, Any] | None:
         # downstream consumers can reproduce measurements per URL.
         raw_viewport = report.get("viewport")
         if isinstance(raw_viewport, Mapping):
-            width = raw_viewport.get("width")
-            height = raw_viewport.get("height")
+            viewport_map = cast(Mapping[str, object], raw_viewport)
+            width = viewport_map.get("width")
+            height = viewport_map.get("height")
             if isinstance(width, int) and isinstance(height, int):
                 url_entry["viewport"] = {"width": width, "height": height}
         raw_theme = report.get("theme")
         if isinstance(raw_theme, str) and raw_theme in {"light", "dark"}:
             url_entry["theme"] = raw_theme
         if isinstance(slop, Mapping):
-            score = slop.get("score")
+            slop_map = cast(Mapping[str, object], slop)
+            score = slop_map.get("score")
             if isinstance(score, int) and 0 <= score <= 100:
                 url_entry["slop"] = {
                     "score": score,
-                    "tier": _text(slop.get("tier"), "Clean"),
-                    "grade": _text(slop.get("grade"), "F"),
-                    "verdict": _text(slop.get("verdict")),
-                    "patternsFlagged": slop.get("patternsFlagged")
-                    if isinstance(slop.get("patternsFlagged"), int)
+                    "tier": _text(slop_map.get("tier"), "Clean"),
+                    "grade": _text(slop_map.get("grade"), "F"),
+                    "verdict": _text(slop_map.get("verdict")),
+                    "patternsFlagged": slop_map.get("patternsFlagged")
+                    if isinstance(slop_map.get("patternsFlagged"), int)
                     else 0,
-                    "patternsTotal": slop.get("patternsTotal")
-                    if isinstance(slop.get("patternsTotal"), int)
+                    "patternsTotal": slop_map.get("patternsTotal")
+                    if isinstance(slop_map.get("patternsTotal"), int)
                     else 27,
                     "patterns": [
                         _slop_pattern_row(p)
-                        for p in slop.get("patterns", [])
-                        if isinstance(p, Mapping)
+                        for p in _list_of_mappings(slop_map.get("patterns"))
                     ],
-                    "copy": _slop_copy_block(slop.get("copy")),
-                    "unifiedScore": slop.get("unifiedScore")
-                    if isinstance(slop.get("unifiedScore"), int)
+                    "copy": _slop_copy_block(slop_map.get("copy")),
+                    "unifiedScore": slop_map.get("unifiedScore")
+                    if isinstance(slop_map.get("unifiedScore"), int)
                     else None,
-                    "unifiedTier": _text(slop.get("unifiedTier"), ""),
+                    "unifiedTier": _text(slop_map.get("unifiedTier"), ""),
                 }
         url_reports.append(url_entry)
     if not url_reports:
@@ -1544,10 +1545,8 @@ def _pagespeed_saved_scores(value: object) -> dict[str, int]:
     if not isinstance(value, Mapping):
         return {}
     scores: dict[str, int] = {}
-    for strategy, score in value.items():
-        if not isinstance(strategy, str) or not strategy:
-            continue
-        if isinstance(score, bool) or not isinstance(score, int):
+    for strategy, score in cast(Mapping[str, object], value).items():
+        if not strategy or not isinstance(score, int) or isinstance(score, bool):
             continue
         if 0 <= score <= 100:
             scores[strategy] = score
@@ -1603,16 +1602,16 @@ def _load_pagespeed(root: Path) -> dict[str, Any] | None:
         }
         raw_strategies = report.get("strategies")
         if isinstance(raw_strategies, Mapping):
-            for strategy_name, raw_entry in cast(
-                Mapping[str, object], raw_strategies
+            for raw_name, raw_entry in cast(
+                Mapping[object, object], raw_strategies
             ).items():
-                if not isinstance(raw_entry, Mapping) or not isinstance(
-                    strategy_name, str
-                ):
+                if not isinstance(raw_name, str) or not isinstance(raw_entry, Mapping):
                     continue
-                strategy_entry = _pagespeed_strategy_entry(strategy_name, raw_entry)
+                strategy_entry = _pagespeed_strategy_entry(
+                    raw_name, cast(Mapping[str, object], raw_entry)
+                )
                 if strategy_entry is not None:
-                    url_entry["strategies"][strategy_name] = strategy_entry
+                    url_entry["strategies"][raw_name] = strategy_entry
         url_reports.append(url_entry)
     if not url_reports:
         return None
@@ -1680,24 +1679,14 @@ def _pagespeed_strategy_entry(
     }
     if isinstance(audits_raw, Mapping):
         audit_mapping = cast(Mapping[str, object], audits_raw)
-        for bucket in (
-            "failed",
-            "passed",
-            "not_applicable",
-            "manual",
-            "informative",
-            "error",
-        ):
-            rows = [
-                _pagespeed_audit_row(audit)
-                for audit in _list_of_mappings(audit_mapping.get(bucket))
-            ]
-            rows = [row for row in rows if row is not None]
-            audits[bucket] = rows
         totals_raw = audit_mapping.get("totals")
+        totals: dict[str, Any] = {}
         if isinstance(totals_raw, Mapping):
-            audits["totals"] = {
-                bucket: _pagespeed_int(totals_raw.get(bucket), len(audits[bucket]))
+            totals_mapping = cast(Mapping[str, object], totals_raw)
+            totals = {
+                bucket: _pagespeed_int(
+                    totals_mapping.get(bucket), len(audits[str(bucket)] or ())
+                )
                 for bucket in (
                     "failed",
                     "passed",
@@ -1707,6 +1696,21 @@ def _pagespeed_strategy_entry(
                     "error",
                 )
             }
+        for bucket in (
+            "failed",
+            "passed",
+            "not_applicable",
+            "manual",
+            "informative",
+            "error",
+        ):
+            audit_rows = (
+                _pagespeed_audit_row(audit)
+                for audit in _list_of_mappings(audit_mapping.get(bucket))
+            )
+            audits[str(bucket)] = [row for row in audit_rows if row is not None]
+        if totals:
+            audits["totals"] = totals
     opportunities = [
         _pagespeed_opportunity_row(opportunity)
         for opportunity in _list_of_mappings(raw.get("opportunities"))
@@ -1874,18 +1878,22 @@ def _slop_pattern_row(p: Mapping[str, Any]) -> dict[str, Any]:
 def _slop_copy_block(copy: object) -> dict[str, Any]:
     if not isinstance(copy, Mapping):
         return {}
-    patterns = copy.get("patterns")
+    copy_map = cast(Mapping[str, object], copy)
     return {
-        "score": copy.get("score") if isinstance(copy.get("score"), int) else None,
-        "tier": _text(copy.get("tier")),
-        "grade": _text(copy.get("grade")),
-        "patternsFlagged": copy.get("patternsFlagged")
-        if isinstance(copy.get("patternsFlagged"), int)
+        "score": copy_map.get("score")
+        if isinstance(copy_map.get("score"), int)
+        else None,
+        "tier": _text(copy_map.get("tier")),
+        "grade": _text(copy_map.get("grade")),
+        "patternsFlagged": copy_map.get("patternsFlagged")
+        if isinstance(copy_map.get("patternsFlagged"), int)
         else 0,
-        "patternsTotal": copy.get("patternsTotal")
-        if isinstance(copy.get("patternsTotal"), int)
+        "patternsTotal": copy_map.get("patternsTotal")
+        if isinstance(copy_map.get("patternsTotal"), int)
         else 9,
-        "patterns": [_slop_pattern_row(p) for p in patterns if isinstance(p, Mapping)],
+        "patterns": [
+            _slop_pattern_row(p) for p in _list_of_mappings(copy_map.get("patterns"))
+        ],
     }
 
 
@@ -2696,6 +2704,7 @@ def _synthesis_findings(
                 "reproducibility": _synthesis_enum_text(finding.reproducibility),
                 "severity_justification": finding.severity_justification,
                 "reviewer_notes": list(finding.reviewer_notes),
+                "finding_kind": _synthesis_enum_text(finding.finding_kind),
             }
         )
     return result
@@ -3683,9 +3692,9 @@ def _report_context(
         run_scope=run_scope,
     )
     ux_audit = experiment.get("ux_audit")
-    ux_audit = ux_audit if isinstance(ux_audit, Mapping) else None
+    ux_audit = cast(Mapping[str, Any], ux_audit) if isinstance(ux_audit, Mapping) else None
     pagespeed = experiment.get("pagespeed")
-    pagespeed = pagespeed if isinstance(pagespeed, Mapping) else None
+    pagespeed = cast(Mapping[str, Any], pagespeed) if isinstance(pagespeed, Mapping) else None
     redesign_value = experiment.get("redesign")
     redesign: dict[str, Any] = (
         cast(dict[str, Any], redesign_value)

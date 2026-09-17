@@ -4559,3 +4559,61 @@ async def test_report_browser_workspace_replays_and_inspects_without_network(
         await browser.close()
 
     assert not external_requests
+
+
+def test_renderer_separates_scenario_defects_from_product_findings(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    findings = (
+        SynthesisFinding(
+            finding_id="ux-navigation",
+            title="Account settings are hard to find",
+            issue="The persona searched unrelated areas before finding the setting.",
+            impact="Account protection takes longer to reach.",
+            root_cause="Labels describe internal structure instead of the task.",
+            fixes=("Rename the entry point around the user goal.",),
+            severity="high",
+            confidence=0.9,
+            evidence_refs=(_synthesis_ref("event", sequence=6),),
+            reviewer_state="accepted",
+            severity_justification="Recorded events show extra navigation.",
+        ),
+        SynthesisFinding(
+            finding_id="scenario-unreachable-target",
+            title="The scenario target is unreachable in every run",
+            issue="The declared verifier text never appears on a reachable page.",
+            impact="The run cannot demonstrate the intended task.",
+            root_cause="The scenario verifier does not match any reachable state.",
+            fixes=("Point the scenario at a page that exposes the target.",),
+            severity="high",
+            confidence=0.85,
+            evidence_refs=(_synthesis_ref("event", sequence=7),),
+            reviewer_state="accepted",
+            severity_justification=(
+                "The recorded run never reaches the declared target state."
+            ),
+            finding_kind="scenario-defect",
+        ),
+    )
+    _write_synthesis(tmp_path, findings=findings)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+    findings_start = html.index('id="priority-findings"')
+    product_article = html.index('id="finding-ux-navigation"')
+    scenario_heading = html.index("Scenario problems")
+    defect_article = html.index('id="finding-scenario-unreachable-target"')
+    fix_first_start = html.index('id="fix-first"')
+    fix_first_html = html[
+        fix_first_start : html.index("</section>", fix_first_start)
+    ]
+
+    assert 'data-scenario-defects="true"' in html
+    # Both kinds stay in the findings view, the product finding first.
+    assert findings_start < product_article < scenario_heading < defect_article
+    assert defect_article < fix_first_start
+    # Fix first lists product work only, never the scenario defect.
+    assert "finding-ux-navigation" in fix_first_html
+    assert "scenario-unreachable-target" not in fix_first_html

@@ -204,6 +204,23 @@ main, .page-header { width: calc(100% - 40px); max-width: 1280px; margin: 0 auto
 }
 .finding-count + .fallback-details { margin-top: 0; }
 
+/* Scenario defects are problems with the test, not the product: flag them in
+   amber so they never read as a stamped product finding. */
+.scenario-defect-group {
+  margin-top: 22px; padding: 14px 16px;
+  border: 2px solid var(--flag); background: var(--flag-soft);
+  border-radius: 2px;
+}
+.scenario-defect-title {
+  margin: 0; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--flag);
+}
+.scenario-defect-lede {
+  max-width: 760px; margin: 8px 0 0; color: var(--ink-soft); font-size: .84rem;
+}
+.scenario-defect-group .finding + .finding { border-top: 1px solid var(--flag); }
+.scenario-defect-group .severity-label { color: var(--flag); background: var(--flag-soft); }
+
 .severity-label {
   padding: 3px 8px; border: 1.5px solid currentColor;
   font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
