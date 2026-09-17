@@ -22,7 +22,7 @@ from ux_analyzer.application.evidence_corpus import (
     EvidenceResolver,
 )
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
-from ux_analyzer.domain.synthesis import EvidenceRef, ObjectionSeverity
+from ux_analyzer.domain.synthesis import EvidenceRef, FindingKind, ObjectionSeverity
 from ux_analyzer.ports.model_transport import (
     MODEL_REQUEST_MAX_BYTES,
     TransportBudgetError,
@@ -2819,7 +2819,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     )
     assert (
         ReportAnalyst(client, model="gpt-report").manifest.prompt_version
-        == "report-analyst-v8"
+        == "report-analyst-v9"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role
@@ -2836,3 +2836,47 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     assert ReportAnalystResponse is AnalystResponse
     assert ReportEvidenceAuditorResponse is EvidenceAuditResponse
     assert ReportPatternReviewerResponse is PatternReviewResponse
+
+
+def _candidate_payload() -> dict[str, object]:
+    return {
+        "finding_id": "invite-control",
+        "title": "The invite control is hard to find",
+        "issue": "The user searched outside the expected task area.",
+        "impact": "Inviting a teammate takes longer to complete.",
+        "root_cause": "The entry point is labeled around internal structure.",
+        "fixes": ["Label the entry point around the user goal."],
+        "severity": "high",
+        "confidence": 0.9,
+        "evidence_refs": [
+            {
+                "evidence_id": "event:run-a:1",
+                "kind": "event",
+                "run_id": "run-a",
+                "replay_sequence": 1,
+            }
+        ],
+    }
+
+
+def test_candidate_finding_requires_severity_justification() -> None:
+    """A candidate without a severity rationale is dropped by publication
+    validation, so the transport contract must demand the field rather than
+    silently default it to an empty string."""
+
+    assert CandidateFinding.model_fields["severity_justification"].is_required()
+    schema = AnalystResponse.model_json_schema()["$defs"]["CandidateFinding"]
+    assert "severity_justification" in schema["required"]
+    with pytest.raises(ValidationError):
+        CandidateFinding.model_validate(_candidate_payload())
+
+
+def test_candidate_finding_omitted_kind_defaults_to_a_ux_issue() -> None:
+    payload = _candidate_payload()
+    payload["severity_justification"] = "The recorded run shows extra navigation."
+
+    candidate = CandidateFinding.model_validate(payload)
+
+    assert candidate.finding_kind is FindingKind.UX_ISSUE
+    schema = AnalystResponse.model_json_schema()["$defs"]["CandidateFinding"]
+    assert "finding_kind" not in schema["required"]

@@ -19,6 +19,7 @@ from pydantic import (
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity, Reproducibility
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
+    FindingKind,
     ObjectionSeverity,
     SynthesisFinding,
     SynthesisObjection,
@@ -222,8 +223,14 @@ class CandidateFinding(_RoleSchema):
     reviewer_state: _BoundedLabel = "candidate"
     evidence_class: EvidenceClass = EvidenceClass.MODEL_ESTIMATE
     reproducibility: Reproducibility = Reproducibility.MODEL_DEPENDENT
-    severity_justification: Annotated[str, StringConstraints(max_length=600)] = ""
+    # Required, not defaulted: a candidate that omits its severity rationale is
+    # dropped by deterministic publication validation, so the transport schema
+    # must list this field as required and force the model to justify severity.
+    severity_justification: Annotated[
+        str, StringConstraints(min_length=1, max_length=600)
+    ]
     reviewer_notes: list[_BoundedNote] = Field(default_factory=list, max_length=4)
+    finding_kind: FindingKind = FindingKind.UX_ISSUE
 
     @field_validator(
         "fixes",
@@ -427,7 +434,7 @@ class _InvestigativeResponse(_RoleSchema):
 class AnalystResponse(_InvestigativeResponse):
     """Structured candidate findings emitted by the report analyst."""
 
-    schema_version: ClassVar[str] = "report-analyst-response-v2"
+    schema_version: ClassVar[str] = "report-analyst-response-v3"
     candidate_findings: list[CandidateFinding] = Field(
         default_factory=_new_candidate_findings,
         max_length=8,
@@ -465,7 +472,7 @@ class PatternReviewResponse(_InvestigativeResponse):
 class AdjudicationResponse(_InvestigativeResponse):
     """Structured final findings and explicit objection resolutions."""
 
-    schema_version: ClassVar[str] = "report-adjudicator-response-v2"
+    schema_version: ClassVar[str] = "report-adjudicator-response-v3"
     final_findings: list[CandidateFinding] = Field(
         default_factory=_new_candidate_findings,
         max_length=8,
@@ -587,6 +594,7 @@ __all__ = [
     "EvidenceReference",
     "EvidenceRefSchema",
     "FinalFinding",
+    "FindingKind",
     "FindingSchema",
     "FORBIDDEN_NARRATIVE_MARKERS",
     "InvestigativeResponse",

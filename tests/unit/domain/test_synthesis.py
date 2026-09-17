@@ -521,3 +521,18 @@ def test_synthesis_attempt_converts_status_values(status: SynthesisStatus) -> No
     attempt = SynthesisAttempt(attempt_id="attempt-1", status=status.value)
 
     assert attempt.status is status
+
+
+def test_finding_kind_defaults_to_a_ux_issue() -> None:
+    assert _finding().finding_kind is synthesis.FindingKind.UX_ISSUE
+
+
+def test_finding_kind_accepts_scenario_defects() -> None:
+    defect = _finding(finding_kind="scenario-defect")
+
+    assert defect.finding_kind is synthesis.FindingKind.SCENARIO_DEFECT
+
+
+def test_finding_kind_rejects_an_unknown_classification() -> None:
+    with pytest.raises(ValueError):
+        _finding(finding_kind="product-bug")

@@ -96,6 +96,13 @@ class SynthesisStatus(StrEnum):
     NO_ISSUES = "no-issues"
 
 
+class FindingKind(StrEnum):
+    """Which subject a finding blames: the product UI or the scenario spec."""
+
+    UX_ISSUE = "ux-issue"
+    SCENARIO_DEFECT = "scenario-defect"
+
+
 REPORT_ADJUDICATOR_ROLE = "report-adjudicator"
 CANONICAL_SYNTHESIS_ROLES = (
     "report-analyst",
@@ -227,6 +234,7 @@ class SynthesisFinding:
     reproducibility: Reproducibility | str = Reproducibility.MODEL_DEPENDENT
     severity_justification: str = ""
     reviewer_notes: tuple[str, ...] = ()
+    finding_kind: FindingKind | str = FindingKind.UX_ISSUE
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -294,6 +302,7 @@ class SynthesisFinding:
             "reviewer_notes",
             _tuple_of_strings(self.reviewer_notes, "reviewer_notes"),
         )
+        object.__setattr__(self, "finding_kind", FindingKind(self.finding_kind))
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +614,7 @@ class SynthesisAttempt:
 __all__ = [
     "CANONICAL_SYNTHESIS_ROLES",
     "EvidenceRef",
+    "FindingKind",
     "ObjectionSeverity",
     "REPORT_ADJUDICATOR_ROLE",
     "RejectedCandidateAudit",

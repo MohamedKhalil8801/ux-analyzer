@@ -28,6 +28,10 @@ _Avoid_: cognitive decision, run evaluation
 An evidence-backed explanation of a user-facing problem, its underlying cause and impact, and a concrete recommended fix.
 _Avoid_: observation, metric, unsupported opinion
 
+**Scenario Defect**:
+A report-synthesis finding that blames the scenario specification rather than the product: an ambiguous or self-contradictory goal, a missing start state or fixture input, a verifier that cannot occur on any reachable page, an unreachable or out-of-scope target, or a budget the goal cannot fit. It cites recorded run evidence exactly like a UX finding, but its fix corrects the scenario and its severity describes the run's validity, not product harm. A scenario defect is not a UX finding.
+_Avoid_: product bug, failed run, test flake
+
 **Synthesis Status**:
 The explicit outcome of report synthesis, distinguishing a completed synthesis from unavailable or invalid synthesis and from a valid conclusion that no UX issue was found.
 _Avoid_: report status, run outcome
