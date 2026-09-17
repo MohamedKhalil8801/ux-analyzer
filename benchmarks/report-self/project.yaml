@@ -1,0 +1,264 @@
+# UXA dogfood project: analyze the tool's own generated report.
+#
+# The "application under test" is the Lab Observation Log report that uxa
+# generated for the exploration run (reports/exploration-generated/). It is
+# served over loopback HTTP so the report's own JS hydration can fetch its
+# sidecars, and uxa's browser agent walks it like any other web app.
+#
+# Run via:  uv run uxa run benchmarks/report-self/project.yaml \
+#             --experiment self-review --output reports/report-self --yes
+id: report-self-review
+name: UXA self-review of the generated report
+
+applications:
+  - id: uxa-report
+    name: UX Analyzer generated report
+    versions:
+      - id: uxa-report-live
+        kind: live
+        label: Live
+        start_url: https://127.0.0.1:8791/report.html
+        allowed_origins:
+          - https://127.0.0.1:8791
+
+scenarios:
+  - id: find-recorded-signals
+    name: Find recorded signals
+    goal: Open the tab that lists the recorded interaction signals and confirm what they flag for manual review.
+    application_version_ids:
+      - uxa-report-live
+    start_state: dashboard
+    fixture_inputs: {}
+    budget:
+      max_steps: 20
+      max_observations: 12
+      max_interactions: 8
+      timeout_seconds: null
+      stall_timeout_seconds: 90.0
+      max_model_calls: 32
+    verifier:
+      type: visible-result
+      text: Recorded signals requiring manual review
+      role: null
+      all_of: []
+    safeguards: []
+    eligible_persona_ids:
+      - stakeholder
+    expected_evidence:
+      - target-discovery
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        uxa-report-live: Recorded signals
+    viewport:
+      width: 1280
+      height: 800
+
+  - id: open-page-findings
+    name: Open page findings
+    goal: Open the section with the static page findings (GEO, meta, accessibility checks) for the analyzed website.
+    application_version_ids:
+      - uxa-report-live
+    start_state: dashboard
+    fixture_inputs: {}
+    budget:
+      max_steps: 20
+      max_observations: 12
+      max_interactions: 8
+      timeout_seconds: null
+      stall_timeout_seconds: 90.0
+      max_model_calls: 32
+    verifier:
+      type: visible-result
+      text: Static & visual page findings
+      role: null
+      all_of: []
+    safeguards: []
+    eligible_persona_ids:
+      - stakeholder
+    expected_evidence:
+      - target-discovery
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        uxa-report-live: Page findings
+    viewport:
+      width: 1280
+      height: 800
+
+  - id: find-performance-scores
+    name: Find performance scores
+    goal: Locate the Lighthouse performance scores recorded for the analyzed website inside this report.
+    application_version_ids:
+      - uxa-report-live
+    start_state: dashboard
+    fixture_inputs: {}
+    budget:
+      max_steps: 20
+      max_observations: 12
+      max_interactions: 8
+      timeout_seconds: null
+      stall_timeout_seconds: 90.0
+      max_model_calls: 32
+    verifier:
+      type: visible-result
+      text: Lighthouse performance reports
+      role: null
+      all_of: []
+    safeguards: []
+    eligible_persona_ids:
+      - stakeholder
+    expected_evidence:
+      - target-discovery
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        uxa-report-live: Performance
+    viewport:
+      width: 1280
+      height: 800
+
+  - id: read-design-proposals
+    name: Read design proposals
+    goal: Open the design proposals section and read the proposed improvements for the analyzed website.
+    application_version_ids:
+      - uxa-report-live
+    start_state: dashboard
+    fixture_inputs: {}
+    budget:
+      max_steps: 20
+      max_observations: 12
+      max_interactions: 8
+      timeout_seconds: null
+      stall_timeout_seconds: 90.0
+      max_model_calls: 32
+    verifier:
+      type: visible-result
+      text: Design proposals
+      role: null
+      all_of: []
+    safeguards: []
+    eligible_persona_ids:
+      - stakeholder
+    expected_evidence:
+      - target-discovery
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        uxa-report-live: Redesign
+    viewport:
+      width: 1280
+      height: 800
+
+  - id: open-evidence-replay
+    name: Open evidence replay
+    goal: Open the recorded replay workspace where a run's recorded timeline can be inspected.
+    application_version_ids:
+      - uxa-report-live
+    start_state: dashboard
+    fixture_inputs: {}
+    budget:
+      max_steps: 20
+      max_observations: 12
+      max_interactions: 8
+      timeout_seconds: null
+      stall_timeout_seconds: 90.0
+      max_model_calls: 32
+    verifier:
+      type: visible-result
+      text: Open replay
+      role: null
+      all_of: []
+    safeguards: []
+    eligible_persona_ids:
+      - stakeholder
+    expected_evidence:
+      - target-discovery
+      - verified-completion
+    evaluation_target:
+      labels_by_version:
+        uxa-report-live: Open replay
+    viewport:
+      width: 1280
+      height: 800
+
+personas:
+  - id: stakeholder
+    name: Report stakeholder
+    working_memory_capacity: 4
+    initial_confidence: 0.55
+    initial_frustration: 0.1
+    abandonment_threshold: 0.75
+    attention_temperature: 1.0
+
+providers:
+  prominence:
+    version: heuristic-prominence-v1
+    temperature: 1.0
+    weights:
+      area: 0.16
+      center_distance: 0.14
+      reading_order: 0.10
+      typography: 0.12
+      contrast: 0.12
+      isolation: 0.10
+      actionability: 0.14
+      motion: 0.05
+      competition: -0.08
+      occlusion: -0.09
+  attention:
+    version: progressive-attention-v4
+    batch_size: 2
+    cross_region_exploration: 1
+    prominence_weight: 1.0
+    coarse_scent_weight: 1.0
+    novelty_penalty: 0.25
+    failure_penalty: 0.5
+    recovery_scent_threshold: 0.9
+    recovery_after_misses: 2
+
+evaluation:
+  discovery_cost:
+    version: discovery-cost-v1
+    inspection_cost: 1.0
+    region_cost: 1.0
+    scroll_cost: 1.0
+    wrong_action_cost: 1.0
+    backtrack_cost: 1.0
+    uncertainty_cost: 1.0
+    abandonment_penalty: 1.0
+  findings:
+    version: finding-rules-v1
+    weak_target_prominence_below: 0.25
+    weak_scent_below: 0.30
+    misleading_scent_margin: 0.20
+    excessive_navigation_depth_at_least: 4
+    wrong_action_count_at_least: 2
+  state_updates:
+    version: state-updates-v1
+    success_confidence_delta: 0.05
+    success_frustration_delta: -0.10
+    failure_confidence_delta: -0.10
+    failure_frustration_delta: 0.20
+  report_synthesis:
+    enabled: true
+
+experiments:
+  - id: self-review
+    name: Self-review of the generated report
+    scenario_ids:
+      - find-recorded-signals
+      - open-page-findings
+      - find-performance-scores
+      - read-design-proposals
+      - open-evidence-replay
+    application_version_ids:
+      - uxa-report-live
+    persona_ids:
+      - stakeholder
+    policies:
+      - full-list
+      - progressive-prominence-scent
+    model_trials:
+      - 0
+    run_count: 1
