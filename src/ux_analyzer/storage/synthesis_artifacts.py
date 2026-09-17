@@ -21,6 +21,7 @@ from ux_analyzer.domain.synthesis import (
     CANONICAL_SYNTHESIS_ROLES,
     REPORT_ADJUDICATOR_ROLE,
     EvidenceRef,
+    FindingKind,
     ObjectionSeverity,
     RejectedCandidateAudit,
     SynthesisAttempt,
@@ -47,10 +48,15 @@ from ux_analyzer.storage.run_bundle import (
 )
 
 _INDEX_SCHEMA_VERSION = "synthesis-index-v1"
-_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v2"
+_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v3"
+_PRIOR_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v2"
 _LEGACY_ARTIFACT_SCHEMA_VERSION = "synthesis-artifact-v1"
 _SUPPORTED_ARTIFACT_SCHEMA_VERSIONS = frozenset(
-    {_LEGACY_ARTIFACT_SCHEMA_VERSION, _ARTIFACT_SCHEMA_VERSION}
+    {
+        _LEGACY_ARTIFACT_SCHEMA_VERSION,
+        _PRIOR_ARTIFACT_SCHEMA_VERSION,
+        _ARTIFACT_SCHEMA_VERSION,
+    }
 )
 MAX_SYNTHESIS_JSON_BYTES = 64 * 1024 * 1024
 _OPTIMISTIC_READ_ATTEMPTS = 3
@@ -571,6 +577,7 @@ def _finding_to_dict(finding: SynthesisFinding) -> dict[str, object]:
         "reproducibility": _enum_text(finding.reproducibility, "reproducibility"),
         "severity_justification": finding.severity_justification,
         "reviewer_notes": list(finding.reviewer_notes),
+        "finding_kind": _enum_text(finding.finding_kind, "finding kind"),
     }
 
 
@@ -619,6 +626,12 @@ def _finding_from_dict(value: object) -> SynthesisFinding:
         reviewer_notes=tuple(
             _text(item, "reviewer note")
             for item in _list(mapping.get("reviewer_notes", []), "reviewer_notes")
+        ),
+        # Artifacts written before scenario-defect classification existed treat
+        # every finding as a product issue.
+        finding_kind=cast(
+            str,
+            mapping.get("finding_kind", FindingKind.UX_ISSUE.value),
         ),
     )
 

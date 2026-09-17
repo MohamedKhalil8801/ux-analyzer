@@ -17,6 +17,7 @@ from ux_analyzer.domain.findings import EvidenceClass
 from ux_analyzer.domain.synthesis import (
     CANONICAL_SYNTHESIS_ROLES,
     EvidenceRef,
+    FindingKind,
     ObjectionSeverity,
     RejectedCandidateAudit,
     SynthesisAttempt,
@@ -221,7 +222,7 @@ def test_write_attempt_publishes_canonical_layout_and_round_trips(
     assert index_bytes == _canonical_bytes(json.loads(index_bytes))
 
     synthesis_value = json.loads(synthesis_bytes)
-    assert synthesis_value["artifact_schema_version"] == "synthesis-artifact-v2"
+    assert synthesis_value["artifact_schema_version"] == "synthesis-artifact-v3"
     assert {
         "corpus",
         "expectation",
@@ -1698,6 +1699,43 @@ def test_reader_rejects_attempt_digest_prefix_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(SynthesisArtifactError, match="digest prefix"):
         _ = store.attempts
+
+
+def test_scenario_defect_kind_round_trips_through_the_artifact() -> None:
+    payload = synthesis_artifacts._finding_to_dict(
+        replace(_finding(), finding_kind="scenario-defect")
+    )
+
+    assert payload["finding_kind"] == "scenario-defect"
+    assert (
+        synthesis_artifacts._finding_from_dict(payload).finding_kind
+        is FindingKind.SCENARIO_DEFECT
+    )
+
+
+def test_finding_without_a_persisted_kind_loads_as_a_ux_issue() -> None:
+    payload = synthesis_artifacts._finding_to_dict(_finding())
+    payload.pop("finding_kind")
+
+    finding = synthesis_artifacts._finding_from_dict(payload)
+
+    assert finding.finding_kind is FindingKind.UX_ISSUE
+
+
+def test_scenario_defect_survives_a_store_round_trip(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        findings=(replace(_finding(), finding_kind="scenario-defect"),),
+    )
+    store = SynthesisArtifactStore(tmp_path)
+
+    store.write_attempt(attempt, corpus)
+
+    reloaded = store.report_attempt
+    assert reloaded is not None
+    assert reloaded.findings[0].finding_kind is FindingKind.SCENARIO_DEFECT
 
 
 def test_version_identifiers_are_always_hashed() -> None:
