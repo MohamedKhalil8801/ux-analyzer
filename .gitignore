@@ -205,3 +205,8 @@ fix-export-*/
 .impeccable/review/
 .impeccable/config.local.json
 /.freebuff
+
+# Dogfood audit tooling generated artifacts (scripts/_audit_*.py outputs)
+scripts/_report_shots/
+scripts/_tls/
+scripts/_audit_measure_out.json
