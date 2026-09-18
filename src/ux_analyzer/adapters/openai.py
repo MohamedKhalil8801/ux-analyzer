@@ -813,6 +813,31 @@ def _provider_error_code(body: object) -> str | None:
     return _safe_provider_text(cast(Mapping[object, object], error_value).get("code"))
 
 
+_QUOTA_EXHAUSTED_CODES = frozenset(
+    {
+        "FREE_TIER_LIMIT_REACHED",
+        "FREE_TIER_QUOTA_EXCEEDED",
+        "INSUFFICIENT_QUOTA",
+        "QUOTA_EXCEEDED",
+        "BILLING_HARD_LIMIT_REACHED",
+    }
+)
+
+
+def _is_quota_exhausted_429(status_code: int, body: object) -> bool:
+    """Return True for deterministic quota exhaustion retries cannot clear.
+
+    Coded quota 429s persist until the provider resets the allowance (hours to
+    days), so exponential backoff only burns wall-clock time. Ephemeral 429s
+    without a coded quota reason are still retried.
+    """
+
+    if status_code != 429:
+        return False
+    code = _provider_error_code(body)
+    return code is not None and code.upper() in _QUOTA_EXHAUSTED_CODES
+
+
 def _provider_failure_reason(status_code: int, body: object) -> str:
     error_code = _provider_error_code(body)
     normalized_code = error_code.upper() if error_code is not None else ""
@@ -1791,6 +1816,12 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 await self._sleep(retries[-1].delay_seconds)
                 continue
             if response.status_code == 429:
+                if _is_quota_exhausted_429(response.status_code, response_payload):
+                    # Deterministic quota exhaustion: the allowance only resets
+                    # when the provider says so, so honor neither the backoff
+                    # schedule nor a provider Retry-After that may span hours.
+                    last_reason = "quota exhausted"
+                    break
                 last_reason = "rate limit"
                 if attempts < retry_policy.max_attempts:
                     retries.append(

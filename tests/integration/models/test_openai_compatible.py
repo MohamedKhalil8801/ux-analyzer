@@ -2312,6 +2312,108 @@ async def test_rate_limit_retry_honors_retry_after_header() -> None:
 
 
 @pytest.mark.asyncio
+async def test_coded_quota_exhaustion_429_fails_fast_without_retry() -> None:
+    """Coded quota 429s are deterministic; retrying them only burns wall clock."""
+
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        return httpx.Response(
+            429,
+            # A provider Retry-After spanning hours must be ignored here.
+            headers={"Retry-After": "259200"},
+            json={
+                "error": {
+                    "message": "free allowance used; next window next week",
+                    "code": "free_tier_limit_reached",
+                    "type": "free_tier_limit_reached",
+                }
+            },
+        )
+
+    settings = _settings(
+        retry_policy={
+            "max_attempts": 3,
+            "base_delay_seconds": 0.25,
+            "max_delay_seconds": 1.0,
+            "multiplier": 2.0,
+        }
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(settings, http_client=http_client)
+    sleeps: list[float] = []
+
+    async def record_sleep(delay_seconds: float) -> None:
+        sleeps.append(delay_seconds)
+
+    client._sleep = record_sleep  # type: ignore[method-assign]
+
+    with pytest.raises(ModelFailureError, match="quota exhausted"):
+        await client.complete(
+            CoarseScentResponse,
+            (ChatMessage(role="user", content="{}"),),
+            model="scent-model",
+            role=ModelRole.COARSE_SCENT,
+        )
+
+    assert calls == 1  # no retry attempts
+    assert sleeps == []  # no backoff sleeps, not even the 3-day Retry-After
+    record = client.records[0]
+    assert record.response == {
+        "failure": "quota exhausted",
+        "provider": {
+            "status_code": 429,
+            "error_code": "free_tier_limit_reached",
+            "error_type": "free_tier_limit_reached",
+        },
+    }
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_uncoded_429_still_retries() -> None:
+    """Rate limits without a coded quota reason remain retriable."""
+
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, json={"error": {"message": "slow down"}})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"scores":[]}'}}]},
+        )
+
+    settings = _settings(
+        retry_policy={
+            "max_attempts": 2,
+            "base_delay_seconds": 0.25,
+            "max_delay_seconds": 1.0,
+            "multiplier": 2.0,
+        }
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(settings, http_client=http_client)
+
+    result = await client.complete(
+        CoarseScentResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    assert result.scores == []
+    assert calls == 2
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_shared_model_call_limiter_serializes_concurrent_requests() -> None:
     active = 0
     maximum_active = 0
