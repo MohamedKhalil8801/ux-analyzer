@@ -1,6 +1,6 @@
 /* Live sidecar views.
  *
- * The report renders its Page findings and Performance tabs from two JSON
+ * The report renders its Page checks and Page speed tabs from two JSON
  * sidecars (the audit and pagespeed JSON files). Instead of re-rendering
  * report.html every time one of those files changes, this script fetches
  * them at page load (no-store, so a refresh always picks up a regenerated
@@ -161,7 +161,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Page findings tab (audit sidecar)
+  // Page checks tab (audit sidecar)
   // ------------------------------------------------------------------
   function auditElementInfoHtml(evidence) {
     var selectors =
@@ -378,7 +378,7 @@
         if (section) {
           section.outerHTML = html;
         } else {
-          ensureView("view-audit", "Page findings", html);
+          ensureView("view-audit", "Page checks", html);
         }
         markLive(document.getElementById("ux-audit"), path, false);
       })
@@ -644,7 +644,7 @@
         if (section) {
           section.outerHTML = html;
         } else {
-          ensureView("view-performance", "Performance", html);
+          ensureView("view-performance", "Page speed", html);
         }
         markLive(document.getElementById("pagespeed"), path, false);
       })

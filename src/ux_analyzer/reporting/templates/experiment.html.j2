@@ -55,10 +55,10 @@
 
     <nav class="view-rail" aria-label="Report sections">
       <a class="view-tab" href="#view-overview" aria-current="page">Overview</a>
-      <a class="view-tab" href="#view-findings">{{ "Recorded signals" if using_fallback else "Findings" }}</a>
-      {% if ux_audit %}<a class="view-tab" href="#view-audit">Page findings</a>{% endif %}
-      {% if pagespeed %}<a class="view-tab" href="#view-performance">Performance</a>{% endif %}
-      <a class="view-tab" href="#view-redesign">Redesign</a>
+      <a class="view-tab" href="#view-findings">{{ "Recorded signals" if using_fallback else "Walkthrough findings" }}</a>
+      {% if ux_audit %}<a class="view-tab" href="#view-audit">Page checks</a>{% endif %}
+      {% if pagespeed %}<a class="view-tab" href="#view-performance">Page speed</a>{% endif %}
+      <a class="view-tab" href="#view-redesign">Redesign ideas</a>
       <a class="view-tab" href="#view-evidence">Evidence desk</a>
     </nav>
 
@@ -259,7 +259,7 @@
       {% endif %}
       <div class="dash-grid">
         <a class="dash-card" href="#view-findings">
-          <span class="dash-card-tab">{{ "Recorded signals" if using_fallback else "Findings" }}</span>
+          <span class="dash-card-tab">{{ "Recorded signals" if using_fallback else "Walkthrough findings" }}</span>
           <span class="dash-card-count">{{ synthesis.findings | length }}</span>
           {% for finding in synthesis.findings[:2] %}
           <span class="dash-card-line">{{ finding.get("fallback_title", finding.title) }}</span>
@@ -269,7 +269,7 @@
           {% if not using_fallback and scenario_findings %}
           <span class="dash-card-line">{{ scenario_findings | length }} scenario problem{{ "s" if scenario_findings | length != 1 }} detected.</span>
           {% endif %}
-          <span class="dash-card-cta">{{ "Review signals" if using_fallback else "Review findings" }}</span>
+          <span class="dash-card-cta">{{ "Review signals" if using_fallback else "Review walkthrough findings" }}</span>
         </a>
         {% if ux_audit %}
         {% set ns_audit = namespace(critical=0, high=0, medium=0, low=0) %}
@@ -280,7 +280,7 @@
           {% if issue.severity in ("low", "info") %}{% set ns_audit.low = ns_audit.low + 1 %}{% endif %}
         {% endfor %}{% endfor %}
         <a class="dash-card" href="#view-audit">
-          <span class="dash-card-tab">Page findings</span>
+          <span class="dash-card-tab">Page checks</span>
           <span class="dash-card-count">{{ ux_audit.total_issues }}</span>
           <span class="dash-card-severities">
             {% if ns_audit.critical %}<span class="severity-label severity-critical">{{ ns_audit.critical }} critical</span>{% endif %}
@@ -289,12 +289,12 @@
             {% if ns_audit.low %}<span class="severity-label severity-low">{{ ns_audit.low }} low</span>{% endif %}
           </span>
           <span class="dash-card-line">Deterministic checks against each start URL — recorded page facts, not simulated-user findings.</span>
-          <span class="dash-card-cta">Open page findings</span>
+          <span class="dash-card-cta">Open page checks</span>
         </a>
         {% endif %}
         {% if pagespeed %}
         <a class="dash-card" href="#view-performance">
-          <span class="dash-card-tab">Performance</span>
+          <span class="dash-card-tab">Page speed</span>
           <span class="dash-card-tiles">
           {% set ns_psi = namespace(found=false) %}
           {% for url_report in pagespeed.url_reports %}{% if not ns_psi.found %}{% for strategy_name, strategy in url_report.strategies.items() %}{% if strategy.status == "ok" and strategy.categories and not ns_psi.found %}
@@ -308,7 +308,7 @@
           {% endif %}{% endfor %}{% endif %}{% endfor %}
           </span>
           <span class="dash-card-line">Lighthouse results per strategy, verbatim from the same API as pagespeed.web.dev.</span>
-          <span class="dash-card-cta">Open performance</span>
+          <span class="dash-card-cta">Open page speed</span>
         </a>
         {% endif %}
         <a class="dash-card" href="#view-evidence">

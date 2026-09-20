@@ -570,7 +570,7 @@ def report(
         "--serve",
         help=(
             "Serve the report over loopback HTTP after rendering. Live sidecar "
-            "views (Page findings, Performance) refetch ux-audit.json / "
+            "views (Page checks, Page speed) refetch ux-audit.json / "
             "pagespeed.json at page load, which browsers block on file:// URLs."
         ),
     ),

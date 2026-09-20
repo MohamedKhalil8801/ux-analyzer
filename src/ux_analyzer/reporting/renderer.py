@@ -307,7 +307,7 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
     """Return the exportable findings a report presents, for fix exports.
 
     Reviewed synthesis findings when a valid attempt is published, plus the
-    Page findings tab (static audit + AI-slop card), the Performance tab
+    Page checks tab (static audit + AI-slop card), the Page speed tab
     (Lighthouse audits and opportunities), and the Redesign tab (accepted
     design proposals, exported as model-estimate findings). Deterministic
     fallback findings ("Recorded interaction needs review …") are excluded:
@@ -490,7 +490,7 @@ _UX_AUDIT_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "inf
 
 
 def _page_audit_findings(ux_audit: object, used: set[str]) -> list[dict[str, Any]]:
-    """Mirror the report's Page findings tab: audit issues + AI-slop card.
+    """Mirror the report's Page checks tab: audit issues + AI-slop card.
 
     Repeated instances of the same check on one URL (one detector rule
     flagged several elements) are consolidated into a single issue with
@@ -669,7 +669,7 @@ def _slop_findings(
                 }
     detail["Annotated evidence"] = (
         "see report.html in the experiment output directory "
-        "(Page findings tab); it is not part of this package"
+        "(Page checks tab); it is not part of this package"
     )
     return [
         _static_finding(
@@ -689,7 +689,7 @@ def _slop_findings(
 
 
 def _pagespeed_findings(pagespeed: object, used: set[str]) -> list[dict[str, Any]]:
-    """Mirror the report's Performance tab: failed audits + opportunities.
+    """Mirror the report's Page speed tab: failed audits + opportunities.
 
     Zero-savings opportunities (passing audits Lighthouse still lists) are
     not exported, and a failed audit that also produced an opportunity is
@@ -922,7 +922,7 @@ _REDESIGN_IMPACT_SEVERITY = {"high": "high", "medium": "medium", "low": "low"}
 
 
 def _redesign_findings(root: Path, used: set[str]) -> list[dict[str, Any]]:
-    """Mirror the report's Redesign tab: accepted design proposals.
+    """Mirror the report's Redesign ideas tab: accepted design proposals.
 
     Proposals are model estimates, never run evidence, so their findings
     carry ``evidence_class="model-estimate"`` and
@@ -975,7 +975,7 @@ def _redesign_findings(root: Path, used: set[str]) -> list[dict[str, Any]]:
                 title,
                 (
                     f"{observation or title} — design proposal from the "
-                    f"Redesign tab (model estimate for {page_url})."
+                    f"Redesign ideas tab (model estimate for {page_url})."
                 ),
                 _REDESIGN_IMPACT_SEVERITY.get(impact, "medium"),
                 "design",
