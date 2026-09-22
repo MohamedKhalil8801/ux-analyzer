@@ -313,3 +313,78 @@ async def test_integration_provider_failure_keeps_safe_diagnostics_in_fallback(
     assert attempt.retrieval_log[0]["error"] == "model provider unavailable"
     assert "HTTP 503" in attempt.limitations[-1]
     assert "request-123" in attempt.limitations[-1]
+
+
+@pytest.mark.asyncio
+async def test_integration_transport_failure_after_invalid_output_is_retried(
+    tmp_path: Path,
+) -> None:
+    """A transport error must not hide an earlier structural rejection.
+
+    The adapter can end a bounded call on a connect error while still holding
+    diagnostics from an attempt that failed schema validation. Treating that
+    as an outage skips the malformed-output retry and drops the whole run to
+    the deterministic fallback, so the role is retried instead.
+    """
+
+    candidate = _candidate_payload()
+    client = _StructuredClient(
+        {
+            ModelRole.REPORT_ANALYST: [
+                ModelFailureError(
+                    "connect-error",
+                    diagnostics={
+                        "stage": "schema_validation",
+                        "attempt_count": 1,
+                    },
+                ),
+                {"complete": False, "evidence_requests": [EVIDENCE_ID]},
+                {"complete": True, "candidate_findings": [candidate]},
+            ],
+            ModelRole.REPORT_EVIDENCE_AUDITOR: [{"complete": True, "objections": []}],
+            ModelRole.REPORT_PATTERN_REVIEWER: [{"complete": True, "objections": []}],
+            ModelRole.REPORT_ADJUDICATOR: [
+                {"complete": True, "final_findings": [candidate]}
+            ],
+        }
+    )
+
+    attempt = await _providers(client).synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert attempt.findings[0].finding_id == "invite-control"
+    assert any(
+        entry["role"] == ModelRole.REPORT_ANALYST.value
+        and entry["error"] == "invalid structured synthesis output"
+        and entry["response"].get("retrying") is True
+        for entry in attempt.retrieval_log
+    )
+
+
+@pytest.mark.asyncio
+async def test_integration_provider_outage_with_stale_diagnostics_stays_unavailable(
+    tmp_path: Path,
+) -> None:
+    client = _StructuredClient(
+        {
+            ModelRole.REPORT_ANALYST: [
+                ModelFailureError(
+                    "rate limit",
+                    status_code=429,
+                    diagnostics={"stage": "schema_validation"},
+                )
+            ],
+            ModelRole.REPORT_EVIDENCE_AUDITOR: [],
+            ModelRole.REPORT_PATTERN_REVIEWER: [],
+            ModelRole.REPORT_ADJUDICATOR: [],
+        }
+    )
+
+    attempt = await _providers(client).synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.UNAVAILABLE
+    assert attempt.fallback_available
+    assert (
+        len([call for call in client.calls if call[2] is ModelRole.REPORT_ANALYST])
+        == 1
+    )

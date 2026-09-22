@@ -132,6 +132,26 @@ _OPERATIONAL_FAILURE_NAMES = {
     "ConnectionError",
     "OSError",
 }
+# A model failure with one of these reasons is a provider outage or refusal,
+# so it stays operational even when stale structural diagnostics from an
+# earlier attempt happen to ride along.
+_MODEL_OUTAGE_REASONS = frozenset(
+    {
+        "model unavailable",
+        "request rejected",
+        "safety rejection",
+        "authentication failure",
+        "rate limit",
+        "quota exhausted",
+        "server error",
+        "response-too-large",
+    }
+)
+# Stages the model adapter records when it rejects a response for shape
+# reasons rather than transport reasons.
+_STRUCTURAL_DIAGNOSTIC_STAGES = frozenset(
+    {"content_parsing", "normalization", "schema_validation"}
+)
 _SEVERITY_ORDER = {
     "critical": 0,
     "high": 1,
@@ -259,6 +279,24 @@ def _retain_response_limitations(target: list[str], response: _Response) -> None
             target.append(limitation)
 
 
+def _structural_failure_stage(error: BaseException) -> str | None:
+    """Return the response stage the adapter rejected, when it recorded one.
+
+    A bounded model call can end on a transport error after an earlier
+    attempt already failed structural validation; the adapter keeps that
+    earlier diagnostics block, so the stage is the honest signal that the
+    output, not the endpoint, was the problem.
+    """
+
+    diagnostics = getattr(error, "diagnostics", None)
+    if not isinstance(diagnostics, Mapping):
+        return None
+    stage = cast("Mapping[str, object]", diagnostics).get("stage")
+    if isinstance(stage, str) and stage in _STRUCTURAL_DIAGNOSTIC_STAGES:
+        return stage
+    return None
+
+
 def _error_category(error: BaseException) -> tuple[bool, str]:
     name = type(error).__name__
     reason = getattr(error, "reason", None)
@@ -276,6 +314,16 @@ def _error_category(error: BaseException) -> tuple[bool, str]:
         "authentication failure",
     }:
         return True, "model provider rejected request"
+    if (
+        name == "ModelFailureError"
+        and reason not in _MODEL_OUTAGE_REASONS
+        and _structural_failure_stage(error) is not None
+    ):
+        # The call ended on a transport error, but the adapter rejected an
+        # earlier response on shape. Retry the role instead of declaring the
+        # whole run unavailable, which is what a bare transport reason would
+        # otherwise do.
+        return False, "invalid structured synthesis output"
     if name in _OPERATIONAL_FAILURE_NAMES or isinstance(error, RuntimeError):
         return True, "model transport or configuration failure"
     if isinstance(

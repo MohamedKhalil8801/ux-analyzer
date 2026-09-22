@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from ux_analyzer.adapters.openai import ModelFailureError
 from ux_analyzer.application.evidence_corpus import (
     EvidenceCorpus,
     EvidenceEntry,
@@ -1934,6 +1935,51 @@ async def test_invalid_structured_role_output_retries_once_without_fallback(
         for log in attempt.retrieval_log
         if log["role"] == ModelRole.REPORT_ANALYST.value
     )
+
+
+@pytest.mark.asyncio
+async def test_transport_reason_with_structural_diagnostics_is_retried(
+    tmp_path: Path,
+) -> None:
+    """A connect error must not mask an earlier structural rejection.
+
+    The adapter can end a bounded call on a transport error while still
+    reporting the stage of an attempt that failed schema validation. That is
+    an output problem, not an outage, so the role is retried and the attempt
+    is rejected rather than declared unavailable.
+    """
+
+    structural = ModelFailureError(
+        "connect-error",
+        diagnostics={"stage": "schema_validation", "attempt_count": 1},
+    )
+    service, roles = _scripted_service(analyst=[structural, structural])
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is not SynthesisStatus.UNAVAILABLE
+    assert len(roles[0].calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_outage_with_stale_diagnostics_stays_unavailable(
+    tmp_path: Path,
+) -> None:
+    service, roles = _scripted_service(
+        analyst=[
+            ModelFailureError(
+                "rate limit",
+                status_code=429,
+                diagnostics={"stage": "schema_validation"},
+            )
+        ]
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.UNAVAILABLE
+    assert len(roles[0].calls) == 1
 
 
 @pytest.mark.asyncio
