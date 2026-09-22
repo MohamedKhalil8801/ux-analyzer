@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 import asyncio
+import gc
 import json
 import os
 import socket
@@ -956,6 +957,77 @@ async def test_foreign_popup_then_streaming_teardown_has_no_unhandled_tasks(
         loop.set_exception_handler(previous_exception_handler)
 
     assert capture.url == f"{fixture_origin}/app/ordered-next/improved"
+    assert loop_errors == []
+
+
+@pytest.mark.asyncio
+async def test_teardown_with_inflight_route_has_no_unhandled_tasks(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_origin, _ = running_servers
+    original_route = NetworkPolicy.handle_route
+
+    async def slow_handle_route(
+        self: NetworkPolicy, route: Any, request: Any, *, kind: str = "request"
+    ) -> None:
+        await asyncio.sleep(0.3)
+        await original_route(self, route, request, kind=kind)
+
+    monkeypatch.setattr(NetworkPolicy, "handle_route", slow_handle_route)
+
+    from playwright._impl import _browser_context as _pw_context
+
+    original_update = _pw_context.BrowserContext._update_interception_patterns
+
+    async def slow_update(self: Any) -> None:
+        await asyncio.sleep(0.3)
+        await original_update(self)
+
+    monkeypatch.setattr(
+        _pw_context.BrowserContext,
+        "_update_interception_patterns",
+        slow_update,
+    )
+
+    session = await browser_adapter.start_session(
+        _session_config(fixture_origin, tmp_path / "inflight.zip", "test-inflight")
+    )
+    page = browser_adapter.page_for_testing(session)
+    await page.evaluate(
+        """
+        () => {
+          for (let i = 0; i < 8; i++) {
+            const img = document.createElement('img');
+            img.src = '/page?i=' + i;
+            document.body.append(img);
+          }
+        }
+        """
+    )
+    await asyncio.sleep(0.05)
+
+    loop = asyncio.get_running_loop()
+    loop_errors: list[dict[str, object]] = []
+    previous_exception_handler = loop.get_exception_handler()
+
+    def record_loop_error(
+        _loop: asyncio.AbstractEventLoop, context: dict[str, object]
+    ) -> None:
+        loop_errors.append(context)
+
+    loop.set_exception_handler(record_loop_error)
+    try:
+        await browser_adapter.end_session(session)
+        gc.collect()
+        await asyncio.sleep(0.3)
+        gc.collect()
+        await asyncio.sleep(0.3)
+    finally:
+        loop.set_exception_handler(previous_exception_handler)
+
     assert loop_errors == []
 
 

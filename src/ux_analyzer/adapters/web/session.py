@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from playwright.async_api import (
@@ -77,6 +78,14 @@ _NAVIGATION_START_GRACE_SECONDS = 0.1
 _TRANSIENT_POPUP_URLS = frozenset(("", ":", "about:blank"))
 _TRACE_REPLACE_ATTEMPTS = 3
 _TRACE_REPLACE_DELAY_SECONDS = 0.01
+# Playwright fires route-interception updates and route fulfil/continue calls
+# as unowned tasks. Closing a context while one is in flight leaves a failed
+# task that nothing retrieves, so the event loop reports a spurious
+# "Task exception was never retrieved" during teardown.
+_TEARDOWN_TASK_SETTLE_SECONDS = 1.0
+_TEARDOWN_TASK_POLL_SECONDS = 0.01
+# Playwright's connection reader loop runs for the whole browser lifetime.
+_PLAYWRIGHT_SESSION_TASKS = frozenset({"Connection.run"})
 _RECOVERABLE_USER_ACTIONS = (
     ClickAction,
     DoubleClickAction,
@@ -689,6 +698,7 @@ class PlaywrightSessionAdapter:
             raise
         finally:
             trace_resources.close()
+            await _drain_playwright_teardown_tasks()
             if self._sessions.get(managed.handle.session_id) is managed:
                 self._sessions.pop(managed.handle.session_id, None)
             managed.route_handler = None
@@ -801,9 +811,99 @@ def _discard_file(path: Path) -> None:
     secure_unlink(path, "trace cleanup", missing_ok=True)
 
 
-def _retrieve_task_exception(task: asyncio.Task[None]) -> None:
+def _retrieve_task_exception(task: asyncio.Task[Any]) -> None:
     if not task.cancelled():
         task.exception()
+
+
+def _is_playwright_task(task: asyncio.Task[Any]) -> bool:
+    """Return True when the task runs Playwright's own coroutine code.
+
+    Playwright fires route-interception updates and route fulfil/continue
+    calls as unowned tasks. Their exceptions are never read, so closing a
+    context mid-flight makes the event loop report them as unretrieved when
+    the finished task is collected. Matching on the coroutine's source file
+    keeps the drain to Playwright's tasks and away from ours or the caller's.
+    """
+
+    code = getattr(task.get_coro(), "cr_code", None)
+    filename = getattr(code, "co_filename", "") or ""
+    return "playwright" in filename.replace("\\", "/").split("/")
+
+
+def _is_playwright_teardown_task(task: asyncio.Task[Any]) -> bool:
+    """Return True for a transient Playwright task spawned around teardown.
+
+    The connection's reader loop outlives a session, so waiting for every
+    Playwright task to finish would never end. Only the short-lived tasks
+    Playwright creates around route handling settle during teardown.
+    """
+
+    if not _is_playwright_task(task):
+        return False
+    code = getattr(task.get_coro(), "cr_code", None)
+    return getattr(code, "co_qualname", "") not in _PLAYWRIGHT_SESSION_TASKS
+
+
+def _is_unretrieved_playwright_task(context: Mapping[str, object]) -> bool:
+    """Return True for an unretrieved-task report about a Playwright task."""
+
+    if context.get("message") != "Task exception was never retrieved":
+        return False
+    if not isinstance(context.get("exception"), PlaywrightError):
+        return False
+    future = context.get("future")
+    return isinstance(future, asyncio.Task) and _is_playwright_task(
+        cast("asyncio.Task[Any]", future)
+    )
+
+
+async def _drain_playwright_teardown_tasks() -> None:
+    """Let Playwright's unowned teardown tasks finish and read them out.
+
+    A finished task whose exception nothing retrieves is reported by the
+    event loop as ``Task exception was never retrieved`` when it is garbage
+    collected, which the loop may do before anyone can look at the result.
+    Holding a reference to every transient Playwright task, waiting for them
+    to settle, and reading their results keeps teardown quiet. A loop filter
+    for the same reports covers any task that slipped past the sampling.
+    """
+
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def filtered(
+        active_loop: asyncio.AbstractEventLoop, context: dict[str, Any]
+    ) -> None:
+        if _is_unretrieved_playwright_task(context):
+            return
+        if previous is not None:
+            previous(active_loop, context)
+        else:
+            active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(filtered)
+    try:
+        held: set[asyncio.Task[Any]] = {
+            task for task in asyncio.all_tasks() if _is_playwright_task(task)
+        }
+        deadline = monotonic() + _TEARDOWN_TASK_SETTLE_SECONDS
+        while monotonic() < deadline:
+            held.update(
+                task for task in asyncio.all_tasks() if _is_playwright_task(task)
+            )
+            if not any(
+                not task.done() and _is_playwright_teardown_task(task)
+                for task in held
+            ):
+                break
+            await asyncio.sleep(_TEARDOWN_TASK_POLL_SECONDS)
+        for task in held:
+            if task.done():
+                _retrieve_task_exception(task)
+        gc.collect()
+    finally:
+        loop.set_exception_handler(previous)
 
 
 def _track_task(
