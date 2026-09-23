@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -397,6 +398,77 @@ def _scripted_service(
         ),
         roles,
     )
+
+
+class _SlowGateRole(_ScriptedRole):
+    """Role whose calls block until an asyncio event is set, for overlap tests."""
+
+    def __init__(self, role: str, response: object) -> None:
+        super().__init__(role, [response])
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def _gate(self) -> None:
+        self.entered.set()
+        await self.release.wait()
+
+    async def audit(self, *args: Any, **kwargs: Any) -> object:
+        await self._gate()
+        return self._next(args=args, kwargs=kwargs)
+
+    async def review(self, *args: Any, **kwargs: Any) -> object:
+        await self._gate()
+        return self._next(args=args, kwargs=kwargs)
+
+
+@pytest.mark.asyncio
+async def test_reviewers_run_concurrently(tmp_path: Path) -> None:
+    """Auditor and pattern reviewer overlap; neither waits for the other."""
+
+    candidate = _candidate()
+    auditor = _SlowGateRole(
+        "auditor", EvidenceAuditResponse(complete=True)
+    )
+    pattern = _SlowGateRole(
+        "pattern", PatternReviewResponse(complete=True)
+    )
+    roles = (
+        _ScriptedRole(
+            "analyst",
+            [AnalystResponse(complete=True, candidate_findings=[candidate])],
+        ),
+        auditor,
+        pattern,
+        _ScriptedRole(
+            "adjudicator",
+            [AdjudicationResponse(complete=True, final_findings=[candidate])],
+        ),
+    )
+    recording_source = _RecordingModelSource()
+    for role in roles:
+        role.record_source = recording_source
+    service = ReportSynthesisService(
+        analyst=roles[0],
+        evidence_auditor=roles[1],
+        pattern_reviewer=roles[2],
+        adjudicator=roles[3],
+        model_record_source=recording_source,
+    )
+
+    async def run() -> object:
+        return await service.synthesize(_corpus(tmp_path))
+
+    task = asyncio.create_task(run())
+    # Both reviewers must be entered while neither has released the gate.
+    await asyncio.wait_for(auditor.entered.wait(), timeout=5)
+    await asyncio.wait_for(pattern.entered.wait(), timeout=5)
+    assert auditor.calls == []
+    assert pattern.calls == []
+    auditor.release.set()
+    pattern.release.set()
+    attempt = await asyncio.wait_for(task, timeout=10)
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
 
 
 def _blocking_objection(finding_id: str) -> TypedObjection:

@@ -996,14 +996,29 @@ class ReportSynthesisService:
         )
 
         candidate_evidence_ids = self._evidence_ids(candidate_findings)
-        auditor_run = await self._run_role(
-            ModelRole.REPORT_EVIDENCE_AUDITOR,
-            cast(object, self.evidence_auditor),
-            corpus,
-            candidate_findings=candidate_input,
-            initial_evidence_ids=candidate_evidence_ids,
+        # The two reviewers are independent: both consume only the analyst's
+        # candidate findings, and their outputs merge after both complete.
+        # Sharing one task lets an idle reviewer overlap with the other's
+        # model latency; the shared call limiter still caps concurrency.
+        reviewer_runs = await asyncio.gather(
+            self._run_role(
+                ModelRole.REPORT_EVIDENCE_AUDITOR,
+                cast(object, self.evidence_auditor),
+                corpus,
+                candidate_findings=candidate_input,
+                initial_evidence_ids=candidate_evidence_ids,
+            ),
+            self._run_role(
+                ModelRole.REPORT_PATTERN_REVIEWER,
+                cast(object, self.pattern_reviewer),
+                corpus,
+                candidate_findings=candidate_input,
+                initial_evidence_ids=candidate_evidence_ids,
+            ),
         )
+        auditor_run, pattern_run = reviewer_runs
         retrieval_log.extend(auditor_run.retrieval_log)
+        retrieval_log.extend(pattern_run.retrieval_log)
         if auditor_run.response is None:
             return self._attempt(
                 corpus,
@@ -1029,15 +1044,6 @@ class ReportSynthesisService:
                     "Evidence auditor output was not trustworthy.",
                 ),
             )
-
-        pattern_run = await self._run_role(
-            ModelRole.REPORT_PATTERN_REVIEWER,
-            cast(object, self.pattern_reviewer),
-            corpus,
-            candidate_findings=candidate_input,
-            initial_evidence_ids=candidate_evidence_ids,
-        )
-        retrieval_log.extend(pattern_run.retrieval_log)
         if pattern_run.response is None:
             return self._attempt(
                 corpus,
