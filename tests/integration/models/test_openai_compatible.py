@@ -997,6 +997,90 @@ async def test_strict_schema_fallback_validates_locally_and_records_usage() -> N
     assert client.manifest(ModelRole.COARSE_SCENT, "scent-model").role == (
         ModelRole.COARSE_SCENT
     )
+
+
+@pytest.mark.asyncio
+async def test_usage_records_reasoning_and_cached_token_details() -> None:
+    """Provider detail counts flow into the record when the provider sends them."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"scores": [{"element_id": "target", "score": 0.7}]}
+                            )
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "total_tokens": 150,
+                    "prompt_tokens_details": {"cached_tokens": 64},
+                    "completion_tokens_details": {"reasoning_tokens": 42},
+                },
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(),
+        http_client=http_client,
+    )
+    await client.complete(
+        CoarseScentResponse,
+        (ChatMessage(role="user", content='{"goal":"Find invite"}'),),
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    usage = client.records[0].token_usage
+    assert usage.prompt_tokens == 100
+    assert usage.completion_tokens == 50
+    assert usage.reasoning_tokens == 42
+    assert usage.cached_tokens == 64
+
+
+@pytest.mark.asyncio
+async def test_usage_defaults_detail_counts_when_provider_omits_them() -> None:
+    """Providers without detail objects still produce valid zero-valued usage."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"scores": [{"element_id": "target", "score": 0.7}]}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(),
+        http_client=http_client,
+    )
+    await client.complete(
+        CoarseScentResponse,
+        (ChatMessage(role="user", content='{"goal":"Find invite"}'),),
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    usage = client.records[0].token_usage
+    assert usage.reasoning_tokens == 0
+    assert usage.cached_tokens == 0
     assert "secret-api-key" not in json.dumps(client.records[0].request)
     await http_client.aclose()
 

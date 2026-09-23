@@ -728,12 +728,25 @@ def _usage(payload: Mapping[str, object]) -> TokenUsage:
     if not isinstance(value, Mapping):
         return TokenUsage()
     usage = cast(Mapping[object, object], value)
+
+    def _detail(parent: str, name: str) -> int:
+        details = usage.get(parent)
+        if not isinstance(details, Mapping):
+            return 0
+        detail_map = cast(Mapping[str, object], details)
+        raw = detail_map.get(name)
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            return 0
+        return max(0, int(raw))
+
     return TokenUsage(
         prompt_tokens=_as_int(usage.get("prompt_tokens", 0) or 0, name="prompt_tokens"),
         completion_tokens=_as_int(
             usage.get("completion_tokens", 0) or 0, name="completion_tokens"
         ),
         total_tokens=_as_int(usage.get("total_tokens", 0) or 0, name="total_tokens"),
+        reasoning_tokens=_detail("completion_tokens_details", "reasoning_tokens"),
+        cached_tokens=_detail("prompt_tokens_details", "cached_tokens"),
     )
 
 

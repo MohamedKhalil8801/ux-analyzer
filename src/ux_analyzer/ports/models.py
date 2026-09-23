@@ -167,6 +167,11 @@ class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # Optional provider detail counts (OpenAI usage.prompt_tokens_details /
+    # completion_tokens_details). Zero means "not reported"; these never
+    # participate in __post_init__ validation because providers omit them.
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
 
     def __post_init__(self) -> None:
         for name, value in (

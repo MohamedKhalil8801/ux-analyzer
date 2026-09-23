@@ -2356,6 +2356,12 @@ class ReportSynthesisService:
             "total_tokens": float(
                 sum(item.token_usage.total_tokens for item in records)
             ),
+            "reasoning_tokens": float(
+                sum(item.token_usage.reasoning_tokens for item in records)
+            ),
+            "cached_tokens": float(
+                sum(item.token_usage.cached_tokens for item in records)
+            ),
             "latency_ms": float(sum(item.latency_ms for item in records)),
             "usage_available": 1.0,
         }
