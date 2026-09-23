@@ -124,15 +124,15 @@
         <div class="finding-grid">
           <div class="finding-field">
             <h4>Issue</h4>
-            <p>{{ finding.display_issue | default(finding.issue) }}</p>
+            <p>{% if finding.alias_issue %}{% for segment in finding.alias_issue %}{% if segment is mapping %}<button class="alias-chip" type="button" data-alias="{{ segment.alias }}">{{ segment.alias }}</button>{% else %}{{ segment }}{% endif %}{% endfor %}{% else %}{{ finding.display_issue | default(finding.issue) }}{% endif %}</p>
           </div>
           <div class="finding-field">
             <h4>Why it matters</h4>
-            <p>{{ finding.display_impact | default(finding.impact) }}</p>
+            <p>{% if finding.alias_impact %}{% for segment in finding.alias_impact %}{% if segment is mapping %}<button class="alias-chip" type="button" data-alias="{{ segment.alias }}">{{ segment.alias }}</button>{% else %}{{ segment }}{% endif %}{% endfor %}{% else %}{{ finding.display_impact | default(finding.impact) }}{% endif %}</p>
           </div>
           <div class="finding-field">
             <h4>Likely root cause</h4>
-            <p>{{ finding.display_root_cause | default(finding.root_cause) }}</p>
+            <p>{% if finding.alias_root_cause %}{% for segment in finding.alias_root_cause %}{% if segment is mapping %}<button class="alias-chip" type="button" data-alias="{{ segment.alias }}">{{ segment.alias }}</button>{% else %}{{ segment }}{% endif %}{% endfor %}{% else %}{{ finding.display_root_cause | default(finding.root_cause) }}{% endif %}</p>
           </div>
           <div class="finding-field">
             <h4>What to fix</h4>
@@ -773,6 +773,20 @@
               <p>{{ proposal.principle_ids | join(", ") }}</p>
             </div>
           </div>
+          {% if proposal.section_chips %}
+          <div class="proposal-sections">
+            <h4>Recorded sections</h4>
+            {% for section in proposal.section_chips %}
+            <button
+              type="button"
+              class="alias-chip redesign-section-chip"
+              data-copy-locator='{%- if section.locator -%}{{ (section.locator.selector or section.locator.xpath) | e }}{%- else -%}{%- endif -%}'
+              {% if not section.locator %}data-no-locator="1"{% endif %}
+              title="{{ section.summary }}"
+            >{{ section.label }}{% if section.locator %} · copy locator{% else %} · no verified locator{% endif %}</button>
+            {% endfor %}
+          </div>
+          {% endif %}
           {% if proposal.deliberate_choice_check %}
           <p class="proposal-deliberate">Deliberate-choice note: {{ proposal.deliberate_choice_check.pattern }} — {{ proposal.deliberate_choice_check.rationale }}</p>
           {% endif %}
@@ -1327,6 +1341,7 @@
   </main>
 
   <script type="application/json" id="report-data">{{ report_json | safe }}</script>
+  <script type="application/json" id="alias-chips">{{ alias_chips_json | default('{}') | safe }}</script>
   {% if data_sources %}<script type="application/json" id="data-sources">{{ data_sources | tojson }}</script>{% endif %}
   <script>
   {% if compact_index %}

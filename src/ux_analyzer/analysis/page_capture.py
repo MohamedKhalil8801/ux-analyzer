@@ -3,7 +3,7 @@
 Implements the deterministic page list from ADR 0007 (start URLs first, then
 BFS discovery order, deduped, capped), the segmented full-page screenshot
 with bounded JPEG segments, and the trimmed node/copy inventory persisted as
-the versioned ``page-capture.json`` sidecar (schema ``page-capture-v2``).
+the versioned ``page-capture.json`` sidecar (schema ``page-capture-v3``).
 """
 
 from __future__ import annotations
@@ -27,7 +27,14 @@ from ux_analyzer.analysis.project_audit import (
 )
 
 PAGE_CAPTURE_FILENAME = "page-capture.json"
-PAGE_CAPTURE_SCHEMA = "page-capture-v2"  # v2: text inventory includes <dt> group titles
+PAGE_CAPTURE_SCHEMA = "page-capture-v3"  # v3: inventory nodes carry operator-facing selector+xpath
+# Schemas accepted on load. v2 sidecars stay valid inputs (reused, upgraded to
+# v3 only when re-captured); only v3 writers emit the operator-facing locator
+# fields, so reading v2 costs nothing and old bundles keep working.
+PAGE_CAPTURE_INPUT_SCHEMAS = frozenset({"page-capture-v2", "page-capture-v3"})
+# Schema that introduced the operator-facing locator fields. Older v2 sidecars
+# stay valid inputs; only fresh captures carry locators.
+PAGE_CAPTURE_LOCATOR_SCHEMA = "page-capture-v3"
 
 SEGMENT_HEIGHT_PX = 2000
 MAX_SEGMENT_BYTES = 640 * 1024
@@ -133,6 +140,40 @@ _INVENTORY_JS = """
     const r = node.getBoundingClientRect();
     return { x: Math.round(r.left), y: Math.round(r.top + (window.scrollY || 0)), w: Math.round(r.width), h: Math.round(r.height) };
   };
+  // Operator-facing locators (page-capture-v3). Never sent to models: the
+  // redesign prompt view strips these keys (see application/redesign.py).
+  // `id` locators when present; otherwise a unique-by-construction
+  // nth-of-type path from the nearest scoping ancestor, same approach as the
+  // run-agent extractor's selectorFor.
+  const locatorFor = (el) => {
+    if (el.id) return { selector: '#' + (window.CSS && CSS.escape ? CSS.escape(el.id) : el.id), xpath: "//*[@id='" + el.id.replace(/'/g, "\\'") + "']" };
+    const path = [];
+    for (let current = el; current instanceof Element && current !== document.body; current = current.parentElement) {
+      let step = current.tagName.toLowerCase();
+      if (current.id) { step += '#' + (window.CSS && CSS.escape ? CSS.escape(current.id) : current.id); path.unshift(step); break; }
+      let sibling = current;
+      let position = 1;
+      while ((sibling = sibling.previousElementSibling)) {
+        if (sibling.tagName === current.tagName) position += 1;
+      }
+      step += ':nth-of-type(' + position + ')';
+      path.unshift(step);
+    }
+    const selector = path.join(' > ') || 'body';
+    const parts = [];
+    for (let current = el; current instanceof Element && current !== document.documentElement; current = current.parentElement) {
+      let step = current.tagName.toLowerCase();
+      if (current.id) { step += "[@id='" + current.id.replace(/'/g, "\\'") + "']"; parts.unshift(step); break; }
+      let sibling = current;
+      let position = 1;
+      while ((sibling = sibling.previousElementSibling)) {
+        if (sibling.tagName === current.tagName) position += 1;
+      }
+      parts.unshift(step + '[' + position + ']');
+    }
+    const xpath = '//' + parts.join('/');
+    return { selector, xpath };
+  };
   const pushNode = (list, kind, el, depth) => {
     if (used >= cap) { truncated = true; return false; }
     const r = el.getBoundingClientRect();
@@ -157,6 +198,9 @@ _INVENTORY_JS = """
       // the target-size guard validates hit-target claims against this.
       entry.tap_box = effectiveTapBox(el);
     }
+    const locator = locatorFor(el);
+    entry.selector = locator.selector;
+    entry.xpath = locator.xpath;
     list.push(entry);
     used += 1;
     return true;
@@ -169,12 +213,15 @@ _INVENTORY_JS = """
     if (used < cap) {
       const heading = el.querySelector('h1, h2, h3, h4, h5, h6');
       const label = (heading && (heading.innerText || heading.textContent) || el.getAttribute('aria-label') || '').replace(/\\u00AD/g, '').trim();
+      const sectionLocator = locatorFor(el);
       sections.push({
         tag: el.tagName.toLowerCase(),
         role: el.getAttribute('role') || '',
         label: label.slice(0, 200),
         box: { x: Math.round(r.left), y: Math.round(absoluteY), w: Math.round(r.width), h: Math.round(r.height) },
         depth,
+        selector: sectionLocator.selector,
+        xpath: sectionLocator.xpath,
       });
       used += 1;
     } else { truncated = true; }
@@ -926,11 +973,11 @@ def max_pages_from_env() -> int:
 def sidecar_capture_urls(document: Mapping[str, object]) -> tuple[str, ...]:
     """Ordered unique capture URLs from a versioned sidecar document.
 
-    Only schema ``page-capture-v2`` documents with well-formed pages count;
+    Only schema-compatible (v2/v3) documents with well-formed pages count;
     anything else yields an empty tuple so the caller falls back to capture.
     """
 
-    if document.get("schema") != PAGE_CAPTURE_SCHEMA:
+    if document.get("schema") not in PAGE_CAPTURE_INPUT_SCHEMAS:
         return ()
     pages = document.get("pages")
     if not isinstance(pages, Sequence) or isinstance(pages, (str, bytes)):
@@ -941,7 +988,7 @@ def sidecar_capture_urls(document: Mapping[str, object]) -> tuple[str, ...]:
         if not isinstance(page, Mapping):
             continue
         item = cast(Mapping[object, object], page)
-        if item.get("schema") != PAGE_CAPTURE_SCHEMA:
+        if item.get("schema") not in PAGE_CAPTURE_INPUT_SCHEMAS:
             continue
         segments = item.get("segments")
         if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
@@ -963,7 +1010,7 @@ def sidecar_captures_by_url(document: Mapping[str, object]) -> dict[str, dict[st
     """
 
     captures: dict[str, dict[str, object]] = {}
-    if document.get("schema") != PAGE_CAPTURE_SCHEMA:
+    if document.get("schema") not in PAGE_CAPTURE_INPUT_SCHEMAS:
         return captures
     pages = document.get("pages")
     if not isinstance(pages, Sequence) or isinstance(pages, (str, bytes)):
@@ -972,7 +1019,7 @@ def sidecar_captures_by_url(document: Mapping[str, object]) -> dict[str, dict[st
         if not isinstance(page, Mapping):
             continue
         item = cast(Mapping[object, object], page)
-        if item.get("schema") != PAGE_CAPTURE_SCHEMA:
+        if item.get("schema") not in PAGE_CAPTURE_INPUT_SCHEMAS:
             continue
         segments = item.get("segments")
         if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
@@ -1004,6 +1051,7 @@ __all__ = [
     "MAX_TOTAL_COPY_CHARS",
     "PAGE_CAPTURE_FILENAME",
     "PAGE_CAPTURE_SCHEMA",
+    "PAGE_CAPTURE_INPUT_SCHEMAS",
     "DEFAULT_MAX_PAGES",
     "SEGMENT_HEIGHT_PX",
     "SegmentPlan",

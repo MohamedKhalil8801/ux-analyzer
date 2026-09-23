@@ -114,6 +114,53 @@ def test_corrupt_newer_attempt_is_skipped_not_silent(tmp_path: Path) -> None:
     assert selection.skipped and "corrupt" in selection.skipped[0]
 
 
+def test_content_selection_prefers_accepted_over_newer_unavailable(
+    tmp_path: Path,
+) -> None:
+    store = RedesignAttemptStore(tmp_path)
+    accepted = "redesign-20260914T080000Z-cccc0003"
+    failed = "redesign-20260919T060000Z-dddd0004"
+    store.publish(_attempt(accepted))
+    store.publish(
+        _attempt(
+            failed,
+            status=RedesignAttemptStatus.UNAVAILABLE,
+            proposals=(),
+            unavailable_reason="provider 502",
+        )
+    )
+
+    selection = store.newest_content_attempt()
+    assert selection.attempt is not None
+    assert selection.attempt.attempt_id == accepted
+
+
+def test_content_selection_falls_back_to_newest_valid_when_none_accepted(
+    tmp_path: Path,
+) -> None:
+    store = RedesignAttemptStore(tmp_path)
+    older_rejected = "redesign-20260918T170000Z-eeee0005"
+    newer_rejected = "redesign-20260919T045000Z-ffff0006"
+    store.publish(
+        _attempt(
+            older_rejected,
+            status=RedesignAttemptStatus.REJECTED,
+            rejection_reasons=("p2: box must not contain negative values",),
+        )
+    )
+    store.publish(
+        _attempt(
+            newer_rejected,
+            status=RedesignAttemptStatus.REJECTED,
+            rejection_reasons=("p1: hit-target claim not supported",),
+        )
+    )
+
+    selection = store.newest_content_attempt()
+    assert selection.attempt is not None
+    assert selection.attempt.attempt_id == newer_rejected
+
+
 def test_payload_round_trip_preserves_attempt(tmp_path: Path) -> None:
     attempt = _attempt(
         new_attempt_id(),

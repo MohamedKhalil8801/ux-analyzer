@@ -1200,6 +1200,69 @@ async def test_conflicting_verifier_outcome_is_not_published(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_negated_failure_phrase_does_not_conflict_with_verifier(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate(
+        issue="No run failed, but the goal control is crowded.",
+        impact="The task still takes longer to complete.",
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate])
+        ],
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_verification_entry(verified=True),))
+    )
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert attempt.findings
+
+
+@pytest.mark.asyncio
+async def test_heuristic_metric_reference_in_severity_is_published(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate(
+        severity_justification=(
+            "The signal is a single heuristic ambiguity flag measured at 1.0."
+        )
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[candidate])
+        ],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert attempt.findings
+
+
+@pytest.mark.asyncio
+async def test_principle_authority_severity_is_not_published(tmp_path: Path) -> None:
+    candidate = _candidate(
+        severity_justification="The severity is justified because heuristic #3 says so."
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])]
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert any(
+        "publication validation" in limitation for limitation in attempt.limitations
+    )
+
+
+@pytest.mark.asyncio
 async def test_harmless_alternate_path_is_no_issue(tmp_path: Path) -> None:
     candidate = _candidate(
         title="The user chose an alternate path",

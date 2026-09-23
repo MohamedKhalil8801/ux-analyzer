@@ -287,6 +287,50 @@ async def test_proposer_json_payload_strips_segment_pixels_to_metadata() -> None
 
 
 @pytest.mark.asyncio
+async def test_proposer_json_payload_never_sees_dom_locators() -> None:
+    """page-capture-v3 locator fields are operator-facing only (ADR).
+
+    The sidecar carries per-node ``selector``/``xpath`` for the report's
+    copy-locator affordance; models must never receive them.
+    """
+
+    capture: dict[str, object] = {
+        **_CAPTURE,
+        "schema": "page-capture-v3",
+        "buttons": [
+            {
+                "label": "Start free trial",
+                "box": {"x": 10, "y": 900, "w": 200, "h": 48},
+                "selector": "main > button:nth-of-type(1)",
+                "xpath": "/html/body/main/button[1]",
+            }
+        ],
+        "headings": [
+            {
+                "label": "Simple pricing",
+                "box": {"x": 0, "y": 420, "w": 300, "h": 40},
+                "selector": "main h1",
+                "xpath": "/html/body/main/h1",
+            }
+        ],
+    }
+    proposer = _FakeProposer(_proposer_response())
+    outcome = await run_redesign_pass(
+        {PAGE_URL: capture},
+        audience="",
+        proposer=proposer,
+        critic=_FakeCritic(_critic_response()),
+        attempt_id="redesign-20260911T000000Z-loc01",
+        **_pack_kwargs(),
+    )
+    assert outcome.attempt.status is RedesignAttemptStatus.ACCEPTED
+    sent = json.dumps(proposer.calls[0])
+    assert "nth-of-type" not in sent
+    assert "/html/body" not in sent
+    assert "selector" not in sent and "xpath" not in sent
+
+
+@pytest.mark.asyncio
 async def test_understanding_uses_capture_key_not_model_echo() -> None:
     """A provider-supplied understanding URL is never trusted over the
     canonical capture key (the page set is the only source of truth)."""

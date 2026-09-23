@@ -87,6 +87,47 @@ _CAUSAL_MARKERS = re.compile(
     r"\b(?:because|due to|causes?|caused by|results? in|leads? to|drives?)\b",
     re.IGNORECASE,
 )
+_NEGATION_TOKENS = frozenset({"no", "not", "never", "without", "none", "zero"})
+_CLAUSE_BOUNDARIES = (". ", ", ", "; ", "! ", "? ", " but ", " yet ", " however ")
+# A severity justification must rest on observed evidence. Flag the words that
+# name a principle pack only when they are cited as the authority ("principle
+# #3 says", "Nielsen's heuristics"), not when they describe the project's own
+# heuristic metric family ("a heuristic ambiguity flag").
+_SEVERITY_PRINCIPLE_AUTHORITY_PATTERN = re.compile(
+    r"(?:\b(?:principle|principles|heuristic|heuristics|guideline|guidelines)\b"
+    r"(?:\s+(?:says?|requires?|demands?|mandates?|determines?|dictates?|proves?|justifies?)\b"
+    r"|\s*(?:#|no\.?|number)\s*\d+"
+    r"|\s+of\b))"
+    r"|(?:\b[\w'-]+['\u2019]s\s+(?:principles?|heuristics?|guidelines?)\b)",
+    re.IGNORECASE,
+)
+
+
+def _asserts_outcome(text: str, marker: str) -> bool:
+    """Return True when *text* asserts *marker* without a nearby negation.
+
+    Publication validation rejects a finding that contradicts a run's verified
+    outcome, but a plain substring test also fires on negated phrasing such as
+    "no run failed". Search each marker occurrence within its clause and treat a
+    preceding negation token as a non-assertion.
+    """
+    start = 0
+    while True:
+        index = text.find(marker, start)
+        if index < 0:
+            return False
+        clause_start = 0
+        for boundary in _CLAUSE_BOUNDARIES:
+            found = text.rfind(boundary, 0, index)
+            if found >= 0:
+                clause_start = max(clause_start, found + len(boundary))
+        clause = text[clause_start:index]
+        if not any(
+            re.search(rf"\b{re.escape(token)}\b", clause)
+            for token in _NEGATION_TOKENS
+        ):
+            return True
+        start = index + len(marker)
 _PRIMARY_OBSERVED_EVIDENCE_KINDS = frozenset(
     {
         "event",
@@ -1670,9 +1711,8 @@ class ReportSynthesisService:
         )
         if any(marker in lowered for marker in _PRINCIPLE_AUTHORITY_MARKERS):
             raise ValueError("UX principles cannot justify severity")
-        if any(
-            marker in finding.severity_justification.casefold()
-            for marker in ("principle", "heuristic", "guideline")
+        if _SEVERITY_PRINCIPLE_AUTHORITY_PATTERN.search(
+            finding.severity_justification
         ):
             raise ValueError("UX principles cannot justify severity")
         if finding.evidence_class is EvidenceClass.UNSUPPORTED_HUMAN_CLAIM:
@@ -1788,7 +1828,7 @@ class ReportSynthesisService:
         text = " ".join((finding.issue, finding.impact, finding.root_cause)).casefold()
         for run_id, verified in verification.items():
             if verified and any(
-                marker in text
+                _asserts_outcome(text, marker)
                 for marker in (
                     "failed",
                     "did not complete",
@@ -1800,7 +1840,7 @@ class ReportSynthesisService:
                     f"finding conflicts with verifier outcome for {run_id}"
                 )
             if not verified and any(
-                marker in text
+                _asserts_outcome(text, marker)
                 for marker in ("completed successfully", "verified successfully")
             ):
                 raise ValueError(

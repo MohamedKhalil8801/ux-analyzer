@@ -179,7 +179,7 @@ def test_write_ux_audit_persists_page_capture_sidecar(
     sidecar = tmp_path / "page-capture.json"
     assert sidecar.exists()
     document = json.loads(sidecar.read_text(encoding="utf-8"))
-    assert document["schema"] == "page-capture-v2"
+    assert document["schema"] == "page-capture-v3"
     assert len(document["pages"]) == 1
     page = document["pages"][0]
     assert page["url"] == "https://a.example/"

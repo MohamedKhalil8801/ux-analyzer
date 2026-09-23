@@ -126,6 +126,7 @@ def _write_synthesis(
     scope_run_ids: tuple[str, ...] | None = None,
     corpus_marker: str | None = None,
     created_at: str = "2026-08-10T12:00:00+00:00",
+    payload_extra: dict[str, dict[str, object]] | None = None,
 ) -> None:
     finding_values = findings
     if finding_values is None:
@@ -153,12 +154,13 @@ def _write_synthesis(
         or finding_refs
         or tuple(ref for finding in finding_values for ref in finding.evidence_refs)
     )
+    extra = payload_extra or {}
     entries = tuple(
         EvidenceEntry(
             ref=ref,
             evidence_class=EvidenceClass.DETERMINISTIC_FACT,
             summary=f"Recorded {ref.evidence_id}.",
-            payload=_synthesis_payload(ref),
+            payload={**_synthesis_payload(ref), **extra.get(ref.evidence_id, {})},
         )
         for ref in refs
     )
@@ -774,6 +776,9 @@ def _write_run(
                 "application_version": {
                     "id": version,
                     "label": version.title(),
+                    # Hover chips on viewport aliases copy this URL so an
+                    # operator can open the page the evidence came from.
+                    "start_url": "https://app.example.test/",
                 },
                 "persona": {
                     "id": "persona",
@@ -2392,8 +2397,12 @@ async def test_renderer_split_index_populates_controls_and_opens_replay(
     }
     _write_json(result_path, result)
     _write_checksums(result_path.parent)
+    # The improved run carries a 150KB limitation string so its page always
+    # exceeds this threshold (oversized fallback), while the defective page
+    # must fit. 410K leaves ~9K of headroom above the ~401K defective page
+    # (shell + payload) so small reporter-shell additions stay inside budget.
     report_path = render_experiment_report(
-        tmp_path, tmp_path / "report.html", max_single_file_bytes=400_000
+        tmp_path, tmp_path / "report.html", max_single_file_bytes=410_000
     )
 
     async with async_playwright() as playwright:

@@ -40,6 +40,11 @@ from ux_analyzer.ports.artifacts import (
     validate_saliency_artifact_path,
     validate_timeline_event_order,
 )
+from ux_analyzer.reporting.element_refs import (
+    alias_index_from_corpus,
+    aliases_in_prose,
+    prose_alias_segments,
+)
 from ux_analyzer.storage.redesign_artifacts import (
     RedesignAttemptSelection,
     RedesignAttemptStore,
@@ -1156,10 +1161,29 @@ def _estimated_full_report_bytes(experiment: dict[str, Any]) -> int:
             template_root / "static" / "report-index.js",
         )
     )
+    # Internal synthesis plumbing (alias vocabulary, element hover payloads)
+    # is consumed during projection and never published; excluding it here
+    # keeps the single-file/split decision aligned with the shipped bytes.
+    internal_keys = ("alias_index", "element_chips")
+    raw_synthesis = experiment.get("synthesis")
+    if isinstance(raw_synthesis, dict):
+        measured_experiment: dict[str, Any] = {
+            **experiment,
+            "synthesis": {
+                **raw_synthesis,
+                **{key: {} for key in internal_keys},
+            },
+        }
+    else:
+        measured_experiment = experiment
     synthesis_bytes = experiment.get("_synthesis_artifact_bytes", 0)
     if not isinstance(synthesis_bytes, int) or synthesis_bytes < 0:
         synthesis_bytes = 0
-    return shell_bytes + len(_safe_json(experiment).encode("utf-8")) + synthesis_bytes
+    return (
+        shell_bytes
+        + len(_safe_json(measured_experiment).encode("utf-8"))
+        + synthesis_bytes
+    )
 
 
 def _oversized_run_html(title: str, threshold: int) -> str:
@@ -1233,7 +1257,7 @@ _UX_AUDIT_SCHEMA = "ux-audit-v1"
 # and the truncation note must still render. 96MB covers ~25 default-height
 # pages while keeping the offline report read bounded.
 _REDESIGN_SIDECAR_MAX_BYTES = 96 * 1024 * 1024
-_PAGE_CAPTURE_SCHEMA = "page-capture-v2"
+_PAGE_CAPTURE_SCHEMAS = frozenset({"page-capture-v2", "page-capture-v3"})
 _REDESIGN_IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
 _REDESIGN_EFFORT_ORDER = {"small": 0, "medium": 1, "large": 2}
 _REDESIGN_STATE_LABELS = {
@@ -1248,8 +1272,29 @@ _UX_AUDIT_CATEGORIES = frozenset(
 )
 
 
-def _redesign_proposal_view(proposal: DesignProposal) -> dict[str, Any]:
+def _redesign_proposal_view(
+    proposal: DesignProposal,
+    captures: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     deliberate = proposal.deliberate_choice_check
+    from ux_analyzer.reporting.element_refs import locator_for_box
+
+    section_chips = [
+        {
+            "label": reference.section_label,
+            "summary": reference.summary,
+            "locator": (
+                locator_for_box(
+                    captures,
+                    box=reference.box,
+                    page_url_hint=reference.url,
+                )
+                if captures
+                else None
+            ),
+        }
+        for reference in proposal.section_refs
+    ]
     return {
         "proposal_id": proposal.proposal_id,
         "page_url": proposal.page_url,
@@ -1262,6 +1307,7 @@ def _redesign_proposal_view(proposal: DesignProposal) -> dict[str, Any]:
         "impact": proposal.impact.value,
         "effort": proposal.effort.value,
         "also_affects": list(proposal.also_affects),
+        "section_chips": section_chips,
         "deliberate_choice_check": (
             {
                 "pattern": deliberate.pattern,
@@ -1291,7 +1337,7 @@ def _redesign_capture_truncation(root: Path) -> tuple[bool, int]:
     if not isinstance(value, Mapping):
         return False, 0
     document = cast(dict[str, object], value)
-    if document.get("schema") != _PAGE_CAPTURE_SCHEMA:
+    if document.get("schema") not in _PAGE_CAPTURE_SCHEMAS:
         return False, 0
     pages = document.get("pages")
     if not isinstance(pages, list):
@@ -1301,7 +1347,7 @@ def _redesign_capture_truncation(root: Path) -> tuple[bool, int]:
         if not isinstance(raw_page, Mapping):
             continue
         page = cast(Mapping[str, object], raw_page)
-        if page.get("schema") != _PAGE_CAPTURE_SCHEMA:
+        if page.get("schema") not in _PAGE_CAPTURE_SCHEMAS:
             continue
         if page.get("truncated") is not True:
             continue
@@ -1322,7 +1368,9 @@ def _load_redesign(root: Path) -> dict[str, Any]:
     """
 
     try:
-        selection = RedesignAttemptStore(root).newest_valid_attempt()
+        # Content over recency: an accepted pack must not be shadowed by a
+        # newer failed/unavailable attempt (e.g. provider outage rerun).
+        selection = RedesignAttemptStore(root).newest_content_attempt()
     except (OSError, RuntimeError, ValueError):
         selection = RedesignAttemptSelection(None)
     attempt = selection.attempt
@@ -1378,7 +1426,10 @@ def _load_redesign(root: Path) -> dict[str, Any]:
         context["capture_note_height"] = height
         return context
     proposals_view = [
-        _redesign_proposal_view(proposal)
+        _redesign_proposal_view(
+            proposal,
+            captures=_operator_captures_by_url(root),
+        )
         for proposal in sorted(
             attempt.proposals,
             key=lambda item: (
@@ -1968,6 +2019,24 @@ def _load_synthesis(
             validate_evidence_refs(corpus, objection.resolution_evidence_refs)
         _validate_synthesis_run_scope(corpus, runs)
         findings = _synthesis_findings(attempt, corpus, runs, root)
+        # Rebuild the model's alias vocabulary (e{index} -> evidence ID) and
+        # hover payloads so every finding-prose token becomes a chip. The
+        # corpus evidence itself already carries the rich human cards; only
+        # element-kind aliases need the extra crop/locator payloads.
+        alias_index = alias_index_from_corpus(corpus)
+        run_map_for_chips = {str(run.get("run_id")): run for run in runs}
+        referenced_aliases = set(
+            aliases_in_prose(
+                [
+                    text
+                    for finding in attempt.findings
+                    for text in (finding.issue, finding.impact, finding.root_cause)
+                ]
+            )
+        )
+        element_chips = _element_chip_payloads(
+            corpus, root, run_map_for_chips, referenced_aliases
+        )
         status = _synthesis_enum_text(attempt.status)
         assessment = (
             "No supported UX issues were established in the tested scenarios."
@@ -1990,6 +2059,8 @@ def _load_synthesis(
                 "fallback_findings": fallback_findings,
                 "limitations": list(attempt.limitations),
                 "tested_scope": _synthesis_scope(runs),
+                "alias_index": alias_index,
+                "element_chips": element_chips,
             },
             artifact_bytes,
         )
@@ -2011,6 +2082,130 @@ def _load_synthesis(
             ),
             _synthesis_artifact_bytes(root, None),
         )
+
+
+def _element_chip_payloads(
+    corpus: Any,
+    root: Path,
+    run_map: Mapping[str, Mapping[str, Any]],
+    referenced_aliases: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Live-site affordances for aliases cited in finding prose.
+
+    Keyed by the alias an ``e{n}`` prose token uses. What lands in the
+    ``element`` slot depends on what the alias points at:
+
+    - ``element`` refs: screenshot crop of the recorded element plus a
+      verified-unique locator for the live site.
+    - ``event`` refs (executed actions): the acted-on element's crop and
+      locator, resolved through ``action.element_id`` + ``viewport_id``.
+    - ``viewport`` refs: the recorded page URL — a viewport is a whole
+      page, so the honest locator is the URL itself.
+
+    Every other referenced alias resolves through its corpus entry's own
+    humanized evidence card (detail only, no element payload).
+    """
+
+    from ux_analyzer.reporting.element_refs import element_chip_payload
+
+    aliases = alias_index_from_corpus(corpus)
+    captures: dict[str, dict[str, Any]] | None = None
+    payloads: dict[str, dict[str, Any]] = {}
+
+    def _captures() -> dict[str, dict[str, Any]]:
+        nonlocal captures
+        if captures is None:
+            captures = _operator_captures_by_url(root)
+        return captures
+
+    def _bundle(run_id: str) -> tuple[Mapping[str, Mapping[str, Any]] | None, Path]:
+        run = run_map.get(run_id)
+        if run is None:
+            return None, root
+        return run.get("snapshots"), root / _text(run.get("bundle_path"))
+
+    for alias in sorted(referenced_aliases):
+        evidence_id = aliases.get(alias)
+        if evidence_id is None:
+            continue
+        try:
+            entry = corpus.require(evidence_id)
+        except ValueError:
+            continue
+        reference = entry.ref
+        payload: dict[str, Any] | None = None
+        if reference.kind == "element" and reference.element_id:
+            snapshots, bundle_path = _bundle(str(reference.run_id))
+            if snapshots is not None:
+                payload = element_chip_payload(
+                    bundle_path=bundle_path,
+                    snapshots=snapshots,
+                    element_id=str(reference.element_id),
+                    captures_by_url=_captures(),
+                )
+        elif reference.kind == "event":
+            # Corpus payloads are frozen (mappingproxy), not plain dicts.
+            raw_action: Any = entry.payload.get("action")
+            action = cast(Mapping[str, Any], raw_action) if isinstance(
+                raw_action, Mapping
+            ) else None
+            acted_element = _text(action.get("element_id")) if action else ""
+            if acted_element:
+                snapshots, bundle_path = _bundle(str(reference.run_id))
+                if snapshots is not None:
+                    payload = element_chip_payload(
+                        bundle_path=bundle_path,
+                        snapshots=snapshots,
+                        element_id=acted_element,
+                        captures_by_url=_captures(),
+                    )
+        elif reference.kind == "viewport":
+            run = run_map.get(str(reference.run_id))
+            page_url = _text(run.get("start_url")) if run else ""
+            if page_url:
+                payload = {
+                    "page_url": page_url,
+                    "viewport_id": reference.viewport_id
+                    or _text(entry.payload.get("id")),
+                }
+        if payload is not None:
+            payloads[alias] = payload
+    return payloads
+
+
+def _operator_captures_by_url(root: Path) -> dict[str, dict[str, Any]]:
+    """Operator-facing capture pages keyed by URL (v3 sidecars only)."""
+
+    path = root / "page-capture.json"
+    if not path.is_file() or secure_is_link_or_reparse(path):
+        return {}
+    try:
+        raw = secure_read_bytes(
+            path,
+            "page capture sidecar",
+            max_bytes=_REDESIGN_SIDECAR_MAX_BYTES,
+        )
+        document = json.loads(raw.decode("utf-8"))
+    except (OSError, RuntimeError, ValueError, UnicodeError):
+        return {}
+    if not isinstance(document, dict):
+        return {}
+    typed_document = cast(dict[str, Any], document)
+    raw_pages: Any = typed_document.get("pages")
+    if not isinstance(raw_pages, list):
+        return {}
+    pages = cast("list[object]", raw_pages)
+    captures: dict[str, dict[str, Any]] = {}
+    for page_item in pages:
+        if not isinstance(page_item, dict):
+            continue
+        page = cast(dict[str, Any], page_item)
+        if page.get("schema") not in _PAGE_CAPTURE_SCHEMAS:
+            continue
+        url = page.get("url")
+        if isinstance(url, str) and url:
+            captures[url] = page
+    return captures
 
 
 def _fallback_synthesis(
@@ -3195,6 +3390,7 @@ def _project_synthesis(
     run_links: Mapping[str, str] | None,
     run_scope: frozenset[str] | None,
 ) -> dict[str, Any]:
+    alias_index = _mapping(synthesis.get("alias_index")) or None
     if not synthesis:
         return {
             "synthesis_status": "missing",
@@ -3209,9 +3405,18 @@ def _project_synthesis(
             ),
         }
     projected = dict(synthesis)
+    # Internal plumbing: the alias vocabulary and element chips are consumed
+    # while projecting findings; they must not ride into the published report
+    # payload (size estimates and run pages count every embedded byte).
+    projected.pop("alias_index", None)
+    projected.pop("element_chips", None)
     for name in ("findings", "fallback_findings"):
         projected[name] = [
-            _project_synthesis_finding(item, run_links=run_links)
+            _project_synthesis_finding(
+                item,
+                run_links=run_links,
+                alias_index=alias_index,
+            )
             for item in _list_of_mappings(synthesis.get(name))
             if run_scope is None or _finding_targets_run(item, run_scope)
         ]
@@ -3222,17 +3427,24 @@ def _project_synthesis_finding(
     finding: Mapping[str, Any],
     *,
     run_links: Mapping[str, str] | None,
+    alias_index: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     projected = dict(finding)
+    known_aliases: frozenset[str] = (
+        frozenset(alias_index) if alias_index is not None else frozenset()
+    )
     for field_name in (
         "issue",
         "impact",
         "root_cause",
         "severity_justification",
     ):
-        projected[f"display_{field_name}"] = _humanize_synthesis_text(
-            finding.get(field_name)
-        )
+        text = _humanize_synthesis_text(finding.get(field_name))
+        projected[f"display_{field_name}"] = text
+        if alias_index is not None:
+            projected[f"alias_{field_name}"] = prose_alias_segments(
+                text, known_aliases
+            )
     for field_name in ("fixes", "limitations", "reviewer_notes", "principles"):
         projected[f"display_{field_name}"] = [
             _humanize_synthesis_text(value)
@@ -3545,6 +3757,11 @@ def _load_run(path: Path) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "bundle_path": f"{path.parent.name}/{path.name}",
+        # Operator-facing page URL for the recorded viewports (hover chips
+        # copy it so an operator can open the page the evidence came from).
+        "start_url": _text(
+            _mapping(spec.get("application_version")).get("start_url")
+        ),
         "integrity_status": "trusted" if trusted else "failed",
         "seed": seed,
         "model_trial": model_trial,
@@ -3686,8 +3903,9 @@ def _report_context(
         if include_run_payload
         else ["Run-specific limitations are available on self-contained run pages."]
     )
+    raw_synthesis = _mapping(experiment.get("synthesis"))
     synthesis = _project_synthesis(
-        _mapping(experiment.get("synthesis")),
+        raw_synthesis,
         run_links=run_links,
         run_scope=run_scope,
     )
@@ -3738,6 +3956,52 @@ def _report_context(
     if not concise_index_fallback:
         report_payload["synthesis"] = synthesis
         report_payload["synthesis_status"] = synthesis["synthesis_status"]
+    # Hover-chip data: alias -> {detail, element}. Kept out of report_payload
+    # (which also feeds the concise index) and served from its own island.
+    raw_alias_index = _mapping(raw_synthesis.get("alias_index"))
+    element_chips = _mapping(raw_synthesis.get("element_chips"))
+    detail_by_evidence_id: dict[str, dict[str, Any]] = {}
+    alias_by_evidence_id = {
+        str(evidence_id): alias for alias, evidence_id in raw_alias_index.items()
+    }
+    for finding in _list_of_mappings(synthesis.get("findings")):
+        refs = _list_of_mappings(finding.get("evidence_refs"))
+        targets = _list_of_mappings(finding.get("evidence_targets"))
+        for reference, target in zip(refs, targets):
+            alias = alias_by_evidence_id.get(_text(reference.get("evidence_id")))
+            if alias is not None and target.get("detail") is not None:
+                detail_by_evidence_id[alias] = _mapping(target.get("detail"))
+    referenced_aliases: set[str] = set()
+    for finding in _list_of_mappings(synthesis.get("findings")):
+        for field_name in ("alias_issue", "alias_impact", "alias_root_cause"):
+            for segment in _list_of_mappings(finding.get(field_name)):
+                referenced_aliases.add(str(segment.get("alias")))
+    alias_chips: dict[str, dict[str, Any]] = {}
+    for alias in referenced_aliases:
+        chip = cast(
+            Mapping[str, Any],
+            element_chips.get(alias) or cast(Mapping[str, Any], {}),
+        )
+        # Viewport aliases carry the recorded page URL (the honest locator
+        # for a whole-page reference); element/action aliases carry the
+        # element crop + verified-unique locator payload.
+        is_page_ref = "page_url" in chip and "element_id" not in chip
+        raw_detail: Any = detail_by_evidence_id.get(alias)
+        detail = cast(Mapping[str, Any], raw_detail) if isinstance(
+            raw_detail, Mapping
+        ) else None
+        if detail is not None and "evidence_id" not in detail:
+            # Click-to-copy fallback: the chip always copies something
+            # meaningful (locator/page URL when present, else evidence ID).
+            detail = {
+                **detail,
+                "evidence_id": str(raw_alias_index.get(alias, "")),
+            }
+        alias_chips[alias] = {
+            "detail": detail or {"alias": alias},
+            "element": None if is_page_ref else (chip or None),
+            "page_url": str(chip.get("page_url", "")) if is_page_ref else "",
+        }
     return {
         "runs": runs,
         "run_rows": experiment["run_rows"],
@@ -3755,6 +4019,7 @@ def _report_context(
         "ux_audit": ux_audit,
         "pagespeed": pagespeed,
         "redesign": dict(redesign),
+        "alias_chips_json": _safe_json(alias_chips),
         "report_json": _safe_json(report_payload),
         "data_sources": data_sources,
     }
@@ -3821,8 +4086,13 @@ def _render_html(context: dict[str, Any], title: str) -> str:
     live_views = (template_root / "static" / "live-views.js").read_text(
         encoding="utf-8"
     )
-    javascript = javascript + "\n" + live_views
-    index_javascript = index_javascript + "\n" + live_views
+    # Element-reference chips render in synthesis prose on both the index
+    # and the run pages, so their behavior ships with both entry points.
+    element_refs = (template_root / "static" / "element-refs.js").read_text(
+        encoding="utf-8"
+    )
+    javascript = javascript + "\n" + live_views + "\n" + element_refs
+    index_javascript = index_javascript + "\n" + live_views + "\n" + element_refs
     return template.render(
         title=title,
         css=css,

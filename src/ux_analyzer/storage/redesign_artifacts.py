@@ -377,6 +377,44 @@ class RedesignAttemptStore:
             return RedesignAttemptSelection(attempt, tuple(skipped))
         return RedesignAttemptSelection(None, tuple(skipped))
 
+    def newest_content_attempt(self) -> RedesignAttemptSelection:
+        """Newest ``accepted`` attempt; falls back to the newest valid one.
+
+        The report tab prefers content over recency: a later run that failed
+        (``unavailable`` — provider outage) or was rejected must not shadow
+        an earlier accepted pack of validated proposals. When no attempt was
+        ever accepted, the newest valid attempt still surfaces so the report
+        can show its status honestly.
+        """
+
+        if not self.attempts_root.is_dir():
+            return RedesignAttemptSelection(None)
+        directories = [
+            entry
+            for entry in self.attempts_root.iterdir()
+            if entry.is_dir() and _ATTEMPT_ID_PATTERN.fullmatch(entry.name)
+        ]
+        directories.sort(key=lambda entry: entry.name, reverse=True)
+        skipped: list[str] = []
+        fallback: RedesignAttemptSelection | None = None
+        for directory in directories:
+            attempt = self._read_attempt(directory)
+            if attempt is None:
+                skipped.append(
+                    f"attempt {directory.name} is corrupt or unreadable"
+                )
+                continue
+            if attempt.status is RedesignAttemptStatus.ACCEPTED:
+                return RedesignAttemptSelection(attempt, tuple(skipped))
+            if fallback is None:
+                fallback = RedesignAttemptSelection(attempt, tuple(skipped))
+        if fallback is not None:
+            return RedesignAttemptSelection(
+                fallback.attempt,
+                tuple(skipped),
+            )
+        return RedesignAttemptSelection(None, tuple(skipped))
+
 
 __all__ = [
     "MAX_REDESIGN_JSON_BYTES",

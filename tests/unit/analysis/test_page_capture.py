@@ -163,7 +163,7 @@ def test_bounds_constants_match_plan() -> None:
     assert MAX_INVENTORY_ENTRIES == 1500
     assert MAX_TOTAL_COPY_CHARS == 200_000
     assert PAGE_CAPTURE_FILENAME == "page-capture.json"
-    assert PAGE_CAPTURE_SCHEMA == "page-capture-v2"
+    assert PAGE_CAPTURE_SCHEMA == "page-capture-v3"
 
 
 def test_max_page_height_env_non_positive_falls_back_to_default(

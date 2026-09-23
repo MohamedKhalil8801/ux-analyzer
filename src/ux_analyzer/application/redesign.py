@@ -302,6 +302,22 @@ def _json_capture_view(capture: Mapping[str, object]) -> dict[str, object]:
     """
 
     view = dict(capture)
+    # ADR boundary: DOM locators are operator-facing only. page-capture-v3
+    # sidecars embed per-node ``selector``/``xpath`` for the report's
+    # copy-locator affordance; no model role may see them.
+    for key in ("links", "buttons", "inputs", "headings", "sections"):
+        nodes = capture.get(key)
+        if not isinstance(nodes, Sequence) or isinstance(nodes, (str, bytes)):
+            continue
+        sanitized: list[dict[str, object]] = []
+        for raw in cast(Sequence[object], nodes):
+            if not isinstance(raw, Mapping):
+                continue
+            node = dict(cast(Mapping[object, object], raw))
+            node.pop("selector", None)
+            node.pop("xpath", None)
+            sanitized.append(cast(dict[str, object], node))
+        view[key] = sanitized
     segments = capture.get("segments")
     metadata: list[dict[str, object]] = []
     if isinstance(segments, Sequence) and not isinstance(segments, (str, bytes)):

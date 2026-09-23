@@ -789,3 +789,41 @@ select {
 @media (max-width: 760px) {
   .proposal-grid { grid-template-columns: 1fr; }
 }
+
+/* --- Element-reference alias chips ------------------------------------- */
+.alias-chip {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 0 6px;
+  border: 1px solid var(--rule, #ccc);
+  border-radius: 999px;
+  background: var(--folder, #f4f4f0);
+  color: inherit;
+  font: inherit;
+  font-size: .82em;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+  vertical-align: baseline;
+}
+.alias-chip:hover, .alias-chip:focus-visible {
+  border-color: var(--stamp, #b3541e);
+  background: var(--stamp-soft, #fdf1e7);
+  outline: none;
+}
+.alias-chip-copied { border-color: var(--verified, #2e7d32); background: var(--verified-soft, #e8f5e9); cursor: default; }
+.alias-popover {
+  position: absolute;
+  z-index: 60;
+  max-width: 340px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule, #ccc);
+  border-radius: 8px;
+  background: var(--paper, #fff);
+  box-shadow: 0 6px 24px rgba(0,0,0,.14);
+  font-size: .8rem;
+}
+.alias-popover[hidden] { display: none; }
+.alias-popover-detail { margin: 6px 0 0; padding: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.alias-popover-preview { display: block; margin: 8px auto 0; max-width: 240px; max-height: 180px; border: 1px solid var(--rule, #ccc); border-radius: 4px; }
+.alias-popover-caption { margin-top: 4px; color: var(--ink-soft, #666); text-align: center; overflow-wrap: anywhere; }
+.alias-popover-hint { margin-top: 6px; color: var(--ink-soft, #666); font-size: .74rem; }
