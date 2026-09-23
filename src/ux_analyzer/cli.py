@@ -125,7 +125,11 @@ from ux_analyzer.domain.exploration import (
 )
 from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
-from ux_analyzer.domain.synthesis import SynthesisAttempt
+from ux_analyzer.domain.synthesis import (
+    SynthesisAttempt,
+    SynthesisFinding,
+    SynthesisRoleReceipt,
+)
 from ux_analyzer.ports.artifacts import (
     BundleManifest,
     RedactionPolicy,
@@ -3984,6 +3988,26 @@ def _synthesis_corpus(
     return EvidenceCorpusBuilder().build(result, output, expectations)
 
 
+def _resume_state(
+    corpus: EvidenceCorpus,
+    *,
+    output: Path,
+) -> tuple[SynthesisRoleReceipt, tuple[SynthesisFinding, ...], str] | None:
+    """Find the newest prior attempt whose analyst stage is reusable.
+
+    The service validates each candidate receipt against the live corpus and
+    current prompts/schemas, so a stale or mismatched prior attempt simply
+    yields None and synthesis starts from the analyst as usual.
+    """
+
+    service = ReportSynthesisService(principles=ux_principles())
+    for prior in reversed(SynthesisArtifactStore(output).attempts):
+        receipt = service.analyst_receipt_for_resume(prior, corpus)
+        if receipt is not None:
+            return receipt, prior.candidate_findings, prior.attempt_id
+    return None
+
+
 async def _run_report_synthesis(
     *,
     result: ExperimentResult,
@@ -3994,6 +4018,7 @@ async def _run_report_synthesis(
     corpus = _synthesis_corpus(result=result, output=output, loaded=loaded)
     http_client = httpx.AsyncClient(timeout=settings.timeout_seconds)
     try:
+        resume = _resume_state(corpus, output=output)
         client = create_structured_model_client(
             settings,
             http_client=http_client,
@@ -4021,6 +4046,9 @@ async def _run_report_synthesis(
             max_adjudication_revisions=synthesis.max_adjudication_revisions,
             max_final_verifications=synthesis.max_final_verifications,
             model_record_source=client,
+            resume_analyst_receipt=resume[0] if resume else None,
+            resume_candidate_findings=resume[1] if resume else (),
+            resume_attempt_id=resume[2] if resume else "",
         )
         return await service.synthesize(corpus)
     finally:

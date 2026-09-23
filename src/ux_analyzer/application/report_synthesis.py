@@ -128,7 +128,7 @@ def _asserts_outcome(text: str, marker: str) -> bool:
         ):
             return True
         start = index + len(marker)
-_PRIMARY_OBSERVED_EVIDENCE_KINDS = frozenset(
+PRIMARY_OBSERVED_EVIDENCE_KINDS = frozenset(
     {
         "event",
         "replay",
@@ -140,6 +140,7 @@ _PRIMARY_OBSERVED_EVIDENCE_KINDS = frozenset(
         "heatmap",
     }
 )
+_PRIMARY_OBSERVED_EVIDENCE_KINDS = PRIMARY_OBSERVED_EVIDENCE_KINDS
 _UI_STATE_EVIDENCE_KINDS = frozenset({"viewport", "element", "screenshot", "heatmap"})
 _BEHAVIOR_OR_OUTCOME_EVIDENCE_KINDS = frozenset(
     {"event", "replay", "verification", "metric"}
@@ -850,6 +851,9 @@ class ReportSynthesisService:
         max_final_verifications: int = 1,
         model_record_source: object | None = None,
         clock: Callable[[], str] | None = None,
+        resume_analyst_receipt: SynthesisRoleReceipt | None = None,
+        resume_candidate_findings: Sequence[SynthesisFinding] = (),
+        resume_attempt_id: str = "",
     ) -> None:
         supplied_roles = _provider_roles(roles or {})
         self.analyst = analyst or supplied_roles.get(ModelRole.REPORT_ANALYST)
@@ -891,6 +895,17 @@ class ReportSynthesisService:
         self._model_record_source = model_record_source
         self._clock = clock
         self._sequence = 0
+        if resume_analyst_receipt is not None and not resume_candidate_findings:
+            raise ValueError(
+                "resume_candidate_findings must accompany resume_analyst_receipt"
+            )
+        if resume_candidate_findings and resume_analyst_receipt is None:
+            raise ValueError(
+                "resume_analyst_receipt must accompany resume_candidate_findings"
+            )
+        self._resume_analyst_receipt = resume_analyst_receipt
+        self._resume_candidate_findings = tuple(resume_candidate_findings)
+        self._resume_attempt_id = resume_attempt_id
 
     async def synthesize(self, corpus: EvidenceCorpus) -> SynthesisAttempt:
         """Run all synthesis roles and return an immutable synthesis outcome."""
@@ -920,35 +935,66 @@ class ReportSynthesisService:
                 role_manifest=role_manifest,
             )
 
-        analyst_run = await self._run_role(
-            ModelRole.REPORT_ANALYST,
-            cast(object, self.analyst),
-            corpus,
-            candidate_findings=(),
-        )
-        retrieval_log.extend(analyst_run.retrieval_log)
-        if analyst_run.response is None:
-            return self._attempt(
-                corpus,
-                attempt_id=attempt_id,
-                created_at=created_at,
-                status=(
-                    SynthesisStatus.UNAVAILABLE
-                    if analyst_run.unavailable
-                    else SynthesisStatus.REJECTED
-                ),
-                limitations=limitations
-                + [
-                    analyst_run.limitation
-                    or "Report analyst produced no usable output."
+        reused_receipt: SynthesisRoleReceipt | None = None
+        if self._resume_analyst_receipt is not None:
+            reused_receipt = self._resume_analyst_receipt
+        analyst_run: _RoleRun | None = None
+        analyst_response: AnalystResponse | None = None
+        if reused_receipt is not None and reused_receipt.role == (
+            ModelRole.REPORT_ANALYST.value
+        ):
+            candidate_models = tuple(self._resume_candidate_findings)
+            analyst_response = AnalystResponse(
+                complete=True,
+                candidate_findings=[
+                    self._finding_to_port(item)
+                    for item in candidate_models
                 ],
-                retrieval_log=retrieval_log,
-                role_manifest=role_manifest,
             )
-
-        analyst_response = cast(AnalystResponse, analyst_run.response)
-        if analyst_run.receipt is not None:
-            role_receipts[analyst_run.receipt.role] = analyst_run.receipt
+            retrieval_log.append(
+                {
+                    "role": ModelRole.REPORT_ANALYST.value,
+                    "phase": "resume",
+                    "round": 0,
+                    "request": (),
+                    "resolved_evidence_ids": (),
+                    "response": {
+                        "status": "reused",
+                        "attempt_id": self._resume_attempt_id,
+                    },
+                }
+            )
+            role_receipts[reused_receipt.role] = reused_receipt
+        else:
+            analyst_run = await self._run_role(
+                ModelRole.REPORT_ANALYST,
+                cast(object, self.analyst),
+                corpus,
+                candidate_findings=(),
+            )
+            retrieval_log.extend(analyst_run.retrieval_log)
+            if analyst_run.response is None:
+                return self._attempt(
+                    corpus,
+                    attempt_id=attempt_id,
+                    created_at=created_at,
+                    status=(
+                        SynthesisStatus.UNAVAILABLE
+                        if analyst_run.unavailable
+                        else SynthesisStatus.REJECTED
+                    ),
+                    limitations=limitations
+                    + [
+                        analyst_run.limitation
+                        or "Report analyst produced no usable output."
+                    ],
+                    retrieval_log=retrieval_log,
+                    role_manifest=role_manifest,
+                )
+            analyst_response = cast(AnalystResponse, analyst_run.response)
+            if analyst_run.receipt is not None:
+                role_receipts[analyst_run.receipt.role] = analyst_run.receipt
+        assert analyst_response is not None
         _retain_response_limitations(limitations, analyst_response)
         candidate_models = tuple(analyst_response.candidate_findings)
         candidate_findings: list[SynthesisFinding] = []
@@ -1337,6 +1383,61 @@ class ReportSynthesisService:
             findings=tuple(accepted),
         )
 
+    def analyst_receipt_for_resume(
+        self,
+        prior_attempt: SynthesisAttempt,
+        corpus: EvidenceCorpus,
+    ) -> SynthesisRoleReceipt | None:
+        """Return the prior attempt's analyst receipt when it is reusable.
+
+        The receipt is reusable only when the prior attempt came from the same
+        corpus digest, the same orchestrator prompt version, and the same
+        analyst response schema, and when every candidate finding it carries
+        still passes deterministic publication validation against *this*
+        corpus. Any mismatch returns None so the caller re-runs the analyst.
+        """
+
+        if type(prior_attempt) is not SynthesisAttempt:
+            raise TypeError("prior attempt must be a SynthesisAttempt")
+        if prior_attempt.corpus_digest != corpus.digest:
+            return None
+        if prior_attempt.prompt_version != REPORT_SYNTHESIS_PROMPT_VERSION:
+            return None
+        receipts = {
+            receipt.role: receipt
+            for receipt in prior_attempt.role_receipts
+            if receipt.role == ModelRole.REPORT_ANALYST.value
+        }
+        receipt = receipts.get(ModelRole.REPORT_ANALYST.value)
+        if receipt is None:
+            return None
+        expected_schema_digest = hashlib.sha256(
+            _canonical_json(
+                _role_schema(ModelRole.REPORT_ANALYST).model_json_schema()
+            ).encode("utf-8")
+        ).hexdigest()
+        if receipt.schema_digest != expected_schema_digest:
+            return None
+        candidate_models = tuple(prior_attempt.candidate_findings)
+        seen_candidate_ids: set[str] = set()
+        for candidate in candidate_models:
+            if candidate.finding_id in seen_candidate_ids:
+                return None
+            seen_candidate_ids.add(candidate.finding_id)
+            try:
+                self._validated_finding(
+                    corpus,
+                    self._finding_to_port(candidate),
+                    reviewer_state="candidate",
+                )
+            except _BenignCandidate:
+                # A benign alternate is also a deterministic, corpus-bound
+                # verdict; reuse stays faithful to the original outcome.
+                continue
+            except (TypeError, ValueError):
+                return None
+        return receipt
+
     async def _run_role(
         self,
         role: ModelRole,
@@ -1673,6 +1774,63 @@ class ReportSynthesisService:
         if isawaitable(value):
             return await cast(Any, value)
         return value
+
+    def _finding_to_port(self, finding: SynthesisFinding) -> CandidateFinding:
+        """Rebuild the transport finding from a persisted domain finding."""
+
+        return CandidateFinding.model_validate(
+            {
+                "finding_id": finding.finding_id,
+                "title": finding.title,
+                "issue": finding.issue,
+                "impact": finding.impact,
+                "root_cause": finding.root_cause,
+                "fixes": list(finding.fixes),
+                "severity": str(finding.severity),
+                "confidence": finding.confidence,
+                "evidence_refs": [
+                    {
+                        "evidence_id": reference.evidence_id,
+                        "kind": reference.kind,
+                        "run_id": reference.run_id,
+                        "viewport_id": reference.viewport_id,
+                        "element_id": reference.element_id,
+                        "event_id": reference.event_id,
+                        "metric_id": reference.metric_id,
+                        "artifact_path": reference.artifact_path,
+                        "replay_sequence": reference.replay_sequence,
+                        "sha256": reference.sha256,
+                    }
+                    for reference in finding.evidence_refs
+                ],
+                "affected_surfaces": list(finding.affected_surfaces),
+                "principles": list(finding.principles),
+                "counterevidence": [
+                    {
+                        "evidence_id": item.evidence_id,
+                        "kind": item.kind,
+                        "run_id": item.run_id,
+                        "viewport_id": item.viewport_id,
+                        "element_id": item.element_id,
+                        "event_id": item.event_id,
+                        "metric_id": item.metric_id,
+                        "artifact_path": item.artifact_path,
+                        "replay_sequence": item.replay_sequence,
+                        "sha256": item.sha256,
+                    }
+                    if isinstance(item, EvidenceRef)
+                    else item
+                    for item in finding.counterevidence
+                ],
+                "limitations": list(finding.limitations),
+                "reviewer_state": finding.reviewer_state,
+                "evidence_class": str(finding.evidence_class),
+                "reproducibility": str(finding.reproducibility),
+                "severity_justification": finding.severity_justification,
+                "reviewer_notes": list(finding.reviewer_notes),
+                "finding_kind": str(finding.finding_kind),
+            }
+        )
 
     def _validated_finding(
         self,
