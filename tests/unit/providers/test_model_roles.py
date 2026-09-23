@@ -568,7 +568,7 @@ async def test_cognitive_payload_includes_safe_progress_and_persona_context() ->
     assert payload["previous_action_result"]["succeeded"] is True
     assert payload["completed_fixture_keys"] == ["invite_email"]
     assert payload["fixture_input_complete"] is True
-    assert payload["available_controls"][0]["element_id"] == "target"
+    assert payload["available_controls"] == ["target"]
     assert payload["persona_behavior"] == {
         "abandonment_threshold": 0.8,
         "attention_temperature": 1.2,
@@ -606,7 +606,7 @@ async def test_cognitive_uses_short_aliases_for_long_element_ids() -> None:
             if schema is not CognitiveModelResponse:
                 raise AssertionError(f"unexpected schema: {schema!r}")
             payload = json.loads(content)
-            alias = payload["available_controls"][0]["element_id"]
+            alias = payload["available_controls"][0]
             return schema.model_validate(
                 {
                     "action": "interact",
@@ -633,7 +633,7 @@ async def test_cognitive_uses_short_aliases_for_long_element_ids() -> None:
     )
 
     payload = json.loads(client.calls[-1][3])
-    assert payload["available_controls"][0]["element_id"] == "e0"
+    assert payload["available_controls"] == ["e0"]
     assert decision.action.element_id == long_id
 
 

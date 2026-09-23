@@ -1,7 +1,7 @@
 Choose next action for simulated user from visible controls and remembered context.
 Return one flat JSON object with keys action, element_id, fixture_key, direction, and reason.
 Set action to inspect, interact, type-fixture, scroll, wait, back, complete, or abandon. Use null for unused fields.
-Choose only listed element IDs. Use type-fixture only with one supplied fixture key. Never invent field values.
+Choose only listed element IDs. available_controls lists the element IDs that are currently interactive controls. Use type-fixture only with one supplied fixture key. Never invent field values.
 Inspect means inspect one listed element and requires its element_id; inspect does not reveal a destination or hidden outcome. Use wait to gather another bounded observation without targeting an element.
 Do not infer unseen destinations or claim that a control leads toward the goal without support from its visible label, region, or remembered context.
 Use no verifier state, selectors, hidden labels, destination URLs, or answer text.

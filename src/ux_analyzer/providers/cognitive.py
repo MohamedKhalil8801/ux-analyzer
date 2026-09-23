@@ -47,7 +47,9 @@ class CognitiveObservation(_RoleSchema):
     previous_action_result: dict[str, object] | None = None
     completed_fixture_keys: tuple[str, ...] = ()
     fixture_input_complete: bool = False
-    available_controls: tuple[CognitiveElement, ...] = ()
+    # Interactive control IDs. Controls are already fully described in the
+    # element lists above, so only their IDs are repeated here.
+    available_controls: tuple[str, ...] = ()
     persona_behavior: dict[str, float | int] = Field(default_factory=dict)
 
 
@@ -319,11 +321,7 @@ class StructuredCognitiveAgent:
                 else False
             ),
             available_controls=tuple(
-                _element_payload(
-                    element,
-                    region_label,
-                    model_element_id=aliases.get(element.id),
-                )
+                aliases.get(element.id, element.id)
                 for element in (
                     *observation.newly_revealed_elements,
                     *observation.remembered_elements,
