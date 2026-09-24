@@ -223,7 +223,7 @@ class PlaywrightSessionAdapter:
             )
             await context.add_init_script(TAP_INSTRUMENTATION_JS)
             await context.tracing.start(
-                screenshots=True,
+                screenshots=config.trace_screencast,
                 snapshots=True,
                 sources=False,
             )

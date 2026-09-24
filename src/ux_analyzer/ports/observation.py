@@ -56,6 +56,10 @@ class ObservationSessionConfig:
     navigation_origins: tuple[str, ...] = ()
     resource_origins: tuple[str, ...] = ()
     fixture_only: bool = True
+    # Playwright trace screencast frames (replay video). Default on preserves
+    # current behavior; disabling shrinks trace archives substantially at the
+    # cost of losing frame-by-frame replay debugging.
+    trace_screencast: bool = True
 
     def __post_init__(self) -> None:
         if not self.session_id:

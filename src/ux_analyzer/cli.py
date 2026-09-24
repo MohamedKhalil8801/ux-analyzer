@@ -5086,6 +5086,21 @@ def _json_data(value: object, *, _active: set[int] | None = None) -> object:
     raise TypeError(f"cannot serialize experiment value {type(value)!r}")
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Read a boolean flag from the environment with a default.
+
+    Unset or empty values fall back to ``default``; truthy values are ``1``,
+    ``true``, ``yes``, ``on``; anything else is false. The empty-string check
+    matters because ``load_dotenv`` turns a ``VAR=`` line in ``.env.example``
+    into an empty string, which must not silently flip the flag.
+    """
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def _session_config(
     spec: RunSpec, *, output: Path, fixture_origin: str
 ) -> ObservationSessionConfig:
@@ -5128,6 +5143,7 @@ def _session_config(
         navigation_origins=navigation_origins,
         resource_origins=resource_origins,
         fixture_only=fixture_only,
+        trace_screencast=_env_flag("UXA_TRACE_SCREENCAST", default=True),
     )
 
 

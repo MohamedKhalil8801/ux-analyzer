@@ -2001,6 +2001,30 @@ async def test_sessions_use_isolated_fixed_contexts_and_denied_capabilities(
 
 
 @pytest.mark.asyncio
+async def test_trace_screencast_disabled_omits_screenshot_frames(
+    browser_adapter: Any,
+    running_servers: tuple[str, str],
+    tmp_path: Path,
+) -> None:
+    """UXA_TRACE_SCREENCAST=0 keeps snapshots/network but drops replay video."""
+
+    fixture_origin, _ = running_servers
+    config = replace(
+        _session_config(fixture_origin, tmp_path / "no-screencast.zip"),
+        trace_screencast=False,
+    )
+    session = await browser_adapter.start_session(config)
+    await browser_adapter.capture(session)
+    await browser_adapter.end_session(session)
+
+    assert session.trace_path.is_file()
+    with zipfile.ZipFile(session.trace_path) as archive:
+        names = archive.namelist()
+    assert not any(name.endswith(".jpeg") or name.endswith(".png") for name in names)
+    assert "trace.network" in names
+
+
+@pytest.mark.asyncio
 async def test_non_test_account_is_rejected_before_context_creation(
     browser_adapter: Any,
     running_servers: tuple[str, str],
