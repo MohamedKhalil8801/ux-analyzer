@@ -9,12 +9,13 @@ import os
 import stat
 import struct
 import tempfile
+import time
 import zipfile
 import zlib
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -1977,6 +1978,7 @@ class FilesystemRunBundleWriter:
             raise
         self._timeline = os.fdopen(descriptor, "a", encoding="utf-8")
         self._next_sequence = 1
+        self._opened_monotonic = time.perf_counter()
         self._finalized = False
         self._aborted = False
         self._saliency_events: list[SaliencyTimelineEvent] = []
@@ -2143,6 +2145,15 @@ class FilesystemRunBundleWriter:
             )
 
     def _append_event_value(self, event_value: dict[str, Any]) -> int:
+        # Performance observability: every timeline event carries the wall-clock
+        # write time plus seconds-since-bundle-open. Additive metadata only —
+        # sequence assignment and payload redaction are unchanged.
+        event_value["ts"] = (
+            datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        )
+        event_value["elapsed_ms"] = int(
+            (time.perf_counter() - self._opened_monotonic) * 1000
+        )
         event_value["sequence"] = self._next_sequence
         self._timeline.write(
             json.dumps(
