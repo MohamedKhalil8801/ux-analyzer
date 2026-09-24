@@ -1,0 +1,226 @@
+{
+  "passed": true,
+  "scenarios": [
+    {
+      "name": "wire-payload-accounting",
+      "passed": true,
+      "checks": [
+        {
+          "name": "payload-contract-present",
+          "passed": true,
+          "detail": "user payload carries the role/response-schema contract"
+        },
+        {
+          "name": "manifest-entries-present",
+          "passed": true,
+          "detail": "compact manifest entries reach the user payload"
+        },
+        {
+          "name": "privacy-sentinels-scrubbed",
+          "passed": true,
+          "detail": "private reasoning / finding prose never reach the wire"
+        }
+      ],
+      "notes": [
+        "analyst user payload = 23,883 bytes, of which the inline response-schema contract = 5,480 bytes. A tool-call-mode dedup saving must come out of the duplicate only, never the degraded-mode copy (scenario 2)."
+      ],
+      "metrics": {
+        "user_payload_bytes": 23883,
+        "contract_schema_bytes": 5480
+      }
+    },
+    {
+      "name": "degraded-transport-contract",
+      "passed": true,
+      "checks": [
+        {
+          "name": "inline-schema-parses",
+          "passed": true,
+          "detail": "the in-message schema is valid JSON object form"
+        },
+        {
+          "name": "inline-schema-carries-full-contract",
+          "passed": true,
+          "detail": "inline schema top-level required/properties match the real model schema"
+        },
+        {
+          "name": "inline-schema-keeps-nested-definitions",
+          "passed": true,
+          "detail": "nested $defs survive (degraded modes lose the tools[] copy entirely)"
+        }
+      ],
+      "notes": [
+        "Schema dedup MUST be mode-conditional: when the adapter falls back to json-object/plain, this in-message contract is the only schema the model sees. Removing it unconditionally would remove the contract exactly when tool enforcement is weakest."
+      ],
+      "metrics": {}
+    },
+    {
+      "name": "reviewer-retry-parity",
+      "passed": true,
+      "checks": [
+        {
+          "name": "retry-budget-is-bounded",
+          "passed": true,
+          "detail": "MAX_INVALID_STRUCTURED_ROLE_RETRIES=1"
+        },
+        {
+          "name": "exhausted-retries-reject-not-unavailable",
+          "passed": true,
+          "detail": "status=rejected"
+        },
+        {
+          "name": "limitation-mentions-invalid-output",
+          "passed": true,
+          "detail": "limitations record the invalid structured output"
+        },
+        {
+          "name": "context-preserved-across-retries",
+          "passed": true,
+          "detail": "2 reviewer calls, each still carrying the full manifest/finding context (no context stripping mid-retry)"
+        }
+      ],
+      "notes": [
+        "BLIND-RETRY baseline: every retry re-sent an identical prompt. Retry feedback will change this; the recovery semantics above must not change (retries <= 2, REJECTED status)."
+      ],
+      "metrics": {}
+    },
+    {
+      "name": "quota-fail-fast",
+      "passed": true,
+      "checks": [
+        {
+          "name": "quota-429-marks-attempt-unavailable",
+          "passed": true,
+          "detail": "status=UNAVAILABLE"
+        },
+        {
+          "name": "single-provider-call-no-pipeline-burn",
+          "passed": true,
+          "detail": "analyst invoked 1x before the attempt ended"
+        }
+      ],
+      "notes": [
+        "A preflight probe must preserve this: any preflight extra call is a budgeted addition, and quota-exhausted runs must never proceed into the full role pipeline (observed cost: ~243 min / 1.45M prompt tokens across 8 doomed attempts)."
+      ],
+      "metrics": {}
+    },
+    {
+      "name": "adjudicator-determinism",
+      "passed": true,
+      "checks": [
+        {
+          "name": "replaced-core-claim-rejected",
+          "passed": true,
+          "detail": "status=REJECTED, published findings=0"
+        },
+        {
+          "name": "rejection-is-publication-validation",
+          "passed": true,
+          "detail": "limitations name publication validation"
+        }
+      ],
+      "notes": [
+        "Publication invariants are code-enforced. Any prompt/schema slimming must leave this behavior byte-identical: a model can never publish a finding the reviewers did not establish, whatever the payload shape."
+      ],
+      "metrics": {}
+    },
+    {
+      "name": "corpus-coverage-parity",
+      "passed": true,
+      "checks": [
+        {
+          "name": "evidence-handles-traceable",
+          "passed": true,
+          "detail": "compact manifest entries + handle format keep evidence requestable"
+        },
+        {
+          "name": "run-id-traceable",
+          "passed": true,
+          "detail": "source run id reaches the model payload"
+        },
+        {
+          "name": "expectation-entry-traceable",
+          "passed": true,
+          "detail": "expectation entries (reference paths, alternatives) reach the payload"
+        },
+        {
+          "name": "prompt-guardrails-intact",
+          "passed": true,
+          "detail": "analyst prompt guardrails survive prompt slimming"
+        }
+      ],
+      "notes": [
+        "Manifest compaction may only remove redundancy (duplicate fields, repeated boilerplate); every evidence id, run id, and expectation entry must remain reachable, and prompt guardrails must stay."
+      ],
+      "metrics": {}
+    },
+    {
+      "name": "redesign-round-trip",
+      "passed": true,
+      "checks": [
+        {
+          "name": "proposer-role-and-payload",
+          "passed": true,
+          "detail": "proposer receives page payload + audience"
+        },
+        {
+          "name": "proposer-schema-in-payload",
+          "passed": true,
+          "detail": "proposer contract rides in the user payload"
+        },
+        {
+          "name": "critic-gets-consolidated-proposals-and-digests",
+          "passed": true,
+          "detail": "critic receives every consolidated proposal + page digests"
+        },
+        {
+          "name": "proposal-invariants-survive-critic",
+          "passed": true,
+          "detail": "critic re-emit keeps ids, page refs, principles, and section refs"
+        }
+      ],
+      "notes": [
+        "critic payload = 3,637 bytes and the critic re-emits every accepted proposal verbatim (observed cost: 11.8k completion tokens, 797s with 2 retries). Compaction may shrink duplicated context but must keep the invariants above."
+      ],
+      "metrics": {
+        "proposer_payload_bytes": 3207,
+        "critic_payload_bytes": 3637
+      }
+    },
+    {
+      "name": "cognitive-payload-coverage",
+      "passed": true,
+      "checks": [
+        {
+          "name": "decision-returns-structured-action",
+          "passed": true,
+          "detail": "cognitive agent returned a structured inspect decision"
+        },
+        {
+          "name": "goal-and-visible-elements-present",
+          "passed": true,
+          "detail": "goal + newly-revealed/remembered elements reach the payload"
+        },
+        {
+          "name": "available-controls-reference-visible-elements",
+          "passed": true,
+          "detail": "available_controls is an id list referencing elements in the payload (stage-3 dedup: no duplicated full objects)"
+        },
+        {
+          "name": "element-ids-unique-across-lists",
+          "passed": true,
+          "detail": "element ids stay distinct across newly-revealed and remembered lists"
+        },
+        {
+          "name": "no-private-execution-leak",
+          "passed": true,
+          "detail": "private execution refs, hidden labels, selectors, and destinations never reach the model"
+        }
+      ],
+      "notes": [
+        "Cognitive payload slimming (stage 3 landed: available_controls is an id list) must keep element ids stable per step and never leak private execution data. Structured-output retry for this role lives in the adapter/application layer, not the provider (scenario 3 covers retry semantics for report roles)."
+      ],
+      "metrics": {}
+    }
+  ]
+}
