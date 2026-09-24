@@ -3033,3 +3033,124 @@ async def test_codex_report_transport_enforces_exact_byte_boundary(
             == MODEL_REQUEST_MAX_BYTES
         )
         assert attachment.evidence_id in (processes[0].input or b"").decode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_records_queue_wait_and_response_mode() -> None:
+    """Limiter wait and final response mode land on the persisted record."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"scores":[]}'}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 1, "base_delay_seconds": 0}),
+        http_client=http_client,
+        call_limiter=asyncio.Semaphore(1),
+    )
+    await client.complete(
+        CoarseScentResponse,
+        (ChatMessage(role="user", content="{}"),),
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    record = client.records[0]
+    assert record.response_mode == "strict"
+    assert record.queue_wait_ms >= 0
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_record_response_mode_tracks_degraded_transport() -> None:
+    """A strict-mode call that degrades records the degraded mode it used."""
+
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "response_format unsupported"}},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"scores": [{"element_id": "target", "score": 0.7}]}
+                            )
+                        }
+                    }
+                ],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 3, "base_delay_seconds": 0}),
+        http_client=http_client,
+    )
+    result = await client.complete(
+        CoarseScentResponse,
+        (ChatMessage(role="user", content='{"goal":"Find invite"}'),),
+        model="scent-model",
+        role=ModelRole.COARSE_SCENT,
+    )
+
+    assert result.scores[0].score == pytest.approx(0.7)
+    assert requests[0]["response_format"]["type"] == "json_schema"
+    assert requests[1]["response_format"]["type"] == "json_object"
+    record = client.records[0]
+    assert record.response_mode == "json-object"
+    # The recorded mode is the final (degraded) one, not the initial strict.
+    assert record.response_mode != "strict"
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_queue_wait_grows_when_limiter_is_contended() -> None:
+    """A blocked call records a wait; an uncontended call records ~zero."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        await asyncio.sleep(0.05)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"scores":[]}'}}]},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleStructuredClient(
+        _settings(retry_policy={"max_attempts": 1, "base_delay_seconds": 0}),
+        http_client=http_client,
+        call_limiter=asyncio.Semaphore(1),
+    )
+    messages = (ChatMessage(role="user", content="{}"),)
+    await asyncio.gather(
+        client.complete(
+            CoarseScentResponse,
+            messages,
+            model="scent-model",
+            role=ModelRole.COARSE_SCENT,
+        ),
+        client.complete(
+            CoarseScentResponse,
+            messages,
+            model="scent-model",
+            role=ModelRole.COARSE_SCENT,
+        ),
+    )
+
+    waits = sorted(record.queue_wait_ms for record in client.records)
+    assert waits[-1] >= 40
+    assert waits[0] == 0
+    await http_client.aclose()

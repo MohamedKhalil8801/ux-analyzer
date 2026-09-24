@@ -1669,6 +1669,9 @@ class _StructuredCallSupport:
         response_payload: Mapping[str, object],
         token_usage: TokenUsage,
         retries: Sequence[RetryEvent],
+        *,
+        queue_wait_ms: int = 0,
+        response_mode: str = "",
     ) -> ModelCallRecord:
         record = ModelCallRecord(
             role=role,
@@ -1694,6 +1697,8 @@ class _StructuredCallSupport:
                 ),
             ),
             retries=tuple(retries),
+            queue_wait_ms=max(0, int(queue_wait_ms)),
+            response_mode=response_mode,
         )
         self._records.append(record)
         logger.info(
@@ -1746,6 +1751,7 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         # Keep local validation while using the provider-compatible object mode
         # for report and cognitive roles.
         mode = _response_mode(role_value)
+        queue_wait_ms = 0
         last_reason = "model call failed"
         last_provider_metadata: dict[str, object] = {}
         last_structural_diagnostics: dict[str, object] = {}
@@ -1759,7 +1765,11 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
             if role_value in _REPORT_ROLES:
                 enforce_transport_size(request_body)
             try:
+                limiter_entered = time.perf_counter()
                 async with _model_call_slot(self._call_limiter):
+                    queue_wait_ms = max(
+                        0, int((time.perf_counter() - limiter_entered) * 1000)
+                    )
                     request_headers: dict[str, str] = {
                         "accept": "application/json",
                         "content-type": "application/json",
@@ -2041,6 +2051,8 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                     else TokenUsage()
                 ),
                 retries,
+                queue_wait_ms=queue_wait_ms,
+                response_mode=mode,
             )
             del record
             return result
@@ -2073,6 +2085,8 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
                 else TokenUsage()
             ),
             retries,
+            queue_wait_ms=queue_wait_ms,
+            response_mode=mode,
         )
         status_code = last_provider_metadata.get("status_code")
         error_code = last_provider_metadata.get("error_code")
@@ -2773,6 +2787,7 @@ class CodexStructuredClient(_StructuredCallSupport):
         retries: list[RetryEvent] = []
         attempts = 0
         started = time.perf_counter()
+        queue_wait_ms = 0
         last_reason = "model call failed"
         response_metadata: dict[str, object] = {"failure": last_reason}
         request_metadata = self._request_metadata(
@@ -2793,7 +2808,7 @@ class CodexStructuredClient(_StructuredCallSupport):
                 reasoning_effort=_reasoning_effort(self.settings, role_value),
             )
             try:
-                parsed = await self._run_attempt(
+                parsed, queue_wait_ms = await self._run_attempt(
                     schema, normalized_messages, model, role_value
                 )
                 result = schema.model_validate(parsed)
@@ -2847,6 +2862,8 @@ class CodexStructuredClient(_StructuredCallSupport):
                 {"status": "success"},
                 TokenUsage(),
                 retries,
+                queue_wait_ms=queue_wait_ms,
+                response_mode="codex-exec",
             )
             return result
 
@@ -2861,6 +2878,8 @@ class CodexStructuredClient(_StructuredCallSupport):
             response_metadata,
             TokenUsage(),
             retries,
+            queue_wait_ms=queue_wait_ms,
+            response_mode="codex-exec",
         )
         raise ModelFailureError(last_reason)
 
@@ -2888,7 +2907,8 @@ class CodexStructuredClient(_StructuredCallSupport):
         messages: Sequence[ChatMessage],
         model: str,
         role: ModelRole,
-    ) -> object:
+    ) -> tuple[object, int]:
+        """Run one codex attempt; returns (parsed_output, limiter_wait_ms)."""
         schema_bytes = serialize_transport_json(
             _codex_transport_schema(schema),
             sort_keys=False,
@@ -2934,7 +2954,11 @@ class CodexStructuredClient(_StructuredCallSupport):
                         "-",
                     ]
                 )
+                limiter_entered = time.perf_counter()
                 async with _model_call_slot(self._call_limiter):
+                    queue_wait_ms = max(
+                        0, int((time.perf_counter() - limiter_entered) * 1000)
+                    )
                     spawn_task = asyncio.create_task(
                         asyncio.create_subprocess_exec(
                             *command,
@@ -3055,7 +3079,7 @@ class CodexStructuredClient(_StructuredCallSupport):
         parsed = json.loads(output)
         if not isinstance(parsed, Mapping):
             raise ValueError("structured response must be one JSON object")
-        return cast(dict[str, object], parsed)
+        return cast(dict[str, object], parsed), queue_wait_ms
 
     def request_size(
         self,

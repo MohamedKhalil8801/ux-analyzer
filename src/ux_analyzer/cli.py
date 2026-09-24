@@ -4561,6 +4561,8 @@ def _persist_redesign_outcome(outcome: object, *, output: Path) -> None:
                         "schema_version": record.schema_version,
                         "attempts": record.attempts,
                         "latency_ms": record.latency_ms,
+                        "queue_wait_ms": record.queue_wait_ms,
+                        "response_mode": record.response_mode,
                         "token_usage": {
                             "prompt_tokens": record.token_usage.prompt_tokens,
                             "completion_tokens": record.token_usage.completion_tokens,

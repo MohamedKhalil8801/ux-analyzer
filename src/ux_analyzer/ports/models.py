@@ -236,12 +236,20 @@ class ModelCallRecord:
     request: Mapping[str, Any]
     response: Mapping[str, Any]
     retries: tuple[RetryEvent, ...] = ()
+    # Performance observability (additive, optional): milliseconds spent waiting
+    # on the concurrency limiter before the final attempt was dispatched, and
+    # the response transport mode the call ended in ("tool-call", "strict",
+    # "json-object", "plain", or "codex-exec"). Zero/empty = not measured.
+    queue_wait_ms: int = 0
+    response_mode: str = ""
 
     def __post_init__(self) -> None:
         if self.attempts < 1:
             raise ValueError("model call needs at least one attempt")
         if self.latency_ms < 0:
             raise ValueError("latency must not be negative")
+        if self.queue_wait_ms < 0:
+            raise ValueError("queue_wait_ms must not be negative")
         object.__setattr__(self, "role", ModelRole(self.role))
         object.__setattr__(self, "retries", tuple(self.retries))
 

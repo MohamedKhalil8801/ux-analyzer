@@ -2556,6 +2556,7 @@ class ReportSynthesisService:
                 sum(item.token_usage.cached_tokens for item in records)
             ),
             "latency_ms": float(sum(item.latency_ms for item in records)),
+            "queue_wait_ms": float(sum(item.queue_wait_ms for item in records)),
             "usage_available": 1.0,
         }
 
@@ -2590,6 +2591,7 @@ class ReportSynthesisService:
                     "reasoning_tokens": 0.0,
                     "cached_tokens": 0.0,
                     "latency_ms": 0.0,
+                    "queue_wait_ms": 0.0,
                 },
             )
             entry["role_calls"] += 1.0
@@ -2600,6 +2602,7 @@ class ReportSynthesisService:
             entry["reasoning_tokens"] += float(record.token_usage.reasoning_tokens)
             entry["cached_tokens"] += float(record.token_usage.cached_tokens)
             entry["latency_ms"] += float(record.latency_ms)
+            entry["queue_wait_ms"] += float(record.queue_wait_ms)
         return breakdown
 
     def _attempt_identity(self, corpus: EvidenceCorpus) -> tuple[str, str]:

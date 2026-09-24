@@ -4859,6 +4859,8 @@ def _public_model_call(value: object) -> dict[str, Any]:
         "schema_version": _optional_text(record.get("schema_version")),
         "attempts": int(_number(record.get("attempts"), 1)),
         "latency_ms": int(_number(record.get("latency_ms"), 0)),
+        "queue_wait_ms": int(_number(record.get("queue_wait_ms"), 0)),
+        "response_mode": _optional_text(record.get("response_mode")),
         "token_usage": {
             "prompt_tokens": int(_number(usage.get("prompt_tokens"), 0)),
             "completion_tokens": int(_number(usage.get("completion_tokens"), 0)),
@@ -6008,6 +6010,9 @@ def _analysis_cost(model_calls: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "latency_ms": sum(
             int(_number(record.get("latency_ms"), 0)) for record in model_calls
+        ),
+        "queue_wait_ms": sum(
+            int(_number(record.get("queue_wait_ms"), 0)) for record in model_calls
         ),
         "prompt_tokens": sum(
             int(_number(usage.get("prompt_tokens"), 0)) for usage in usages

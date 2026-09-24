@@ -3105,6 +3105,8 @@ def _model_call_persistence_dict(record: ModelCallRecord) -> dict[str, object]:
         "schema_version": record.schema_version,
         "attempts": record.attempts,
         "latency_ms": record.latency_ms,
+        "queue_wait_ms": record.queue_wait_ms,
+        "response_mode": record.response_mode,
         "token_usage": record.token_usage,
         "retries": record.retries,
     }
