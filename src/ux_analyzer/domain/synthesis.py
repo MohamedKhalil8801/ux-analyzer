@@ -67,6 +67,15 @@ def _float_mapping(values: object) -> Mapping[str, float]:
     return MappingProxyType(normalized)
 
 
+def _float_mapping_of_mappings(values: object) -> Mapping[str, Mapping[str, float]]:
+    if not isinstance(values, Mapping):
+        raise TypeError("per_role_usage must be a mapping")
+    mapping = cast(Mapping[object, object], values)
+    return MappingProxyType(
+        {str(key): _float_mapping(item) for key, item in mapping.items()}
+    )
+
+
 def _tuple_of_refs(values: object, field_name: str) -> tuple[EvidenceRef, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{field_name} must be a collection of EvidenceRef values")
@@ -529,6 +538,13 @@ class SynthesisAttempt:
     schema_version: str = "synthesis-v2"
     retrieval_log: tuple[Mapping[str, object], ...] = ()
     usage: Mapping[str, float] = field(default_factory=lambda: dict[str, float]())
+    # Performance observability (additive, optional): per-role token/latency
+    # breakdown keyed by role name, and the attempt's wall-clock duration in
+    # milliseconds. Empty/zero means "not measured".
+    per_role_usage: Mapping[str, Mapping[str, float]] = field(
+        default_factory=lambda: dict[str, Mapping[str, float]]()
+    )
+    attempt_wall_ms: float = 0.0
     role_receipts: tuple[SynthesisRoleReceipt, ...] = ()
     rejected_candidate_audits: tuple[RejectedCandidateAudit, ...] = ()
     candidate_findings: tuple[SynthesisFinding, ...] = ()
@@ -559,6 +575,11 @@ class SynthesisAttempt:
         object.__setattr__(self, "model_manifest", _mapping_proxy(self.model_manifest))
         object.__setattr__(self, "role_manifest", _mapping_proxy(self.role_manifest))
         object.__setattr__(self, "usage", _float_mapping(self.usage))
+        object.__setattr__(
+            self, "per_role_usage", _float_mapping_of_mappings(self.per_role_usage)
+        )
+        if self.attempt_wall_ms < 0:
+            raise ValueError("attempt_wall_ms must not be negative")
         object.__setattr__(
             self,
             "role_receipts",

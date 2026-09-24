@@ -915,6 +915,7 @@ class ReportSynthesisService:
             raise TypeError("synthesize requires an EvidenceCorpus")
         corpus = corpus_input
         attempt_id, created_at = self._attempt_identity(corpus)
+        attempt_started = time.perf_counter()
         retrieval_log: list[Mapping[str, object]] = []
         role_receipts: dict[str, SynthesisRoleReceipt] = {}
         rejected_candidate_audits: list[RejectedCandidateAudit] = []
@@ -925,6 +926,7 @@ class ReportSynthesisService:
             return self._attempt(
                 corpus,
                 attempt_id=attempt_id,
+                attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
                 created_at=created_at,
                 status=SynthesisStatus.UNAVAILABLE,
                 limitations=limitations
@@ -977,6 +979,7 @@ class ReportSynthesisService:
                 return self._attempt(
                     corpus,
                     attempt_id=attempt_id,
+                    attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
                     created_at=created_at,
                     status=(
                         SynthesisStatus.UNAVAILABLE
@@ -1069,6 +1072,7 @@ class ReportSynthesisService:
             return self._attempt(
                 corpus,
                 attempt_id=attempt_id,
+                attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
                 created_at=created_at,
                 status=(
                     SynthesisStatus.UNAVAILABLE
@@ -1094,6 +1098,7 @@ class ReportSynthesisService:
             return self._attempt(
                 corpus,
                 attempt_id=attempt_id,
+                attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
                 created_at=created_at,
                 status=(
                     SynthesisStatus.UNAVAILABLE
@@ -1143,6 +1148,7 @@ class ReportSynthesisService:
             return self._attempt(
                 corpus,
                 attempt_id=attempt_id,
+                attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
                 created_at=created_at,
                 status=SynthesisStatus.REJECTED,
                 limitations=limitations,
@@ -1174,6 +1180,7 @@ class ReportSynthesisService:
             return self._attempt(
                 corpus,
                 attempt_id=attempt_id,
+                attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
                 created_at=created_at,
                 status=(
                     SynthesisStatus.UNAVAILABLE
@@ -1216,6 +1223,7 @@ class ReportSynthesisService:
             return self._attempt(
                 corpus,
                 attempt_id=attempt_id,
+                attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
                 created_at=created_at,
                 status=SynthesisStatus.REJECTED,
                 limitations=limitations,
@@ -1370,6 +1378,7 @@ class ReportSynthesisService:
         return self._attempt(
             corpus,
             attempt_id=attempt_id,
+            attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
             created_at=created_at,
             status=status,
             limitations=limitations,
@@ -2550,6 +2559,49 @@ class ReportSynthesisService:
             "usage_available": 1.0,
         }
 
+    def _per_role_usage(self) -> dict[str, dict[str, float]]:
+        """Per-role token/latency breakdown; empty when usage is unavailable."""
+
+        source = self._model_record_source
+        if source is None:
+            return {}
+        try:
+            raw_records = getattr(source, "records")
+            records = tuple(raw_records)
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return {}
+        if not records or any(
+            not isinstance(item, ModelCallRecord) for item in records
+        ):
+            return {}
+        breakdown: dict[str, dict[str, float]] = {}
+        for record in records:
+            role_name = (
+                record.role.value if isinstance(record.role, ModelRole) else str(record.role)
+            )
+            entry = breakdown.setdefault(
+                role_name,
+                {
+                    "role_calls": 0.0,
+                    "model_attempts": 0.0,
+                    "prompt_tokens": 0.0,
+                    "completion_tokens": 0.0,
+                    "total_tokens": 0.0,
+                    "reasoning_tokens": 0.0,
+                    "cached_tokens": 0.0,
+                    "latency_ms": 0.0,
+                },
+            )
+            entry["role_calls"] += 1.0
+            entry["model_attempts"] += float(record.attempts)
+            entry["prompt_tokens"] += float(record.token_usage.prompt_tokens)
+            entry["completion_tokens"] += float(record.token_usage.completion_tokens)
+            entry["total_tokens"] += float(record.token_usage.total_tokens)
+            entry["reasoning_tokens"] += float(record.token_usage.reasoning_tokens)
+            entry["cached_tokens"] += float(record.token_usage.cached_tokens)
+            entry["latency_ms"] += float(record.latency_ms)
+        return breakdown
+
     def _attempt_identity(self, corpus: EvidenceCorpus) -> tuple[str, str]:
         if self._clock is not None:
             created_at = self._clock()
@@ -2577,6 +2629,7 @@ class ReportSynthesisService:
         objections: Sequence[SynthesisObjection] = (),
         rejected_findings: Sequence[SynthesisFinding] = (),
         findings: Sequence[SynthesisFinding] = (),
+        attempt_wall_ms: float = 0.0,
     ) -> SynthesisAttempt:
         expectation_payload = [
             entry.payload for entry in corpus.entries if entry.ref.kind == "expectation"
@@ -2596,6 +2649,8 @@ class ReportSynthesisService:
             schema_version=REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION,
             retrieval_log=tuple(retrieval_log),
             usage=self._usage(),
+            per_role_usage=self._per_role_usage(),
+            attempt_wall_ms=attempt_wall_ms,
             role_receipts=tuple(role_receipts),
             rejected_candidate_audits=tuple(rejected_candidate_audits),
             candidate_findings=tuple(candidate_findings),

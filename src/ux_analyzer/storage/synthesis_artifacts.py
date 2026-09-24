@@ -775,6 +775,10 @@ def _attempt_to_dict(attempt: SynthesisAttempt) -> dict[str, object]:
         "role_manifest": attempt.role_manifest,
         "retrieval_log": attempt.retrieval_log,
         "usage": attempt.usage,
+        "per_role_usage": {
+            role: dict(entry) for role, entry in attempt.per_role_usage.items()
+        },
+        "attempt_wall_ms": attempt.attempt_wall_ms,
         "role_receipts": [
             _role_receipt_to_dict(item) for item in attempt.role_receipts
         ],
@@ -848,6 +852,18 @@ def _attempt_from_dict(value: Mapping[str, object]) -> SynthesisAttempt:
             key: _float(item, f"usage.{key}")
             for key, item in _mapping(value.get("usage"), "usage").items()
         },
+        per_role_usage={
+            role: {
+                key: _float(item, f"per_role_usage.{role}.{key}")
+                for key, item in _mapping(entry, f"per_role_usage.{role}").items()
+            }
+            for role, entry in _mapping(
+                value.get("per_role_usage", {}), "per_role_usage"
+            ).items()
+        },
+        attempt_wall_ms=_float(
+            value.get("attempt_wall_ms", 0.0), "attempt_wall_ms"
+        ),
         role_receipts=tuple(
             _role_receipt_from_dict(item)
             for item in _list(

@@ -2395,6 +2395,74 @@ async def test_attempt_usage_aggregates_model_call_records(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_attempt_per_role_usage_breaks_down_by_role(tmp_path: Path) -> None:
+    source = _ModelRecordSource(
+        (
+            ModelCallRecord(
+                role=ModelRole.REPORT_ANALYST,
+                model="report-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest="a" * 64,
+                schema_version="report-analyst-v1",
+                attempts=1,
+                latency_ms=17,
+                token_usage=TokenUsage(4, 3, 7, reasoning_tokens=1, cached_tokens=2),
+                request={},
+                response={},
+            ),
+            ModelCallRecord(
+                role=ModelRole.REPORT_ADJUDICATOR,
+                model="report-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest="b" * 64,
+                schema_version="report-adjudicator-v1",
+                attempts=2,
+                latency_ms=23,
+                token_usage=TokenUsage(8, 5, 13),
+                request={},
+                response={},
+            ),
+            ModelCallRecord(
+                role=ModelRole.REPORT_ADJUDICATOR,
+                model="report-model",
+                endpoint_origin="https://llm.example.test",
+                prompt_digest="c" * 64,
+                schema_version="report-adjudicator-v1",
+                attempts=1,
+                latency_ms=10,
+                token_usage=TokenUsage(2, 2, 4),
+                request={},
+                response={},
+            ),
+        )
+    )
+    service, _ = _scripted_service(model_record_source=source)
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    analyst = attempt.per_role_usage[ModelRole.REPORT_ANALYST.value]
+    adjudicator = attempt.per_role_usage[ModelRole.REPORT_ADJUDICATOR.value]
+    assert analyst["role_calls"] == 1
+    assert analyst["prompt_tokens"] == 4
+    assert analyst["reasoning_tokens"] == 1
+    assert analyst["cached_tokens"] == 2
+    assert analyst["latency_ms"] == 17
+    assert adjudicator["role_calls"] == 2
+    assert adjudicator["model_attempts"] == 3
+    assert adjudicator["prompt_tokens"] == 10
+    assert adjudicator["total_tokens"] == 17
+    assert adjudicator["latency_ms"] == 33
+    # Totals agree with the aggregate usage block.
+    assert attempt.usage["prompt_tokens"] == sum(
+        entry["prompt_tokens"] for entry in attempt.per_role_usage.values()
+    )
+    assert attempt.usage["latency_ms"] == sum(
+        entry["latency_ms"] for entry in attempt.per_role_usage.values()
+    )
+    assert attempt.attempt_wall_ms >= 0.0
+
+
+@pytest.mark.asyncio
 async def test_no_issues_requires_valid_completion_provenance_for_every_role(
     tmp_path: Path,
 ) -> None:
