@@ -1740,6 +1740,16 @@ class _ReportRole:
     role: ClassVar[ModelRole]
     prompt_version: ClassVar[str]
 
+    # Feedback payload contract: the application sets this key on a retry after
+    # an invalid structured output so the model can correct the exact failure
+    # instead of receiving an identical prompt (which historically repeated it).
+    _VALIDATION_FEEDBACK_INSTRUCTION = (
+        "Your previous response failed application-side validation with the "
+        "reason above. Return exactly one valid JSON object that corrects "
+        "exactly this failure while keeping every other requirement of the "
+        "role, the evidence policy, and the response schema."
+    )
+
     def __init__(self, client: StructuredModelClient, *, model: object) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("report model must not be empty")
@@ -1782,6 +1792,7 @@ class _ReportRole:
         previous_output: InvestigativeResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        validation_feedback: str | None = None,
     ) -> InvestigativeResponse:
         if not 1 <= retrieval_round <= max_retrieval_rounds:
             raise ValueError("retrieval round is outside the configured role budget")
@@ -1810,6 +1821,11 @@ class _ReportRole:
             base_message_payload["prior_structured_output"] = (
                 _contract_provider_handles(previous_output, handle_by_evidence_id)
             )
+        if validation_feedback:
+            base_message_payload["validation_feedback"] = {
+                "previous_validation_failure": validation_feedback,
+                "instruction": self._VALIDATION_FEEDBACK_INSTRUCTION,
+            }
         all_entries = (
             tuple(resolved_evidence.entries) if resolved_evidence is not None else ()
         )
@@ -2614,7 +2630,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v9"
+    prompt_version = "report-analyst-v10"
     response_schema = AnalystResponse
 
     @property
@@ -2674,6 +2690,7 @@ class ReportAnalyst(_ReportRole):
         previous_output: AnalystResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        validation_feedback: str | None = None,
     ) -> AnalystResponse:
         response = await self._complete(
             corpus_manifest,
@@ -2683,6 +2700,7 @@ class ReportAnalyst(_ReportRole):
             retrieval_round=retrieval_round,
             max_retrieval_rounds=max_retrieval_rounds,
             role_input={"task": "discover issues and root causes"},
+            validation_feedback=validation_feedback,
         )
         return cast(AnalystResponse, response)
 
@@ -2691,7 +2709,7 @@ class EvidenceAuditor(_ReportRole):
     """Challenge factual and visual support for analyst candidates."""
 
     role = ModelRole.REPORT_EVIDENCE_AUDITOR
-    prompt_version = "report-evidence-auditor-v4"
+    prompt_version = "report-evidence-auditor-v5"
     response_schema = EvidenceAuditResponse
 
     @property
@@ -2710,6 +2728,7 @@ class EvidenceAuditor(_ReportRole):
         previous_output: EvidenceAuditResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        validation_feedback: str | None = None,
     ) -> EvidenceAuditResponse:
         response = await self._complete(
             corpus_manifest,
@@ -2722,6 +2741,7 @@ class EvidenceAuditor(_ReportRole):
                 "task": "audit factual and visual support",
                 "candidate_findings": list(candidate_findings),
             },
+            validation_feedback=validation_feedback,
         )
         return cast(EvidenceAuditResponse, response)
 
@@ -2737,6 +2757,7 @@ class EvidenceAuditor(_ReportRole):
         previous_output: EvidenceAuditResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        validation_feedback: str | None = None,
     ) -> EvidenceAuditResponse:
         return await self.audit(
             corpus_manifest,
@@ -2746,6 +2767,7 @@ class EvidenceAuditor(_ReportRole):
             previous_output=previous_output,
             retrieval_round=retrieval_round,
             max_retrieval_rounds=max_retrieval_rounds,
+            validation_feedback=validation_feedback,
         )
 
 
@@ -2753,7 +2775,7 @@ class PatternReviewer(_ReportRole):
     """Review recurrence, cross-surface impact, severity, and fix leverage."""
 
     role = ModelRole.REPORT_PATTERN_REVIEWER
-    prompt_version = "report-pattern-reviewer-v4"
+    prompt_version = "report-pattern-reviewer-v5"
     response_schema = PatternReviewResponse
 
     @property
@@ -2772,6 +2794,7 @@ class PatternReviewer(_ReportRole):
         previous_output: PatternReviewResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        validation_feedback: str | None = None,
     ) -> PatternReviewResponse:
         response = await self._complete(
             corpus_manifest,
@@ -2784,6 +2807,7 @@ class PatternReviewer(_ReportRole):
                 "task": "review recurrence, scope, severity, and fix leverage",
                 "candidate_findings": list(candidate_findings),
             },
+            validation_feedback=validation_feedback,
         )
         return cast(PatternReviewResponse, response)
 
@@ -2792,7 +2816,7 @@ class ReportAdjudicator(_ReportRole):
     """Resolve reviewer objections and write plain-language final findings."""
 
     role = ModelRole.REPORT_ADJUDICATOR
-    prompt_version = "report-adjudicator-v5"
+    prompt_version = "report-adjudicator-v6"
     response_schema = AdjudicationResponse
 
     @property
@@ -2822,6 +2846,7 @@ class ReportAdjudicator(_ReportRole):
         previous_output: AdjudicationResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        validation_feedback: str | None = None,
     ) -> AdjudicationResponse:
         response = await self._complete(
             corpus_manifest,
@@ -2835,6 +2860,7 @@ class ReportAdjudicator(_ReportRole):
                 "candidate_findings": list(candidate_findings),
                 "objections": list(objections),
             },
+            validation_feedback=validation_feedback,
         )
         return cast(AdjudicationResponse, response)
 
@@ -2853,6 +2879,7 @@ class ReportAdjudicator(_ReportRole):
         previous_output: AdjudicationResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        validation_feedback: str | None = None,
     ) -> AdjudicationResponse:
         return await self.adjudicate(
             corpus_manifest,
@@ -2863,6 +2890,7 @@ class ReportAdjudicator(_ReportRole):
             previous_output=previous_output,
             retrieval_round=retrieval_round,
             max_retrieval_rounds=max_retrieval_rounds,
+            validation_feedback=validation_feedback,
         )
 
 

@@ -2441,3 +2441,43 @@ async def test_adjudicator_cannot_reclassify_a_scenario_defect(tmp_path: Path) -
 
     assert attempt.status is SynthesisStatus.ACCEPTED
     assert attempt.findings[0].finding_kind is FindingKind.SCENARIO_DEFECT
+
+
+@pytest.mark.asyncio
+async def test_invalid_output_retry_carries_validation_feedback(
+    tmp_path: Path,
+) -> None:
+    """A retried role must receive the safe validation reason, not a blind re-send."""
+
+    candidate = _candidate()
+    invalid = ModelResponseValidationError(
+        ModelRole.REPORT_ANALYST,
+        "finding references an unknown UX principle: accessibility-contrast",
+    )
+    service, roles = _scripted_service(
+        analyst=[invalid, AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert len(roles[0].calls) == 2
+    first_kwargs = roles[0].calls[0]["kwargs"]
+    second_kwargs = roles[0].calls[1]["kwargs"]
+    assert first_kwargs.get("validation_feedback") is None
+    feedback = second_kwargs.get("validation_feedback")
+    assert feedback is not None
+    assert "unknown UX principle" in feedback
+    # The feedback must be the bounded safe phrase, never raw attacker text.
+    assert "accessibility-contrast" not in feedback
+    retrieval_logs = [
+        log
+        for log in attempt.retrieval_log
+        if log.get("role") == ModelRole.REPORT_ANALYST.value
+        and log.get("response", {}).get("retrying") is True
+    ]
+    assert retrieval_logs
+    assert all(
+        "validation_feedback" in log["response"] for log in retrieval_logs
+    )

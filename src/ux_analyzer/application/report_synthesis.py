@@ -1501,6 +1501,7 @@ class ReportSynthesisService:
 
         prior = previous_output
         rounds = max_rounds or self.max_retrieval_rounds
+        validation_feedback: str | None = None
         for round_number in range(1, rounds + 1):
             response: _Response | None = None
             prior_role_record_count = 0
@@ -1517,6 +1518,7 @@ class ReportSynthesisService:
                         previous_output=prior,
                         retrieval_round=round_number,
                         max_retrieval_rounds=rounds,
+                        validation_feedback=validation_feedback,
                     )
                     response = _normalize_response(role, raw_response)
                 except asyncio.CancelledError:
@@ -1533,6 +1535,8 @@ class ReportSynthesisService:
                         and invalid_retry < MAX_INVALID_STRUCTURED_ROLE_RETRIES
                     ):
                         response_payload["retrying"] = True
+                        validation_feedback = self._retry_feedback_reason(error)
+                        response_payload["validation_feedback"] = validation_feedback
                         logs.append(
                             {
                                 "role": role.value,
@@ -1744,12 +1748,14 @@ class ReportSynthesisService:
         previous_output: _Response | None,
         retrieval_round: int,
         max_retrieval_rounds: int,
+        validation_feedback: str | None = None,
     ) -> object:
         common = {
             "resolved_evidence": resolved_evidence,
             "previous_output": previous_output,
             "retrieval_round": retrieval_round,
             "max_retrieval_rounds": max_retrieval_rounds,
+            "validation_feedback": validation_feedback,
         }
         if role is ModelRole.REPORT_ANALYST:
             method = getattr(provider, "analyze")
@@ -1774,6 +1780,20 @@ class ReportSynthesisService:
         if isawaitable(value):
             return await cast(Any, value)
         return value
+
+    def _retry_feedback_reason(self, error: BaseException) -> str:
+        """Bounded, provider-safe reason describing a validation failure.
+
+        Retried role invocations carry this in ``validation_feedback`` so the
+        model can correct the exact failure instead of receiving an identical
+        prompt. Only allowlisted safe phrases are emitted; unknown reasons
+        collapse to the generic safe message with a hard length bound.
+        """
+
+        if isinstance(error, ModelResponseValidationError):
+            _code, reason = _safe_role_validation_reason(error.reason)
+            return reason
+        return self._safe_validation_reason(error)[:512]
 
     def _finding_to_port(self, finding: SynthesisFinding) -> CandidateFinding:
         """Rebuild the transport finding from a persisted domain finding."""

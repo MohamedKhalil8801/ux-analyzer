@@ -192,6 +192,7 @@ class _ScriptedRole:
     def _next(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
         self.calls.append(
             {
+                "kwargs": dict(kwargs),
                 "args_repr_len": len(repr(args)),
                 "kwargs_repr_len": len(repr(sorted(kwargs.items(), key=str))),
             }
@@ -557,19 +558,19 @@ def scenario_reviewer_retry_parity(tmp_path: Path) -> ScenarioReport:
         f"{len(pattern_calls)} reviewer calls, each still carrying the full "
         "manifest/finding context (no context stripping mid-retry)",
     )
-    sizes = [c["kwargs_repr_len"] for c in pattern_calls]
-    if len(set(sizes)) == 1:
-        report.note(
-            "BLIND-RETRY baseline: every retry re-sent an identical prompt. "
-            "Retry feedback will change this; the recovery semantics above "
-            "must not change (retries <= "
-            f"{MAX_INVALID_STRUCTURED_ROLE_RETRIES + 1}, REJECTED status)."
-        )
-    else:
-        report.note(
-            "FEEDBACK-RETRY detected: retry payloads differ from the original "
-            f"({sizes}). Recovery semantics above still hold."
-        )
+    feedback_values = [
+        (c.get("kwargs") or {}).get("validation_feedback") for c in pattern_calls
+    ]
+    report.check(
+        "retry-feedback-mode",
+        feedback_values[0] is None
+        and all(
+            isinstance(value, str) and value
+            for value in feedback_values[1:]
+        ),
+        "first call has no feedback; every retry carries the bounded safe "
+        "validation reason (feedback-retry mode)",
+    )
     return report
 
 
