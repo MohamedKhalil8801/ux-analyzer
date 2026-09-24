@@ -346,6 +346,48 @@ def _audit_message_dump(message: ChatMessage) -> dict[str, object]:
     return payload
 
 
+def _strip_inline_response_schema(
+    messages: Sequence[ChatMessage],
+) -> tuple[ChatMessage, ...]:
+    """Drop the in-message ``response_schema`` copy when ``tools[]`` carries it.
+
+    Report and redesign providers embed the JSON schema in the user payload as
+    defense-in-depth for degraded transports. In tool-call mode the schema
+    already rides in ``tools[].function.parameters``, so the in-message copy is
+    duplicate bytes. Degraded modes never strip: there the in-message contract
+    is the only schema the model sees. Content that does not parse as a JSON
+    object with a ``response_schema`` member is passed through untouched so an
+    unexpected payload shape can never corrupt a request.
+    """
+
+    stripped: list[ChatMessage] | None = None
+    for index, message in enumerate(messages):
+        if message.role != "user" or not message.content.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(message.content)
+            if not isinstance(parsed, dict) or "response_schema" not in parsed:
+                continue
+            del parsed["response_schema"]
+            content = json.dumps(
+                parsed,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if stripped is None:
+            stripped = list(messages)
+        stripped[index] = ChatMessage(
+            role=message.role,
+            content=content,
+            attachments=message.attachments,
+        )
+    return tuple(stripped) if stripped is not None else tuple(messages)
+
+
 def _http_message_payload(message: ChatMessage) -> dict[str, object]:
     if not message.attachments:
         return message.model_dump()
@@ -2054,9 +2096,16 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         mode: str,
         *,
         include_attachment_bytes: bool = True,
+        strip_inline_schema: bool = True,
     ) -> dict[str, object]:
         role_value = ModelRole(role)
         effective_messages = messages
+        if strip_inline_schema and mode == "tool-call":
+            # tools[].function.parameters already carries the full JSON schema
+            # on the wire; the in-message response_schema copy is duplicate
+            # bytes. Degraded transports keep the in-message contract (below),
+            # so stripping is mode-conditional by construction.
+            effective_messages = _strip_inline_response_schema(effective_messages)
         if (
             role_value in _REPORT_ROLES or role_value in _REDESIGN_ROLES
         ) and mode != "tool-call":
@@ -2128,11 +2177,22 @@ class OpenAICompatibleStructuredClient(_StructuredCallSupport):
         model: str,
         role: ModelRole,
     ) -> int:
+        # Deliberately unstripped: this value feeds the provider's transport
+        # budget packing. Measuring with the inline schema included keeps
+        # headroom so a degraded-mode re-send (which restores the in-message
+        # contract) can never overflow the budget that was packed against.
         role_value = ModelRole(role)
         mode = _response_mode(role_value)
         return len(
             serialize_transport_json(
-                self._request_payload(schema, messages, model, role_value, mode)
+                self._request_payload(
+                    schema,
+                    messages,
+                    model,
+                    role_value,
+                    mode,
+                    strip_inline_schema=False,
+                )
             )
         )
 

@@ -34,6 +34,11 @@ deferred optimization could degrade.
 8.  cognitive-payload-coverage   element aliases must stay stable and
     collision-free across visible elements and available_controls; no
     private execution data may leak into any message.
+9.  adapter-schema-strip-modes   the adapter's tool-call schema strip must
+    be mode-conditional: tool-call bodies drop the duplicate in-message
+    schema, degraded modes (strict/json-object) keep it byte-identical,
+    and request_size stays measured unstripped so transport packing keeps
+    headroom for a degraded re-send.
 
 Exit code is 0 only when every scenario passes. ``--json`` writes a
 machine-readable score for baseline tracking across optimization commits.
@@ -52,7 +57,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ux_analyzer.adapters.openai import ModelFailureError
+import httpx
+
+from ux_analyzer.adapters import openai as openai_adapter
+from ux_analyzer.adapters.openai import (
+    ModelFailureError,
+    OpenAICompatibleSettings,
+    OpenAICompatibleStructuredClient,
+)
 from ux_analyzer.application.evidence_corpus import EvidenceCorpus, EvidenceEntry
 from ux_analyzer.application.report_synthesis import (
     MAX_INVALID_STRUCTURED_ROLE_RETRIES,
@@ -71,6 +83,7 @@ from ux_analyzer.domain.synthesis import (
     SynthesisStatus,
 )
 from ux_analyzer.ports.models import (
+    ChatMessage,
     ModelCallRecord,
     ModelResponseValidationError,
     ModelRole,
@@ -915,6 +928,190 @@ def _minimal_manifest() -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
+# Scenario 9: adapter tool-call schema strip is mode-conditional
+# ---------------------------------------------------------------------------
+
+
+def _gate_adapter_settings() -> OpenAICompatibleSettings:
+    values: dict[str, object] = {
+        "base_url": "https://fake-llm.test/v1",
+        "api_key": "gate-key",
+        "scent_model": "gate-scent",
+        "cognitive_model": "gate-cognitive",
+        "retry_policy": {"max_attempts": 3, "base_delay_seconds": 0},
+    }
+    return OpenAICompatibleSettings.model_validate(values)
+
+
+def _gate_user_payload_message() -> ChatMessage:
+    """A user message shaped like the real report provider payload."""
+
+    payload = {
+        "corpus_manifest": {"entries": ["e0", "e1"]},
+        "response_schema": {
+            "role": "report-analyst",
+            "schema_version": AnalystResponse.schema_version,
+            "schema": AnalystResponse.model_json_schema(),
+        },
+    }
+    content = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return ChatMessage(role="user", content=content)
+
+
+def scenario_adapter_schema_strip_modes(tmp_path: Path) -> ScenarioReport:
+    report = ScenarioReport("adapter-schema-strip-modes")
+    client = OpenAICompatibleStructuredClient(
+        _gate_adapter_settings(),
+        http_client=httpx.AsyncClient(),
+    )
+    messages = (
+        ChatMessage(role="system", content="You are a report analyst."),
+        _gate_user_payload_message(),
+    )
+    messages_with_trailing = (*messages, ChatMessage(role="user", content="plain"))
+    stripped = openai_adapter._strip_inline_response_schema(messages)
+    stripped_trailing = openai_adapter._strip_inline_response_schema(
+        messages_with_trailing
+    )
+
+    def _payload_of(source: object) -> dict[str, Any]:
+        assert isinstance(source, ChatMessage)
+        return dict(json.loads(source.content))
+
+    original = _payload_of(messages[1])
+    stripped_payload = _payload_of(stripped[1])
+    stripped_trailing_payload = _payload_of(stripped_trailing[1])
+
+    report.check(
+        "tool-call-mode-strips-schema",
+        "response_schema" in original
+        and "response_schema" not in stripped_payload
+        and "corpus_manifest" in stripped_payload,
+        "tool-call body drops the in-message response_schema while keeping "
+        "the rest of the payload intact",
+    )
+    report.check(
+        "strip-preserves-adjacent-messages",
+        stripped_trailing[2].content == messages_with_trailing[2].content
+        and "response_schema" not in stripped_trailing_payload,
+        "non-JSON and schema-less messages pass through untouched",
+    )
+
+    def _wire_payload(messages_value: object) -> dict[str, Any] | None:
+        """Find the parseable JSON user payload in a wire message list."""
+
+        assert isinstance(messages_value, list)
+        for raw in messages_value:
+            if not isinstance(raw, dict):
+                continue
+            content = raw.get("content")
+            if not isinstance(content, str) or not content.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and "response_schema" in parsed:
+                return parsed
+        return None
+
+    # Degraded transports: the wire body must keep the in-message contract.
+    for mode in ("strict", "json-object", "plain"):
+        degraded_payload = client._request_payload(
+            AnalystResponse,
+            messages,
+            "gate-report-model",
+            ModelRole.REPORT_ANALYST,
+            mode,
+        )
+        degraded_user = _wire_payload(degraded_payload.get("messages"))
+        report.check(
+            f"degraded-{mode}-keeps-contract",
+            degraded_user is not None,
+            f"{mode} wire body keeps the in-message response_schema contract",
+        )
+
+    tool_payload = client._request_payload(
+        AnalystResponse,
+        messages,
+        "gate-report-model",
+        ModelRole.REPORT_ANALYST,
+        "tool-call",
+    )
+    tool_user = _wire_payload(tool_payload.get("messages"))
+    tool_tools = tool_payload.get("tools")
+    assert isinstance(tool_tools, list)
+    tool_function = dict(tool_tools[0])
+    tool_spec = dict(tool_function.get("function") or {})
+    report.check(
+        "tool-call-wire-has-schema-once",
+        tool_user is None
+        and isinstance(tool_spec.get("parameters"), dict)
+        and bool(tool_spec["parameters"]),
+        "tool-call wire body carries the schema only in tools[].function",
+    )
+
+    stripped_bytes = len(
+        openai_adapter.serialize_transport_json(tool_payload)
+    )
+    unstripped_payload = client._request_payload(
+        AnalystResponse,
+        messages,
+        "gate-report-model",
+        ModelRole.REPORT_ANALYST,
+        "tool-call",
+        strip_inline_schema=False,
+    )
+    unstripped_bytes = len(
+        openai_adapter.serialize_transport_json(unstripped_payload)
+    )
+    packed_size = client.request_size(
+        AnalystResponse,
+        messages,
+        model="gate-report-model",
+        role=ModelRole.REPORT_ANALYST,
+    )
+    degraded_wire = client._request_payload(
+        AnalystResponse,
+        messages,
+        "gate-report-model",
+        ModelRole.REPORT_ANALYST,
+        "strict",
+    )
+    degraded_bytes = len(
+        openai_adapter.serialize_transport_json(degraded_wire)
+    )
+    report.metrics["tool_call_wire_bytes"] = stripped_bytes
+    report.metrics["unstripped_wire_bytes"] = unstripped_bytes
+    report.metrics["request_size_bytes"] = packed_size
+    report.metrics["degraded_strict_wire_bytes"] = degraded_bytes
+    report.check(
+        "request-size-keeps-packing-headroom",
+        packed_size == unstripped_bytes
+        and stripped_bytes < unstripped_bytes
+        and degraded_bytes >= stripped_bytes,
+        "packing measure (request_size) stays unstripped and the stripped "
+        "tool-call wire is strictly smaller, so no degraded re-send can "
+        "overflow a budget its tool-call send fit in; the strict-mode "
+        "response_format block is a pre-existing overhead request_size never "
+        f"included (tool-call wire {stripped_bytes:,} B vs unstripped "
+        f"{unstripped_bytes:,} B, saved {unstripped_bytes - stripped_bytes:,} B)",
+    )
+    report.note(
+        "Strip is adapter-side and mode-conditional by construction: providers "
+        "keep emitting the inline contract (scenario 2), so degraded modes and "
+        "codex transport are unchanged. Only tool-call bodies lose the duplicate."
+    )
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -927,6 +1124,7 @@ SCENARIOS: list[Callable[[Path], ScenarioReport]] = [
     scenario_corpus_coverage_parity,
     scenario_redesign_round_trip,
     scenario_cognitive_payload_coverage,
+    scenario_adapter_schema_strip_modes,
 ]
 
 
