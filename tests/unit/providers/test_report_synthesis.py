@@ -54,6 +54,9 @@ from ux_analyzer.providers.report_synthesis import (
     _initial_manifest_payload,
     _known_evidence_ids,
     _manifest_payload,
+    _reserve_per_scenario,
+    _safe_context_entries,
+    _scenario_of_run,
 )
 from ux_analyzer.providers.ux_principles import ux_principles
 
@@ -3056,3 +3059,126 @@ def test_candidate_finding_omitted_kind_defaults_to_a_ux_issue() -> None:
     assert candidate.finding_kind is FindingKind.UX_ISSUE
     schema = AnalystResponse.model_json_schema()["$defs"]["CandidateFinding"]
     assert "finding_kind" not in schema["required"]
+
+
+def _context_entry(
+    evidence_id: str,
+    run_id: str,
+    *,
+    kind: str = "event",
+    scenario_id: str | None = None,
+) -> EvidenceEntry:
+    if kind == "event":
+        sequence = int(evidence_id.rsplit(":", 1)[-1])
+        ref = EvidenceRef(
+            evidence_id,
+            kind,
+            run_id,
+            event_id=f"event-{sequence}",
+            replay_sequence=sequence,
+        )
+    else:
+        ref = EvidenceRef(evidence_id, kind, run_id)
+    payload: dict[str, object] = {"id": evidence_id}
+    if scenario_id is not None:
+        payload["id"] = scenario_id
+    return EvidenceEntry(
+        ref=ref,
+        evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+        summary=f"Recorded {evidence_id}.",
+        payload=payload,
+    )
+
+
+def _noisy_and_quiet_scenarios() -> list[EvidenceEntry]:
+    """One run recorded fifty events; another recorded one."""
+
+    entries = [
+        _context_entry(f"scenario:{run_id}", run_id, kind="scenario", scenario_id=name)
+        for run_id, name in (("run-loud", "loud"), ("run-quiet", "quiet"))
+    ]
+    entries.extend(
+        _context_entry(f"event:run-loud:{index}", "run-loud")
+        for index in range(1, 51)
+    )
+    entries.append(_context_entry("event:run-quiet:1", "run-quiet"))
+    return entries
+
+
+def test_context_slice_gives_every_scenario_a_share() -> None:
+    """A loud run must not be able to starve a quiet one out of the context.
+
+    The analyst is required to review every scenario, so a scenario that
+    happens to record little is exactly the one whose evidence gets dropped
+    first when the budget is first-come - and it is then the review most likely
+    to be skipped. A scenario with one entry has to be as present in the
+    context as one with fifty.
+    """
+
+    entries = _noisy_and_quiet_scenarios()
+    scenario_of_run = _scenario_of_run(entries)
+
+    selected = _reserve_per_scenario(entries, scenario_of_run, 6)
+
+    included_runs = {entry.ref.run_id for entry in selected}
+    assert included_runs == {"run-loud", "run-quiet"}
+    assert "event:run-quiet:1" in {entry.ref.evidence_id for entry in selected}
+
+
+def test_unused_share_is_redistributed() -> None:
+    """A scenario with three entries must not hold budget hostage.
+
+    Equal floors are only fair if the leftover is usable, otherwise the slice
+    is padded with nothing while another scenario's evidence is dropped.
+    """
+
+    entries = [
+        _context_entry("scenario:run-a", "run-a", kind="scenario", scenario_id="a"),
+        _context_entry("scenario:run-b", "run-b", kind="scenario", scenario_id="b"),
+        *[_context_entry(f"event:run-a:{index}", "run-a") for index in range(1, 21)],
+    ]
+    scenario_of_run = _scenario_of_run(entries)
+
+    selected = _reserve_per_scenario(entries, scenario_of_run, 8)
+
+    # The whole budget is spent: run-b takes its single entry, and the rest
+    # goes to run-a rather than being left idle.
+    assert len(selected) == 8
+    assert {entry.ref.run_id for entry in selected} == {"run-a", "run-b"}
+    assert "scenario:run-b" in {entry.ref.evidence_id for entry in selected}
+
+
+def test_scenario_slice_never_exceeds_the_limit() -> None:
+    entries = _noisy_and_quiet_scenarios()
+    scenario_of_run = _scenario_of_run(entries)
+
+    for limit in (0, 1, 2, 5, 17, 60, 500):
+        assert len(_reserve_per_scenario(entries, scenario_of_run, limit)) == min(
+            limit, len(entries)
+        )
+
+
+def test_context_entries_keep_metric_references_when_scenarios_are_reserved() -> None:
+    """Rationing must not cost the metric group its slot.
+
+    Metrics are already grouped into one entry, which is why the group is
+    reserved before the per-scenario slice rather than after it.
+    """
+
+    entries = [
+        *_noisy_and_quiet_scenarios(),
+        _context_entry("metric:run-loud:wrong-actions", "run-loud", kind="metric"),
+    ]
+
+    context_entries, included, deferred, included_ids = _safe_context_entries(
+        entries, max_entries=8
+    )
+
+    assert deferred > 0
+    representations = [
+        item.get("representation")
+        for item in context_entries
+        if isinstance(item, dict)
+    ]
+    assert "metric-group-v1" in representations
+    assert "metric:run-loud:wrong-actions" in included_ids

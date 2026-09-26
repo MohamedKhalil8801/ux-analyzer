@@ -607,6 +607,82 @@ def _safe_metric_row(entry: EvidenceEntry, *, depth: int = 0) -> dict[str, objec
     return row
 
 
+def _scenario_of_run(entries: Sequence[EvidenceEntry]) -> dict[str, str]:
+    """Map run_id to the scenario that run executed.
+
+    The corpus records the scenario on the ``scenario:`` entry rather than on
+    every entry that belongs to that run, so the association is read once here
+    instead of being re-derived per entry.
+    """
+
+    mapping: dict[str, str] = {}
+    for entry in entries:
+        if entry.ref.kind != "scenario":
+            continue
+        scenario_id = entry.payload.get("id")
+        if isinstance(scenario_id, str) and scenario_id.strip():
+            mapping[entry.ref.run_id] = scenario_id.strip()
+    return mapping
+
+
+def _reserve_per_scenario(
+    entries: Sequence[EvidenceEntry],
+    scenario_of_run: Mapping[str, str],
+    limit: int,
+) -> list[EvidenceEntry]:
+    """Take a context slice that gives every scenario a share of the budget.
+
+    The previous slice was first-come: a run that recorded many events could
+    consume the whole allowance and leave other scenarios represented by
+    nothing at all. That interacts badly with the coverage invariant - the
+    analyst is required to review every scenario, and starvation is what makes
+    a review of the quiet scenario the first thing to get cut.
+
+    Each scenario gets an equal floor, spent in recording order, and any share
+    a scenario cannot use is redistributed to those that still have entries. So
+    a scenario with three entries does not hold budget hostage, and a scenario
+    with three hundred still gets its floor.
+    """
+
+    if limit <= 0:
+        return []
+    by_scenario: dict[str, list[EvidenceEntry]] = {}
+    order: list[str] = []
+    unattributed: list[EvidenceEntry] = []
+    for entry in entries:
+        scenario_id = scenario_of_run.get(entry.ref.run_id)
+        if scenario_id is None:
+            unattributed.append(entry)
+            continue
+        if scenario_id not in by_scenario:
+            by_scenario[scenario_id] = []
+            order.append(scenario_id)
+        by_scenario[scenario_id].append(entry)
+    if not by_scenario:
+        return list(entries[:limit])
+    # Unattributed entries sort last: they cannot be rationed against a
+    # scenario, and starving the attributable ones would defeat the point.
+    for scenario_id in order:
+        by_scenario[scenario_id] = [
+            *by_scenario[scenario_id],
+            *unattributed,
+        ]
+        break
+    selected: list[EvidenceEntry] = []
+    remaining = limit
+    progressed = True
+    while remaining > 0 and progressed:
+        progressed = False
+        for scenario_id in order:
+            bucket = by_scenario[scenario_id]
+            if not bucket or remaining <= 0:
+                continue
+            selected.append(bucket.pop(0))
+            remaining -= 1
+            progressed = True
+    return selected
+
+
 def _safe_context_entries(
     entries: Sequence[EvidenceEntry],
     *,
@@ -629,7 +705,11 @@ def _safe_context_entries(
             "entries": metric_rows,
         }
     non_metric_limit = max_entries - (1 if metric_group is not None else 0)
-    included_non_metric = non_metric_entries[: max(0, non_metric_limit)]
+    included_non_metric = _reserve_per_scenario(
+        non_metric_entries,
+        _scenario_of_run(entries),
+        max(0, non_metric_limit),
+    )
     context_entries = [_safe_entry(entry) for entry in included_non_metric]
     if metric_group is not None and len(context_entries) < max_entries:
         context_entries.append(metric_group)
