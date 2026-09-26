@@ -647,7 +647,7 @@ def pagespeed(
     stable saved-report link and the scores that report renders — that is
     a second, independent Lighthouse run, so its scores are labeled and
     shown separately from the API run's. The capture is cached per URL for
-    7 days; set UXA_SKIP_PAGESPEED_WEB=1 to disable.
+    7 days; set UXA_SKIP_PAGESPEED=1 to disable.
     """
     from ux_analyzer.analysis.pagespeed import (
         enrich_pagespeed_web_links,
