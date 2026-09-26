@@ -236,6 +236,7 @@ Start with [Getting started](docs/getting-started.md) for a first analysis, then
 | [Commands](docs/commands.md) | Every command, its options, and a worked example. |
 | [Configuration](docs/configuration.md) | Project YAML schema and every environment variable. |
 | [Exploration](docs/exploration.md) | The scenario-discovery workflow. |
+| [Reports](docs/reports.md) | What a report claims, the three finding kinds, and how to audit a finding. |
 | [Redesign](docs/redesign.md) | Design proposals, the two model roles, and capture limits. |
 | [Output formats](docs/output-formats.md) | Run bundle layout, sidecars, and how to read them. |
 | [Security](docs/security.md) | What reaches the model provider, redaction, and key handling. |

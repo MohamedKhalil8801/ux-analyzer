@@ -98,6 +98,15 @@ including blockers. See CONTEXT.md.
 should notice, understand, and ultimately achieve in a specific scenario and
 application version. Evidence for comparison, not a UX judgment. See CONTEXT.md.
 
+## I
+
+**Improvement**: A UX finding kind for the case where the persona completed the
+task and the record shows a better balance of competing signals was available.
+It is not a UX issue and not a scenario defect: an improvement never claims the
+persona was harmed, blocked, delayed, or misled. Reporting a balance of
+trade-offs as an improvement rather than inflating it into a harm claim is what
+keeps severity honest.
+
 ## M
 
 **Model Estimate**: A model-generated claim that is explicitly not run evidence.
@@ -130,9 +139,21 @@ Both are immutable and digest-stamped. See CONTEXT.md.
 
 ## R
 
+**Review Disposition**: The outcome recorded by a **Scenario Review** for one
+scenario. `no-issue-found` means the scenario was examined and produced nothing
+publishable; `ux-issue`, `scenario-defect`, and `improvement` mean it produced a
+finding of that kind. The distinction is the point: `no-issue-found` is a result,
+not an absence.
+
 **Redesign Attempt Status**: The explicit outcome of a redesign pass:
 `accepted`, `no-proposals`, `unavailable`, or `rejected`. Mirrors **Synthesis
 Status** for the redesign pipeline. See CONTEXT.md.
+
+A malformed proposal costs only itself. `rejected` is reserved for a pass-level
+failure - a bound breach, or every proposal failing validation - so a single bad
+item cannot hide the valid ones beside it. `no-proposals` means the critic
+considered the pages and concluded no change was warranted, which is why a pass
+where nothing survived validation is `rejected` rather than `no-proposals`.
 
 **Redesign Principle Pack**: The versioned, static design-principle set —
 perception and grouping (Gestalt), hierarchy and consistency, usability
@@ -151,6 +172,15 @@ content-addressed `artifacts/`. Format documented in
 [output formats](output-formats.md).
 
 ## S
+
+**Scenario Review**: The published record of examining one scenario. Every
+scenario in the evidence corpus carries exactly one review, and an attempt that
+leaves any scenario unexamined is rejected rather than published. A review names
+the evidence that was examined and the signals that were weighed, so "nothing
+was found" is a claim the report can show its work for rather than silence. The
+report shows the whole set under **Scenario examination**.
+
+_Avoid_: skipped scenario, missing review
 
 **Same-Origin Crawl**: Frontier rule that enqueued links must share origin with a
 start URL origin. Resource origins (`allowed_origins`) stay separate for
