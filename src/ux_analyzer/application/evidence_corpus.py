@@ -45,6 +45,7 @@ _MAX_SCREENSHOT_PIXELS = 16 * 1024 * 1024
 _MAX_SALIENCY_BYTES = 8 * 1024 * 1024
 _MAX_NATIVE_MAP_BYTES = 64 * 1024 * 1024
 _MAX_TEXT_LENGTH = 4096
+_MAX_TRAJECTORY_ACTIONS = 400
 _MAX_GEOMETRY_COORDINATE = 1_000_000.0
 _MAX_VIEWPORT_DIMENSION = 32_768
 _EXPERIMENT_RUN_IDENTITY_FIELDS = (
@@ -200,6 +201,7 @@ _REF_NAMESPACE_KINDS = {
     "persona",
     "goal",
     "expectation",
+    "run",
     "viewport",
     "element",
     "screenshot",
@@ -1208,6 +1210,7 @@ def _validate_ref_namespace(ref: EvidenceRef) -> None:
         "persona",
         "goal",
         "expectation",
+        "run",
         "verification",
         "failure",
     }:
@@ -2064,6 +2067,15 @@ class EvidenceCorpusBuilder:
             )
         for event in events:
             self._add_score_estimates(collector, run_id, event, metrics, manifest)
+        self._add_run_trajectory(
+            collector,
+            run_id=run_id,
+            events=events,
+            snapshots=snapshots,
+            metric_values=metric_values,
+            expected=expected,
+            verification=verification,
+        )
         self._add_limitations(collector, run_id, raw_result, events)
         self._add_saliency(
             collector,
@@ -2076,6 +2088,101 @@ class EvidenceCorpusBuilder:
             spec,
         )
         return checksum_manifest_digest
+
+    def _add_run_trajectory(
+        self,
+        collector: _EntryCollector,
+        *,
+        run_id: str,
+        events: Sequence[Mapping[str, object]],
+        snapshots: Sequence[Mapping[str, object]],
+        metric_values: Sequence[tuple[str, object, EvidenceClass, Mapping[str, object]]],
+        expected: Mapping[str, object],
+        verification: Mapping[str, object],
+    ) -> None:
+        """One reference carrying a run's whole path and its cost metrics.
+
+        Without this, judging how much attention a persona spent means
+        requesting every action event plus every cost metric as separate
+        references. A twenty-action run with four cost metrics is twenty-five
+        retrievals, and the retrieval budget is first-come, so the runs that
+        would show the most about attention are the ones least likely to be
+        examined in full. The per-event and per-metric entries remain the
+        precise, individually citable record; this is the cheap overview that
+        makes the trade-off visible at all.
+
+        Cost metrics are labelled with their evidence class rather than
+        flattened, because the deterministic counts and the modelled cost
+        weights are not the same kind of claim and a reader must be able to
+        tell them apart.
+        """
+
+        actions: list[tuple[int, dict[str, object]]] = []
+        for event in events:
+            kind = _text(event.get("kind"))
+            sequence = _sequence(event)
+            if kind != "action-executed" or sequence <= 0:
+                continue
+            viewport_id = _optional_text(event.get("viewport_id"))
+            if viewport_id is None:
+                viewport_id = self._viewport_before(events, sequence)
+            row: dict[str, object] = {
+                "sequence": sequence,
+                "action": _safe_action(event.get("action")),
+                "succeeded": bool(event.get("succeeded", False)),
+            }
+            if viewport_id is not None:
+                row["viewport_id"] = viewport_id
+            actions.append((sequence, row))
+        actions.sort(key=lambda item: item[0])
+        ordered_rows = [row for _sequence_value, row in actions]
+        truncated = False
+        if len(ordered_rows) > _MAX_TRAJECTORY_ACTIONS:
+            ordered_rows = ordered_rows[:_MAX_TRAJECTORY_ACTIONS]
+            truncated = True
+        failed = sum(1 for row in ordered_rows if not row["succeeded"])
+        metrics_payload: dict[str, object] = {}
+        for name, value, evidence_class, _source in metric_values:
+            metrics_payload[name] = {
+                "value": value,
+                "evidence_class": evidence_class.value,
+            }
+        payload: dict[str, object] = {
+            "scenario_id": _text(expected["scenario_id"], "unknown"),
+            "application_version_id": _text(
+                expected["application_version_id"], "unknown"
+            ),
+            "persona_id": _text(expected["persona_id"], "unknown"),
+            "policy": _text(expected["policy"], "unknown"),
+            "viewport_count": len(snapshots),
+            "action_count": len(ordered_rows),
+            "actions": ordered_rows,
+            "metrics": metrics_payload,
+            "verification": dict(verification),
+            "sequence_event_ids": [
+                f"event:{run_id}:{row['sequence']}" for row in ordered_rows
+            ],
+        }
+        if truncated:
+            # Silence here would read as "the persona acted this many times".
+            # A truncation the reader cannot see is a smaller version of the
+            # same class of bug this corpus exists to prevent.
+            payload["actions_truncated"] = True
+            payload["actions_truncation_note"] = (
+                f"Path truncated to the first {_MAX_TRAJECTORY_ACTIONS} actions. "
+                "Per-action entries remain individually citable."
+            )
+        summary = (
+            f"Run {run_id} executed {len(ordered_rows)} recorded action(s) across "
+            f"{len(snapshots)} viewport(s), {failed} unsuccessful, with "
+            f"{len(metrics_payload)} recorded metric(s)."
+        )
+        collector.add(
+            EvidenceRef(f"run:{run_id}", "run", run_id),
+            EvidenceClass.DETERMINISTIC_FACT,
+            summary,
+            payload,
+        )
 
     @staticmethod
     def _viewport_before(

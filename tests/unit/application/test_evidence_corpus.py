@@ -5,11 +5,11 @@ import io
 import json
 import struct
 import zlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from PIL import Image
@@ -369,6 +369,103 @@ def test_corpus_accepts_cli_relative_output_and_bundle_reference(
 
     assert corpus.output_root == tmp_path
     assert corpus.require("verification:run-a").payload["verified"] is True
+
+
+def test_run_entry_carries_the_whole_path_and_its_cost_metrics(
+    tmp_path: Path,
+) -> None:
+    """One reference has to be enough to reason about attention cost.
+
+    Judging how much attention a persona spent means seeing the ordered path
+    and the cost metrics together. Both already existed, but only as separate
+    per-event and per-metric references, so a twenty-action run cost twenty-five
+    retrievals - and the retrieval budget is first-come, so the runs with the
+    most to say about attention are the likeliest to go unexamined.
+    """
+
+    experiment, _run = _experiment(tmp_path)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    entry = corpus.require("run:run-a")
+    payload = entry.payload
+    actions = list(payload["actions"])
+    assert actions, "trajectory entry must carry the recorded actions"
+    assert [row["sequence"] for row in actions] == sorted(
+        row["sequence"] for row in actions
+    )
+    assert payload["action_count"] == len(actions)
+    # The path must be traceable back to the per-action references so a claim
+    # about a specific step can still be cited precisely.
+    assert list(payload["sequence_event_ids"]) == [
+        f"event:run-a:{row['sequence']}" for row in actions
+    ]
+    for event_id in payload["sequence_event_ids"]:
+        corpus.require(event_id)
+    metrics = payload["metrics"]
+    assert metrics, "trajectory entry must carry the run's metrics"
+    for name, record in metrics.items():
+        assert set(record) == {"value", "evidence_class"}
+
+
+def test_trajectory_keeps_deterministic_counts_distinct_from_modelled_costs(
+    tmp_path: Path,
+) -> None:
+    """A count and a cost weight are not the same kind of claim.
+
+    wrong-actions is counted from the run; target-prominence is a model
+    estimate. Grouping them into one number-shaped map would let a reader treat
+    a modelled weight as an observed fact, which is the distinction the whole
+    evidence-class system exists to preserve. The cost metrics are the sharpest
+    case, since discovery-cost is derived from configured weights and only
+    looks like a measurement.
+    """
+
+    from ux_analyzer.application.evidence_corpus import _APPROVED_METRIC_CLASSES
+
+    experiment, _run = _experiment(tmp_path)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    metrics = corpus.require("run:run-a").payload["metrics"]
+    classes = {
+        name: cast("Mapping[str, object]", record)["evidence_class"]
+        for name, record in metrics.items()
+    }
+    assert classes.get("wrong-actions") == "deterministic-fact"
+    assert classes.get("target-prominence") == "model-estimate"
+    # Every cost metric is a model estimate, by classification not by accident.
+    for name, evidence_class in _APPROVED_METRIC_CLASSES.items():
+        if name.endswith("-cost") or name == "discovery-cost":
+            assert evidence_class.value == "model-estimate", name
+    # The grouped view must agree with the individually citable entries.
+    for name, evidence_class in classes.items():
+        single = corpus.require(f"metric:run-a:{name}")
+        assert single.evidence_class.value == evidence_class
+
+
+def test_truncated_trajectory_says_so(tmp_path: Path, monkeypatch) -> None:
+    """A silently shortened path would read as the whole path.
+
+    Truncation the reader cannot see is the same class of defect as a missing
+    scenario review: the record looks complete and is not. The limit is
+    dropped below the fixture's single recorded action to exercise the path.
+    """
+
+    from ux_analyzer.application import evidence_corpus as corpus_module
+
+    experiment, _run = _experiment(tmp_path)
+    baseline = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+    assert len(list(baseline.require("run:run-a").payload["actions"])) == 1
+    monkeypatch.setattr(corpus_module, "_MAX_TRAJECTORY_ACTIONS", 0)
+
+    corpus = EvidenceCorpusBuilder().build(experiment, tmp_path, _expectations())
+
+    payload = corpus.require("run:run-a").payload
+    assert payload["actions_truncated"] is True
+    assert "truncated" in payload["actions_truncation_note"].lower()
+    assert payload["action_count"] == 0
+    assert "actions_truncated" not in baseline.require("run:run-a").payload
 
 
 @pytest.mark.asyncio
