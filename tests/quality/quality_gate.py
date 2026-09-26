@@ -91,6 +91,7 @@ from ux_analyzer.domain.interface import (
 )
 from ux_analyzer.domain.synthesis import (
     EvidenceRef,
+    ReviewDisposition,
     SynthesisStatus,
 )
 from ux_analyzer.ports.models import (
@@ -100,6 +101,7 @@ from ux_analyzer.ports.models import (
     ModelRole,
     TokenUsage,
 )
+from ux_analyzer.ports.report_synthesis import ScenarioReviewReport
 from ux_analyzer.providers.cognitive import StructuredCognitiveAgent
 from ux_analyzer.providers.redesign import (
     CriticResponse,
@@ -1245,16 +1247,54 @@ def _recorded_candidate(
     return CandidateFinding.model_validate(_expand_recorded(candidates[0], corpus))
 
 
+def _scenario_reviews(corpus: EvidenceCorpus) -> list[Any]:
+    """One examined review per corpus scenario.
+
+    Publication validation rejects an attempt that leaves any scenario
+    unexamined. The recorded responses predate that invariant, so the replay
+    has to add the reviews itself - otherwise every replayed attempt rejects
+    for missing coverage and the gate would only be measuring the new
+    validation rather than whether quality held.
+    """
+
+    return [
+        ScenarioReviewReport(
+            scenario_id=scenario_id,
+            disposition=ReviewDisposition.NO_ISSUE_FOUND,
+            evidence_ids=[evidence_id],
+            signals_weighed=["attention cost", "action count"],
+            note="Replayed attempt: the recorded pass did not examine this "
+            "scenario for improvements.",
+        )
+        for scenario_id, evidence_id in _scenario_evidence(corpus)
+    ]
+
+
+def _scenario_evidence(corpus: EvidenceCorpus) -> list[tuple[str, str]]:
+    """(scenario_id, scenario evidence id) for each scenario in the corpus."""
+
+    return [
+        (scenario_id, f"scenario:{entry.ref.run_id}")
+        for scenario_id in corpus.scenario_ids()
+        for entry in corpus.entries
+        if entry.ref.kind == "scenario" and entry.payload.get("id") == scenario_id
+    ][: len(corpus.scenario_ids())]
+
+
 def _replay_attempt(tmp_path: Path, attempt_id: str) -> Any:
     """Drive the real service with the recorded role outputs for one attempt."""
 
     corpus = _recorded_corpus(tmp_path)
+    reviews = _scenario_reviews(corpus)
     analyst = _recorded_role_response(attempt_id, ModelRole.REPORT_ANALYST, corpus)
     if analyst is None:
         analyst = AnalystResponse(
             complete=True,
             candidate_findings=[_recorded_candidate(attempt_id, corpus)],
+            scenario_reviews=reviews,
         )
+    elif isinstance(analyst, AnalystResponse) and not analyst.scenario_reviews:
+        analyst = analyst.model_copy(update={"scenario_reviews": reviews})
     scripted = {"analyst": [analyst]}
     for role in (
         ModelRole.REPORT_EVIDENCE_AUDITOR,
