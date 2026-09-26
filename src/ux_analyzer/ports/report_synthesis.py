@@ -21,6 +21,7 @@ from ux_analyzer.domain.synthesis import (
     EvidenceRef,
     FindingKind,
     ObjectionSeverity,
+    ReviewDisposition,
     SynthesisFinding,
     SynthesisObjection,
 )
@@ -431,14 +432,50 @@ class _InvestigativeResponse(_RoleSchema):
         return self
 
 
-class AnalystResponse(_InvestigativeResponse):
-    """Structured candidate findings emitted by the report analyst."""
+class ScenarioReviewReport(_RoleSchema):
+    """One published review of one scenario.
 
-    schema_version: ClassVar[str] = "report-analyst-response-v3"
+    ``signals_weighed`` is the discipline that keeps a single metric from
+    standing in for judgment: the analyst must name the signals it balanced and
+    which way they pulled, because good UX judgment routinely trades action
+    count against attention cost against competing-element density, and any one
+    of those alone can point the wrong way.
+    """
+
+    scenario_id: _BoundedIdentifier
+    disposition: ReviewDisposition
+    evidence_ids: list[_BoundedIdentifier] = Field(min_length=1, max_length=12)
+    signals_weighed: list[_BoundedLabel] = Field(min_length=1, max_length=8)
+    note: _BoundedNote = ""
+
+
+class AnalystResponse(_InvestigativeResponse):
+    """Structured candidate findings and per-scenario reviews from the analyst.
+
+    ``scenario_reviews`` is required by publication validation to cover every
+    scenario in the corpus exactly once, so examination cannot be skipped and
+    "nothing was found" stays a reported result rather than silence.
+    """
+
+    schema_version: ClassVar[str] = "report-analyst-response-v4"
     candidate_findings: list[CandidateFinding] = Field(
         default_factory=_new_candidate_findings,
         max_length=8,
     )
+    scenario_reviews: list[ScenarioReviewReport] = Field(
+        default_factory=list,
+        max_length=64,
+    )
+
+    @field_validator("scenario_reviews")
+    @classmethod
+    def _reject_duplicate_scenario_reviews(
+        cls, value: list[ScenarioReviewReport]
+    ) -> list[ScenarioReviewReport]:
+        scenario_ids = [item.scenario_id for item in value]
+        if len(scenario_ids) != len(set(scenario_ids)):
+            raise ValueError("analyst returned duplicate scenario reviews")
+        return value
 
 
 class EvidenceAuditResponse(_InvestigativeResponse):
@@ -512,6 +549,7 @@ class ReportAnalystPort(Protocol):
         previous_output: Any = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
+        prior_rejections: Any = (),
     ) -> object: ...
 
 

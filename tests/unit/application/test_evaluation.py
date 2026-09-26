@@ -418,6 +418,87 @@ def test_invalid_target_references_are_explicitly_unavailable(
         evaluate_run(_result(version), target)
 
 
+def test_unlocatable_evaluation_target_is_a_scenario_defect_not_a_matcher_bug() -> None:
+    """Pin the recorded `discover-app-store-ratings` failure classification.
+
+    That scenario's evaluation target is the literal string ``4.8 * App Store``.
+    The recorded portfolio page never renders it: the ratings appear as prose
+    ("rated 4.8 on iOS and 4.6 on Android") with no App Store control at all.
+    The evaluation therefore cannot resolve a target, and the run is recorded as
+    an evidence-unavailable evaluation failure.
+
+    The matcher is already as permissive as it can honestly be - it normalizes
+    whitespace and case and accepts a substring - so a target that never appears
+    in any recorded snapshot is a defect in the scenario specification, not a
+    defect in target resolution. These tests pin both halves of that claim so a
+    future "fix" cannot quietly loosen the matcher into manufacturing a
+    verified success for an unreachable verifier.
+    """
+
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    snapshot = base.state.snapshots[0]
+    rendered = replace(
+        snapshot,
+        elements=(
+            replace(
+                snapshot.element("target"),
+                label="I build the hard parts. Rated 4.8 on iOS and 4.6 on "
+                "Android.",
+            ),
+            snapshot.element("competitor"),
+        ),
+    )
+    state = replace(
+        base.state,
+        snapshots=(rendered,),
+    )
+    result = replace(base, state=state)
+    contract = replace(
+        result.state.spec.scenario.evaluation_target,
+        labels_by_version={"defective": "4.8 * App Store"},
+        role=None,
+    )
+    spec = replace(
+        result.state.spec,
+        scenario=replace(result.state.spec.scenario, evaluation_target=contract),
+    )
+    result = replace(result, state=replace(state, spec=spec))
+
+    with pytest.raises(
+        EvaluationEvidenceUnavailable,
+        match="target label '4.8 \\* App Store' not found in recorded snapshots",
+    ):
+        evaluation_target_for(result)
+
+    # A target the page really does render still resolves, including through a
+    # case difference and through collapsed whitespace.
+    for label in (
+        "Rated 4.8 on iOS and 4.6 on Android",
+        "rated 4.8 on ios and 4.6 on android.",
+        "Rated  4.8 on iOS\n  and 4.6 on Android",
+    ):
+        resolvable = replace(
+            result,
+            state=replace(
+                result.state,
+                spec=replace(
+                    spec,
+                    scenario=replace(
+                        spec.scenario,
+                        evaluation_target=replace(
+                            contract,
+                            labels_by_version={"defective": label},
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assert evaluation_target_for(resolvable).element_id == "target", label
+
+
 def test_compare_variants_requires_paired_seeds_and_applies_directional_gate() -> None:
     defective = ApplicationVersion(
         id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"

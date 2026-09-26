@@ -22,11 +22,11 @@
         }
       ],
       "notes": [
-        "analyst user payload = 23,883 bytes, of which the inline response-schema contract = 5,480 bytes. A tool-call-mode dedup saving must come out of the duplicate only, never the degraded-mode copy (scenario 2)."
+        "analyst user payload = 23,736 bytes, of which the inline response-schema contract = 5,339 bytes. A tool-call-mode dedup saving must come out of the duplicate only, never the degraded-mode copy (scenario 2)."
       ],
       "metrics": {
-        "user_payload_bytes": 23883,
-        "contract_schema_bytes": 5480
+        "user_payload_bytes": 23736,
+        "contract_schema_bytes": 5339
       }
     },
     {
@@ -77,11 +77,14 @@
           "name": "context-preserved-across-retries",
           "passed": true,
           "detail": "2 reviewer calls, each still carrying the full manifest/finding context (no context stripping mid-retry)"
+        },
+        {
+          "name": "retry-feedback-mode",
+          "passed": true,
+          "detail": "first call has no feedback; every retry carries the bounded safe validation reason (feedback-retry mode)"
         }
       ],
-      "notes": [
-        "BLIND-RETRY baseline: every retry re-sent an identical prompt. Retry feedback will change this; the recovery semantics above must not change (retries <= 2, REJECTED status)."
-      ],
+      "notes": [],
       "metrics": {}
     },
     {
@@ -221,6 +224,126 @@
         "Cognitive payload slimming (stage 3 landed: available_controls is an id list) must keep element ids stable per step and never leak private execution data. Structured-output retry for this role lives in the adapter/application layer, not the provider (scenario 3 covers retry semantics for report roles)."
       ],
       "metrics": {}
+    },
+    {
+      "name": "adapter-schema-strip-modes",
+      "passed": true,
+      "checks": [
+        {
+          "name": "tool-call-mode-strips-schema",
+          "passed": true,
+          "detail": "tool-call body drops the in-message response_schema while keeping the rest of the payload intact"
+        },
+        {
+          "name": "strip-preserves-adjacent-messages",
+          "passed": true,
+          "detail": "non-JSON and schema-less messages pass through untouched"
+        },
+        {
+          "name": "degraded-strict-keeps-contract",
+          "passed": true,
+          "detail": "strict wire body keeps the in-message response_schema contract"
+        },
+        {
+          "name": "degraded-json-object-keeps-contract",
+          "passed": true,
+          "detail": "json-object wire body keeps the in-message response_schema contract"
+        },
+        {
+          "name": "degraded-plain-keeps-contract",
+          "passed": true,
+          "detail": "plain wire body keeps the in-message response_schema contract"
+        },
+        {
+          "name": "tool-call-wire-has-schema-once",
+          "passed": true,
+          "detail": "tool-call wire body carries the schema only in tools[].function"
+        },
+        {
+          "name": "request-size-keeps-packing-headroom",
+          "passed": true,
+          "detail": "packing measure (request_size) stays unstripped and the stripped tool-call wire is strictly smaller, so no degraded re-send can overflow a budget its tool-call send fit in; the strict-mode response_format block is a pre-existing overhead request_size never included (tool-call wire 5,275 B vs unstripped 11,036 B, saved 5,761 B)"
+        }
+      ],
+      "notes": [
+        "Strip is adapter-side and mode-conditional by construction: providers keep emitting the inline contract (scenario 2), so degraded modes and codex transport are unchanged. Only tool-call bodies lose the duplicate."
+      ],
+      "metrics": {
+        "tool_call_wire_bytes": 5275,
+        "unstripped_wire_bytes": 11036,
+        "request_size_bytes": 11036,
+        "degraded_strict_wire_bytes": 11161
+      }
+    },
+    {
+      "name": "recorded-attempt-shapes",
+      "passed": true,
+      "checks": [
+        {
+          "name": "authorized-contraction-publishes",
+          "passed": true,
+          "detail": "attempt 2 replayed as accepted with 1 published finding(s)"
+        },
+        {
+          "name": "authorized-contraction-is-resolution-backed",
+          "passed": true,
+          "detail": "6 candidate evidence IDs contracted, all cited by an adjudicator resolution (0 unauthorized)"
+        },
+        {
+          "name": "unauthorized-contraction-rejected",
+          "passed": true,
+          "detail": "attempt 3 replayed as rejected with 0 published finding(s)"
+        },
+        {
+          "name": "heuristic-only-claim-not-published",
+          "passed": true,
+          "detail": "attempt 1 replayed as rejected; the candidate rests on 4 model-estimate metrics while the run records verified completion and zero wrong actions"
+        },
+        {
+          "name": "identical-duplicate-objections-collapse",
+          "passed": true,
+          "detail": "2 identical duplicate objection ID(s) in the recorded auditor response collapse to one each and adjudication proceeds"
+        },
+        {
+          "name": "recorded-duplicate-shape-is-real",
+          "passed": true,
+          "detail": "the replayed duplicate objections are byte-identical, so collapsing them cannot hide a disagreement"
+        },
+        {
+          "name": "accepted-baseline-still-publishes",
+          "passed": true,
+          "detail": "attempt 5 replayed as accepted with 1 published finding(s)"
+        }
+      ],
+      "notes": [
+        "These five checks are the definition of 'did not worsen quality'. Any prompt change, gate change, or payload reshaping must keep the authorized contraction publishing, the unauthorized one rejecting, the heuristic-only claim unpublished, the duplicates collapsed, and the accepted baseline finding published."
+      ],
+      "metrics": {}
+    },
+    {
+      "name": "prompt-prefix-stability",
+      "passed": true,
+      "checks": [
+        {
+          "name": "static-blocks-serialize-first",
+          "passed": true,
+          "detail": "payload key order is ['corpus_manifest', 'response_schema', 'ux_principle_pack', 'role_input', 'evidence_request_policy', 'resolved_evidence']"
+        },
+        {
+          "name": "rounds-share-the-static-prefix",
+          "passed": true,
+          "detail": "consecutive analyst rounds share 25,535 of 26,048 payload bytes; the static prefix is 25,455 bytes"
+        }
+      ],
+      "notes": [
+        "Provider prompt caching only reuses a request prefix, so the reusable bytes must come first. Alphabetical key order put the 17 kB principle pack and 5 kB response schema behind the 0.5 kB per-round retrieval policy, which truncated the reusable prefix to the 2.8 kB corpus manifest and held the observed cache hit ratio to 0.3-13% across 1.38M prompt tokens on one identical corpus. Reordering is serialization-only: key names, values, and the system prompt are unchanged, so no prompt_version bump is due."
+      ],
+      "metrics": {
+        "analyst_payload_bytes": 26048,
+        "static_prefix_bytes": 25455,
+        "shared_prefix_bytes": 25535,
+        "static_prefix_ratio": 98.0
+      }
     }
   ]
 }

@@ -129,6 +129,7 @@ from ux_analyzer.domain.exploration import (
 from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
 from ux_analyzer.domain.synthesis import (
+    PriorRejection,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisRoleReceipt,
@@ -4046,6 +4047,24 @@ def _resume_state(
     return None
 
 
+def _prior_rejections(
+    output: Path, corpus: EvidenceCorpus
+) -> tuple[PriorRejection, ...]:
+    """Rejection history from prior attempts on this corpus, newest first.
+
+    Only attempts recorded against the same corpus digest contribute, so a
+    stale rejection from a different experiment never constrains this one.
+    """
+
+    prior = SynthesisArtifactStore(output).attempts
+    same_corpus = [
+        attempt for attempt in prior if attempt.corpus_digest == corpus.digest
+    ]
+    if not same_corpus:
+        return ()
+    return ReportSynthesisService.prior_rejections_from_attempts(same_corpus)
+
+
 async def _run_report_synthesis(
     *,
     result: ExperimentResult,
@@ -4088,6 +4107,7 @@ async def _run_report_synthesis(
             resume_analyst_receipt=resume[0] if resume else None,
             resume_candidate_findings=resume[1] if resume else (),
             resume_attempt_id=resume[2] if resume else "",
+            prior_rejections=_prior_rejections(output, corpus),
         )
         return await service.synthesize(corpus)
     finally:

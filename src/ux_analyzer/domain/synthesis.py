@@ -106,10 +106,35 @@ class SynthesisStatus(StrEnum):
 
 
 class FindingKind(StrEnum):
-    """Which subject a finding blames: the product UI or the scenario spec."""
+    """Which subject a finding blames, and what class of claim it makes.
+
+    ``UX_ISSUE`` requires established user-facing harm. ``SCENARIO_DEFECT``
+    blames the scenario specification instead of the product.
+    ``IMPROVEMENT`` reports that the interaction worked but the record shows a
+    better balance was available. It never claims harm: its subject is
+    opportunity, and the weighing of competing signals is the analyst's
+    judgment, not a threshold this layer computes.
+    """
 
     UX_ISSUE = "ux-issue"
     SCENARIO_DEFECT = "scenario-defect"
+    IMPROVEMENT = "improvement"
+
+
+class ReviewDisposition(StrEnum):
+    """Outcome of examining one scenario, published whether or not it found
+    anything.
+
+    A scenario that was examined and yielded nothing publishable records
+    ``NO_ISSUE_FOUND``. That is a result, not silence: publication requires one
+    review per corpus scenario, so an unexamined scenario cannot be reported as
+    clean.
+    """
+
+    UX_ISSUE = "ux-issue"
+    SCENARIO_DEFECT = "scenario-defect"
+    IMPROVEMENT = "improvement"
+    NO_ISSUE_FOUND = "no-issue-found"
 
 
 REPORT_ADJUDICATOR_ROLE = "report-adjudicator"
@@ -561,6 +586,108 @@ def _tuple_of_rejected_candidate_audits(
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioReview:
+    """The published record of examining one scenario.
+
+    Every scenario in the corpus carries exactly one review. A review names the
+    evidence that was actually examined, so "nothing was found" is a claim the
+    report can show its work for, and the weighing the analyst did across
+    competing signals is recorded rather than implied.
+
+    ``signals_weighed`` exists so a single metric can never stand in for
+    judgment: the analyst must name the signals it balanced (attention cost,
+    action count, path deviation, competing-element density, and so on) and
+    say which way they pulled. The domain validates presence and shape; it never
+    decides the balance.
+    """
+
+    scenario_id: str
+    disposition: ReviewDisposition | str
+    evidence_ids: tuple[str, ...] = ()
+    signals_weighed: tuple[str, ...] = ()
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.scenario_id, "scenario review scenario ID")
+        object.__setattr__(
+            self, "disposition", ReviewDisposition(self.disposition)
+        )
+        object.__setattr__(
+            self, "evidence_ids", _tuple_of_strings(self.evidence_ids, "evidence_ids")
+        )
+        object.__setattr__(
+            self,
+            "signals_weighed",
+            _tuple_of_strings(self.signals_weighed, "signals_weighed"),
+        )
+        if len(self.signals_weighed) > 12:
+            raise ValueError("scenario review weighs too many signals")
+        if len(self.note) > 1024:
+            raise ValueError("scenario review note is too long")
+        if self.disposition is not ReviewDisposition.NO_ISSUE_FOUND:
+            # A scenario that produced something publishable must say what it
+            # looked at, or the review is an unsupported assertion.
+            if not self.evidence_ids:
+                raise ValueError(
+                    "scenario review with a finding must name examined evidence"
+                )
+
+
+def _tuple_of_scenario_reviews(
+    values: object, field_name: str
+) -> tuple[ScenarioReview, ...]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError(f"{field_name} must be a collection")
+    normalized = tuple(cast(Iterable[object], values))
+    if any(not isinstance(value, ScenarioReview) for value in normalized):
+        raise TypeError(f"{field_name} must contain ScenarioReview values")
+    seen: set[str] = set()
+    for value in cast(tuple[ScenarioReview, ...], normalized):
+        if value.scenario_id in seen:
+            raise ValueError(f"{field_name} must contain one review per scenario")
+        seen.add(value.scenario_id)
+    return cast(tuple[ScenarioReview, ...], normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class PriorRejection:
+    """One previously rejected finding summary fed forward to the analyst.
+
+    A rejection is context, never a blacklist: the recorded reasons describe why
+    a claim was not established, and the analyst may propose the same subject
+    again when it retrieves evidence that answers those reasons. Evidence
+    references are proposals - the application keeps only the IDs that exist in
+    the live corpus, so no prompt can cite evidence the corpus does not hold.
+    """
+
+    finding_id: str
+    title: str
+    reasons: tuple[str, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    attempt_id: str = ""
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.finding_id, "rejected finding ID")
+        _require_non_empty(self.title, "rejected finding title")
+        if len(self.title) > 240:
+            raise ValueError("rejected finding title is too long")
+        object.__setattr__(
+            self, "reasons", _tuple_of_strings(self.reasons, "reasons")[:8]
+        )
+        if any(len(reason) > 512 for reason in self.reasons):
+            raise ValueError("rejection reason is too long")
+        object.__setattr__(
+            self, "evidence_ids", _tuple_of_strings(self.evidence_ids, "evidence_ids")
+        )
+        if len(self.evidence_ids) > 24:
+            raise ValueError("rejection carries too many evidence references")
+        if self.attempt_id:
+            _require_non_empty(self.attempt_id, "attempt_id")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("rejection contains duplicate evidence ID")
+
+
+@dataclass(frozen=True, slots=True)
 class SynthesisAttempt:
     """Immutable, auditable result of one report-synthesis attempt."""
 
@@ -592,6 +719,9 @@ class SynthesisAttempt:
     objections: tuple[SynthesisObjection, ...] = ()
     rejected_findings: tuple[SynthesisFinding, ...] = ()
     findings: tuple[SynthesisFinding, ...] = ()
+    # One review per corpus scenario, always present for a published attempt.
+    # Empty only for attempts that never reached examination (unavailable).
+    scenario_reviews: tuple[ScenarioReview, ...] = ()
     limitations: tuple[str, ...] = ()
     fallback_available: bool = True
     created_at: str | None = None
@@ -657,6 +787,11 @@ class SynthesisAttempt:
             _tuple_of_findings(self.findings, "findings"),
         )
         object.__setattr__(
+            self,
+            "scenario_reviews",
+            _tuple_of_scenario_reviews(self.scenario_reviews, "scenario_reviews"),
+        )
+        object.__setattr__(
             self, "limitations", _tuple_of_strings(self.limitations, "limitations")
         )
 
@@ -678,8 +813,11 @@ __all__ = [
     "EvidenceRef",
     "FindingKind",
     "ObjectionSeverity",
+    "PriorRejection",
     "REPORT_ADJUDICATOR_ROLE",
     "RejectedCandidateAudit",
+    "ReviewDisposition",
+    "ScenarioReview",
     "SynthesisAttempt",
     "SynthesisFinding",
     "SynthesisObjection",

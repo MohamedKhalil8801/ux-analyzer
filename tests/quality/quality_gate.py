@@ -39,6 +39,17 @@ deferred optimization could degrade.
     schema, degraded modes (strict/json-object) keep it byte-identical,
     and request_size stays measured unstripped so transport packing keeps
     headroom for a degraded re-send.
+10. recorded-attempt-shapes       replays the four rejected recorded attempts
+    against one immutable corpus. Authorized evidence contraction publishes;
+    unauthorized contraction still rejects; a heuristic-only harm claim never
+    reaches publication; identical duplicate reviewer objections collapse
+    while conflicting duplicates still reject. These are the regression guard
+    for every later change in this pipeline.
+11. prompt-prefix-stability      the report-role user payload must serialize
+    every static block (corpus manifest, response schema, principle pack, role
+    input) before anything that varies per retrieval round, and the analyst's
+    consecutive rounds must share at least that prefix. Recorded baseline:
+    1.38M prompt tokens at a 0.3-13% cache hit ratio.
 
 Exit code is 0 only when every scenario passes. ``--json`` writes a
 machine-readable score for baseline tracking across optimization commits.
@@ -55,7 +66,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -1112,6 +1123,377 @@ def scenario_adapter_schema_strip_modes(tmp_path: Path) -> ScenarioReport:
 
 
 # ---------------------------------------------------------------------------
+# Scenario 10: recorded-attempt replay shapes
+# ---------------------------------------------------------------------------
+
+FIXTURE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "synthesis"
+ATTEMPT_1 = "2026-09-24T192546Z-98bf4207803b-1"
+ATTEMPT_2 = "2026-09-25T074903Z-98bf4207803b-1"
+ATTEMPT_3 = "2026-09-25T085418Z-98bf4207803b-1"
+ATTEMPT_4 = "2026-09-25T091923Z-98bf4207803b-1"
+ATTEMPT_5 = "2026-09-25T094814Z-98bf4207803b-1"
+WORK_FINDING_ID = "work-showcase-obscured-entry"
+HEURISTIC_FINDING_ID = "work-showcase-discovery-warning-signals"
+
+_ROLE_SCHEMA_BY_NAME: Mapping[str, type[Any]] = {
+    "report-analyst": AnalystResponse,
+    "report-evidence-auditor": EvidenceAuditResponse,
+    "report-pattern-reviewer": PatternReviewResponse,
+    "report-adjudicator": AdjudicationResponse,
+}
+_ROLE_NAME_BY_MODEL_ROLE: Mapping[ModelRole, str] = {
+    ModelRole.REPORT_ANALYST: "analyst",
+    ModelRole.REPORT_EVIDENCE_AUDITOR: "auditor",
+    ModelRole.REPORT_PATTERN_REVIEWER: "pattern",
+    ModelRole.REPORT_ADJUDICATOR: "adjudicator",
+}
+
+
+def _load_fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
+
+def _recorded_corpus(tmp_path: Path) -> EvidenceCorpus:
+    payload = _load_fixture("recorded-attempt-corpus.json")
+    entries = []
+    for item in payload["entries"]:
+        entries.append(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    evidence_id=item["evidence_id"],
+                    kind=item["kind"],
+                    run_id=item["run_id"],
+                    viewport_id=item["viewport_id"],
+                    element_id=item["element_id"],
+                    event_id=item["event_id"],
+                    metric_id=item["metric_id"],
+                    artifact_path=item["artifact_path"],
+                    replay_sequence=item["replay_sequence"],
+                    sha256=item["sha256"],
+                ),
+                evidence_class=EvidenceClass(item["evidence_class"]),
+                summary=item["summary"],
+                payload=item["payload"],
+            )
+        )
+    return EvidenceCorpus(
+        output_root=tmp_path,
+        entries=tuple(entries),
+        principle_pack_version=payload["principle_pack_version"],
+        principle_pack_digest=payload["principle_pack_digest"],
+    )
+
+
+def _recorded_ref(evidence_id: str, corpus: EvidenceCorpus) -> dict[str, object]:
+    ref = corpus.require(evidence_id).ref
+    return {
+        "evidence_id": ref.evidence_id,
+        "kind": ref.kind,
+        "run_id": ref.run_id,
+        "viewport_id": ref.viewport_id,
+        "element_id": ref.element_id,
+        "event_id": ref.event_id,
+        "metric_id": ref.metric_id,
+        "artifact_path": ref.artifact_path,
+        "replay_sequence": ref.replay_sequence,
+        "sha256": ref.sha256,
+    }
+
+
+def _expand_recorded(value: Any, corpus: EvidenceCorpus) -> Any:
+    if isinstance(value, list):
+        return [_expand_recorded(item, corpus) for item in value]
+    if not isinstance(value, dict):
+        return value
+    expanded: dict[str, Any] = {}
+    for name, item in value.items():
+        if name == "evidence_ids":
+            expanded["evidence_refs"] = [
+                _recorded_ref(str(evidence_id), corpus) for evidence_id in item
+            ]
+        elif name == "counterevidence":
+            expanded["counterevidence"] = [
+                _recorded_ref(str(entry["evidence_id"]), corpus)
+                if isinstance(entry, dict)
+                else entry
+                for entry in item
+            ]
+        else:
+            expanded[name] = _expand_recorded(item, corpus)
+    return expanded
+
+
+def _recorded_attempt(attempt_id: str) -> dict[str, Any]:
+    return _load_fixture("recorded-attempt-shapes.json")["attempts"][attempt_id]
+
+
+def _recorded_role_response(
+    attempt_id: str, role: ModelRole, corpus: EvidenceCorpus
+) -> Any | None:
+    rounds = _recorded_attempt(attempt_id)["roles"].get(role.value)
+    if not rounds:
+        return None
+    payload = _expand_recorded(rounds[-1]["response"], corpus)
+    return _ROLE_SCHEMA_BY_NAME[role.value].model_validate(payload)
+
+
+def _recorded_candidate(
+    attempt_id: str, corpus: EvidenceCorpus
+) -> CandidateFinding:
+    candidates = _recorded_attempt(attempt_id).get("candidates", ())
+    assert candidates, f"{attempt_id} recorded no candidate finding"
+    return CandidateFinding.model_validate(_expand_recorded(candidates[0], corpus))
+
+
+def _replay_attempt(tmp_path: Path, attempt_id: str) -> Any:
+    """Drive the real service with the recorded role outputs for one attempt."""
+
+    corpus = _recorded_corpus(tmp_path)
+    analyst = _recorded_role_response(attempt_id, ModelRole.REPORT_ANALYST, corpus)
+    if analyst is None:
+        analyst = AnalystResponse(
+            complete=True,
+            candidate_findings=[_recorded_candidate(attempt_id, corpus)],
+        )
+    scripted = {"analyst": [analyst]}
+    for role in (
+        ModelRole.REPORT_EVIDENCE_AUDITOR,
+        ModelRole.REPORT_PATTERN_REVIEWER,
+        ModelRole.REPORT_ADJUDICATOR,
+    ):
+        response = _recorded_role_response(attempt_id, role, corpus)
+        scripted[_ROLE_NAME_BY_MODEL_ROLE[role]] = [] if response is None else [response]
+    service, _roles = _synthesis_service(
+        tmp_path,
+        analyst=cast(Sequence[object], scripted["analyst"]),
+        auditor=cast(Sequence[object], scripted["auditor"]),
+        pattern=cast(Sequence[object], scripted["pattern"]),
+        adjudicator=cast(Sequence[object], scripted["adjudicator"]),
+    )
+    return asyncio.run(service.synthesize(corpus))
+
+
+def _evidence_ids(finding: object) -> set[str]:
+    refs = cast(Any, finding).evidence_refs
+    return {ref.evidence_id for ref in refs}
+
+
+def scenario_recorded_attempt_shapes(tmp_path: Path) -> ScenarioReport:
+    report = ScenarioReport("recorded-attempt-shapes")
+    corpus = _recorded_corpus(tmp_path)
+
+    attempt_2 = _replay_attempt(tmp_path, ATTEMPT_2)
+    candidate = _recorded_candidate(ATTEMPT_2, corpus)
+    published = attempt_2.findings
+    removed = _evidence_ids(candidate) - (
+        _evidence_ids(published[0]) if published else set()
+    )
+    authorized = {
+        ref.evidence_id
+        for objection in attempt_2.objections
+        if objection.resolved and objection.resolution_evidence_refs
+        for ref in objection.resolution_evidence_refs
+    }
+    report.check(
+        "authorized-contraction-publishes",
+        attempt_2.status is SynthesisStatus.ACCEPTED
+        and [finding.finding_id for finding in published] == [WORK_FINDING_ID],
+        f"attempt 2 replayed as {attempt_2.status.value} with "
+        f"{len(published)} published finding(s)",
+    )
+    report.check(
+        "authorized-contraction-is-resolution-backed",
+        len(removed) == 6 and removed <= authorized,
+        f"{len(removed)} candidate evidence IDs contracted, all cited by an "
+        f"adjudicator resolution ({len(removed - authorized)} unauthorized)",
+    )
+
+    attempt_3 = _replay_attempt(tmp_path, ATTEMPT_3)
+    report.check(
+        "unauthorized-contraction-rejected",
+        attempt_3.status is not SynthesisStatus.ACCEPTED
+        and not attempt_3.findings
+        and any(
+            "changed the reviewed core claim" in limitation
+            for limitation in attempt_3.limitations
+        ),
+        f"attempt 3 replayed as {attempt_3.status.value} with "
+        f"{len(attempt_3.findings)} published finding(s)",
+    )
+
+    attempt_1 = _replay_attempt(tmp_path, ATTEMPT_1)
+    heuristic_candidate = _recorded_candidate(ATTEMPT_1, corpus)
+    heuristic_only = {
+        ref.evidence_id
+        for ref in heuristic_candidate.evidence_refs
+        if any(
+            marker in ref.evidence_id
+            for marker in (
+                "target-discovery-rank",
+                "target-below-fold",
+                "ambiguous-target",
+                "discovery-cost",
+            )
+        )
+    }
+    report.check(
+        "heuristic-only-claim-not-published",
+        attempt_1.status is not SynthesisStatus.ACCEPTED
+        and not attempt_1.findings
+        and {finding.finding_id for finding in attempt_1.rejected_findings}
+        == {HEURISTIC_FINDING_ID}
+        and all(
+            corpus.require(evidence_id).evidence_class is EvidenceClass.MODEL_ESTIMATE
+            for evidence_id in heuristic_only
+        ),
+        f"attempt 1 replayed as {attempt_1.status.value}; the candidate rests on "
+        f"{len(heuristic_only)} model-estimate metrics while the run records "
+        "verified completion and zero wrong actions",
+    )
+
+    attempt_4_corpus = corpus
+    auditor = _recorded_role_response(
+        ATTEMPT_4, ModelRole.REPORT_EVIDENCE_AUDITOR, attempt_4_corpus
+    )
+    identifiers = [item.objection_id for item in auditor.objections]
+    duplicates = sorted({name for name in identifiers if identifiers.count(name) > 1})
+    collapsed = _replay_attempt(tmp_path, ATTEMPT_4)
+    report.check(
+        "identical-duplicate-objections-collapse",
+        bool(duplicates)
+        and not any(
+            "Reviewer objections failed deterministic validation" in limitation
+            for limitation in collapsed.limitations
+        )
+        and len({item.objection_id for item in collapsed.objections})
+        == len(collapsed.objections),
+        f"{len(duplicates)} identical duplicate objection ID(s) in the recorded "
+        "auditor response collapse to one each and adjudication proceeds",
+    )
+    report.check(
+        "recorded-duplicate-shape-is-real",
+        all(
+            len(
+                {
+                    item.model_dump_json()
+                    for item in auditor.objections
+                    if item.objection_id == name
+                }
+            )
+            == 1
+            for name in duplicates
+        ),
+        "the replayed duplicate objections are byte-identical, so collapsing "
+        "them cannot hide a disagreement",
+    )
+
+    attempt_5 = _replay_attempt(tmp_path, ATTEMPT_5)
+    report.check(
+        "accepted-baseline-still-publishes",
+        attempt_5.status is SynthesisStatus.ACCEPTED
+        and [finding.finding_id for finding in attempt_5.findings]
+        == [WORK_FINDING_ID],
+        f"attempt 5 replayed as {attempt_5.status.value} with "
+        f"{len(attempt_5.findings)} published finding(s)",
+    )
+    report.note(
+        "These five checks are the definition of 'did not worsen quality'. Any "
+        "prompt change, gate change, or payload reshaping must keep the "
+        "authorized contraction publishing, the unauthorized one rejecting, the "
+        "heuristic-only claim unpublished, the duplicates collapsed, and the "
+        "accepted baseline finding published."
+    )
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Scenario 11: prompt-prefix stability
+# ---------------------------------------------------------------------------
+
+_STATIC_PAYLOAD_KEYS = (
+    "corpus_manifest",
+    "response_schema",
+    "ux_principle_pack",
+    "role_input",
+)
+
+
+def _static_prefix_bytes(payload: str) -> int:
+    parsed = json.loads(payload)
+    total = 1
+    for key, value in parsed.items():
+        if key not in _STATIC_PAYLOAD_KEYS:
+            return total
+        total += (
+            len(key)
+            + 1
+            + len(json.dumps(value, ensure_ascii=True, separators=(",", ":")))
+            + 1
+        )
+    return total
+
+
+def _shared_prefix_bytes(left: str, right: str) -> int:
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[index] == right[index]:
+        index += 1
+    return index
+
+
+def scenario_prompt_prefix_stability(tmp_path: Path) -> ScenarioReport:
+    report = ScenarioReport("prompt-prefix-stability")
+    corpus = _recorded_corpus(tmp_path)
+    client = _FlakyStructuredClient(defaults=_synthesis_defaults())
+    analyst = ReportAnalyst(client, model="gate-report-model")  # type: ignore[arg-type]
+
+    async def _rounds() -> None:
+        for round_number in (1, 2, 3):
+            await analyst.analyze(corpus, ux_principles(), retrieval_round=round_number)
+
+    asyncio.run(_rounds())
+    payloads = [call["user_content"] for call in client.calls]
+    keys = list(json.loads(payloads[0]))
+    static_positions = [keys.index(key) for key in _STATIC_PAYLOAD_KEYS if key in keys]
+    varying_positions = [index for index, key in enumerate(keys) if index not in static_positions]
+    static_prefix = _static_prefix_bytes(payloads[0])
+    shared = min(
+        _shared_prefix_bytes(payloads[0], payloads[1]),
+        _shared_prefix_bytes(payloads[1], payloads[2]),
+    )
+
+    report.check(
+        "static-blocks-serialize-first",
+        set(_STATIC_PAYLOAD_KEYS) <= set(keys)
+        and (not varying_positions or max(static_positions) < min(varying_positions)),
+        f"payload key order is {keys}",
+    )
+    report.check(
+        "rounds-share-the-static-prefix",
+        shared >= static_prefix,
+        f"consecutive analyst rounds share {shared:,} of {len(payloads[0]):,} "
+        f"payload bytes; the static prefix is {static_prefix:,} bytes",
+    )
+    report.metrics["analyst_payload_bytes"] = len(payloads[0])
+    report.metrics["static_prefix_bytes"] = static_prefix
+    report.metrics["shared_prefix_bytes"] = shared
+    report.metrics["static_prefix_ratio"] = round(
+        100 * shared / max(len(payloads[0]), 1), 1
+    )
+    report.note(
+        "Provider prompt caching only reuses a request prefix, so the reusable "
+        "bytes must come first. Alphabetical key order put the 17 kB principle "
+        "pack and 5 kB response schema behind the 0.5 kB per-round retrieval "
+        "policy, which truncated the reusable prefix to the 2.8 kB corpus "
+        "manifest and held the observed cache hit ratio to 0.3-13% across "
+        "1.38M prompt tokens on one identical corpus. Reordering is "
+        "serialization-only: key names, values, and the system prompt are "
+        "unchanged, so no prompt_version bump is due."
+    )
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -1125,6 +1507,8 @@ SCENARIOS: list[Callable[[Path], ScenarioReport]] = [
     scenario_redesign_round_trip,
     scenario_cognitive_payload_coverage,
     scenario_adapter_schema_strip_modes,
+    scenario_recorded_attempt_shapes,
+    scenario_prompt_prefix_stability,
 ]
 
 

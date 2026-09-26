@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -29,7 +29,10 @@ from ux_analyzer.domain.synthesis import (
     REPORT_ADJUDICATOR_ROLE,
     EvidenceRef,
     ObjectionSeverity,
+    PriorRejection,
     RejectedCandidateAudit,
+    ReviewDisposition,
+    ScenarioReview,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
@@ -72,6 +75,10 @@ DEFAULT_MAX_RETRIEVAL_ENTRIES = 16
 MAX_ROLE_RETRIEVAL_ENTRIES = 32
 DEFAULT_MAX_ATTACHMENT_BYTES = MODEL_ATTACHMENT_MAX_BYTES
 MAX_INVALID_STRUCTURED_ROLE_RETRIES = 1
+# Rejection history is context, not a budget: a handful of recent, distinct
+# rejections is enough to stop blind re-derivation without crowding the corpus.
+MAX_PRIOR_REJECTIONS = 8
+MAX_PRIOR_REJECTION_REASONS = 4
 
 _PRINCIPLE_AUTHORITY_MARKERS = (
     "principle proves",
@@ -101,6 +108,48 @@ _SEVERITY_PRINCIPLE_AUTHORITY_PATTERN = re.compile(
     r"|(?:\b[\w'-]+['\u2019]s\s+(?:principles?|heuristics?|guidelines?)\b)",
     re.IGNORECASE,
 )
+
+
+def _asserts_harm(text: str) -> bool:
+    """Return whether *text* asserts user harm, ignoring negated phrasing.
+
+    Reuses the clause-aware outcome check on case-folded text, so "the run
+    recorded zero wrong actions" is not read as a harm claim while "users cannot
+    find the control" is.
+    """
+
+    folded = text.casefold()
+    return any(_asserts_outcome(folded, marker) for marker in _HARM_MARKERS)
+
+
+def _heuristic_only_harm_claim(
+    corpus: EvidenceCorpus, finding: SynthesisFinding
+) -> bool:
+    """Return whether a harm claim rests on nothing but model estimates.
+
+    Heuristic prominence rank, below-fold counts, ambiguity flags, and discovery
+    or scent cost are model estimates. They may support context and
+    interpretation, but a claim that a person could not do something, had to
+    hunt for it, or was held up has to stand on a deterministic observation,
+    event, or outcome record. When every primary observed entry a finding cites
+    is a model estimate and the issue or impact asserts harm, the claim
+    restates a heuristic rather than reporting an observed problem, and it is
+    stopped at the analyst stage instead of spending reviewer and adjudicator
+    work on it.
+    """
+
+    primary = tuple(
+        entry
+        for entry in (corpus.require(ref.evidence_id) for ref in finding.evidence_refs)
+        if entry.ref.kind in _PRIMARY_OBSERVED_EVIDENCE_KINDS
+    )
+    if not primary:
+        return False
+    if any(
+        entry.evidence_class is not EvidenceClass.MODEL_ESTIMATE for entry in primary
+    ):
+        return False
+    return _asserts_harm(" ".join((finding.issue, finding.impact)))
 
 
 def _asserts_outcome(text: str, marker: str) -> bool:
@@ -854,6 +903,7 @@ class ReportSynthesisService:
         resume_analyst_receipt: SynthesisRoleReceipt | None = None,
         resume_candidate_findings: Sequence[SynthesisFinding] = (),
         resume_attempt_id: str = "",
+        prior_rejections: Sequence[PriorRejection] = (),
     ) -> None:
         supplied_roles = _provider_roles(roles or {})
         self.analyst = analyst or supplied_roles.get(ModelRole.REPORT_ANALYST)
@@ -903,9 +953,13 @@ class ReportSynthesisService:
             raise ValueError(
                 "resume_analyst_receipt must accompany resume_candidate_findings"
             )
+        raw_rejections: Sequence[object] = cast(Sequence[object], prior_rejections)
+        if any(not isinstance(item, PriorRejection) for item in raw_rejections):
+            raise TypeError("prior_rejections must contain PriorRejection values")
         self._resume_analyst_receipt = resume_analyst_receipt
         self._resume_candidate_findings = tuple(resume_candidate_findings)
         self._resume_attempt_id = resume_attempt_id
+        self._prior_rejections = tuple(cast(Sequence[PriorRejection], raw_rejections))
 
     async def synthesize(self, corpus: EvidenceCorpus) -> SynthesisAttempt:
         """Run all synthesis roles and return an immutable synthesis outcome."""
@@ -999,6 +1053,10 @@ class ReportSynthesisService:
                 role_receipts[analyst_run.receipt.role] = analyst_run.receipt
         assert analyst_response is not None
         _retain_response_limitations(limitations, analyst_response)
+        scenario_reviews, review_limitations = self._scenario_reviews(
+            corpus, analyst_response
+        )
+        limitations.extend(review_limitations)
         candidate_models = tuple(analyst_response.candidate_findings)
         candidate_findings: list[SynthesisFinding] = []
         benign_candidate_count = 0
@@ -1328,6 +1386,30 @@ class ReportSynthesisService:
         unresolved_blocking = self._has_unresolved_blocking(resolved_objections)
         publication_invalid = False
 
+        # Examination coverage is a publication invariant, not a prompt
+        # request. Every scenario the corpus holds evidence for must carry
+        # exactly one review, so an attempt cannot report "no issues" for
+        # scenarios nobody looked at.
+        corpus_scenarios = corpus.scenario_ids()
+        reviewed_scenarios = {review.scenario_id for review in scenario_reviews}
+        unreviewed = [
+            scenario_id
+            for scenario_id in corpus_scenarios
+            if scenario_id not in reviewed_scenarios
+        ]
+        if corpus_scenarios and unreviewed:
+            publication_invalid = True
+            limitations.append(
+                "Publication validation requires one scenario review per "
+                f"scenario; {len(unreviewed)} scenario(s) were not examined: "
+                f"{', '.join(unreviewed)}."
+            )
+            rejected = self._not_established(
+                candidate_findings,
+                "Not every scenario was examined, so no finding is published.",
+            )
+            accepted = []
+
         undispositioned = tuple(
             objection
             for objection in resolved_objections
@@ -1381,6 +1463,18 @@ class ReportSynthesisService:
             benign_candidate_count == len(candidate_models) and not rejected
         ):
             status = SynthesisStatus.REJECTED
+        elif corpus_scenarios and any(
+            review.disposition is not ReviewDisposition.NO_ISSUE_FOUND
+            for review in scenario_reviews
+        ):
+            # A scenario was examined and something publishable was recorded
+            # against it, yet no finding survived. Reporting "no issues" here
+            # would contradict the attempt's own record.
+            status = SynthesisStatus.REJECTED
+            limitations.append(
+                "At least one scenario review recorded a finding disposition "
+                "but no finding was published; the attempt is not consistent."
+            )
         else:
             status = SynthesisStatus.NO_ISSUES
 
@@ -1399,6 +1493,7 @@ class ReportSynthesisService:
             objections=resolved_objections,
             rejected_findings=tuple(rejected),
             findings=tuple(accepted),
+            scenario_reviews=scenario_reviews,
         )
 
     def analyst_receipt_for_resume(
@@ -1790,7 +1885,12 @@ class ReportSynthesisService:
         }
         if role is ModelRole.REPORT_ANALYST:
             method = getattr(provider, "analyze")
-            value = method(corpus, self.principles, **common)
+            value = method(
+                corpus,
+                self.principles,
+                **common,
+                prior_rejections=self._prior_rejection_payload(corpus),
+            )
         elif role is ModelRole.REPORT_EVIDENCE_AUDITOR:
             method = getattr(provider, "audit", None) or getattr(provider, "review")
             value = method(corpus, self.principles, candidate_findings, **common)
@@ -1811,6 +1911,104 @@ class ReportSynthesisService:
         if isawaitable(value):
             return await cast(Any, value)
         return value
+
+    @staticmethod
+    def prior_rejections_from_attempts(
+        attempts: Iterable[SynthesisAttempt],
+    ) -> tuple[PriorRejection, ...]:
+        """Summarize prior rejected findings as analyst feed-forward context.
+
+        Only *rejected* findings carry a reason worth repeating, and the reason
+        is taken from the recorded reviewer notes and objection messages rather
+        than from any model reasoning. The newest attempt wins for a given
+        finding ID, and a rejection without a reason is skipped because it
+        would tell the analyst nothing.
+        """
+
+        ordered = tuple(reversed(tuple(attempts)))
+        reasons_by_finding: dict[str, list[str]] = {}
+        for attempt in ordered:
+            for objection in attempt.objections:
+                bucket = reasons_by_finding.setdefault(objection.finding_id, [])
+                if len(bucket) < MAX_PRIOR_REJECTION_REASONS:
+                    bucket.append(objection.message)
+        rejections: list[PriorRejection] = []
+        seen: set[str] = set()
+        for attempt in ordered:
+            for finding in attempt.rejected_findings:
+                if finding.finding_id in seen:
+                    continue
+                reasons = tuple(
+                    dict.fromkeys(
+                        note
+                        for note in (
+                            *reasons_by_finding.get(finding.finding_id, ()),
+                            *finding.reviewer_notes,
+                        )
+                        if note.strip()
+                    )
+                )
+                if not reasons:
+                    continue
+                seen.add(finding.finding_id)
+                rejections.append(
+                    PriorRejection(
+                        finding_id=finding.finding_id,
+                        title=finding.title[:240],
+                        reasons=reasons,
+                        evidence_ids=tuple(
+                            dict.fromkeys(
+                                ref.evidence_id
+                                for ref in ReportSynthesisService._finding_evidence_refs(
+                                    finding
+                                )
+                            )
+                        ),
+                        attempt_id=attempt.attempt_id,
+                    )
+                )
+                if len(rejections) >= MAX_PRIOR_REJECTIONS:
+                    return tuple(rejections)
+        return tuple(rejections)
+
+    def _prior_rejection_payload(
+        self, corpus: EvidenceCorpus
+    ) -> tuple[Mapping[str, object], ...]:
+        """Corpus-bound rejection context for the analyst prompt.
+
+        Every referenced evidence ID is checked against the live corpus before it
+        reaches a prompt, so a rejection recorded against an earlier corpus can
+        never make the analyst cite evidence this corpus does not hold.
+        """
+
+        known = {entry.ref.evidence_id for entry in corpus.entries}
+        payload: list[Mapping[str, object]] = []
+        for rejection in self._prior_rejections[:MAX_PRIOR_REJECTIONS]:
+            reasons = tuple(
+                dict.fromkeys(reason for reason in rejection.reasons if reason.strip())
+            )[:MAX_PRIOR_REJECTION_REASONS]
+            if not reasons:
+                continue
+            payload.append(
+                {
+                    "finding_id": rejection.finding_id,
+                    "title": rejection.title,
+                    "rejected_because": list(reasons),
+                    "evidence_ids": [
+                        evidence_id
+                        for evidence_id in rejection.evidence_ids
+                        if evidence_id in known
+                    ],
+                    "rejected_in_attempt": rejection.attempt_id,
+                    "policy": (
+                        "This is a record of why a claim was not established, not "
+                        "a prohibition. Propose this subject again if you retrieve "
+                        "evidence that answers every recorded reason; otherwise "
+                        "propose a different finding."
+                    ),
+                }
+            )
+        return tuple(payload)
 
     def _retry_feedback_reason(self, error: BaseException) -> str:
         """Bounded, provider-safe reason describing a validation failure.
@@ -1957,6 +2155,10 @@ class ReportSynthesisService:
         evidence_kinds = {entry.ref.kind for entry in entries}
         if not evidence_kinds.intersection(_PRIMARY_OBSERVED_EVIDENCE_KINDS):
             raise ValueError("finding has no primary observed evidence")
+        if _heuristic_only_harm_claim(corpus, finding):
+            raise ValueError(
+                "heuristic-only harm claim is not supported by observed evidence"
+            )
         if finding.affected_surfaces:
             supported_surfaces = {
                 value.casefold()
@@ -2505,6 +2707,86 @@ class ReportSynthesisService:
             return None
         return len(self._role_call_records(role))
 
+    def _scenario_reviews(
+        self,
+        corpus: EvidenceCorpus,
+        response: AnalystResponse,
+    ) -> tuple[tuple[ScenarioReview, ...], list[str]]:
+        """Convert analyst reviews into domain reviews, dropping unverifiable ones.
+
+        Evidence IDs are proposals. Only IDs the live corpus actually holds are
+        kept, so a review cannot claim to have examined something that does not
+        exist. A review whose evidence is entirely fictional is discarded rather
+        than reported, and its scenario falls back to an explicit
+        ``no-issue-found`` with a note, because the alternative is publishing an
+        unsupported assertion.
+        """
+
+        known_evidence = {entry.ref.evidence_id for entry in corpus.entries}
+        corpus_scenarios = corpus.scenario_ids()
+        limitations: list[str] = []
+        reviews: list[ScenarioReview] = []
+        covered: set[str] = set()
+        for report in response.scenario_reviews:
+            if report.scenario_id in covered:
+                limitations.append(
+                    f"Scenario {report.scenario_id} was reviewed more than once; "
+                    "the duplicate review was ignored."
+                )
+                continue
+            covered.add(report.scenario_id)
+            if corpus_scenarios and report.scenario_id not in corpus_scenarios:
+                limitations.append(
+                    f"Scenario review {report.scenario_id} names a scenario the "
+                    "corpus does not hold evidence for; the review was ignored."
+                )
+                continue
+            examined = tuple(
+                evidence_id
+                for evidence_id in report.evidence_ids
+                if evidence_id in known_evidence
+            )
+            if not examined:
+                limitations.append(
+                    f"Scenario {report.scenario_id} reported "
+                    f"{report.disposition.value} without naming delivered "
+                    "evidence; it is recorded as examined with nothing found."
+                )
+                reviews.append(
+                    ScenarioReview(
+                        scenario_id=report.scenario_id,
+                        disposition=ReviewDisposition.NO_ISSUE_FOUND,
+                        evidence_ids=(),
+                        signals_weighed=tuple(report.signals_weighed),
+                        note=(
+                            "The analyst reported a disposition without "
+                            "delivered evidence references, so no claim is "
+                            "published for this scenario."
+                        ),
+                    )
+                )
+                continue
+            reviews.append(
+                ScenarioReview(
+                    scenario_id=report.scenario_id,
+                    disposition=report.disposition,
+                    evidence_ids=examined,
+                    signals_weighed=tuple(report.signals_weighed),
+                    note=report.note,
+                )
+            )
+        missing = [
+            scenario_id
+            for scenario_id in corpus_scenarios
+            if scenario_id not in covered
+        ]
+        if missing:
+            limitations.append(
+                "The analyst did not review every scenario; unexamined "
+                f"scenarios: {', '.join(missing)}."
+            )
+        return tuple(reviews), limitations
+
     @staticmethod
     def _rejected_candidate_audit(
         candidate: CandidateFinding,
@@ -2657,6 +2939,7 @@ class ReportSynthesisService:
         objections: Sequence[SynthesisObjection] = (),
         rejected_findings: Sequence[SynthesisFinding] = (),
         findings: Sequence[SynthesisFinding] = (),
+        scenario_reviews: Sequence[ScenarioReview] = (),
         attempt_wall_ms: float = 0.0,
     ) -> SynthesisAttempt:
         expectation_payload = [
@@ -2685,6 +2968,7 @@ class ReportSynthesisService:
             objections=tuple(objections),
             rejected_findings=tuple(rejected_findings),
             findings=tuple(findings),
+            scenario_reviews=tuple(scenario_reviews),
             limitations=tuple(
                 dict.fromkeys(item for item in limitations if item.strip())
             ),
@@ -2749,6 +3033,10 @@ class ReportSynthesisService:
                 "causal language is not supported by evidence",
             ),
             (
+                "heuristic-only harm claim",
+                "heuristic-only harm claim is not supported by observed evidence",
+            ),
+            (
                 "finding has no primary observed evidence",
                 "finding has no primary observed evidence",
             ),
@@ -2767,6 +3055,7 @@ class ReportSynthesisService:
 __all__ = [
     "DEFAULT_MAX_ATTACHMENT_BYTES",
     "DEFAULT_MAX_RETRIEVAL_ENTRIES",
+    "MAX_PRIOR_REJECTIONS",
     "MAX_ROLE_RETRIEVAL_ENTRIES",
     "MAX_RETRIEVAL_ROUNDS",
     "REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION",

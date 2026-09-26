@@ -1,0 +1,2339 @@
+{
+ "attempts": {
+  "2026-09-24T192546Z-98bf4207803b-1": {
+   "candidates": [
+    {
+     "affected_surfaces": [
+      "Navigate to work showcase"
+     ],
+     "confidence": 0.48,
+     "counterevidence": [
+      "The work-showcase run records 0 wrong actions (e565).",
+      "The delivered desktop states show a fully visible \u201cSee what I built\u201d link in two other runs (e28, e226), so the below-fold warning is not established as cross-run behavior."
+     ],
+     "evidence_class": "model-estimate",
+     "evidence_ids": [
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+      "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+      "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2"
+     ],
+     "finding_id": "work-showcase-discovery-warning-signals",
+     "finding_kind": "ux-issue",
+     "fixes": [
+      "Use a prominent work destination with explicit wording such as \u201cWork showcase\u201d or \u201cView my work,\u201d rather than relying only on \u201cSee what I built.\u201d",
+      "Keep that destination in the initial viewport and validate the work-showcase task with lower discovery cost, no ambiguity signal, and no additional scrolling."
+     ],
+     "impact": "If the heuristic reflects user behavior, people may spend extra effort identifying the correct destination and may need to scroll. No work-run verification or failure record was delivered, and the run has 0 wrong actions, so the demonstrated cost remains limited.",
+     "issue": "For \u201cNavigate to work showcase,\u201d heuristic metrics report ambiguity 1.0, below-fold placement 1.0, target-discovery rank 12, and discovery cost 1.35. Two delivered 1280\u00d7800 page states contain a fully visible hero link labeled \u201cSee what I built,\u201d but they belong to other runs and do not verify the work-run target layout. These signals support a possible discoverability issue, not a confirmed task failure.",
+     "limitations": [
+      "No viewport, selected element, full action sequence, or verification record for the work-showcase run was delivered.",
+      "The wording comparison uses structured page states from the prayer-times and contact runs, not the work-showcase run."
+     ],
+     "principles": [],
+     "reproducibility": "model-dependent",
+     "reviewer_notes": [
+      "Validate the wording-mismatch hypothesis with the work-showcase page and action record before increasing severity."
+     ],
+     "reviewer_state": "candidate",
+     "root_cause": "A wording mismatch is a plausible but unconfirmed cause: the delivered page states use \u201cSee what I built,\u201d while the work-showcase heuristic marks its target ambiguous. The work-run viewport, selected element, and action record are absent, so the metrics cannot be tied causally to a specific layout or control.",
+     "severity": "low",
+     "severity_justification": "The only delivered behavioral fact is 0 wrong actions; failure, delay, abandonment, backtracking, and extra scroll counts were not supplied. The four discovery warning signals are heuristic estimates, so this remains low severity pending direct run evidence.",
+     "title": "Work-showcase discovery carries ambiguous, below-fold warning signals"
+    }
+   ],
+   "corpus_digest": "98bf4207803ba00e587f7d716e9f3483681669bc7eb1c72d0fc705b6587bfd68",
+   "roles": {
+    "report-adjudicator": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "final_findings": [],
+       "limitations": [
+        "No visual review is claimed; the work-run verification screenshot was excluded from disclosure (e555), so subjective appearance and perceived prominence are not assessed.",
+        "The delivered records do not identify the selected activation or every intermediate action, and e489 records that no frozen expectation matched the work-showcase run."
+       ],
+       "objection_resolutions": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-below-fold-003",
+         "resolution": "Sustained. e571 is a heuristic flag, while e490 records the in-bounds link with zero visibility and full occlusion. The supported condition is recorded occlusion, not below-fold placement. Because the heuristic metric does not identify its selected target in the delivered record, the below-fold clai [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-verification-003",
+         "resolution": "Sustained. e490 and e535 are delivered work-run viewports, e556 records a successful scroll, e558 records the completion action, and e560 and e584 record verified success. The candidate's obsolete absence claims are removed, and the finding is not published.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-root-cause-003",
+         "resolution": "Sustained. e490 establishes the work-run link label, but e573 is heuristic and e560 and e584 establish verified success. The deterministic condition available for investigation is the occlusion recorded in e490. No wording cause is asserted, and the candidate finding is withdrawn.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-cross-run-evidence-003",
+         "resolution": "Sustained. e28 and e226 describe other runs only; e490 and e535 are the relevant work-run states. The cross-run records are not used to establish work-run placement, impact, or a fix, and the candidate finding is withdrawn.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-impact-003",
+         "resolution": "Sustained. e488 requires traversal, while e556 and e564 record one successful scroll and e565, e566, and e575 record zero wrong actions, backtracks, and recovery actions. e560 and e584 verify completion. The rank and cost values in e561 and e583 are estimates, so the record does not establish extra [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-fix-leverage-003",
+         "resolution": "Sustained. e490 records a control that fits within the viewport but is fully occluded; e556 then records a scroll and e535 records the verified work state. Neither mandatory above-the-fold placement nor a wording change is supported as an effective fix. Those speculative fixes are removed with the c [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "visual-disclosure:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-visual-interpretation-003",
+         "resolution": "Sustained. e555 records that the verification screenshot was excluded. The adjudication uses only structured state and verification records, including e490, e535, and e560; it makes no claim based on image pixels, aesthetics, or perceived prominence. The candidate finding is not published.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "expectation:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-evidence-auditor:work-showcase-expectation-baseline-003",
+         "resolution": "Sustained. e488 defines traversal as the goal, but e489 records that no frozen expectation matched the run. Without an intended-path or placement benchmark, the observed traversal cannot be classified as nonstandard. The candidate finding is withdrawn.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-pattern-reviewer:work-showcase-obsolete-caveats",
+         "resolution": "Sustained. Direct records are available in e490, e514, e556, e558, e560, e564, e566, e575, and e584. The statements that work-run viewports, actions, verification, scroll, backtrack, recovery, or outcome records were absent are obsolete and are removed.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "model-estimate:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:prominence:11:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-pattern-reviewer:unsupported-wording-root-cause",
+         "resolution": "Sustained. e490 shows the work-run label, while e573 and e614 are heuristic estimates and e560 and e584 establish verified success. No controlled evidence links the label to ambiguity or friction, so the wording root cause is rejected and the finding is not published.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-pattern-reviewer:cross-run-recurrence-not-established",
+         "resolution": "Sustained. e28 and e226 show full visibility in two other runs, but they do not establish recurrence within the work run; e571 and e573 are work-run heuristic flags. Cross-run recurrence is not claimed, and the candidate finding is withdrawn.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-pattern-reviewer:cross-run-states-have-limited-work-scope",
+         "resolution": "Sustained. e28 and e226 are limited to their own surfaces and cannot establish a work-run defect or remediation. The work-run evaluation uses e490 and e514; because no supported harm or validated fix remains, the candidate finding is omitted.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "model-estimate:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:prominence:11:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-pattern-reviewer:no-observed-harm-supports-issue-severity",
+         "resolution": "Sustained. e564, e565, e566, and e575 record one scroll, zero wrong actions, zero backtracks, and zero recovery actions; e567, e569, and e584 record verified completion, no false success, and verified success. The signals in e561, e571, e573, e583, and e614 are heuristic estimates rather than observ [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "model-estimate:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:prominence:11:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "objection_id": "report-pattern-reviewer:specific-work-fixes-remain-speculative",
+         "resolution": "Sustained. e490 and e514 show the existing direct label and work-run states, while e614 does not compare interventions. Neither the proposed wording rewrite nor the placement requirement has demonstrated leverage, so those speculative fixes are not published.",
+         "resolved": true
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 1
+     }
+    ],
+    "report-analyst": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "candidate_findings": [
+        {
+         "affected_surfaces": [
+          "Navigate to work showcase"
+         ],
+         "confidence": 0.48,
+         "counterevidence": [
+          "The work-showcase run records 0 wrong actions (e565).",
+          "The delivered desktop states show a fully visible \u201cSee what I built\u201d link in two other runs (e28, e226), so the below-fold warning is not established as cross-run behavior."
+         ],
+         "evidence_class": "model-estimate",
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "finding_kind": "ux-issue",
+         "fixes": [
+          "Use a prominent work destination with explicit wording such as \u201cWork showcase\u201d or \u201cView my work,\u201d rather than relying only on \u201cSee what I built.\u201d",
+          "Keep that destination in the initial viewport and validate the work-showcase task with lower discovery cost, no ambiguity signal, and no additional scrolling."
+         ],
+         "impact": "If the heuristic reflects user behavior, people may spend extra effort identifying the correct destination and may need to scroll. No work-run verification or failure record was delivered, and the run has 0 wrong actions, so the demonstrated cost remains limited.",
+         "issue": "For \u201cNavigate to work showcase,\u201d heuristic metrics report ambiguity 1.0, below-fold placement 1.0, target-discovery rank 12, and discovery cost 1.35. Two delivered 1280\u00d7800 page states contain a fully visible hero link labeled \u201cSee what I built,\u201d but they belong to other runs and do not verify the work-run target layout. These signals support a possible discoverability issue, not a confirmed task failure.",
+         "limitations": [
+          "No viewport, selected element, full action sequence, or verification record for the work-showcase run was delivered.",
+          "The wording comparison uses structured page states from the prayer-times and contact runs, not the work-showcase run."
+         ],
+         "principles": [],
+         "reproducibility": "model-dependent",
+         "reviewer_notes": [
+          "Validate the wording-mismatch hypothesis with the work-showcase page and action record before increasing severity."
+         ],
+         "reviewer_state": "candidate",
+         "root_cause": "A wording mismatch is a plausible but unconfirmed cause: the delivered page states use \u201cSee what I built,\u201d while the work-showcase heuristic marks its target ambiguous. The work-run viewport, selected element, and action record are absent, so the metrics cannot be tied causally to a specific layout or control.",
+         "severity": "low",
+         "severity_justification": "The only delivered behavioral fact is 0 wrong actions; failure, delay, abandonment, backtracking, and extra scroll counts were not supplied. The four discovery warning signals are heuristic estimates, so this remains low severity pending direct run evidence.",
+         "title": "Work-showcase discovery carries ambiguous, below-fold warning signals"
+        }
+       ],
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "The work-showcase candidate depends on heuristic metrics because its direct viewport, element, full action sequence, and verification were not delivered.",
+        "The structured page states and selected elements delivered for the prayer-times and contact runs are 1280\u00d7800 states; no mobile or other responsive state was delivered.",
+        "Only sequence-17 interaction events were delivered for those two runs, so preceding steps, redundant actions, and backtracking cannot be evaluated.",
+        "No delivered evidence covers the app-store-ratings surface, so no finding is made for it.",
+        "This synthesis uses structured evidence only and does not claim visual review of screenshot artifacts."
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ],
+    "report-evidence-auditor": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "No work-run screenshot pixels were reviewed: e555 reports that the final screenshot was excluded. Claims about labels, bounds, visibility, and occlusion are limited to the structured records e490 and e535.",
+        "e559 records a successful completion action but does not identify the activated destination; the complete intermediate action sequence and the exact target used by the heuristic metrics were not delivered.",
+        "No matching frozen expectation was delivered for this run (e489), so the evidence cannot establish whether the observed traversal was nonstandard or avoidable."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "e571 is a heuristic target-level flag, not a deterministic placement observation. For the work-navigation control discussed by the candidate, e490 places \u201cSee what I built\u201d at y=683.8125 with height=59.1875 in an 800px viewport, so its bounds end 57px above the bottom edge. It is nevertheless record [excerpt]",
+         "objection_id": "work-showcase-below-fold-003",
+         "objection_type": "factual-support",
+         "resolution": "Remove below-fold placement from the issue title and factual claim. Anchor any revised concern to e490's recorded occlusion; retain e571 only as an unlinked heuristic warning.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "replay:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "The stated limitations that no work-run viewport, action, or verification record was delivered are obsolete. e490 and e535 provide structured work-run states, e556 records a successful downward scroll, e559 records a successful completion action, and e560 and e584 record verification and a verified- [excerpt]",
+         "objection_id": "work-showcase-verification-003",
+         "objection_type": "contradiction",
+         "resolution": "Replace the obsolete limitation with the narrower gaps: no selected destination activation or complete intermediate sequence. Report the delivered successful completion explicitly.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "e490 now establishes that the work-run viewport contains an actionable link labeled \u201cSee what I built,\u201d but the wording-mismatch hypothesis is still not a supported root cause. The ambiguity signal in e573 is heuristic, the task verifies successfully in e560 and e584, and no delivered record connect [excerpt]",
+         "objection_id": "work-showcase-root-cause-003",
+         "objection_type": "factual-support",
+         "resolution": "Remove wording mismatch as the asserted root cause. It may remain only as an explicitly unvalidated hypothesis, separate from the supported occlusion record.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "e28 and e226 accurately establish recorded visibility and wording for their own runs only. They cannot establish work-run placement, affected user impact, or a cause for the work-run heuristic. The affected surface is now directly covered by e490 and e535.",
+         "objection_id": "work-showcase-cross-run-evidence-003",
+         "objection_type": "citation-accuracy",
+         "resolution": "Use e490 and e535 for work-run claims. Keep e28 and e226 solely as explicitly scoped cross-run context, not evidence for the work-run issue or its cause.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "The rank and cost values in e561 and e583 are model estimates, while the deterministic run records one successful downward scroll, zero wrong actions, zero backtracks, zero recovery actions, and verified success. Because e488 explicitly requires traversal, the single scroll is not established as add [excerpt]",
+         "objection_id": "work-showcase-impact-003",
+         "objection_type": "counterexample",
+         "resolution": "Pair any retained low-severity heuristic concern with the verified-success outcome. Do not describe the observed scroll as additional or avoidable, and do not present estimated discovery cost as measured user effort.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "The proposed requirement to keep the destination in the initial viewport has no demonstrated placement leverage: the candidate's control already fits within viewport-1 in e490 but is fully occluded. The run later verifies a work-showcase state in e535 after a successful scroll in e556. A mandatory w [excerpt]",
+         "objection_id": "work-showcase-fix-leverage-003",
+         "objection_type": "fix-leverage",
+         "resolution": "Remove the move-to-top and mandatory wording prescriptions. Test whether the occluding first state should be shortened, bypassed, or made non-blocking; evaluate clearer wording separately through comparative behavioral evidence.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "visual-disclosure:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "e555 reports that the work-run verification screenshot was excluded, so no work-run image pixels were reviewed. e490 and e535 support structured label, bounds, visibility, occlusion, and content-state claims, but not subjective appearance, aesthetic quality, or perceived prominence from screenshot p [excerpt]",
+         "objection_id": "work-showcase-visual-interpretation-003",
+         "objection_type": "visual-interpretation",
+         "resolution": "State the screenshot limitation and restrict visual claims to the delivered structured fields. Do not claim screenshot review or infer pixels from geometry records.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "expectation:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "e488 defines the goal as traversing the portfolio to reach the work showcase, but e489 records that no frozen expectation matched this run. The delivered evidence therefore lacks a benchmark for an intended path or destination placement and cannot establish that the observed traversal was nonstandar [excerpt]",
+         "objection_id": "work-showcase-expectation-baseline-003",
+         "objection_type": "other",
+         "resolution": "Do not characterize the traversal as nonstandard or path-incorrect. Report only the observed action and heuristic signals, and retain the absent expectation baseline as a limitation.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "editorial"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ],
+    "report-pattern-reviewer": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "The delivered work-showcase action evidence is an isolated successful scroll at sequence 9 and completion at sequence 18; intervening actions and a full replay were not delivered.",
+        "The work-showcase prominence, below-fold, ambiguity, discovery-rank, discovery-cost, and scroll-cost values are heuristic estimates; e614 identifies the model ID and version as unavailable.",
+        "The initial work-run state e490 is heavily occluded, so it does not by itself establish a stable initial-page placement for the destination.",
+        "No screenshot-level visual inspection was performed; conclusions are limited to structured viewport, event, verification, and metric fields."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "The candidate's scope caveats are contradicted by delivered direct work-run evidence. e490 and e514 are work-run viewports; e556 and e558 are work-run actions; e560 records independent verification; and e564, e566, e575, and e584 provide scroll, backtrack, recovery, and outcome records. Statements t [excerpt]",
+         "objection_id": "work-showcase-obsolete-caveats",
+         "objection_type": "citation-accuracy",
+         "resolution": "Replace the obsolete caveats with the actual boundary: direct work-run viewports, isolated actions, and verified completion were delivered, but a full replay and cross-session evidence were not.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "model-estimate:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:prominence:11:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "The direct work-run states show the label \u2018See what I built,\u2019 so the earlier cross-run-only wording comparison is obsolete. However, the ambiguity and prominence records are heuristic estimates, not a controlled comparison of label wording, while the run has independent verified success. The wording [excerpt]",
+         "objection_id": "unsupported-wording-root-cause",
+         "objection_type": "shared-cause",
+         "resolution": "Remove the asserted wording-mismatch root cause. If retained, describe explicit task-oriented wording only as an untested hypothesis rather than an established shared cause.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "Cross-run recurrence is not established. The delivered warning metrics belong to the work run, while e28 and e226 show the same link fully visible in two other scenarios. Those states are counterexamples to treating a recurrent below-fold pattern as established, although they do not prove the work-r [excerpt]",
+         "objection_id": "cross-run-recurrence-not-established",
+         "objection_type": "recurrence",
+         "resolution": "Limit the observation to a one-run heuristic warning. Use the other-run states only as counterexamples, and do not claim that the problem recurs across surfaces.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "e28 and e226 belong to the prayer-times and contact surfaces, whereas e490 and e514 are the delivered work-run viewports. The former can support a cross-run counterexample but cannot establish a defect, remediation, or affected surface within the work-showcase run.",
+         "objection_id": "cross-run-states-have-limited-work-scope",
+         "objection_type": "affected-surface",
+         "resolution": "Keep the affected surface limited to \u2018Navigate to work showcase\u2019 and label the other-run evidence as comparative counterevidence only.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "model-estimate:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:prominence:11:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "The direct run does not demonstrate user-observed failure or friction: it records one scroll, zero wrong actions, zero backtracks, verified completion, false-success 0, and verified-success outcome. Discovery rank 12, below-fold 1.0, ambiguity 1.0, discovery cost 1.35, and prominence near 4.75% are [excerpt]",
+         "objection_id": "no-observed-harm-supports-issue-severity",
+         "objection_type": "severity",
+         "resolution": "Reclassify the candidate as an informational, model-dependent warning rather than a confirmed UX issue. Do not claim observed failure, delay, abandonment, or extra effort.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "model-estimate:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:prominence:11:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9"
+         ],
+         "finding_id": "work-showcase-discovery-warning-signals",
+         "message": "Neither the proposed wording rewrite nor the placement change is validated. The direct work run already uses the proposed existing label, records one scroll, and ends in independent and deterministic verified success; the low prominence estimate alone does not identify which change would improve beh [excerpt]",
+         "objection_id": "specific-work-fixes-remain-speculative",
+         "objection_type": "fix-leverage",
+         "resolution": "Do not prescribe either change as an established fix. If the warning is retained, validate target identity, stable first-viewport visibility, wording, and task efficiency through a targeted behavioral comparison before prioritizing a remediation.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "editorial"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ]
+   },
+   "status": "rejected"
+  },
+  "2026-09-25T074903Z-98bf4207803b-1": {
+   "candidates": [
+    {
+     "affected_surfaces": [
+      "Navigate to work showcase",
+      "navigate-work-showcase"
+     ],
+     "confidence": 0.72,
+     "counterevidence": [
+      "The run includes a successful downward scroll at sequence 9, suggesting that a later state may have exposed the work-showcase entry.",
+      "The run recorded zero wrong actions, so the delivered evidence does not show a misclick, recovery loop, or abandoned navigation."
+     ],
+     "evidence_class": "model-estimate",
+     "evidence_ids": [
+      "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+      "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions"
+     ],
+     "finding_id": "work-showcase-obscured-entry",
+     "finding_kind": "ux-issue",
+     "fixes": [
+      "Keep the persistent header and a direct \u201cSee work\u201d entry outside any full-screen introductory layer.",
+      "If the \u201cSpoiler: it's good.\u201d treatment must remain, make it nonblocking or explicitly dismissible and restore access to navigation as soon as it is dismissed.",
+      "Retest work discovery in both the captured initial state and the state immediately after a scroll, and reduce any additional travel required to identify the work-showcase section."
+     ],
+     "impact": "In the captured state, a user has no visible actionable work-showcase entry and must rely on a later state. This can delay the navigation task, but the delivered evidence does not establish abandonment or task failure.",
+     "issue": "In a captured work-showcase state, the non-actionable text \u201cSpoiler: it's good.\u201d is visible while the header links, \u201cSee what I built,\u201d \u201cGet in touch,\u201d and the theme control are recorded as 100% occluded with 0% visibility. Heuristic metrics also classify the target as below-fold and ambiguous, with discovery rank 12 and discovery cost 1.35; a downward scroll was recorded at sequence 9.",
+     "limitations": [
+      "Only one work-showcase viewport and one event were delivered; there is no post-scroll viewport with which to confirm how the target became accessible.",
+      "The duration and trigger of the fully occluded state are unknown. It may be a transient transition or capture state rather than a persistent product state.",
+      "No work-showcase verification or completion outcome was delivered, so the observed visibility problem cannot be tied to a failed task."
+     ],
+     "principles": [],
+     "reproducibility": "model-dependent",
+     "reviewer_notes": [
+      "The full-page occlusion is deterministic in the delivered viewport metadata, while the below-fold, ambiguity, rank, and cost conclusions are heuristic estimates."
+     ],
+     "reviewer_state": "candidate",
+     "root_cause": "The cause is not established. The viewport records a non-actionable spoiler element while all actionable controls are fully occluded, but it does not establish whether this is a deliberate transition, a capture artifact, or a persistent blocker, nor whether that state caused the subsequent scroll.",
+     "severity": "low",
+     "severity_justification": "The captured state removes every visible actionable route to the requested work showcase, and the associated discovery estimates indicate additional search cost. Impact is limited to low severity because only one state was observed, a scroll occurred, zero wrong actions were recorded, and no failed completion or repeated-step sequence is available.",
+     "title": "Work-showcase entry is fully occluded in a captured state"
+    }
+   ],
+   "corpus_digest": "98bf4207803ba00e587f7d716e9f3483681669bc7eb1c72d0fc705b6587bfd68",
+   "roles": {
+    "report-adjudicator": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "final_findings": [
+        {
+         "affected_surfaces": [
+          "Open prayer times feature",
+          "Initiate contact via Get in touch",
+          "Discover Muslim Pedia app store ratings",
+          "Navigate to work showcase"
+         ],
+         "confidence": 0.78,
+         "counterevidence": [
+          "e79, e262, and e535 expose the prayer-times content, contact controls, and work-showcase content in later supplied states.",
+          "All four task records report verified-success, so the initial state is not evidence of abandonment or a permanent blocker.",
+          "The delivered metadata does not identify the occluding object, its duration, or a common implementation cause."
+         ],
+         "evidence_class": "model-estimate",
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-verification-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-verification-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:outcome",
+          "metric:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:outcome",
+          "metric:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "finding_kind": "ux-issue",
+         "fixes": [
+          "Reproduce the first state from all four task entry points and inspect the introductory and dismissal behavior. If it blocks input, keep an explicit dismiss or continue control and the header and primary call to action available throughout.",
+          "Retest the first interaction and post-transition viewport at 1280\u00d7800 for every entry point. Set the release criterion that listed actionable controls have non-zero visibility and pass a hit test in the interactive state."
+         ],
+         "impact": "That state supplies no recorded visible action for the tasks, including \"See what I built.\" It constrains immediate action only at the captured state; the evidence does not establish a measured delay or failure. Each of the four tasks records a verified-success outcome.",
+         "issue": "In each run's first supplied 1280\u00d7800 viewport, the 800px introduction container and every listed actionable control are recorded with occlusion_fraction 1.0 and visibility_fraction 0.0, although non-actionable introductory text remains recorded as visible. The same pattern appears for the prayer-times, contact, ratings, and work-showcase tasks.",
+         "limitations": [
+          "Structured viewport metadata, not rendered pixels or a directly identified occluding element, supports the visibility finding.",
+          "The evidence does not establish how long the state lasts, whether an interaction dismisses it, or whether input is blocked rather than merely covered in the capture.",
+          "No elapsed-time, abandonment, or failed-outcome evidence supports a delay or higher-severity claim."
+         ],
+         "principles": [],
+         "reproducibility": "model-dependent",
+         "reviewer_notes": [],
+         "reviewer_state": "candidate",
+         "root_cause": "A recurring initial introduction state is associated with all-action occlusion, but the cause is not established. The evidence cannot distinguish an intentional transition, capture timing, or a shared or separate implementation defect.",
+         "severity": "low",
+         "severity_justification": "The deterministic records support a state-specific loss of visible actions across all four supplied initial states. However, later states expose several requested outcomes, all four task outcomes are verified-success, and no measured delay, abandonment, or failed completion supports a higher severity.",
+         "title": "First supplied viewport states show no visible actions across four tasks"
+        }
+       ],
+       "limitations": [
+        "The report is limited to delivered structured evidence; no rendered-pixel or occluder review was performed.",
+        "The evidence does not establish persistence, dismissal behavior, elapsed delay, or a shared implementation cause for the recurring state."
+       ],
+       "objection_resolutions": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-obsolete-limitations",
+         "resolution": "Accepted. The final finding removes the stale limitations about having only one work viewport and no completion outcome. e514 and e535 are additional work states, e560 records a broad matched result, and e567, e569, and e584 support verified completion without false success. The final uses the compl [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-delay-not-measured",
+         "resolution": "Accepted. The final impact makes no delay claim. e556 and e564 establish one successful downward scroll, e565 and e566 record zero wrong actions and backtracks, and e567 and e584 establish completion. The evidence supplies neither scroll distance nor elapsed time, so the finding is confined to the c [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-unseen-occluder",
+         "resolution": "Accepted. The final wording says the metadata records the visible introductory text and the occluded controls; it does not claim a rendered full-screen layer or identify an occluding object. e490 supports the state, while e514 and e535 show later states with the header visible and the work CTA at pa [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "expectation:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-heuristic-metric-misuse",
+         "resolution": "Accepted. The final finding removes e561, e571, e573, and e583 and makes no rank, below-fold, ambiguity, or discovery-cost claim. e490 places the \"See what I built\" link within the 800px viewport, while e571 does not identify the heuristic target, so the estimate is not attributed to that link. e489 [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-goal-citation",
+         "resolution": "Accepted. e488 explicitly defines the goal as traversing the portfolio to reach the work showcase, e490 records the \"See what I built\" action, and e535 later exposes Act 01 work content. The final evidence now includes e488, e490, and e535, making the goal-to-target relationship explicit without inf [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-verification-scope",
+         "resolution": "Accepted. The final finding does not use e560 to identify a particular matched element because its cited source is absent from the delivered e535 element inventory. Completion is supported by e567 and e584, while the work-goal mapping is supported separately by e488 and the work content in e535.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-showcase-cross-surface-scope",
+         "resolution": "Accepted for the observed state. The affected surfaces now include all four task runs because e4, e202, e370, and e490 record the same first-state all-action occlusion pattern. The finding describes recurrence across scenarios, not a proven shared implementation cause.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-verification-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-verification-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-verification-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:outcome",
+          "metric:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:outcome",
+          "metric:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-showcase-persistence-counterexample",
+         "resolution": "Accepted. The finding is limited to the first supplied state and makes no persistence or universality claim. e79, e262, e416, and e535 show later content or visibility states, while e128, e313, e443, and e584 record successful outcomes. These records counter a permanent-blocker interpretation but do [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:outcome",
+          "metric:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:outcome",
+          "metric:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-showcase-severity-evidence",
+         "resolution": "Accepted. The missing-verification limitation is removed. Low severity now rests on the deterministic first-state observation, the four verified-success outcomes, and the absence of measured delay or failure\u2014not on heuristic scores. For the work run, e564 records one scroll, while e565, e566, and e5 [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-showcase-fix-leverage",
+         "resolution": "Accepted. The fix now begins with a common-state diagnostic across all four entry points because e4, e202, e370, and e490 record matching first-state occlusion. Recurrence is treated only as a diagnostic lead. Any interface change is conditional on reproducing actual input blocking, and the acceptan [excerpt]",
+         "resolved": true
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 1
+     }
+    ],
+    "report-analyst": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "candidate_findings": [
+        {
+         "affected_surfaces": [
+          "Navigate to work showcase",
+          "navigate-work-showcase"
+         ],
+         "confidence": 0.72,
+         "counterevidence": [
+          "The run includes a successful downward scroll at sequence 9, suggesting that a later state may have exposed the work-showcase entry.",
+          "The run recorded zero wrong actions, so the delivered evidence does not show a misclick, recovery loop, or abandoned navigation."
+         ],
+         "evidence_class": "model-estimate",
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "finding_kind": "ux-issue",
+         "fixes": [
+          "Keep the persistent header and a direct \u201cSee work\u201d entry outside any full-screen introductory layer.",
+          "If the \u201cSpoiler: it's good.\u201d treatment must remain, make it nonblocking or explicitly dismissible and restore access to navigation as soon as it is dismissed.",
+          "Retest work discovery in both the captured initial state and the state immediately after a scroll, and reduce any additional travel required to identify the work-showcase section."
+         ],
+         "impact": "In the captured state, a user has no visible actionable work-showcase entry and must rely on a later state. This can delay the navigation task, but the delivered evidence does not establish abandonment or task failure.",
+         "issue": "In a captured work-showcase state, the non-actionable text \u201cSpoiler: it's good.\u201d is visible while the header links, \u201cSee what I built,\u201d \u201cGet in touch,\u201d and the theme control are recorded as 100% occluded with 0% visibility. Heuristic metrics also classify the target as below-fold and ambiguous, with discovery rank 12 and discovery cost 1.35; a downward scroll was recorded at sequence 9.",
+         "limitations": [
+          "Only one work-showcase viewport and one event were delivered; there is no post-scroll viewport with which to confirm how the target became accessible.",
+          "The duration and trigger of the fully occluded state are unknown. It may be a transient transition or capture state rather than a persistent product state.",
+          "No work-showcase verification or completion outcome was delivered, so the observed visibility problem cannot be tied to a failed task."
+         ],
+         "principles": [],
+         "reproducibility": "model-dependent",
+         "reviewer_notes": [
+          "The full-page occlusion is deterministic in the delivered viewport metadata, while the below-fold, ambiguity, rank, and cost conclusions are heuristic estimates."
+         ],
+         "reviewer_state": "candidate",
+         "root_cause": "The cause is not established. The viewport records a non-actionable spoiler element while all actionable controls are fully occluded, but it does not establish whether this is a deliberate transition, a capture artifact, or a persistent blocker, nor whether that state caused the subsequent scroll.",
+         "severity": "low",
+         "severity_justification": "The captured state removes every visible actionable route to the requested work showcase, and the associated discovery estimates indicate additional search cost. Impact is limited to low severity because only one state was observed, a scroll occurred, zero wrong actions were recorded, and no failed completion or repeated-step sequence is available.",
+         "title": "Work-showcase entry is fully occluded in a captured state"
+        }
+       ],
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "No delivered evidence covers the \u201cDiscover Muslim Pedia app store ratings\u201d run.",
+        "Full action sequences, verification records, and completion outcomes were not delivered for any run, so repeated steps, backtracking, success, and false success cannot be assessed.",
+        "Only structured viewport metadata was delivered for the reviewed states; screenshot attachments and downstream states were not available.",
+        "The available evidence is insufficient to establish whether any issue represents a scenario-specification defect."
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ],
+    "report-evidence-auditor": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "e489 records no matched frozen expectation, so conformity to a reference path and a frozen severity benchmark cannot be assessed.",
+        "e490, e514, and e535 provide structured viewport metadata and artifact paths but no inspectable pixels; visual composition, occluder identity, layer persistence, and dismissibility remain unverified.",
+        "e556 and e564 establish one successful downward scroll, but do not record scroll distance, duration, or observed user delay; the discovery-rank, below-fold, ambiguity, and discovery-cost values in e561, e571, e573, and e583 are heuristic estimates.",
+        "e560 supports a broad matched-result verification, but its source reference to e535 element-8 cannot be resolved against the delivered e535 element list."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The candidate's limitations that no work-showcase verification or completion outcome was delivered, and its rationale that only one viewport was observed, are stale. e514 and e535 are later captured work states, e560 records a matched result, e567 records verified completion, e569 records zero false [excerpt]",
+         "objection_id": "work-showcase-obsolete-limitations",
+         "objection_type": "contradiction",
+         "resolution": "Remove the stale no-verification and no-completion limitations. State that later captures and verified-success evidence are available, while retaining that the records do not explicitly quantify the relationship between the scroll event and the captured state change.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e556 and e564 establish one successful downward scroll; e565 and e566 record zero wrong actions and zero backtracks; e567 and e584 establish successful completion. These records do not establish scroll distance, elapsed time, or an observed user delay. The impact claim that the occlusion can delay n [excerpt]",
+         "objection_id": "work-showcase-delay-not-measured",
+         "objection_type": "factual-support",
+         "resolution": "Describe the observed trajectory as one scroll followed by verified success. Do not claim measured extra travel or delay; hypothetical delay may remain only if explicitly qualified.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e490 supports the narrow claim that the spoiler is recorded as visible while the actionable controls are recorded with zero visibility and full occlusion. e514 and e535 later record the header as fully visible and \u201cSee what I built\u201d at 0.4 visibility and 0.6 occlusion. The delivered records do not e [excerpt]",
+         "objection_id": "work-showcase-unseen-occluder",
+         "objection_type": "visual-interpretation",
+         "resolution": "Use metadata-qualified wording such as \u201crecorded as visible\u201d and \u201crecorded as occluded.\u201d Remove the full-screen-layer and dismissibility assertions unless observed directly, and frame any header or overlay fix conditionally with retesting across the initial and later states.",
+         "resolved": false,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "expectation:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The core occlusion metadata is deterministic in e490, while e561, e571, e573, and e583 are heuristic estimates. In e490, \u201cSee what I built\u201d has y=683.8125 and height=59.1875 within an 800px-high viewport; e571 does not identify its measured target, so the below-fold estimate should not be attributed [excerpt]",
+         "objection_id": "work-showcase-heuristic-metric-misuse",
+         "objection_type": "severity",
+         "resolution": "Classify the core finding from deterministic evidence and label the four heuristic metrics separately. Do not use below-fold, ambiguity, rank, or discovery cost as proof of user impact or as the primary severity basis.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e488 explicitly defines the goal as traversing the portfolio to reach the work showcase. e490 supplies the \u201cSee what I built\u201d entry, while e514 and e535 supply later Act 01 work content. The finding should cite e488 to make the goal-to-target mapping explicit rather than leaving it implicit.",
+         "objection_id": "work-showcase-goal-citation",
+         "objection_type": "citation-accuracy",
+         "resolution": "Add e488 to the finding\u2019s evidence and preserve the limitation from e489 that no frozen reference path was matched.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e560 records a broad \u201cpersona-visible result matched\u201d verification, but its source lists e535 element-8, which is absent from the delivered e535 element list. It therefore cannot independently identify the exact matched element. Broad completion is supported by e567 and e584; exact goal mapping shou [excerpt]",
+         "objection_id": "work-showcase-verification-scope",
+         "objection_type": "citation-accuracy",
+         "resolution": "Use e560 only for broad verification, not element-level visual proof. Pair it with e488 and e535 for target context, and use e567/e584 for completion and outcome.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "editorial"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ],
+    "report-pattern-reviewer": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "Direct screenshot review was not performed; e27 and e513 record visual-disclosure exclusion for two initial states, so the occlusion assessment here uses deterministic viewport metadata.",
+        "The delivered evidence does not establish the duration, trigger, or implementation cause of the initial fully occluded state. Cross-route recurrence is observed, but shared causation remains unverified.",
+        "The prominence and cost metrics e561, e571, e573, and e583 are heuristic model estimates, not deterministic evidence of persistent user impact."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The finding's surface scope is too narrow. In the first captured 1280\u00d7800 state of every run, e4, e202, e370, and e490 record the 800px introduction at 100% occlusion, with all listed actionable header, CTA, Download CV, and theme controls at 100% occlusion and 0% visibility. The runs differ in thei [excerpt]",
+         "objection_id": "obj-work-showcase-cross-surface-scope",
+         "objection_type": "recurrence",
+         "resolution": "Broaden recurrence scope to all four surfaces while retaining work showcase as the route-specific impact. Keep the implementation cause open and test for a common initial-state layer before relying on surface-specific fixes.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-verification-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-verification-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-verification-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:outcome",
+          "metric:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:outcome",
+          "metric:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "Counterevidence rules out treating the condition as persistent or universal. e79 exposes Open Prayer Times, e262 exposes the contact email and copy control, e416 shows the ratings-run introduction at 60% visibility, and e535 shows the work-showcase region; all four runs record verified-success in e1 [excerpt]",
+         "objection_id": "obj-work-showcase-persistence-counterexample",
+         "objection_type": "counterexample",
+         "resolution": "Retain the state-specific wording, include these later-state counterexamples, and leave persistence and trigger unresolved rather than implying permanent loss of navigation.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The limitation that no work-showcase verification or completion outcome was delivered is outdated: e560 records a matched persona-visible result and e584 records verified-success. Deterministic metrics show one scroll, zero wrong actions, zero backtracks, and zero recovery actions in e564, e565, e56 [excerpt]",
+         "objection_id": "obj-work-showcase-severity-evidence",
+         "objection_type": "severity",
+         "resolution": "Replace the stale limitation and retain low severity for the observed impact, explicitly describing the issue as state-specific and recoverable. Keep heuristic discovery metrics secondary to deterministic outcome and interaction evidence.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "Fix leverage should begin with a common-state retest. The matching initial bounds and occlusion values in e4, e202, e370, and e490 make the shared introductory state a more leveraged diagnostic target than a work-showcase-only hierarchy problem. This does not prove one implementation cause: a transi [excerpt]",
+         "objection_id": "obj-work-showcase-fix-leverage",
+         "objection_type": "fix-leverage",
+         "resolution": "Retest load and immediate post-interaction states across all four routes. Apply a shared fix only if a shared layer or trigger is confirmed; otherwise retain route-specific navigation changes.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ]
+   },
+   "status": "rejected"
+  },
+  "2026-09-25T085418Z-98bf4207803b-1": {
+   "candidates": [
+    {
+     "affected_surfaces": [
+      "Navigate to work showcase",
+      "navigate-work-showcase"
+     ],
+     "confidence": 0.72,
+     "counterevidence": [
+      "The run includes a successful downward scroll at sequence 9, suggesting that a later state may have exposed the work-showcase entry.",
+      "The run recorded zero wrong actions, so the delivered evidence does not show a misclick, recovery loop, or abandoned navigation."
+     ],
+     "evidence_class": "model-estimate",
+     "evidence_ids": [
+      "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+      "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions"
+     ],
+     "finding_id": "work-showcase-obscured-entry",
+     "finding_kind": "ux-issue",
+     "fixes": [
+      "Keep the persistent header and a direct \u201cSee work\u201d entry outside any full-screen introductory layer.",
+      "If the \u201cSpoiler: it's good.\u201d treatment must remain, make it nonblocking or explicitly dismissible and restore access to navigation as soon as it is dismissed.",
+      "Retest work discovery in both the captured initial state and the state immediately after a scroll, and reduce any additional travel required to identify the work-showcase section."
+     ],
+     "impact": "In the captured state, a user has no visible actionable work-showcase entry and must rely on a later state. This can delay the navigation task, but the delivered evidence does not establish abandonment or task failure.",
+     "issue": "In a captured work-showcase state, the non-actionable text \u201cSpoiler: it's good.\u201d is visible while the header links, \u201cSee what I built,\u201d \u201cGet in touch,\u201d and the theme control are recorded as 100% occluded with 0% visibility. Heuristic metrics also classify the target as below-fold and ambiguous, with discovery rank 12 and discovery cost 1.35; a downward scroll was recorded at sequence 9.",
+     "limitations": [
+      "Only one work-showcase viewport and one event were delivered; there is no post-scroll viewport with which to confirm how the target became accessible.",
+      "The duration and trigger of the fully occluded state are unknown. It may be a transient transition or capture state rather than a persistent product state.",
+      "No work-showcase verification or completion outcome was delivered, so the observed visibility problem cannot be tied to a failed task."
+     ],
+     "principles": [],
+     "reproducibility": "model-dependent",
+     "reviewer_notes": [
+      "The full-page occlusion is deterministic in the delivered viewport metadata, while the below-fold, ambiguity, rank, and cost conclusions are heuristic estimates."
+     ],
+     "reviewer_state": "candidate",
+     "root_cause": "The cause is not established. The viewport records a non-actionable spoiler element while all actionable controls are fully occluded, but it does not establish whether this is a deliberate transition, a capture artifact, or a persistent blocker, nor whether that state caused the subsequent scroll.",
+     "severity": "low",
+     "severity_justification": "The captured state removes every visible actionable route to the requested work showcase, and the associated discovery estimates indicate additional search cost. Impact is limited to low severity because only one state was observed, a scroll occurred, zero wrong actions were recorded, and no failed completion or repeated-step sequence is available.",
+     "title": "Work-showcase entry is fully occluded in a captured state"
+    }
+   ],
+   "corpus_digest": "98bf4207803ba00e587f7d716e9f3483681669bc7eb1c72d0fc705b6587bfd68",
+   "roles": {
+    "report-adjudicator": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "final_findings": [
+        {
+         "affected_surfaces": [
+          "Open prayer times feature",
+          "Initiate contact via Get in touch",
+          "Discover Muslim Pedia app store ratings",
+          "Navigate to work showcase"
+         ],
+         "confidence": 0.92,
+         "counterevidence": [
+          "Later work-showcase viewports expose the work area; e514 also records the header links at full visibility and \u201cSee what I built\u201d at 40% visibility.",
+          "The work-showcase run records one scroll, zero wrong actions, verified completion, and a verified-success outcome."
+         ],
+         "evidence_class": "deterministic-fact",
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "finding_kind": "ux-issue",
+         "fixes": [
+          "Make the first settled interactive state expose the relevant navigation controls; remove or shorten any rendering or transition condition that records them at zero visibility.",
+          "If the state is an intentional timed introduction, make it explicitly dismissible with visible progress feedback and restore the controls without requiring a broader navigation redesign.",
+          "Add a cross-surface regression check for the first settled state and the existing post-scroll state, recording control visibility, transition duration, and successful activation of each scenario target."
+         ],
+         "impact": "A user who actually encounters this as a settled interactive state would have no recorded immediately actionable route. Cross-surface task delay is not measured, however. In the work-showcase run, one scroll exposed the work area, wrong actions were recorded as zero, and completion was independently verified.",
+         "issue": "In the initial structured viewport record for each of four surfaces, every recorded actionable control has occlusion_fraction 1.0 and visibility_fraction 0.0, while visible non-actionable introductory text is also present. This establishes recurrence of the recorded state pattern, but does not identify any text as the occluder or establish a full-screen layer.",
+         "limitations": [
+          "The viewport records do not establish whether the zero-visibility state persisted, was visible to a real user, or was a capture artifact.",
+          "Only the work-showcase run has delivered outcome evidence, and that outcome is successful; recurrence of task harm across the four surfaces is not established.",
+          "The verification record names an element-specific anchor absent from the delivered e535 element list, so the final finding relies on area-level work content and the separate outcome records for completion."
+         ],
+         "principles": [],
+         "reproducibility": "model-dependent",
+         "reviewer_notes": [
+          "The finding describes controls as recorded as fully occluded and does not name any visible text as their occluder.",
+          "Heuristic discovery metrics are not used to establish the finding or its severity.",
+          "The revised fixes preserve the successful post-scroll path and do not require a persistent header or a new direct work link."
+         ],
+         "reviewer_state": "candidate",
+         "root_cause": "The cause is not established. The viewport metadata records full occlusion of actionable controls but does not reveal what caused it, when it occurs, how long it lasts, or whether it was a transient rendering or capture-only state.",
+         "severity": "low",
+         "severity_justification": "Low severity is justified because only one delivered initial viewport is available per surface and the cause and duration of the state are unknown. The work-showcase run records one scroll, zero wrong actions, verified completion, and a verified-success outcome, so the evidence supports possible initial-state friction rather than task failure, abandonment, or a blocking workflow.",
+         "title": "Initial captures record every actionable control as fully occluded"
+        }
+       ],
+       "limitations": [
+        "The delivered evidence establishes a recurring initial-state metadata pattern, but not the occluding mechanism, its trigger, or its duration.",
+        "Outcome evidence is delivered only for the work-showcase run; that run verified successful. Task harm on the other three surfaces is not established.",
+        "Conclusions use structured viewport and deterministic event, verification, and metric records rather than screenshot visual review."
+       ],
+       "objection_resolutions": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-outcome-record",
+         "resolution": "Resolved. The candidate limitation was incorrect. e560 reports verified=true, e567 records verified completion, e569 records no false success, and e584 records verified-success. The final impact and severity rationale explicitly include this successful outcome and do not claim failed completion or a [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-state-label",
+         "resolution": "Resolved. e488 defines reaching the work showcase as the goal, e490 is viewport 1, and e556 records the subsequent scroll. e514 and e535 expose the work area later. The final finding calls e490 an initial state and does not imply that the destination had already been reached.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-persistent-entry-fix",
+         "resolution": "Resolved. The mandatory persistent-header and direct-work-entry proposals are removed. The goal permits traversal, e564 records one scroll, later viewports expose the work area, and completion is verified. The revised fixes target the zero-visibility settled state and preserve the successful existin [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-verification-anchor",
+         "resolution": "Resolved. e560 names a viewport-3 element-8 anchor that is absent from the delivered e535 element list. The final finding does not cite that unresolved anchor. Area-level work content in e535 and the deterministic completion and outcome records support successful area-level completion.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-occluder-inference",
+         "resolution": "Resolved. The final wording states only that the actionable controls are recorded as fully occluded and that visible non-actionable text co-occurs. It does not identify that text as the occluder, infer a rendered full-screen layer, or claim a trigger or duration.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:work-showcase-obscured-entry-scope-001",
+         "resolution": "Resolved. The affected-surface scope is expanded to all four surfaces because e4, e202, e370, and e490 each record zero visibility and full occlusion for all recorded actionable controls. The finding describes recurrence of that state pattern only; it does not generalize the work-showcase outcome or [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:work-showcase-obscured-entry-counterevidence-002",
+         "resolution": "Resolved. The inaccurate candidate limitations are removed. The final finding includes the later work-showcase viewports, the successful complete action, independent verification, and verified-success metrics, and frames the concern as possible initial-state friction rather than a failed task.",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:work-showcase-obscured-entry-severity-003",
+         "resolution": "Resolved. Low severity is retained. The verified-success outcome and zero wrong actions weigh against a moderate or higher classification, while the heuristic discovery-cost estimate cannot establish failure, abandonment, or repeated error. The final severity rationale now relies on the verified out [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:work-showcase-obscured-entry-fix-004",
+         "resolution": "Resolved. The persistent-header mandate is removed. Later evidence records the header links at full visibility and the work-showcase CTA at 40% visibility, so the fix preserves continuity without requiring broad restructuring. The unresolved question is the trigger and duration of the initial zero-v [excerpt]",
+         "resolved": true
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 1
+     }
+    ],
+    "report-evidence-auditor": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "Only structured viewport metadata and screenshot artifact paths were delivered for e490, e514, and e535; no rendered screenshot image was attached. Layer appearance, stacking, and perceptual visibility were therefore not independently visually reviewed.",
+        "The corpus contains one delivered run for this surface, and e489 reports no matching frozen expectation. Persistence, prevalence, trigger, duration, and compliance with a frozen usability threshold cannot be established.",
+        "The exact verification anchor named by e560 is not reconstructable from e535 because the cited element-8 is absent from e535's delivered element list."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The candidate limitation that no verification or completion outcome was delivered is contradicted by the delivered corpus. e560 reports verified=true, e567 gives verified-completion=1.0, e569 gives false-success=0.0, and e584 gives outcome=verified-success. Impact and severity rationale must be rewr [excerpt]",
+         "objection_id": "work-outcome-record",
+         "objection_type": "contradiction",
+         "resolution": "Replace the obsolete completion limitation and use the verified-success evidence in the impact and severity rationale.",
+         "resolved": false,
+         "reviewer_role": "evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e490 should be described as an initial or pre-destination viewport, not as a state in which the work-showcase area had already been reached. e488 makes reaching that area the goal; e556 records a downward scroll from viewport 1, and e514 and e535 expose the Muslim Pedia work-showcase content. The in [excerpt]",
+         "objection_id": "work-state-label",
+         "objection_type": "citation-accuracy",
+         "resolution": "Describe e490 as the initial or pre-destination state reached during the work-showcase traversal.",
+         "resolved": false,
+         "reviewer_role": "evidence-auditor",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The proposed persistent header and direct 'See work' entry are not evidence-backed necessities. The goal is traversal, and e514 and e535 show the work area after a single scroll; e564 records one scroll, while e567 and e584 verify success. A direct entry is an optional alternative, and the evidence [excerpt]",
+         "objection_id": "work-persistent-entry-fix",
+         "objection_type": "fix-leverage",
+         "resolution": "Scope remediation to preventing actionable controls from being fully occluded in the captured initial state; present a persistent direct-work entry as an optional redesign rather than a required path.",
+         "resolved": false,
+         "reviewer_role": "evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e560's verification details reference viewport-3-element-8, but e535's delivered element list contains no element-8; it proceeds from element-7 to element-9. The specific verification anchor is therefore not resolvable. This does not negate area-level completion: e535 exposes work-showcase content, [excerpt]",
+         "objection_id": "work-verification-anchor",
+         "objection_type": "citation-accuracy",
+         "resolution": "Cite outcome-level verification and avoid attributing verification to a specific control whose delivered element record is absent.",
+         "resolved": false,
+         "reviewer_role": "evidence-auditor",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e490 supports the metadata statement that the actionable elements have occlusion_fraction=1.0 and visibility_fraction=0.0, while the text 'Spoiler: it's good.' has visibility_fraction=1.0. It does not identify that text as the occluder or establish a rendered full-screen introductory layer. The find [excerpt]",
+         "objection_id": "work-occluder-inference",
+         "objection_type": "visual-interpretation",
+         "resolution": "Limit the claim to the delivered visibility and occlusion fields and do not assign a specific occluder or layer sequence.",
+         "resolved": false,
+         "reviewer_role": "evidence-auditor",
+         "severity": "editorial"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 2
+     }
+    ],
+    "report-pattern-reviewer": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "Source screenshots were excluded by the delivered disclosure records (e27, e225, e393, e513, e555); this review therefore relies on structured records rather than screenshot review.",
+        "No matching frozen expectation exists for the work-showcase scenario (e489), so the review uses the independent verification (e560) rather than an expectation contract.",
+        "The delivered viewport and event records (e490, e556, e558) do not establish the duration, trigger, or causal effect of the initial occluded state."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The candidate's surface scope is too narrow for the observed state. Across all four delivered initial viewports, visible non-actionable text accompanies a 100% occlusion and 0% visibility value for every recorded actionable control. This establishes recurrence of the captured-state pattern across th [excerpt]",
+         "objection_id": "work-showcase-obscured-entry-scope-001",
+         "objection_type": "affected-surface",
+         "resolution": "Broaden the occurrence scope to all four surfaces while limiting impact claims to the work-showcase run, where outcome evidence is delivered. Keep the shared root cause unestablished because recurring metadata alone does not prove one mechanism.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The candidate's limitations stating that no later work-showcase viewport or verification/completion outcome is delivered are no longer accurate. A later captured viewport exposes the work section and navigation, a complete action is recorded, and independent verification reports a matched persona-vi [excerpt]",
+         "objection_id": "work-showcase-obscured-entry-counterevidence-002",
+         "objection_type": "contradiction",
+         "resolution": "Retain the initial captured-state observation, but replace the stale limitations and remove any inference of task failure. The later visible and verified states are counterexamples to treating the initial occlusion as a persistent blocker.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "Low severity is supported; a moderate, high, or blocking classification is not established. The heuristic discovery-cost estimate permits possible friction, but the delivered outcome is verified and the deterministic wrong-actions metric is zero, so the evidence does not support failure, abandonment [excerpt]",
+         "objection_id": "work-showcase-obscured-entry-severity-003",
+         "objection_type": "severity",
+         "resolution": "Retain low severity and describe the demonstrated impact as possible navigation friction in the captured state rather than a completed-task failure.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The first fix overstates missing navigation persistence. In the later captured states, header links are fully visible and \u201cSee what I built\u201d has 40% visibility. The evidence supports preserving continuity, but it does not establish a need for broad navigation restructuring; the unresolved risk is ho [excerpt]",
+         "objection_id": "work-showcase-obscured-entry-fix-004",
+         "objection_type": "fix-leverage",
+         "resolution": "Treat persistent navigation as a regression invariant rather than the main intervention. First reproduce and time the initial state; if it persists, prioritize a bounded, dismissible, or directly responsive transition and retest the next state.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "editorial"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ]
+   },
+   "status": "rejected"
+  },
+  "2026-09-25T091923Z-98bf4207803b-1": {
+   "candidates": [
+    {
+     "affected_surfaces": [
+      "Navigate to work showcase",
+      "navigate-work-showcase"
+     ],
+     "confidence": 0.72,
+     "counterevidence": [
+      "The run includes a successful downward scroll at sequence 9, suggesting that a later state may have exposed the work-showcase entry.",
+      "The run recorded zero wrong actions, so the delivered evidence does not show a misclick, recovery loop, or abandoned navigation."
+     ],
+     "evidence_class": "model-estimate",
+     "evidence_ids": [
+      "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+      "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions"
+     ],
+     "finding_id": "work-showcase-obscured-entry",
+     "finding_kind": "ux-issue",
+     "fixes": [
+      "Keep the persistent header and a direct \u201cSee work\u201d entry outside any full-screen introductory layer.",
+      "If the \u201cSpoiler: it's good.\u201d treatment must remain, make it nonblocking or explicitly dismissible and restore access to navigation as soon as it is dismissed.",
+      "Retest work discovery in both the captured initial state and the state immediately after a scroll, and reduce any additional travel required to identify the work-showcase section."
+     ],
+     "impact": "In the captured state, a user has no visible actionable work-showcase entry and must rely on a later state. This can delay the navigation task, but the delivered evidence does not establish abandonment or task failure.",
+     "issue": "In a captured work-showcase state, the non-actionable text \u201cSpoiler: it's good.\u201d is visible while the header links, \u201cSee what I built,\u201d \u201cGet in touch,\u201d and the theme control are recorded as 100% occluded with 0% visibility. Heuristic metrics also classify the target as below-fold and ambiguous, with discovery rank 12 and discovery cost 1.35; a downward scroll was recorded at sequence 9.",
+     "limitations": [
+      "Only one work-showcase viewport and one event were delivered; there is no post-scroll viewport with which to confirm how the target became accessible.",
+      "The duration and trigger of the fully occluded state are unknown. It may be a transient transition or capture state rather than a persistent product state.",
+      "No work-showcase verification or completion outcome was delivered, so the observed visibility problem cannot be tied to a failed task."
+     ],
+     "principles": [],
+     "reproducibility": "model-dependent",
+     "reviewer_notes": [
+      "The full-page occlusion is deterministic in the delivered viewport metadata, while the below-fold, ambiguity, rank, and cost conclusions are heuristic estimates."
+     ],
+     "reviewer_state": "candidate",
+     "root_cause": "The cause is not established. The viewport records a non-actionable spoiler element while all actionable controls are fully occluded, but it does not establish whether this is a deliberate transition, a capture artifact, or a persistent blocker, nor whether that state caused the subsequent scroll.",
+     "severity": "low",
+     "severity_justification": "The captured state removes every visible actionable route to the requested work showcase, and the associated discovery estimates indicate additional search cost. Impact is limited to low severity because only one state was observed, a scroll occurred, zero wrong actions were recorded, and no failed completion or repeated-step sequence is available.",
+     "title": "Work-showcase entry is fully occluded in a captured state"
+    }
+   ],
+   "corpus_digest": "98bf4207803ba00e587f7d716e9f3483681669bc7eb1c72d0fc705b6587bfd68",
+   "roles": {
+    "report-evidence-auditor": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "No matching frozen expectation was recorded for this scenario (e489), so severity is based on the delivered observed impact rather than a predefined benchmark.",
+        "Screenshots were explicitly excluded from visual disclosure for the delivered work-showcase viewports (e513, e534, e555). This audit therefore relies on structured viewport metadata and does not make screenshot-level visual claims."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The stated evidence gaps are contradicted by delivered evidence. A successful scroll was recorded in viewport 1 (e556), and e514 contains a later work-showcase state with visible project content and actions at partial visibility. A verification viewport is also delivered in e535, followed by a succe [excerpt]",
+         "objection_id": "work-showcase-stale-limitations",
+         "objection_type": "other",
+         "resolution": "Remove the obsolete limitations, incorporate the later accessible work-showcase state and verified completion, and retain the finding only as a bounded issue in the initial captured state.",
+         "resolved": false,
+         "reviewer_role": "",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "visual-disclosure:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The snapshot supports that the non-actionable \u201cSpoiler: it's good.\u201d element is visible while the enumerated actionable controls have 100% occlusion and 0% visibility (e490). It does not establish that the text belongs to a full-screen introductory layer, causes the occlusion, or persists as a blocke [excerpt]",
+         "objection_id": "work-showcase-layer-attribution",
+         "objection_type": "other",
+         "resolution": "Preserve the deterministic snapshot claim, but remove or qualify the full-screen-layer and persistence assumptions. Present changes to the spoiler treatment as conditional retest hypotheses rather than causally established remedies.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The stated evidence gaps are contradicted by delivered evidence. A successful scroll was recorded in viewport 1 (e556), and e514 contains a later work-showcase state with visible project content and actions at partial visibility. A verification viewport is also delivered in e535, followed by a succe [excerpt]",
+         "objection_id": "work-showcase-stale-limitations",
+         "objection_type": "other",
+         "resolution": "Remove the obsolete limitations, incorporate the later accessible work-showcase state and verified completion, and retain the finding only as a bounded issue in the initial captured state.",
+         "resolved": false,
+         "reviewer_role": "",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "visual-disclosure:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The snapshot supports that the non-actionable \u201cSpoiler: it's good.\u201d element is visible while the enumerated actionable controls have 100% occlusion and 0% visibility (e490). It does not establish that the text belongs to a full-screen introductory layer, causes the occlusion, or persists as a blocke [excerpt]",
+         "objection_id": "work-showcase-layer-attribution",
+         "objection_type": "other",
+         "resolution": "Preserve the deterministic snapshot claim, but remove or qualify the full-screen-layer and persistence assumptions. Present changes to the spoiler treatment as conditional retest hypotheses rather than causally established remedies.",
+         "resolved": true,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 2
+     }
+    ],
+    "report-pattern-reviewer": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "No post-scroll viewport is present in the delivered evidence, so target visibility after the sequence-9 scroll cannot be directly checked (e490, e556).",
+        "Only one captured viewport is available (e490); recurrence, duration, trigger, and cross-surface impact remain unestablished.",
+        "No matching frozen expectation was recorded for this scenario (e489), so severity must be grounded in the observed run outcomes rather than a predefined acceptance condition."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "replay:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The limitation stating that no work-showcase verification or completion outcome was delivered is contradicted by the resolved run records: verified-completion is 1.0, false-success is 0.0, and outcome is verified-success. The completion event and its replay also succeeded.",
+         "objection_id": "work-showcase-completion-limitation-contradiction",
+         "objection_type": "contradiction",
+         "resolution": "Remove the no-completion limitation. Replace it with the narrower limitation that no post-scroll viewport was delivered, while explicitly recording the run's verified-success outcome.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "scenario:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The viewport-1 record shows an introductory work-navigation state before the sequence-9 scroll, not a reached work-showcase state. It deterministically shows actionable controls fully occluded, but target-below-fold is heuristic and does not identify a distinct work-showcase element as fully occlude [excerpt]",
+         "objection_id": "state-and-target-wording-overstates-evidence",
+         "objection_type": "citation-accuracy",
+         "resolution": "Describe this as the initial work-navigation viewport and distinguish deterministic full occlusion of recorded actionable controls from heuristic estimates about the unseen work target.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "scenario:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The two affected-surface strings are the name and identifier of the same scenario, not evidence of two affected surfaces. The delivered state evidence is one viewport from one run, so recurrence and a shared cross-surface pattern are not established.",
+         "objection_id": "recurrence-and-scope-not-established",
+         "objection_type": "recurrence",
+         "resolution": "Keep the scope to one surface and one captured state, and explicitly state that recurrence is unknown rather than aggregating this into a broader pattern.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The proposed persistent-header and direct-entry intervention assumes a persistent full-screen introductory layer. Viewport-1 establishes full occlusion of recorded controls but does not establish the layer mechanism, duration, trigger, or persistence; the later scroll does not prove that the overlay [excerpt]",
+         "objection_id": "fix-leverage-assumes-persistent-overlay",
+         "objection_type": "fix-leverage",
+         "resolution": "Prioritize reproduction across pre-scroll, post-scroll, and timed transition states. Apply a persistent-access fix only if the blocking state recurs or persists; otherwise address transition duration, dismissal, or feedback.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:navigation-depth",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "A higher-severity interpretation is challenged by the observed run: it used one scroll, recorded zero wrong actions and zero recovery actions, had navigation depth 0, and finished with verified completion, zero false-success, and a verified-success outcome. This does not erase the state-specific occ [excerpt]",
+         "objection_id": "higher-severity-escalation-counterevidence",
+         "objection_type": "counterexample",
+         "resolution": "Retain low severity and describe impact as potential delay or state-specific access friction, not observed navigation failure.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "editorial"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 3
+     }
+    ]
+   },
+   "status": "rejected"
+  },
+  "2026-09-25T094814Z-98bf4207803b-1": {
+   "candidates": [
+    {
+     "affected_surfaces": [
+      "Navigate to work showcase",
+      "navigate-work-showcase"
+     ],
+     "confidence": 0.72,
+     "counterevidence": [
+      "The run includes a successful downward scroll at sequence 9, suggesting that a later state may have exposed the work-showcase entry.",
+      "The run recorded zero wrong actions, so the delivered evidence does not show a misclick, recovery loop, or abandoned navigation."
+     ],
+     "evidence_class": "model-estimate",
+     "evidence_ids": [
+      "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+      "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions"
+     ],
+     "finding_id": "work-showcase-obscured-entry",
+     "finding_kind": "ux-issue",
+     "fixes": [
+      "Keep the persistent header and a direct \u201cSee work\u201d entry outside any full-screen introductory layer.",
+      "If the \u201cSpoiler: it's good.\u201d treatment must remain, make it nonblocking or explicitly dismissible and restore access to navigation as soon as it is dismissed.",
+      "Retest work discovery in both the captured initial state and the state immediately after a scroll, and reduce any additional travel required to identify the work-showcase section."
+     ],
+     "impact": "In the captured state, a user has no visible actionable work-showcase entry and must rely on a later state. This can delay the navigation task, but the delivered evidence does not establish abandonment or task failure.",
+     "issue": "In a captured work-showcase state, the non-actionable text \u201cSpoiler: it's good.\u201d is visible while the header links, \u201cSee what I built,\u201d \u201cGet in touch,\u201d and the theme control are recorded as 100% occluded with 0% visibility. Heuristic metrics also classify the target as below-fold and ambiguous, with discovery rank 12 and discovery cost 1.35; a downward scroll was recorded at sequence 9.",
+     "limitations": [
+      "Only one work-showcase viewport and one event were delivered; there is no post-scroll viewport with which to confirm how the target became accessible.",
+      "The duration and trigger of the fully occluded state are unknown. It may be a transient transition or capture state rather than a persistent product state.",
+      "No work-showcase verification or completion outcome was delivered, so the observed visibility problem cannot be tied to a failed task."
+     ],
+     "principles": [],
+     "reproducibility": "model-dependent",
+     "reviewer_notes": [
+      "The full-page occlusion is deterministic in the delivered viewport metadata, while the below-fold, ambiguity, rank, and cost conclusions are heuristic estimates."
+     ],
+     "reviewer_state": "candidate",
+     "root_cause": "The cause is not established. The viewport records a non-actionable spoiler element while all actionable controls are fully occluded, but it does not establish whether this is a deliberate transition, a capture artifact, or a persistent blocker, nor whether that state caused the subsequent scroll.",
+     "severity": "low",
+     "severity_justification": "The captured state removes every visible actionable route to the requested work showcase, and the associated discovery estimates indicate additional search cost. Impact is limited to low severity because only one state was observed, a scroll occurred, zero wrong actions were recorded, and no failed completion or repeated-step sequence is available.",
+     "title": "Work-showcase entry is fully occluded in a captured state"
+    }
+   ],
+   "corpus_digest": "98bf4207803ba00e587f7d716e9f3483681669bc7eb1c72d0fc705b6587bfd68",
+   "final_findings": [
+    {
+     "affected_surfaces": [
+      "Open prayer times feature",
+      "Discover Muslim Pedia app store ratings",
+      "Navigate to work showcase"
+     ],
+     "confidence": 0.85,
+     "counterevidence": [
+      "e514 shows the work section in another capture of the same run, with \u201cSee what I built\u201d and \u201cGet in touch\u201d at 40% visibility, so e490 does not describe every captured state.",
+      "e560 and e584 report verified success, while e565 records zero wrong actions.",
+      "e226 shows all listed actionable controls at 100% visibility in the contact scenario, so recurrence is not established across every scenario or state.",
+      "e556 proves that a downward scroll executed, but it does not establish that the captured occlusion caused the scroll."
+     ],
+     "evidence_class": "deterministic-fact",
+     "evidence_ids": [
+      "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+      "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+      "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+      "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+      "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+      "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+      "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+      "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9"
+     ],
+     "finding_id": "work-showcase-obscured-entry",
+     "finding_kind": "ux-issue",
+     "fixes": [
+      "Capture the initial-to-interactive transition with timestamps, repeated screenshots, and hit testing that names the element covering each actionable control. Compare the same window across the three affected scenarios.",
+      "If a covering layer is confirmed, remove it when unintended. If it is an intended full-screen treatment, provide a visible dismiss or continue control and keep a direct work-showcase entry reachable without requiring scrolling.",
+      "Unless a deliberately timed state is documented and tested, require at least one actionable route to remain visible and operable throughout the transition. Record time to interactivity, scrolls, wrong actions, and completion as regression measures."
+     ],
+     "impact": "The directly observed impact is a captured state in which the listed navigation, work-entry, and theme controls cannot be seen. Another capture in the work-scenario run exposes the work section, and that workflow verifies successfully; the contact scenario also has a capture with its listed controls fully visible. The evidence does not establish a measured delay, persistent blockage, failure, or abandonment.",
+     "issue": "In the initial viewport of the work-showcase, prayer-times, and app-store-ratings scenarios, every listed actionable control is recorded at 0% visibility and 100% occlusion, while a non-actionable message has full visibility. This repeated pattern removes visible interaction routes from the captured states, but the evidence does not identify the occluding element or establish how long the condition lasts.",
+     "limitations": [
+      "The structured evidence does not identify the occluding component, its trigger, or its duration.",
+      "Recurrence is established in three initial captures, not across users, repeated trials, or all states; no prevalence estimate is supported.",
+      "The work workflow succeeds, so the evidence supports an initial-state accessibility condition rather than demonstrated delay, persistent blockage, failure, or abandonment.",
+      "Heuristic prominence and cost estimates are secondary. The below-fold estimate is not used to explain the entry because its target mapping is not documented."
+     ],
+     "principles": [],
+     "reproducibility": "model-dependent",
+     "reviewer_notes": [
+      "The finding relies on deterministic visibility and occlusion fields rather than heuristic prominence metrics.",
+      "All layer-specific remediation is conditional on identifying the actual cover; no shared overlay, persistent header architecture, or full-screen introduction is asserted."
+     ],
+     "reviewer_state": "accepted",
+     "root_cause": "The cause is unknown. The three initial captures share a deterministic visibility signature, but no timing, component, or causal evidence identifies the covering element. The accessible controls and work section in other captures do not support treating the condition as a persistent global blocker.",
+     "severity": "low",
+     "severity_justification": "Low severity is supported by the deterministic absence of visible actionable controls in the three initial captures, balanced against limited observed harm. The work run has another capture with accessible controls and work content, records one scroll and zero wrong actions, and verifies successfully. No persistent blockage, measured delay, failure, or abandonment is established.",
+     "title": "Actionable controls are fully occluded in three initial captures"
+    }
+   ],
+   "roles": {
+    "report-adjudicator": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "final_findings": [
+        {
+         "affected_surfaces": [
+          "Open prayer times feature",
+          "Discover Muslim Pedia app store ratings",
+          "Navigate to work showcase"
+         ],
+         "confidence": 0.85,
+         "counterevidence": [
+          "e514 shows the work section in another capture of the same run, with \u201cSee what I built\u201d and \u201cGet in touch\u201d at 40% visibility, so e490 does not describe every captured state.",
+          "e560 and e584 report verified success, while e565 records zero wrong actions.",
+          "e226 shows all listed actionable controls at 100% visibility in the contact scenario, so recurrence is not established across every scenario or state.",
+          "e556 proves that a downward scroll executed, but it does not establish that the captured occlusion caused the scroll."
+         ],
+         "evidence_class": "deterministic-fact",
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "finding_kind": "ux-issue",
+         "fixes": [
+          "Capture the initial-to-interactive transition with timestamps, repeated screenshots, and hit testing that names the element covering each actionable control. Compare the same window across the three affected scenarios.",
+          "If a covering layer is confirmed, remove it when unintended. If it is an intended full-screen treatment, provide a visible dismiss or continue control and keep a direct work-showcase entry reachable without requiring scrolling.",
+          "Unless a deliberately timed state is documented and tested, require at least one actionable route to remain visible and operable throughout the transition. Record time to interactivity, scrolls, wrong actions, and completion as regression measures."
+         ],
+         "impact": "The directly observed impact is a captured state in which the listed navigation, work-entry, and theme controls cannot be seen. Another capture in the work-scenario run exposes the work section, and that workflow verifies successfully; the contact scenario also has a capture with its listed controls fully visible. The evidence does not establish a measured delay, persistent blockage, failure, or abandonment.",
+         "issue": "In the initial viewport of the work-showcase, prayer-times, and app-store-ratings scenarios, every listed actionable control is recorded at 0% visibility and 100% occlusion, while a non-actionable message has full visibility. This repeated pattern removes visible interaction routes from the captured states, but the evidence does not identify the occluding element or establish how long the condition lasts.",
+         "limitations": [
+          "The structured evidence does not identify the occluding component, its trigger, or its duration.",
+          "Recurrence is established in three initial captures, not across users, repeated trials, or all states; no prevalence estimate is supported.",
+          "The work workflow succeeds, so the evidence supports an initial-state accessibility condition rather than demonstrated delay, persistent blockage, failure, or abandonment.",
+          "Heuristic prominence and cost estimates are secondary. The below-fold estimate is not used to explain the entry because its target mapping is not documented."
+         ],
+         "principles": [],
+         "reproducibility": "model-dependent",
+         "reviewer_notes": [
+          "The finding relies on deterministic visibility and occlusion fields rather than heuristic prominence metrics.",
+          "All layer-specific remediation is conditional on identifying the actual cover; no shared overlay, persistent header architecture, or full-screen introduction is asserted."
+         ],
+         "reviewer_state": "final",
+         "root_cause": "The cause is unknown. The three initial captures share a deterministic visibility signature, but no timing, component, or causal evidence identifies the covering element. The accessible controls and work section in other captures do not support treating the condition as a persistent global blocker.",
+         "severity": "low",
+         "severity_justification": "Low severity is supported by the deterministic absence of visible actionable controls in the three initial captures, balanced against limited observed harm. The work run has another capture with accessible controls and work content, records one scroll and zero wrong actions, and verifies successfully. No persistent blockage, measured delay, failure, or abandonment is established.",
+         "title": "Actionable controls are fully occluded in three initial captures"
+        }
+       ],
+       "limitations": [
+        "The delivered evidence does not identify the occluding component, its trigger, or how long the fully occluded state lasts.",
+        "The matching initial captures establish recurrence in three scenarios, not prevalence across users, trials, or all states.",
+        "A work-scenario capture with accessible controls and a verified-success outcome bound the finding to the captured initial-state condition.",
+        "Heuristic metrics are not used to establish the deterministic visibility problem or causal impact."
+       ],
+       "objection_resolutions": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-below-fold-target-conflict",
+         "resolution": "Resolved by removing e571 from the finding. Its target mapping is not supplied, and its value of 1 cannot explain the entry in e490 using the entry\u2019s bounds: the link starts at y=683.8125, is 59.1875 pixels high, and ends within the 800-pixel viewport while being recorded at 0% visibility and 100% o [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-stale-evidence-limitations",
+         "resolution": "Resolved by removing the stale limitation. e514 exposes the work section, e535 is a verification viewport, e558 records a successful complete action, e560 records verified=true, and e584 records verified-success. The final finding incorporates the accessible work capture and verified outcome rather [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-observed-impact-boundary",
+         "resolution": "Resolved by limiting impact to a captured state with no listed visible actionable controls. e514 exposes the work section, e556 records a successful downward scroll, e564 counts one scroll, e565 records zero wrong actions, and e560/e584 verify success. These records do not establish that occlusion c [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-unverified-layer-cause",
+         "resolution": "Resolved by retaining an unknown root cause. e490 establishes the visibility and occlusion values and the full visibility of a non-actionable message, but it does not identify the covering element or establish that the message is a full-screen layer. The first fix identifies the actual occluder, and [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-evidence-auditor:work-showcase-state-label-scope",
+         "resolution": "Resolved by describing e490 as an initial viewport in the work-showcase navigation scenario, not as work-showcase content. Its structured region is Introduction, whereas e514 and e535 expose the later work section. The final title and issue do not conflate the scenario\u2019s initial state with the work [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-recurrence-scope",
+         "resolution": "Resolved by expanding the affected surfaces to the three initial captures supported by e490, e4, and e370. Each records the listed actionable controls at 0% visibility and 100% occlusion alongside a fully visible non-actionable message. The finding states recurrence across those captures, not preval [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-later-viewport",
+         "resolution": "Resolved by describing e514 as another capture in the same run, not definitively as the post-scroll state. It exposes the work section and records \u201cSee what I built\u201d at 40% visibility. e556 confirms that a downward scroll executed, but the final finding does not assert an explicit temporal link betw [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-metric-causality",
+         "resolution": "Resolved by basing the finding on deterministic visibility fields and excluding causal claims from the heuristic metrics. e561\u2019s discovery rank, e573\u2019s ambiguity score, and e583\u2019s discovery-cost estimate are retained only as secondary prioritization evidence. e556 records a scroll but cannot prove t [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-severity-ceiling",
+         "resolution": "Resolved by retaining low severity. e564 records one scroll; e565, e566, and e575 record zero wrong actions, backtracks, and recovery actions; e567 records verified completion; e569 records no false success; and e560/e584 verify success. These results do not negate the captured occlusion, but they c [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-fix-leverage",
+         "resolution": "Resolved by prioritizing timed capture and hit testing, making layer remediation conditional on identifying an actual cover, and defining a regression gate. e514 exposes the work section and controls in another capture, e226 exposes the controls in the contact scenario, and e560 verifies success. Th [excerpt]",
+         "resolved": true
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "objection_id": "report-pattern-reviewer:obj-work-shared-cause",
+         "resolution": "Resolved by expanding the observed pattern without attributing it to a shared implementation. e490, e4, and e370 show the same initial visibility signature, but no delivered evidence connects their timing, trigger, or covering components. e226 further shows that fully visible controls occur in anoth [excerpt]",
+         "resolved": true
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 1
+     }
+    ],
+    "report-evidence-auditor": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "This audit did not visually inspect screenshot artifacts; it uses only the structured visibility and occlusion fields delivered in e490, e514, and e535.",
+        "e489 records that no frozen expectation matched, so the assessment is bounded by the goal in e488 and the verification and outcome records in e560 and e584.",
+        "No delivered record provides the duration of the initial occluded state; e556 records only a successful downward scroll at sequence 9."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The below-fold interpretation is not consistent with the deterministic bounds if the target is the \u201cSee what I built\u201d entry. In e490 it begins at y=683.8125, is 59.1875 pixels high, and therefore fits within the 800-pixel viewport, while its recorded visibility is 0 and occlusion is 1. The e571 esti [excerpt]",
+         "objection_id": "work-showcase-below-fold-target-conflict",
+         "objection_type": "contradiction",
+         "resolution": null,
+         "resolved": false,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The candidate\u2019s limitation that no additional viewport, verification, or completion outcome is delivered is now contradicted by the evidence. e514 exposes the work section, e535 is a verification viewport, e558 records a successful completion action, e560 records verified=true, and e584 records veri [excerpt]",
+         "objection_id": "work-showcase-stale-evidence-limitations",
+         "objection_type": "citation-accuracy",
+         "resolution": null,
+         "resolved": false,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The observed workflow reached the work section, completed successfully, passed verification, and recorded zero wrong actions. The initial-state occlusion is valid, but the claim that it delayed navigation is not directly measured: e583 is a heuristic discovery-cost estimate, and the delivered record [excerpt]",
+         "objection_id": "work-showcase-observed-impact-boundary",
+         "objection_type": "severity",
+         "resolution": null,
+         "resolved": false,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The structured fields in e490 establish 0 visibility and 1 occlusion for the listed actionable controls, but they do not identify the covering element or prove that the visible \u201cSpoiler: it's good.\u201d text functions as a full-screen introductory layer. The fixes assume that layer and its dismissibilit [excerpt]",
+         "objection_id": "work-showcase-unverified-layer-cause",
+         "objection_type": "visual-interpretation",
+         "resolution": null,
+         "resolved": false,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "e490 identifies its region as Introduction and does not show the work-showcase content represented in e514 and e535. Calling e490 a captured work-showcase state is imprecise. Use \u201cthe initial state in the work-showcase navigation scenario\u201d so the finding does not conflate the scenario surface with t [excerpt]",
+         "objection_id": "work-showcase-state-label-scope",
+         "objection_type": "citation-accuracy",
+         "resolution": null,
+         "resolved": false,
+         "reviewer_role": "report-evidence-auditor",
+         "severity": "editorial"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 2
+     }
+    ],
+    "report-pattern-reviewer": [
+     {
+      "error": null,
+      "phase": "retrieval",
+      "response": {
+       "complete": true,
+       "evidence_requests": [],
+       "limitations": [
+        "The structured evidence establishes the captured occlusion but not the overlay's trigger, duration, persistence, or implementation cause.",
+        "Cross-run recurrence is supported only for the three captured initial states; prevalence across users or repeated trials is not established.",
+        "Prominence and discovery metrics are heuristic estimates and do not establish causality or population-level impact."
+       ],
+       "objections": [
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "Affected scope is understated. The same deterministic initial-state signature\u2014a visible non-actionable message while every listed actionable control has 0% visibility and 100% occlusion\u2014also appears in the Open prayer times and app-store-ratings runs. This establishes cross-scenario recurrence, not [excerpt]",
+         "objection_id": "obj-work-recurrence-scope",
+         "objection_type": "affected-surface",
+         "resolution": "Track the occlusion across at least these three scenario surfaces while avoiding claims about user prevalence or a shared implementation cause.",
+         "resolved": false,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The limitation stating that no later work-showcase viewport was delivered is inaccurate as written. A second viewport in the same run shows \"See what I built\" at 40% visibility along with work content, and the run records a successful scroll. Because their temporal linkage is not explicit, the later [excerpt]",
+         "objection_id": "obj-work-later-viewport",
+         "objection_type": "citation-accuracy",
+         "resolution": "Revise the limitation to acknowledge the later visible viewport while retaining uncertainty about its exact timing relative to the scroll.",
+         "resolved": false,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "editorial"
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "Discovery rank 12, below-fold 1, ambiguous-target 1, and discovery cost 1.35 are heuristic estimates. The scroll event proves only that a downward scroll executed; it does not prove the captured occlusion caused the scroll or establish a deterministic delay. These metrics can support prioritization [excerpt]",
+         "objection_id": "obj-work-metric-causality",
+         "objection_type": "factual-support",
+         "resolution": "Retain the heuristic evidence-class labels and remove any causal wording connecting the estimates to the recorded scroll.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+          "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "Low severity is supportable; a higher-severity claim would conflict with the observed outcome. The work-showcase run records one scroll, zero wrong actions, zero backtracks, zero recovery actions, verified completion, no false success, independent verification, and a verified-success outcome. These [excerpt]",
+         "objection_id": "obj-work-severity-ceiling",
+         "objection_type": "severity",
+         "resolution": "Retain low severity and describe impact as potential short-lived delay, not task failure, abandonment, or recurring recovery burden.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+          "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+          "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The leading fix assumes a persistent full-screen introductory layer and header architecture that the evidence does not establish. A later work-showcase viewport exposes the actionable entry, and another scenario viewport exposes all controls, while the work-showcase task ultimately verifies successf [excerpt]",
+         "objection_id": "obj-work-fix-leverage",
+         "objection_type": "fix-leverage",
+         "resolution": "Replace the assumed structural remedy with a conditional plan: verify transition duration and recurrence first, then choose the least invasive remedy supported by those observations.",
+         "resolved": false,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        },
+        {
+         "evidence_ids": [
+          "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+          "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+          "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+          "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9"
+         ],
+         "finding_id": "work-showcase-obscured-entry",
+         "message": "The repeated occlusion signature supports cross-scenario occurrence but does not establish one shared implementation cause. No timing, trigger, component, or transition-state evidence links the three initial captures, and the only delivered action records a successful scroll. A shared overlay should [excerpt]",
+         "objection_id": "obj-work-shared-cause",
+         "objection_type": "shared-cause",
+         "resolution": "Preserve the candidate's unspecified root cause and require transition-level evidence before attributing the states to a shared mechanism.",
+         "resolved": true,
+         "reviewer_role": "report-pattern-reviewer",
+         "severity": "material"
+        }
+       ],
+       "unavailable_evidence_ids": []
+      },
+      "round": 2
+     }
+    ]
+   },
+   "status": "accepted"
+  }
+ },
+ "schema_version": "recorded-attempt-shapes-v1",
+ "source": {
+  "attempts": [
+   "2026-09-24T192546Z-98bf4207803b-1",
+   "2026-09-25T074903Z-98bf4207803b-1",
+   "2026-09-25T085418Z-98bf4207803b-1",
+   "2026-09-25T091923Z-98bf4207803b-1",
+   "2026-09-25T094814Z-98bf4207803b-1"
+  ],
+  "experiment": "exploration-generated",
+  "note": "Role responses are the redacted payloads recorded in each attempt's retrieval_log, i.e. the exact output shapes the pipeline accepted or rejected. Only the round that carried the deliverable is kept. Objection messages and resolution prose are excerpted to 300 characters; evidence references are stored as IDs and rebuilt from the corpus entry, and all finding prose is verbatim."
+ }
+}

@@ -2995,7 +2995,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     )
     assert (
         ReportAnalyst(client, model="gpt-report").manifest.prompt_version
-        == "report-analyst-v11"
+        == "report-analyst-v13"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role

@@ -1,0 +1,1695 @@
+{
+ "entries": [
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": "event-18",
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+   "kind": "event",
+   "metric_id": null,
+   "payload": {
+    "action": {
+     "kind": "complete"
+    },
+    "kind": "action-executed",
+    "sequence": 18,
+    "succeeded": true,
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+   },
+   "replay_sequence": 18,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Executed action at sequence 18 in run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": "event-9",
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "event:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:9",
+   "kind": "event",
+   "metric_id": null,
+   "payload": {
+    "action": {
+     "direction": "down",
+     "kind": "scroll"
+    },
+    "kind": "action-executed",
+    "sequence": 9,
+    "succeeded": true,
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+   },
+   "replay_sequence": 9,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Executed action at sequence 9 in run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "expectation:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "kind": "expectation",
+   "metric_id": null,
+   "payload": {
+    "expectation_id": null,
+    "key": {
+     "application_version_id": "exploration-app-live",
+     "persona_id": "default-explorer",
+     "scenario_id": "navigate-work-showcase"
+    },
+    "matched": false,
+    "reason": "no matching frozen expectation",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase"
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "No frozen expectation matched run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "goal:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "kind": "goal",
+   "metric_id": null,
+   "payload": {
+    "scenario_id": "navigate-work-showcase",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "text": "Traverse the portfolio to reach the work showcase area."
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Recorded goal for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "model-estimate",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target",
+   "kind": "metric",
+   "metric_id": "ambiguous-target",
+   "payload": {
+    "evidence_class": "model-estimate",
+    "name": "ambiguous-target",
+    "provenance": {
+     "model_id": "unavailable",
+     "model_version": "unavailable",
+     "provider_id": "heuristic",
+     "provider_version": "heuristic-prominence-v1"
+    },
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:ambiguous-target"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 1.0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric ambiguous-target recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks",
+   "kind": "metric",
+   "metric_id": "backtracks",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "backtracks",
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:backtracks"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric backtracks recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "model-estimate",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost",
+   "kind": "metric",
+   "metric_id": "discovery-cost",
+   "payload": {
+    "evidence_class": "model-estimate",
+    "name": "discovery-cost",
+    "provenance": {
+     "model_id": "unavailable",
+     "model_version": "unavailable",
+     "provider_id": "heuristic",
+     "provider_version": "heuristic-prominence-v1"
+    },
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:discovery-cost"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 1.3499999999999999
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric discovery-cost recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success",
+   "kind": "metric",
+   "metric_id": "false-success",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "false-success",
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:false-success"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 0.0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric false-success recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:navigation-depth",
+   "kind": "metric",
+   "metric_id": "navigation-depth",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "navigation-depth",
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:navigation-depth"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric navigation-depth recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:outcome",
+   "kind": "metric",
+   "metric_id": "outcome",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "outcome",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": "verified-success"
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric outcome recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions",
+   "kind": "metric",
+   "metric_id": "recovery-actions",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "recovery-actions",
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:recovery-actions"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric recovery-actions recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls",
+   "kind": "metric",
+   "metric_id": "scrolls",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "scrolls",
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:scrolls"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 1
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric scrolls recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "model-estimate",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold",
+   "kind": "metric",
+   "metric_id": "target-below-fold",
+   "payload": {
+    "evidence_class": "model-estimate",
+    "name": "target-below-fold",
+    "provenance": {
+     "model_id": "unavailable",
+     "model_version": "unavailable",
+     "provider_id": "heuristic",
+     "provider_version": "heuristic-prominence-v1"
+    },
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-below-fold"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 1.0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric target-below-fold recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "model-estimate",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank",
+   "kind": "metric",
+   "metric_id": "target-discovery-rank",
+   "payload": {
+    "evidence_class": "model-estimate",
+    "name": "target-discovery-rank",
+    "provenance": {
+     "model_id": "unavailable",
+     "model_version": "unavailable",
+     "provider_id": "heuristic",
+     "provider_version": "heuristic-prominence-v1"
+    },
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:target-discovery-rank"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 12
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric target-discovery-rank recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion",
+   "kind": "metric",
+   "metric_id": "verified-completion",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "verified-completion",
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:verified-completion"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 1.0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric verified-completion recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions",
+   "kind": "metric",
+   "metric_id": "wrong-actions",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "wrong-actions",
+    "source_evidence_ids": [
+     "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:wrong-actions"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "value": 0
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Metric wrong-actions recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:outcome",
+   "kind": "metric",
+   "metric_id": "outcome",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "outcome",
+    "surface": "Open prayer times feature",
+    "surface_id": "complete-open-prayer-times",
+    "value": "verified-success"
+   },
+   "replay_sequence": null,
+   "run_id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37",
+   "sha256": null,
+   "summary": "Metric outcome recorded for run run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:outcome",
+   "kind": "metric",
+   "metric_id": "outcome",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "outcome",
+    "surface": "Discover Muslim Pedia app store ratings",
+    "surface_id": "discover-app-store-ratings",
+    "value": "verified-success"
+   },
+   "replay_sequence": null,
+   "run_id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577",
+   "sha256": null,
+   "summary": "Metric outcome recorded for run run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "metric:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:outcome",
+   "kind": "metric",
+   "metric_id": "outcome",
+   "payload": {
+    "evidence_class": "deterministic-fact",
+    "name": "outcome",
+    "surface": "Initiate contact via Get in touch",
+    "surface_id": "convert-contact-get-in-touch",
+    "value": "verified-success"
+   },
+   "replay_sequence": null,
+   "run_id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52",
+   "sha256": null,
+   "summary": "Metric outcome recorded for run run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9",
+   "event_id": "event-11",
+   "evidence_class": "model-estimate",
+   "evidence_id": "model-estimate:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:prominence:11:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9",
+   "kind": "model-estimate",
+   "metric_id": null,
+   "payload": {
+    "element_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9",
+    "estimate_kind": "prominence",
+    "provenance": {
+     "model_id": "unavailable",
+     "model_version": "unavailable",
+     "provider_id": "heuristic",
+     "provider_version": "heuristic-prominence-v1"
+    },
+    "sequence": 11,
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "values": {
+     "first_notice_probability": 0.04747203808690389,
+     "normalized_probability": 0.04747203808690389,
+     "notice_within_budget_probability": 0.04747203808690389,
+     "raw_score": 0.29654720126529915
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Prominence estimate for element run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-9.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": "event-18",
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "replay:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:18",
+   "kind": "replay",
+   "metric_id": null,
+   "payload": {
+    "action": {
+     "kind": "complete"
+    },
+    "kind": "action-executed",
+    "sequence": 18,
+    "succeeded": true,
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+   },
+   "replay_sequence": 18,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Replay position 18 in run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "scenario:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "kind": "scenario",
+   "metric_id": null,
+   "payload": {
+    "application_version_id": "exploration-app-live",
+    "id": "navigate-work-showcase",
+    "name": "Navigate to work showcase",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase"
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Scenario navigate-work-showcase executed for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "verification:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "kind": "verification",
+   "metric_id": null,
+   "payload": {
+    "details": "persona-visible result matched",
+    "evidence_ids": [
+     "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1:element:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-8",
+     "screenshot:artifacts/178febddfd65100f3d74e2490af3ac000886a2bf413337773ff7635b1ef4fde5"
+    ],
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "verified": true
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Independent verifier result recorded for run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": null
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 22,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-element-2",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-element-3",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-element-4",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-element-5",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-element-6",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-element-7",
+      "label": "Skills",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-element-0",
+      "label": "Spoiler: it's good.",
+      "occlusion_fraction": 0.0,
+      "role": "other",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+    "regions": [
+     {
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/16ae54df0f5d39678ca7d2fe9225a44eb88cfd171870dfcbfac95b9fd816c497",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Captured viewport run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1 in run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 19,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-0",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-1",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-2",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-3",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-4",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-5",
+      "label": "Skills",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-element-12",
+      "label": "Act 01 Muslim Pedia An all-in-one Muslim app for iOS and Android, with Quran, Hadith, prayer times, Qiblah, and voice search. Built from the rendering engine to the store release. 32K+ downloads 1.5 \u2605 App Store \u2197 1.5 \u2605 Google Play \u2197",
+      "occlusion_fraction": 0.0,
+      "role": "other",
+      "visibility_fraction": 0.13748657357679914
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2",
+    "regions": [
+     {
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/f1ebfe04be4ee40844a95d98476513783feb3603410fa9f2de701f577a7c9a8f",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Captured viewport run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2 in run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-2"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 19,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-0",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-1",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-2",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-3",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-4",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-5",
+      "label": "Skills",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-element-12",
+      "label": "Act 01 Muslim Pedia An all-in-one Muslim app for iOS and Android, with Quran, Hadith, prayer times, Qiblah, and voice search. Built from the rendering engine to the store release. 100K+ downloads 4.8 \u2605 App Store \u2197 4.6 \u2605 Google Play \u2197",
+      "occlusion_fraction": 0.0,
+      "role": "other",
+      "visibility_fraction": 0.13748657357679914
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+    "regions": [
+     {
+      "id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/178febddfd65100f3d74e2490af3ac000886a2bf413337773ff7635b1ef4fde5",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Captured viewport run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1 in run run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 22,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-element-2",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-element-3",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-element-4",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-element-5",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-element-6",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-element-7",
+      "label": "Skills",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-element-0",
+      "label": "Curiosity suits you.",
+      "occlusion_fraction": 0.0,
+      "role": "other",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1",
+    "regions": [
+     {
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/52f538fb869a3ce5c1042319c6b8ca352fed6fc4839b85c5a604f8c86cdd7112",
+    "surface": "Open prayer times feature",
+    "surface_id": "complete-open-prayer-times",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37",
+   "sha256": null,
+   "summary": "Captured viewport run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1 in run run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37.",
+   "viewport_id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 20,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-element-0",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-element-1",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-element-2",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-element-3",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-element-4",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-element-5",
+      "label": "Skills",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-element-9",
+      "label": "Mobile Web UI/UX",
+      "occlusion_fraction": 0.0,
+      "role": "text",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2",
+    "regions": [
+     {
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/c58e7fb2608dbf0836947a7909766758f4d4bf48d3c6d29673fc1b700ffbf118",
+    "surface": "Open prayer times feature",
+    "surface_id": "complete-open-prayer-times",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37",
+   "sha256": null,
+   "summary": "Captured viewport run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2 in run run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37.",
+   "viewport_id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-2"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37:run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-verification-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 17,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-element-0",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-element-1",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-element-2",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-element-3",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-element-4",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-element-5",
+      "label": "Skills",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-element-9",
+      "label": "Act 02",
+      "occlusion_fraction": 0.0,
+      "role": "text",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-verification-1",
+    "regions": [
+     {
+      "id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/19cbd71d1898e6306a6ca97ec1f1711d3e364b821cf2f8f3bf40ed92c504f878",
+    "surface": "Open prayer times feature",
+    "surface_id": "complete-open-prayer-times",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37",
+   "sha256": null,
+   "summary": "Captured viewport run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-verification-1 in run run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37.",
+   "viewport_id": "run-9ff49c90472d42dec2f58045a598d7df61eb64f9d2b23bf555a6bd5a4819fa37-viewport-4-verification-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 22,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-element-2",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-element-3",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-element-4",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-element-5",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-element-6",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-element-7",
+      "label": "Skills",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-element-0",
+      "label": "Looking sharp.",
+      "occlusion_fraction": 0.0,
+      "role": "other",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1",
+    "regions": [
+     {
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/6a2626b1689b90dff53802e468cc4762c0b86e11eec2bf341793b394ed6cb4f1",
+    "surface": "Discover Muslim Pedia app store ratings",
+    "surface_id": "discover-app-store-ratings",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577",
+   "sha256": null,
+   "summary": "Captured viewport run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1 in run run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577.",
+   "viewport_id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577:run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-verification-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 20,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-element-0",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-element-1",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-element-2",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-element-3",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-element-4",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-element-5",
+      "label": "Skills",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-element-9",
+      "label": "Mobile Web UI/UX",
+      "occlusion_fraction": 0.0,
+      "role": "text",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-verification-1",
+    "regions": [
+     {
+      "id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/7ec3d05a377848e294ab39e64fc8a9085768e4727defe27e21ff1664cf524292",
+    "surface": "Discover Muslim Pedia app store ratings",
+    "surface_id": "discover-app-store-ratings",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577",
+   "sha256": null,
+   "summary": "Captured viewport run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-verification-1 in run run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577.",
+   "viewport_id": "run-f5b030d7b984488846c297ee7c61c6c14527357d1444380fd973251fa3f70577-viewport-3-verification-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 22,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-element-2",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-element-3",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-element-4",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-element-5",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-element-6",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-element-7",
+      "label": "Skills",
+      "occlusion_fraction": 1.0,
+      "role": "link",
+      "visibility_fraction": 0.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-element-0",
+      "label": "Looking sharp.",
+      "occlusion_fraction": 0.0,
+      "role": "other",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1",
+    "regions": [
+     {
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/a41c4a5f015287d5637a00c6a04c1a16ae4bc8166fbc185dc466e1773e88d01e",
+    "surface": "Initiate contact via Get in touch",
+    "surface_id": "convert-contact-get-in-touch",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52",
+   "sha256": null,
+   "summary": "Captured viewport run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1 in run run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52.",
+   "viewport_id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 20,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-element-0",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-element-1",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-element-2",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-element-3",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-element-4",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-element-5",
+      "label": "Skills",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-element-9",
+      "label": "Mobile Web UI/UX",
+      "occlusion_fraction": 0.0,
+      "role": "text",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2",
+    "regions": [
+     {
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/40f28e63fa986eec4c15e25e902a333c6ca885f5f1e2586fdec53b70c2e7ec14",
+    "surface": "Initiate contact via Get in touch",
+    "surface_id": "convert-contact-get-in-touch",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52",
+   "sha256": null,
+   "summary": "Captured viewport run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2 in run run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52.",
+   "viewport_id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-2"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "viewport:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52:run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-verification-1",
+   "kind": "viewport",
+   "metric_id": null,
+   "payload": {
+    "element_count": 19,
+    "elements": [
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-element-0",
+      "label": "Mohamed Khalil",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-element-1",
+      "label": "Muslim Pedia",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-element-2",
+      "label": "Open Prayer Times",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-element-3",
+      "label": "PAIR Systems",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-element-4",
+      "label": "UX Analyzer",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": true,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-element-5",
+      "label": "Skills",
+      "occlusion_fraction": 0.0,
+      "role": "link",
+      "visibility_fraction": 1.0
+     },
+     {
+      "actionable": false,
+      "disabled": false,
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-element-9",
+      "label": "Let's talk",
+      "occlusion_fraction": 0.0,
+      "role": "text",
+      "visibility_fraction": 1.0
+     }
+    ],
+    "elements_trimmed": true,
+    "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-verification-1",
+    "regions": [
+     {
+      "id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-region-0"
+     }
+    ],
+    "screenshot_artifact": "artifacts/44b9cb99ea975cd17b464805fca704de351cf18de39978f1c37b3e5c2e8a2aee",
+    "surface": "Initiate contact via Get in touch",
+    "surface_id": "convert-contact-get-in-touch",
+    "viewport": {
+     "height": 800,
+     "width": 1280
+    }
+   },
+   "replay_sequence": null,
+   "run_id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52",
+   "sha256": null,
+   "summary": "Captured viewport run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-verification-1 in run run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52.",
+   "viewport_id": "run-fa2147caa973d47099d17425b0dddbc969957f56c4d974cc515dfd6548308c52-viewport-4-verification-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "visual-disclosure:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1",
+   "kind": "visual-disclosure",
+   "metric_id": null,
+   "payload": {
+    "media_kind": "screenshot",
+    "policy": "visual-evidence-v1",
+    "reason": "live-target-default",
+    "result": "excluded",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "verified": true,
+    "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Source screenshot disclosure decision for viewport run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-1"
+  },
+  {
+   "artifact_path": null,
+   "element_id": null,
+   "event_id": null,
+   "evidence_class": "deterministic-fact",
+   "evidence_id": "visual-disclosure:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b:run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1",
+   "kind": "visual-disclosure",
+   "metric_id": null,
+   "payload": {
+    "media_kind": "screenshot",
+    "policy": "visual-evidence-v1",
+    "reason": "live-target-default",
+    "result": "excluded",
+    "surface": "Navigate to work showcase",
+    "surface_id": "navigate-work-showcase",
+    "verified": true,
+    "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+   },
+   "replay_sequence": null,
+   "run_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b",
+   "sha256": null,
+   "summary": "Source screenshot disclosure decision for viewport run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1.",
+   "viewport_id": "run-138e9c5ae1b43547a7d6a57dd11c7ad9154522eea7a547dccd697d68bc046b7b-viewport-3-verification-1"
+  }
+ ],
+ "principle_pack_digest": "b460e6bde12cd108199e4fa6d96676149a6809d03bcdfc894f4025663e0238df",
+ "principle_pack_version": "ux-principles-v1",
+ "schema_version": "recorded-attempt-corpus-v1",
+ "source": {
+  "attempts": [
+   "2026-09-24T192546Z-98bf4207803b-1",
+   "2026-09-25T074903Z-98bf4207803b-1",
+   "2026-09-25T085418Z-98bf4207803b-1",
+   "2026-09-25T091923Z-98bf4207803b-1",
+   "2026-09-25T094814Z-98bf4207803b-1"
+  ],
+  "experiment": "exploration-generated",
+  "note": "Evidence IDs, kinds, classes, and summaries are copied verbatim from the recorded corpus manifest. Viewport element and region arrays are trimmed because publication validation reads only the reference namespace, evidence class, and surface tokens.",
+  "recorded_corpus_digest": "evidence-corpus-v1"
+ }
+}

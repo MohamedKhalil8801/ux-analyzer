@@ -1112,6 +1112,24 @@ class EvidenceCorpus:
     def to_json(self) -> str:
         return _canonical_json(self.to_dict()) + "\n"
 
+    def scenario_ids(self) -> tuple[str, ...]:
+        """Distinct scenario IDs the corpus holds evidence for.
+
+        Report synthesis uses this as the denominator for examination
+        coverage: publication requires exactly one scenario review per entry
+        here, so a scenario can never be silently skipped and "no issues" can
+        never mean "nobody looked".
+        """
+
+        found: set[str] = set()
+        for entry in self.entries:
+            if entry.ref.kind != "scenario":
+                continue
+            scenario_id = entry.payload.get("id")
+            if isinstance(scenario_id, str) and scenario_id:
+                found.add(scenario_id)
+        return tuple(sorted(found))
+
 
 @dataclass(frozen=True, slots=True, init=False)
 class ResolvedEvidence:

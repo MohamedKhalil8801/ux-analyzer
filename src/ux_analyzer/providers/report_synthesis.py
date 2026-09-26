@@ -1694,6 +1694,72 @@ def _canonical_json(value: object) -> str:
     )
 
 
+# Top-level key order for a report-role user payload.
+#
+# Provider prompt caching only reuses a *prefix* of the message, so the reusable
+# bytes have to come first. Every block below is byte-identical for a given
+# corpus, role, and prompt version; only the trailing retrieval state changes
+# between rounds and attempts. Alphabetical ordering put the 17 kB principle
+# pack and the 5 kB response schema *after* the 0.5 kB retrieval policy, which
+# truncated the reusable prefix to the 2.8 kB corpus manifest and held the
+# observed prompt-cache hit ratio to 0.3-13%. Nothing about the payload's
+# content or key names changes here - only the order the keys are written in,
+# which a JSON object does not give meaning to.
+_REPORT_PAYLOAD_KEY_ORDER: tuple[str, ...] = (
+    "corpus_manifest",
+    "response_schema",
+    "ux_principle_pack",
+    "role_input",
+    "evidence_request_policy",
+    "prior_structured_output",
+    "resolved_evidence",
+    "resolved_evidence_context",
+    "validation_feedback",
+    "final_response_correction",
+)
+
+
+def _sorted_prompt_value(value: object) -> object:
+    """Recursively rebuild a prompt value with deterministically ordered keys."""
+
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        return {
+            str(key): _sorted_prompt_value(mapping[key])
+            for key in sorted(mapping, key=str)
+        }
+    if isinstance(value, (list, tuple)):
+        items = cast(Sequence[object], value)
+        return [_sorted_prompt_value(item) for item in items]
+    return value
+
+
+def _ordered_payload_json(payload: Mapping[str, object]) -> str:
+    """Serialize a report-role payload with the cache-stable key order.
+
+    Fails closed on an undeclared key so a new payload block cannot silently
+    land after the reusable prefix and go back to missing the cache.
+    """
+
+    unknown = sorted(set(payload) - set(_REPORT_PAYLOAD_KEY_ORDER))
+    if unknown:
+        raise ValueError(
+            "report payload key is missing from the declared order: "
+            + ", ".join(unknown)
+        )
+    ordered = {
+        key: _sorted_prompt_value(payload[key])
+        for key in _REPORT_PAYLOAD_KEY_ORDER
+        if key in payload
+    }
+    return json.dumps(
+        ordered,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 def _raw_canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -1989,7 +2055,7 @@ class _ReportRole:
                 ChatMessage(role="system", content=self.prompt),
                 ChatMessage(
                     role="user",
-                    content=_canonical_json(message_payload),
+                    content=_ordered_payload_json(message_payload),
                     attachments=message_attachments,
                 ),
             )
@@ -2191,7 +2257,7 @@ class _ReportRole:
                 messages[0],
                 ChatMessage(
                     role="user",
-                    content=_canonical_json(correction_payload),
+                    content=_ordered_payload_json(correction_payload),
                     attachments=messages[1].attachments,
                 ),
             )
@@ -2644,7 +2710,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v11"
+    prompt_version = "report-analyst-v13"
     response_schema = AnalystResponse
 
     @property
@@ -2670,6 +2736,32 @@ class ReportAnalyst(_ReportRole):
             "from the frozen expectation's reference path without offering a clearer "
             "alternate route. Name every redundant, missing, or misplaced step from "
             "the recorded sequence, never from intuition. "
+            "Examine every scenario. Success is not a reason to stop looking. A run "
+            "that reached its goal quickly is still a design that can be better, and "
+            "a fast path is not automatically a good one: the same single click can "
+            "sit behind a screen the persona had to scan exhaustively first. Never "
+            "treat a verified-success outcome, few steps, or zero wrong actions as "
+            "evidence that the interaction was well designed. Zero wrong actions means "
+            "the persona did not go wrong; it says nothing about whether the interface "
+            "asked for more attention than it needed to. "
+            "Weigh several signals against each other, because good design judgment "
+            "routinely trades them off and any one of them alone can point the wrong "
+            "way. Fewer steps can mean less attention spent or more options to "
+            "disambiguate; a deep path can be the right call when it keeps a dense "
+            "screen legible; a prominent control can be easy to reach and still hard to "
+            "notice. Consider at minimum, where relevant to the scenario: how much "
+            "attention the persona spent before acting (elements and viewports "
+            "inspected), how many actions the goal needed, whether the completion "
+            "affordance was visible from the start or had to be discovered, how many "
+            "competing controls were on screen at the moment of decision, and how far "
+            "the recorded path sat from the frozen expectation's reference path. Read "
+            "these as one picture, and say in the finding which signals you balanced "
+            "and which way they pulled. "
+            "Report a balance of trade-offs as finding_kind improvement, not ux-issue. "
+            "An improvement says the task worked but the record shows a better design "
+            "was available. It must not claim the persona was harmed, blocked, "
+            "delayed, or misled: if it does, it is a ux-issue and it needs the observed "
+            "evidence for that harm. "
             "Judge the scenario itself as well as the product. Set finding_kind to "
             "scenario-defect when the recorded run shows the scenario specification "
             "is at fault rather than the interface: the goal is ambiguous or "
@@ -2693,7 +2785,42 @@ class ReportAnalyst(_ReportRole):
             "delivered evidence does not establish a cause, state that plainly instead "
             "of using causal root-cause language. Set a finding's evidence_class to "
             "model-estimate whenever any supporting evidence is model-estimate; mixed "
-            "deterministic and model-estimate support is still model-estimate."
+            "deterministic and model-estimate support is still model-estimate. "
+            "Rest every issue and impact claim on observed behavior. Observed evidence "
+            "is a recorded event, a replay, an independent verification outcome, a "
+            "deterministic UI-state observation, or a deterministic behavior or outcome "
+            "metric. Heuristic signals - prominence rank, below-fold counts, ambiguity "
+            "flags, discovery cost, scent, and inspection cost - are model estimates. "
+            "They may appear as supporting context and must be named as estimates when "
+            "they do, but they can never be the reason a person was harmed. A finding "
+            "whose only primary observed evidence is a model estimate, and whose issue "
+            "or impact says a user could not do something, had to hunt for it, was "
+            "delayed, or went wrong, is rejected before it reaches the reviewers. "
+            "Before proposing, read the delivered outcome record for the same run: "
+            "wrong-actions, backtracks, recovery actions, false success, verified "
+            "completion, and the task outcome. When those records contradict the harm you "
+            "are about to claim, either narrow the claim to what the observed record "
+            "supports or drop it. Zero wrong actions together with verified completion "
+            "means the persona completed the task without observed harm; it does not "
+            "mean the interaction was well designed, and it is not a reason to end the "
+            "examination. One required-looking scroll or a required traversal step is "
+            "expected behavior, and by itself it is neither harm nor an improvement - "
+            "weigh it against the attention the persona spent to find it. "
+            "When prior_rejections are supplied, each entry records a finding a previous "
+            "attempt proposed and the reasons it was not established. Treat it as "
+            "context, not a prohibition: either retrieve delivered evidence that answers "
+            "every recorded reason and propose the subject again, or leave it aside and "
+            "propose a different finding. Never restate a recorded reason as a finding. "
+            "Return exactly one scenario_review per scenario_id in the delivered "
+            "scenario evidence; the attempt is rejected if any scenario is left "
+            "unreviewed. For each one, set disposition to the strongest thing the "
+            "record supports for that scenario: ux-issue, scenario-defect, improvement, "
+            "or no-issue-found. no-issue-found is a legitimate and expected outcome and "
+            "means you examined the scenario, weighed the signals, and found no "
+            "balance worth reporting - say so plainly rather than reaching for a weak "
+            "observation. List the evidence_ids you actually examined and name the "
+            "signals_weighed you balanced; a review that names no delivered evidence is "
+            "recorded as no-issue-found, so cite real evidence IDs from the manifest."
         )
 
     async def analyze(
@@ -2706,7 +2833,13 @@ class ReportAnalyst(_ReportRole):
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
         validation_feedback: str | None = None,
+        prior_rejections: Sequence[Mapping[str, object]] = (),
     ) -> AnalystResponse:
+        role_input: dict[str, object] = {
+            "task": "discover issues and root causes",
+        }
+        if prior_rejections:
+            role_input["prior_rejections"] = [dict(item) for item in prior_rejections]
         response = await self._complete(
             corpus_manifest,
             principles,
@@ -2714,7 +2847,7 @@ class ReportAnalyst(_ReportRole):
             previous_output=previous_output,
             retrieval_round=retrieval_round,
             max_retrieval_rounds=max_retrieval_rounds,
-            role_input={"task": "discover issues and root causes"},
+            role_input=role_input,
             validation_feedback=validation_feedback,
         )
         return cast(AnalystResponse, response)
@@ -2724,12 +2857,24 @@ class EvidenceAuditor(_ReportRole):
     """Challenge factual and visual support for analyst candidates."""
 
     role = ModelRole.REPORT_EVIDENCE_AUDITOR
-    prompt_version = "report-evidence-auditor-v5"
+    prompt_version = "report-evidence-auditor-v6"
     response_schema = EvidenceAuditResponse
 
     @property
     def _role_prompt(self) -> str:
-        return "Challenge factual support, visual interpretation, citation accuracy, and contradictions in candidate findings. Emit typed objections tied to the evidence needed to resolve each challenge."
+        return (
+            "Challenge factual support, visual interpretation, citation accuracy, "
+            "and contradictions in candidate findings. Emit typed objections tied "
+            "to the evidence needed to resolve each challenge. Raise a "
+            "contradiction or factual-support objection whenever a candidate's "
+            "issue or impact rests only on heuristic signals - prominence rank, "
+            "below-fold counts, ambiguity flags, discovery or scent cost - while "
+            "the delivered observed record for the same run shows the opposite: "
+            "zero wrong actions, zero backtracks, zero recovery actions, verified "
+            "completion, no false success, or a verified-success outcome. Cite the "
+            "counterevidence that decides it. A required scroll or a required "
+            "traversal step is expected behavior, not harm."
+        )
 
     async def audit(
         self,

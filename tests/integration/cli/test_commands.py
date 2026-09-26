@@ -2096,7 +2096,6 @@ def test_synthesize_relative_output_reaches_report_roles_and_persists_artifacts(
     assert len(matrix.specs) == 1
     output_root = tmp_path / "relative-synthesis-output"
     _write_synthesis_finalized_bundle(output_root, matrix.specs[0])
-
     monkeypatch.setenv("UXA_LLM_BASE_URL", "https://llm.example.test/v1")
     monkeypatch.setenv("UXA_LLM_API_KEY", "super-secret-api-key")
     monkeypatch.setenv("UXA_SCENT_MODEL", "scent-model")
@@ -2112,6 +2111,10 @@ def test_synthesize_relative_output_reaches_report_roles_and_persists_artifacts(
         def __init__(self) -> None:
             self.calls: list[tuple[Any, str, tuple[Any, ...]]] = []
             self.records: list[ModelCallRecord] = []
+            # Publication validation rejects an attempt that leaves a corpus
+            # scenario unexamined, so the analyst stub must account for every
+            # scenario the test's project runs.
+            self.scenario_reviews: list[dict[str, Any]] = []
 
         async def complete(
             self,
@@ -2133,6 +2136,8 @@ def test_synthesize_relative_output_reaches_report_roles_and_persists_artifacts(
             ):
                 if field_name in schema.model_fields:
                     payload[field_name] = []
+            if "scenario_reviews" in schema.model_fields:
+                payload["scenario_reviews"] = self.scenario_reviews
             response = schema.model_validate(payload)
             self.records.append(
                 ModelCallRecord(
@@ -2153,6 +2158,15 @@ def test_synthesize_relative_output_reaches_report_roles_and_persists_artifacts(
             return response
 
     client = FakeReportClient()
+    client.scenario_reviews = [
+        {
+            "scenario_id": "invite-teammate",
+            "disposition": "no-issue-found",
+            "evidence_ids": [f"scenario:{matrix.specs[0].run_id}"],
+            "signals_weighed": ["attention cost", "action count"],
+            "note": "Examined; the recorded interaction showed nothing to report.",
+        }
+    ]
     monkeypatch.setattr(
         cli,
         "create_structured_model_client",
