@@ -398,7 +398,7 @@ def _redesign_defaults() -> dict[type[Any], object]:
         "observation": "Cards sit 8px apart and read as one block.",
         "rationale": "Grouping clarity suffers without separation.",
         "change": "Raise the gap to 32px.",
-        "principle_ids": ["gestalt-proximity"],
+        "principle_refs": [1],
         "impact": "medium",
         "effort": "small",
         "section_refs": [
@@ -776,7 +776,7 @@ def scenario_redesign_round_trip(tmp_path: Path) -> ScenarioReport:
     )
     report.check(
         "proposer-schema-in-payload",
-        proposer_payload["response_schema"]["schema_version"] == "redesign-proposer-v1",
+        proposer_payload["response_schema"]["schema_version"] == "redesign-proposer-v2",
         "proposer contract rides in the user payload",
     )
     report.check(
@@ -792,7 +792,7 @@ def scenario_redesign_round_trip(tmp_path: Path) -> ScenarioReport:
         "proposal-invariants-survive-critic",
         '"proposal_id"' in proposal_json
         and '"page_url"' in proposal_json
-        and '"principle_ids"' in proposal_json
+        and '"principle_refs"' in proposal_json
         and '"section_refs"' in proposal_json,
         "critic re-emit keeps ids, page refs, principles, and section refs",
     )

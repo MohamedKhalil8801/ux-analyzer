@@ -24,8 +24,8 @@ from ux_analyzer.ports.models import (
     StructuredModelClient,
 )
 
-REDESIGN_PROPOSER_PROMPT_VERSION = "redesign-proposer-v1"
-REDESIGN_CRITIC_MERGER_PROMPT_VERSION = "redesign-critic-merger-v1"
+REDESIGN_PROPOSER_PROMPT_VERSION = "redesign-proposer-v2"
+REDESIGN_CRITIC_MERGER_PROMPT_VERSION = "redesign-critic-merger-v2"
 
 _REDESIGN_CATEGORIES = (
     "grouping",
@@ -78,7 +78,7 @@ class _ProposalInvariants(_RedesignSchema):
     observation: str
     rationale: str
     change: str
-    principle_ids: list[str] = Field(min_length=1)
+    principle_refs: list[int] = Field(min_length=1)
     impact: str
     effort: str
     section_refs: list[ProposerSectionRef] = Field(min_length=1)
@@ -103,8 +103,14 @@ class _ProposalInvariants(_RedesignSchema):
             raise ValueError(f"impact must be one of {_IMPACTS}")
         if self.effort not in _EFFORTS:
             raise ValueError(f"effort must be one of {_EFFORTS}")
-        if len(set(self.principle_ids)) != len(self.principle_ids):
-            raise ValueError("principle_ids must be unique")
+        if len(set(self.principle_refs)) != len(self.principle_refs):
+            raise ValueError("principle_refs must be unique")
+        for ref in self.principle_refs:
+            if ref < 1:
+                raise ValueError(
+                    "principle_refs are 1-based positions in the numbered "
+                    "principle pack, so 0 and below are not valid"
+                )
         for ref in self.section_refs:
             if ref.url != self.page_url:
                 raise ValueError(
@@ -140,10 +146,12 @@ class ProposerPageUnderstanding(_RedesignSchema):
 
 
 class ProposerResponse(_RedesignSchema):
-    schema_version: ClassVar[str] = "redesign-proposer-v1"
+    schema_version: ClassVar[str] = "redesign-proposer-v2"
 
     page_understanding: ProposerPageUnderstanding
-    proposals: list[ProposerDesignProposal] = Field(default_factory=list)
+    proposals: list[ProposerDesignProposal] = Field(
+        default_factory=list[ProposerDesignProposal]
+    )
 
 
 class CriticKilledProposal(_RedesignSchema):
@@ -158,7 +166,7 @@ class CriticConsolidatedProposal(_ProposalInvariants):
 
 
 class CriticResponse(_RedesignSchema):
-    schema_version: ClassVar[str] = "redesign-critic-merger-v1"
+    schema_version: ClassVar[str] = "redesign-critic-merger-v2"
 
     final_proposals: list[CriticConsolidatedProposal] = []
     killed: list[CriticKilledProposal] = []
@@ -183,8 +191,11 @@ Hard rules:
 observation as what the capture shows, not as proof of a defect.
 - Never cite evidence IDs or run evidence. You have no access to run \
 evidence; page captures are your only input.
-- Reference principles by id only, from the supplied redesign principle \
-pack. Principles name and explain; they never prove.
+- Reference principles by their number, not by name. Every entry in the \
+supplied redesign principle pack carries a "ref" field; cite those numbers in \
+principle_refs. Never type a principle id or name yourself - a misspelled id \
+is discarded and the proposal is lost with it. Principles name and explain; \
+they never prove.
 - Infer page intent and audience from the capture itself, and always state \
 the audience as an inference ("likely aimed at ...").
 - Stay consistent across pages of the same site: reuse shared vocabulary, \

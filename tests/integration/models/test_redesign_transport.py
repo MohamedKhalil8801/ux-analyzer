@@ -75,7 +75,7 @@ _PROPOSER_OUTPUT = {
             "observation": "Cards sit 8px apart and read as one block.",
             "rationale": "Grouping clarity suffers without separation.",
             "change": "Raise the gap to 32px.",
-            "principle_ids": ["gestalt-proximity"],
+            "principle_refs": [1],
             "impact": "medium",
             "effort": "small",
             "section_refs": [

@@ -46,7 +46,7 @@ def _proposal_kwargs(**overrides: object) -> dict[str, object]:
         "observation": "Cards sit 8px apart and read as one block.",
         "rationale": "Grouping clarity suffers without separation.",
         "change": "Raise the gap to 32px.",
-        "principle_ids": ["gestalt-proximity"],
+        "principle_refs": [1],
         "impact": "medium",
         "effort": "small",
         "section_refs": [_section_ref()],
@@ -70,7 +70,7 @@ _STUB_PROPOSAL = {
     "observation": "Cards sit 8px apart and read as one block.",
     "rationale": "Grouping clarity suffers without separation.",
     "change": "Raise the gap to 32px.",
-    "principle_ids": ["gestalt-proximity"],
+    "principle_refs": [1],
     "impact": "medium",
     "effort": "small",
     "section_refs": [_STUB_SECTION_REF],
@@ -163,13 +163,34 @@ def test_empty_text_fields_rejected() -> None:
         ProposerDesignProposal.model_validate(_proposal_kwargs(change=""))
 
 
-def test_principle_ids_must_be_unique_and_non_empty() -> None:
+def test_principle_refs_must_be_unique_and_non_empty() -> None:
     with pytest.raises(ValidationError):
         ProposerDesignProposal.model_validate(
-            _proposal_kwargs(principle_ids=["gestalt-proximity", "gestalt-proximity"])
+            _proposal_kwargs(principle_refs=[1, 1])
         )
     with pytest.raises(ValidationError):
-        ProposerDesignProposal.model_validate(_proposal_kwargs(principle_ids=[]))
+        ProposerDesignProposal.model_validate(_proposal_kwargs(principle_refs=[]))
+
+
+def test_principle_refs_reject_a_typed_principle_name() -> None:
+    """A misspelled or invented id must not fit the field at all.
+
+    The pack is offered to the model as a numbered list, so the only value it
+    can legitimately produce is a number. Accepting a string here would reopen
+    the exact failure that discarded two real proposals.
+    """
+
+    with pytest.raises(ValidationError):
+        ProposerDesignProposal.model_validate(
+            _proposal_kwargs(principle_refs=["copy-clarity-over-cleveness"])
+        )
+
+
+def test_principle_refs_are_one_based() -> None:
+    """Ref 0 is not the first principle; a 1-based count has no zero."""
+
+    with pytest.raises(ValidationError, match="1-based"):
+        ProposerDesignProposal.model_validate(_proposal_kwargs(principle_refs=[0]))
 
 
 def test_critic_consolidated_proposal_shares_invariants() -> None:
@@ -197,8 +218,8 @@ def test_role_enum_contains_both_redesign_roles() -> None:
 def test_prompt_versions_are_frozen_strings() -> None:
     assert RedesignProposer.prompt_version == REDESIGN_PROPOSER_PROMPT_VERSION
     assert RedesignCriticMerger.prompt_version == REDESIGN_CRITIC_MERGER_PROMPT_VERSION
-    assert REDESIGN_PROPOSER_PROMPT_VERSION == "redesign-proposer-v1"
-    assert REDESIGN_CRITIC_MERGER_PROMPT_VERSION == "redesign-critic-merger-v1"
+    assert REDESIGN_PROPOSER_PROMPT_VERSION == "redesign-proposer-v2"
+    assert REDESIGN_CRITIC_MERGER_PROMPT_VERSION == "redesign-critic-merger-v2"
 
 
 def test_prompts_encode_doctrine() -> None:
@@ -222,10 +243,10 @@ def test_manifest_describes_role_and_versions() -> None:
     assert isinstance(manifest, ModelManifest)
     assert manifest.role is ModelRole.REDESIGN_PROPOSER
     assert manifest.prompt_version == REDESIGN_PROPOSER_PROMPT_VERSION
-    assert manifest.schema_version == "redesign-proposer-v1"
+    assert manifest.schema_version == "redesign-proposer-v2"
     critic = RedesignCriticMerger(client, model="gpt-redesign")
     assert critic.manifest.role is ModelRole.REDESIGN_CRITIC_MERGER
-    assert critic.manifest.schema_version == "redesign-critic-merger-v1"
+    assert critic.manifest.schema_version == "redesign-critic-merger-v2"
 
 
 def test_empty_model_rejected() -> None:
@@ -261,7 +282,7 @@ async def test_proposer_analyze_sends_payload_principles_and_schema() -> None:
     assert payload["role_input"]["redesign_principle_pack"][0]["id"] == (
         "gestalt-proximity"
     )
-    assert payload["response_schema"]["schema_version"] == "redesign-proposer-v1"
+    assert payload["response_schema"]["schema_version"] == "redesign-proposer-v2"
 
 
 @pytest.mark.asyncio
@@ -287,7 +308,7 @@ async def test_critic_review_sends_consolidated_and_digests() -> None:
 
 def test_proposer_response_validates_schema_shape() -> None:
     response = ProposerResponse.model_validate(_STUB_RESPONSES["ProposerResponse"])
-    assert response.schema_version == "redesign-proposer-v1"
+    assert response.schema_version == "redesign-proposer-v2"
     understanding: ProposerPageUnderstanding = response.page_understanding
     assert understanding.audience_inference.startswith("Likely")
 

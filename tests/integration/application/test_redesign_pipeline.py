@@ -57,7 +57,7 @@ _PROPOSAL_PAYLOAD: dict[str, object] = {
     "observation": "Cards read as one block.",
     "rationale": "Separation clarifies groups.",
     "change": "Raise gap to 32px.",
-    "principle_ids": ["gestalt-proximity"],
+    "principle_refs": [1],
     "impact": "medium",
     "effort": "small",
     "section_refs": [
@@ -210,11 +210,19 @@ async def test_section_reference_outside_document_rejected(tmp_path: Path) -> No
     outcome = _validate_final_proposals(
         [bad_payload],
         {PAGE_URL: _CAPTURE},
-        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs(),
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     assert proposals == ()
     assert reasons and "dangling" in reasons[0]
+
+
+def _pack_refs() -> dict[int, str]:
+    """The ref-to-id map run_redesign_pass builds from the numbered pack."""
+
+    ids = _pack_kwargs()["principle_ids"]
+    assert isinstance(ids, tuple)
+    return {position: value for position, value in enumerate(ids, start=1)}
 
 
 def _pack_kwargs() -> dict[str, object]:

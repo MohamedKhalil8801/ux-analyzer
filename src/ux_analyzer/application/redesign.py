@@ -693,11 +693,36 @@ class _ValidationOutcome(NamedTuple):
         return self.dropped + self.limit_breaches
 
 
+def _numbered_pack(
+    principle_pack: Sequence[Mapping[str, object]],
+) -> tuple[list[dict[str, object]], dict[int, str]]:
+    """Stamp each pack entry with a 1-based ref and return the ref-to-id map.
+
+    Each entry gains an explicit ``ref`` so the number the model cites is
+    visible in the payload rather than implied by list position. The map is
+    built from the same entries that are sent, so it cannot drift out of step
+    with what the model was shown - a mismatch would attribute proposals to the
+    wrong principle without failing any check.
+    """
+
+    payload: list[dict[str, object]] = []
+    refs: dict[int, str] = {}
+    for position, entry in enumerate(principle_pack, start=1):
+        raw_id = entry.get("id")
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            # An entry with no usable id cannot be cited, so it is not offered.
+            continue
+        payload.append({**dict(entry), "ref": position})
+        refs[position] = raw_id.strip()
+    return payload, refs
+
+
 def _validate_final_proposals(
     final_proposals: Sequence[Mapping[str, object]],
     captures: Mapping[str, Mapping[str, object]],
     *,
     known_ids: frozenset[str],
+    pack_refs: Mapping[int, str],
 ) -> _ValidationOutcome:
     """Deterministic validation gate; separates item defects from bound breaches."""
 
@@ -706,20 +731,41 @@ def _validate_final_proposals(
     for proposal in final_proposals:
         proposal_id = str(proposal.get("proposal_id", ""))
         page_url = str(proposal.get("page_url", ""))
-        principle_ids = proposal.get("principle_ids")
-        if not isinstance(principle_ids, Sequence) or isinstance(
-            principle_ids, (str, bytes)
+        principle_refs = proposal.get("principle_refs")
+        if not isinstance(principle_refs, Sequence) or isinstance(
+            principle_refs, (str, bytes)
         ):
-            reasons.append(_reason(f"{proposal_id}: principle_ids must be a list"))
+            reasons.append(_reason(f"{proposal_id}: principle_refs must be a list"))
             continue
-        unknown = [
-            str(item)
-            for item in cast(Sequence[object], principle_ids)
-            if str(item) not in known_ids
-        ]
+        resolved: list[str] = []
+        unresolved: list[str] = []
+        for item in cast(Sequence[object], principle_refs):
+            if isinstance(item, bool) or not isinstance(item, int):
+                unresolved.append(str(item))
+                continue
+            principle_id = pack_refs.get(item)
+            if principle_id is None:
+                unresolved.append(str(item))
+                continue
+            resolved.append(principle_id)
+        if unresolved:
+            # An out-of-range or non-numeric ref means the model cited a
+            # principle that was not offered. The proposal cannot be published
+            # against a principle the pack does not contain, and guessing which
+            # one was meant would be worse than recording the miss.
+            reasons.append(
+                _reason(
+                    f"{proposal_id}: principle_refs not in the supplied pack: "
+                    f"{unresolved} (valid refs are 1..{len(pack_refs)})"
+                )
+            )
+            continue
+        unknown = [item for item in resolved if item not in known_ids]
         if unknown:
-            # A proposal bound to principles outside the pack cannot be
-            # published; record why and drop it (same as dangling refs).
+            # Defence in depth. Refs resolve from the pack, so this should be
+            # unreachable; it stays because a resolved id that is not in the
+            # pack's declared id set means the two inputs disagree, and
+            # publishing it would be publishing an unattributable claim.
             reasons.append(
                 _reason(f"{proposal_id}: unknown principle ids: {unknown}")
             )
@@ -801,9 +847,7 @@ def _validate_final_proposals(
                     observation=str(proposal.get("observation", "")),
                     rationale=str(proposal.get("rationale", "")),
                     change=str(proposal.get("change", "")),
-                    principle_ids=tuple(
-                        str(item) for item in cast(Sequence[object], principle_ids)
-                    ),
+                    principle_ids=tuple(resolved),
                     impact=Impact(str(proposal.get("impact", ""))),
                     effort=Effort(str(proposal.get("effort", ""))),
                     section_refs=tuple(
@@ -907,7 +951,7 @@ async def run_redesign_pass(
             "",
         )
     digest = captures_digest(captures)
-    pack_payload = [dict(item) for item in principle_pack]
+    pack_payload, pack_refs = _numbered_pack(principle_pack)
     known_ids = frozenset(principle_ids)
 
     consolidated: list[dict[str, object]] = []
@@ -1033,7 +1077,7 @@ async def run_redesign_pass(
         for item in cast(Sequence[object], final_value)
     ]
     outcome = _validate_final_proposals(
-        final_dicts, captures, known_ids=known_ids
+        final_dicts, captures, known_ids=known_ids, pack_refs=pack_refs
     )
     killed_sequence: Sequence[object] = (
         cast(Sequence[object], killed_value)

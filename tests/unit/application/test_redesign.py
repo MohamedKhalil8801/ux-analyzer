@@ -66,6 +66,14 @@ def _ref(**overrides: object) -> dict[str, object]:
     return ref
 
 
+def _pack_refs() -> dict[int, str]:
+    """The ref-to-id map run_redesign_pass builds from the numbered pack."""
+
+    ids = _pack_kwargs()["principle_ids"]
+    assert isinstance(ids, tuple)
+    return {position: value for position, value in enumerate(ids, start=1)}
+
+
 def _proposal_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "proposal_id": "p1",
@@ -75,7 +83,7 @@ def _proposal_payload(**overrides: object) -> dict[str, object]:
         "observation": "Cards read as one block.",
         "rationale": "Separation clarifies groups.",
         "change": "Raise gap to 32px.",
-        "principle_ids": ["gestalt-proximity"],
+        "principle_refs": [1],
         "impact": "medium",
         "effort": "small",
         "section_refs": [_ref()],
@@ -584,14 +592,73 @@ async def test_unknown_principle_id_rejects() -> None:
         proposer=_FakeProposer(_proposer_response()),
         critic=_FakeCritic(
             _critic_response(
-                final=[_proposal_payload(principle_ids=["laws-of-ux-verdict"])]
+                final=[_proposal_payload(principle_refs=[9999])]
             )
         ),
         attempt_id="redesign-20260911T000000Z-aaaa7777",
         **_pack_kwargs(),
     )
     assert outcome.attempt.status is RedesignAttemptStatus.REJECTED
-    assert any("unknown principle ids" in r for r in outcome.attempt.rejection_reasons)
+    assert any(
+        "not in the supplied pack" in r for r in outcome.attempt.rejection_reasons
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_invent_a_principle_id() -> None:
+    """The response schema has no field a misspelled principle name fits in.
+
+    A real pass lost two proposals to "copy-clarity-over-cleveness", and
+    because a free-text id was accepted from the model, the only possible
+    outcomes were publish the typo or discard the work. principle_refs is a
+    list of integers into the numbered pack, so there is no string to misspell:
+    the failure the model used to make is now unrepresentable rather than
+    merely discouraged by the prompt.
+    """
+
+    schema = ProposerResponse.model_json_schema()
+    proposal_schema = schema["$defs"]["ProposerDesignProposal"]
+    cited = proposal_schema["properties"]["principle_refs"]
+    assert cited["type"] == "array"
+    assert cited["items"]["type"] == "integer"
+    assert "principle_ids" not in proposal_schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_principle_ref_resolves_to_the_pack_id() -> None:
+    """The number the model cites must resolve to the id that was offered."""
+
+    refs = _pack_refs()
+    outcome = await run_redesign_pass(
+        _CAPTURES,
+        audience="",
+        proposer=_FakeProposer(_proposer_response()),
+        critic=_FakeCritic(
+            _critic_response(final=[_proposal_payload(principle_refs=[2])])
+        ),
+        attempt_id="redesign-20260911T000000Z-eeee0001",
+        **_pack_kwargs(),
+    )
+    assert outcome.attempt.status is RedesignAttemptStatus.ACCEPTED
+    assert outcome.attempt.proposals[0].principle_ids == (refs[2],)
+
+
+@pytest.mark.asyncio
+async def test_pack_entries_carry_the_ref_the_model_is_told_to_cite() -> None:
+    """The number has to be visible in the payload, not implied by position.
+
+    If the ref were derived from list order alone, the mapping would depend on
+    two orderings agreeing and a mismatch would attribute proposals to the
+    wrong principle without failing anything.
+    """
+
+    from ux_analyzer.application.redesign import _numbered_pack
+
+    payload, refs = _numbered_pack(_pack_kwargs()["principle_pack"])
+    assert payload
+    for position, entry in enumerate(payload, start=1):
+        assert entry["ref"] == position
+        assert refs[position] == entry["id"]
 
 
 @pytest.mark.asyncio
@@ -616,7 +683,7 @@ async def test_one_malformed_proposal_does_not_reject_the_pass() -> None:
                     _proposal_payload(proposal_id="good"),
                     _proposal_payload(
                         proposal_id="bad",
-                        principle_ids=["laws-of-ux-verdict"],
+                        principle_refs=[9999],
                     ),
                 ]
             )
@@ -651,11 +718,11 @@ async def test_pass_where_every_proposal_fails_is_rejected() -> None:
                 final=[
                     _proposal_payload(
                         proposal_id="bad-1",
-                        principle_ids=["laws-of-ux-verdict"],
+                        principle_refs=[9999],
                     ),
                     _proposal_payload(
                         proposal_id="bad-2",
-                        principle_ids=["also-not-a-principle"],
+                        principle_refs=[9998],
                     ),
                 ]
             )
@@ -669,36 +736,35 @@ async def test_pass_where_every_proposal_fails_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_misspelled_principle_id_does_not_hide_the_rest_of_the_pass() -> None:
+async def test_out_of_range_ref_does_not_hide_the_rest_of_the_pass() -> None:
     """Reproduction of the run that produced an empty redesign report.
 
-    A real pass proposed seven changes. Two cited "copy-clarity-over-cleveness"
-    instead of the pack's "copy-clarity-over-cleverness", so they were rightly
-    dropped - but the whole attempt was marked rejected, which left five valid
-    proposals stored and invisible. The report renders an accepted pass only,
-    so the user received nothing for a pass the model had completed.
+    A real pass proposed seven changes. Two cited
+    "copy-clarity-over-cleveness" instead of the pack's
+    "copy-clarity-over-cleverness". Those two were rightly discarded, but the
+    attempt was marked rejected, so the five valid proposals were stored and
+    never rendered - the report only shows an accepted pass.
 
-    Two things have to hold: the five valid proposals are published, and the
-    attempt still records the principle-pack version so the surviving
-    proposals remain traceable to the principles they were generated from.
+    The misspelling itself is no longer expressible now that the model cites
+    numbers, so the closest reproducible failure is a ref the pack never
+    offered. Both halves of the original defect still have to hold: the bad
+    items cost only themselves, and the surviving items keep the pack version
+    that traces them back to the principles they were generated from.
     """
 
     valid = [
         _proposal_payload(proposal_id=f"keep-{index}")
         for index in range(5)
     ]
-    misspelled = [
-        _proposal_payload(
-            proposal_id=f"drop-{index}",
-            principle_ids=["copy-clarity-over-cleveness"],
-        )
+    uncited = [
+        _proposal_payload(proposal_id=f"drop-{index}", principle_refs=[9999])
         for index in range(2)
     ]
     outcome = await run_redesign_pass(
         _CAPTURES,
         audience="",
-        proposer=_FakeProposer(_proposer_response([*valid, *misspelled])),
-        critic=_FakeCritic(_critic_response(final=[*valid, *misspelled])),
+        proposer=_FakeProposer(_proposer_response([*valid, *uncited])),
+        critic=_FakeCritic(_critic_response(final=[*valid, *uncited])),
         attempt_id="redesign-20260926T090415Z-9aa7791a",
         **_pack_kwargs(),
     )
@@ -709,7 +775,7 @@ async def test_misspelled_principle_id_does_not_hide_the_rest_of_the_pass() -> N
     assert outcome.attempt.pack_version
     assert len(outcome.attempt.rejection_reasons) == 2
     assert all(
-        "copy-clarity-over-cleveness" in reason
+        "not in the supplied pack" in reason
         for reason in outcome.attempt.rejection_reasons
     )
 
@@ -757,7 +823,7 @@ async def test_missing_deliberate_check_rejects_guardrail_category() -> None:
     from ux_analyzer.application.redesign import _validate_final_proposals
 
     outcome = _validate_final_proposals(
-        [_proposal_payload(category="grouping")], _CAPTURES, known_ids=frozenset(_pack_kwargs()["principle_ids"])
+        [_proposal_payload(category="grouping")], _CAPTURES, known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs()
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     assert proposals == ()
@@ -855,7 +921,7 @@ def test_malformed_proposals_do_not_inflate_per_page_count() -> None:
     outcome = _validate_final_proposals(
         [dict(item) for item in [*valid, malformed]],
         _CAPTURES,
-        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs(),
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     assert len(proposals) == MAX_PROPOSALS_PER_PAGE
@@ -944,7 +1010,7 @@ def test_target_guard_rejects_claim_on_control_already_44px() -> None:
     outcome = _validate_final_proposals(
         [payload],
         {PAGE_URL: capture},
-        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs(),
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     assert proposals == ()
@@ -1065,7 +1131,7 @@ def test_target_guard_passes_genuinely_small_control() -> None:
     outcome = _validate_final_proposals(
         [payload],
         {PAGE_URL: capture},
-        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs(),
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     assert len(proposals) == 1
@@ -1084,7 +1150,7 @@ def test_target_guard_leaves_non_target_refs_alone() -> None:
     outcome = _validate_final_proposals(
         [payload],
         {PAGE_URL: capture},
-        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs(),
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     assert len(proposals) == 1
@@ -1107,7 +1173,7 @@ def test_target_guard_skips_non_target_accessibility_claims() -> None:
     outcome = _validate_final_proposals(
         [payload],
         {PAGE_URL: capture},
-        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs(),
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     assert len(proposals) == 1
@@ -1153,7 +1219,7 @@ def test_target_guard_skips_non_target_accessibility_claims() -> None:
     outcome = _validate_final_proposals(
         [payload],
         {PAGE_URL: capture},
-        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]), pack_refs=_pack_refs(),
     )
     proposals, reasons = outcome.proposals, outcome.reasons
     # Still rejected deterministically by the target-size guard, but for the

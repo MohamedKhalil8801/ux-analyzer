@@ -358,7 +358,7 @@ def test_unavailable_attempt_persists_model_call_records(
                     model="deepseek-v4.1-flash",
                     endpoint_origin="https://llm.example.test",
                     prompt_digest="0" * 64,
-                    schema_version="redesign-proposer-v1",
+                    schema_version="redesign-proposer-v2",
                     attempts=3,
                     latency_ms=1200,
                     token_usage=TokenUsage(
