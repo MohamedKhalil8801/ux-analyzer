@@ -21,8 +21,14 @@ UXA_REPORT_MODEL       model ID for the four report-synthesis roles
 UXA_REDESIGN_MODEL     optional model ID for the two redesign roles; falls
                        back to UXA_REPORT_MODEL when unset
 UXA_LLM_TIMEOUT_SECONDS
-                       positive model-call timeout in seconds; none, off, or
-                       unlimited disables the model-call timeout
+                       positive model-call timeout in seconds; defaults to 30.
+                       none, off, or unlimited disables the model-call timeout
+UXA_LLM_MAX_CONCURRENT_CALLS
+                       client-side model-call concurrency cap; defaults to 2
+UXA_LLM_REQUEST_MAX_BYTES
+                       serialized request byte ceiling; defaults to 750000
+                       (clamped to at least 100000)
+UXA_LLM_SESSION_ID     optional provider session identifier sent with each call
 UXA_LLM_REPORT_REASONING_EFFORT
                        optional report effort: none, minimal, low, medium,
                        high, xhigh, or max
@@ -70,8 +76,9 @@ candidates, the evidence auditor checks references and counterevidence, the
 pattern reviewer checks cross-surface and recurrence claims, and the
 adjudicator decides publication and severity.
 
-Retrieval is bounded. Defaults are three retrieval rounds, at most 32 evidence
-entries per resolution, and 16 MiB of cumulative attachments. Project settings
+Retrieval is bounded. Defaults are three retrieval rounds, a 32-entry per-role
+request cap resolved in 16-entry batches, and 16 MiB of cumulative
+attachments. Project settings
 can bound retrieval rounds from 1 to 5, adjudication revisions from 0 to 2,
 and final verification passes from 1 to 2. Evidence references remain tied to
 recorded run, viewport, element, event, metric, replay, and artifact identity.
@@ -119,7 +126,8 @@ schema, principle-ID membership, unique IDs, and section references that resolve
 into the capture; violations make the attempt `rejected` or `unavailable` and
 are recorded with reasons. Attempts are immutable under
 `<output>/redesign/<attempt-id>/` and carry a `captures_digest` binding the
-proposal set to the exact capture it read. Impact and effort are model
+proposal set to the exact capture it read; the attempt files and schemas are in
+[output formats](output-formats.md). Impact and effort are model
 estimates stamped as such in the report; they are never presented as measured
 facts.
 
@@ -162,6 +170,10 @@ deterministic interface snapshots remain unchanged.
 
 ## Saliency validation status
 
+Status: historical Task 14 record, superseded by the 2026-09-07 review addendum
+in
+[`docs/adr/0001-provisional-saliency-provider.md`](adr/0001-provisional-saliency-provider.md).
+
 Foveacast model management is explicit. Inference never downloads a model or
 runtime. Task 14 ran:
 
@@ -183,12 +195,16 @@ SHA-256 values, release tag, and license chain are recorded in
 The real CPU known-screenshot test now produces stable finite maps for all three
 durations after the adapter accepted symbolic spatial dimensions. This proves
 adapter/runtime behavior for one pinned input only. It does not establish model
-quality, focused comparison, sequential warm latency, peak RSS, output parity
+quality, sequential warm latency budget, peak RSS, output parity
 budget, or real cache measurement. Fake runtime tests verify orchestration and
 provider-selection contracts only.
 
-The focused real experiment was not run. DirectML was unavailable, and no real
-comparison could be produced. `uxa validate --check-env` separately reported configured LLM
+The focused real experiment has since run: ADR 0001's 2026-09-07 addendum
+records three live focused comparison rounds against a real portfolio site, the
+final one with 8/8 finalized runs, 8/8 valid UX samples, 8/8 verified success,
+and zero saliency fallbacks. DirectML is still unavailable, no real latency/RSS
+budget has been supplied, and promotion remains gated.
+`uxa validate --check-env` separately reported configured LLM
 settings; no real endpoint result is claimed. The deterministic Task 13 fake
 path passed and remains separate from real promotion evidence. Foveacast
 fallback preserves normal UX execution through
@@ -207,8 +223,10 @@ device result is inferred.
 
 DirectML parity and stability coverage is hardware-marked and skips when
 Windows, `onnxruntime-directml`, or local model files are unavailable. It never
-downloads artifacts. Set `UXA_FOVEACAST_MODEL_1S`, `UXA_FOVEACAST_MODEL_3S`,
-and `UXA_FOVEACAST_MODEL_7S` to existing files before running the marked test.
+downloads artifacts. It resolves artifacts through `ModelRegistry`, so install
+them first with `uxa models install foveacast-v0.2.0 --precision fp16`; point
+`UXA_MODEL_HOME` at a non-default model root when the local release lives
+elsewhere.
 
 ## Three Separate Roles
 
@@ -216,7 +234,7 @@ and `UXA_FOVEACAST_MODEL_7S` to existing files before running the marked test.
 | --- | --- | --- | --- |
 | `coarse-scent` | `scent-coarse-v1.txt`, `scent-coarse-v1` | Goal plus visible element ID, role, label, region label, actionability. Glance-level only. | Scores in `[0, 1]` for listed elements. |
 | `full-scent` | `scent-full-v1.txt`, `scent-full-v1` | Goal plus same visible meaning and disabled state for already noticed elements in current viewport. | Scores in `[0, 1]` for noticed elements only. |
-| `cognitive` | `cognitive-v2.txt`, `cognitive-v1` | Goal plus newly revealed and remembered sighted-visible elements and optional rendered region label. | One typed action: inspect, interact, type-fixture, scroll, wait, back, complete, or abandon. |
+| `cognitive` | `cognitive-v3.txt`, `cognitive-v1` | Goal plus newly revealed and remembered sighted-visible elements and optional rendered region label. | One typed action: inspect, interact, type-fixture, scroll, wait, back, complete, or abandon. |
 
 Roles remain separate even when endpoint and model IDs match. Each has its own
 prompt version, schema version, `ModelRole`, manifest, model call record, retry

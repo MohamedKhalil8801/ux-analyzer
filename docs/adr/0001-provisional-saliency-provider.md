@@ -18,9 +18,9 @@ real model output and persisted operational evidence.
 ## Context and baseline
 
 Current branch at review start was `94ab617` (`test: add focused saliency
-validation`). Earlier POC baseline in
-`docs/validation/2026-08-01-poc-baseline.md` is dry-run only and explicitly
-contains no live OpenAI-compatible endpoint result. Its baseline provider is
+validation`). The earlier dry-run baseline that this ADR cites is dry-run only
+and explicitly contains no live OpenAI-compatible endpoint result; that dated
+record has been removed from this repository. Its baseline provider is
 heuristic prominence; attention seed and external model trial remain separate
 axes.
 
@@ -306,8 +306,9 @@ Real evidence collected since the review trigger was written:
    internal errors, zero provider-caused timeouts.
 4. The controlled prominence benchmark reran against the 24-case corpus:
    recommendation `keep-both`; calibrated fusion again selected the heuristic
-   endpoint; neither pure provider dominates. See
-   [`docs/validation/2026-09-07-prominence-provider-benchmark/decision.md`](../validation/2026-09-07-prominence-provider-benchmark/decision.md).
+   endpoint; neither pure provider dominates. The dated validation record for
+   that round has been removed from this repository; the decision itself is
+   restated in the section above.
 
 Decision impact: none — the decision is reaffirmed. `heuristic-prominence-v1`
 remains the default, Foveacast remains explicit opt-in as a second evidence

@@ -1,5 +1,8 @@
 # Testing
 
+Contributor reference material. For how to use the tool, start with
+[getting started](getting-started.md) and [commands](commands.md).
+
 Run deterministic checks with:
 
 ```text
@@ -12,17 +15,23 @@ uv run pyright
 git diff --check
 ```
 
-Task 16 acceptance starts local fixture and model servers, drives reduced
-production `uxa run`, opens generated report through `file://` with Playwright,
-blocks external report requests, and exercises element hover/focus/click. It
-uses one fixed CI seed and a reduced improved 2FA matrix. Run bundles,
-timelines, checksums, independent verification, provider manifests, exact
-prominence contributions, causal findings, and process cards are checked.
+`uv run pytest -m "not live" -q --collect-only` currently collects 2378 tests
+with 3 deselected (2381 total).
+
+The end-to-end acceptance suite starts local fixture and model servers, drives a
+reduced production `uxa run`, opens the generated report through `file://` with
+Playwright, blocks external report requests, and exercises element
+hover/focus/click. It uses one fixed CI seed and a reduced improved 2FA matrix.
+Run bundles, timelines, checksums, independent verification, provider manifests,
+exact prominence contributions, causal findings, and the report's run status
+banner and element evidence panel are checked.
 Browser extraction and fixture-only network safety remain covered by
 `tests/integration/web` and install Chromium before running those suites.
 
 Live API endpoint checks stay skipped unless `UXA_RUN_LIVE_TESTS=1` and API-mode
-variables exist:
+variables exist. Note that a `UXA_RUN_LIVE_TESTS=1` line in `.env` is ignored by
+design: the CLI removes the variable from the environment after loading `.env`
+unless it was already set in the real process environment.
 
 ```text
 UXA_LLM_MODE=api
@@ -213,13 +222,14 @@ real-user completion, satisfaction, or human behavior.
 Run the controlled 24-case comparison before changing prominence providers:
 
 ```text
-rtk uv run python scripts/generate_prominence_corpus.py
-rtk uv run python scripts/benchmark_prominence.py --cases benchmarks/prominence/cases.json --output reports/prominence-comprehensive
+uv run python scripts/generate_prominence_corpus.py
+uv run python scripts/benchmark_prominence.py --cases benchmarks/prominence/cases.json --output reports/prominence-comprehensive
 ```
 
 The corpus splits 12 calibration cases from 12 holdout cases. The runner compares
 heuristic, FoveaCast, and a calibrated late-fusion candidate, rejects FoveaCast
-fallback samples, and writes `summary.json` plus `decision.md`. See
-`docs/validation/2026-08-09-prominence-provider-benchmark.md` for the formulas,
-metric table, and current recommendation. The labels are controlled human-authored
-synthetic evidence; they are not eye tracking or real-user measurements.
+fallback samples, and writes `summary.json` plus `decision.md` under the output
+directory. The current recommendation and the conditional promotion status are
+recorded in [ADR 0001](adr/0001-provisional-saliency-provider.md). The labels
+are controlled human-authored synthetic evidence; they are not eye tracking or
+real-user measurements.

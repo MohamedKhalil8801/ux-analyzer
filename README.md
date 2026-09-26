@@ -1,150 +1,115 @@
-# Attention-Guided UI Agent
+# uxa — Recorded-interaction UX analysis
 
-Python 3.12 proof of concept for benchmarkable synthetic UI discovery runs.
-It compares unrestricted element access with progressive attention-guided
-observation across two controlled SaaS workflows:
+`uxa` drives a real browser through a task, records what the user actually saw
+and did, and turns that record into a verifiable UX report.
 
-- `invite-teammate`
-- `enable-2fa`
+The pipeline is **evidence-first**. A finding is publishable only when it points
+at something the run captured — an event, a metric, a viewport, an element, a
+screenshot, a heatmap, or a replay position. The model proposes; deterministic
+code decides. Nothing is asserted that the record cannot support.
 
-Current POC uses Chromium through Playwright, deterministic rendered-element
-extraction, heuristic prominence, seeded progressive attention, structured
-OpenAI-compatible model calls, and an independent fixture verifier. Outputs
-are simulated benchmark evidence. They are not measurements of real-user
-completion, satisfaction, emotion, accessibility behavior, or product demand.
+```text
+crawl → scenarios → runs → recorded evidence → UX report → fix package
+                                               ↘ redesign proposals
+```
 
-## Quick Start
+## What it does
 
-Run from repository root.
+| Stage | Command | Output |
+| --- | --- | --- |
+| Discover scenarios from a live site | `uxa explore` | Crawl corpus + scenario suggestions + review UI |
+| Execute recorded runs | `uxa run` | Immutable run bundles with UI-state snapshots |
+| Synthesize the UX report | `uxa synthesize` | Evidence-backed findings, or a valid "no issues" |
+| Propose design changes | `uxa redesign` | Model-estimate design proposals (not findings) |
+| Audit page performance | `uxa pagespeed` | Lighthouse categories and per-audit results |
+| Audit AI-design slop | `uxa slop` | 0–100 score over a 27-rule fingerprint |
+| Hand fixes to an agent | `uxa export` | Self-contained markdown fix package |
+
+## Quick start
+
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```powershell
 uv sync
 uv run playwright install chromium
+```
+
+### Analyze a live site end to end
+
+This is the main path. It needs an HTTPS target and model configuration.
+
+```powershell
+$env:UXA_LLM_BASE_URL  = "https://<provider-host>/v1"
+$env:UXA_LLM_API_KEY   = "<api-key>"
+$env:UXA_SCENT_MODEL   = "<model-id>"
+$env:UXA_COGNITIVE_MODEL = "<model-id>"
+$env:UXA_REPORT_MODEL  = "<model-id>"
+
+uv run uxa explore --starting-url https://example.com
+```
+
+`explore` crawls the site, synthesizes candidate scenarios, and opens a review
+UI. Accept or edit the scenarios, then run them:
+
+```powershell
+uv run uxa run .uxa-output\explore\example\project.yaml --experiment exploration-run
+```
+
+Open `reports/exploration-generated/report.html` in any browser. It is static
+HTML — no server needed. `uxa report` only reads recorded bundles and never
+calls a model.
+
+### Self-contained demo (no live target)
+
+The demo ships a local fixture app and needs no network target.
+
+```powershell
 uv run uxa fixture serve --host 127.0.0.1 --port 8000
 ```
 
-Keep fixture server running. In second shell:
+In a second shell:
 
 ```powershell
 uv run uxa validate benchmarks/demo/project.yaml
-uv run uxa run benchmarks/demo/project.yaml --experiment core-pair --output .uxa-output --dry-run
-```
-
-Execution needs model configuration. Use placeholder values while configuring
-your environment; never place real keys in YAML, source, or documentation.
-
-```powershell
-$env:UXA_LLM_BASE_URL = "https://<provider-host>/v1"
-$env:UXA_LLM_API_KEY = "<api-key>"
-$env:UXA_SCENT_MODEL = "<scent-model-id>"
-$env:UXA_COGNITIVE_MODEL = "<cognitive-model-id>"
-$env:UXA_REPORT_MODEL = "<report-model-id>"
-```
-
-`UXA_LLM_BASE_URL` must be an HTTP(S) URL without credentials. Adapter posts to
-`<base-url>/chat/completions`. Scent and cognitive model IDs may be equal, but
-roles remain separate. `UXA_REPORT_MODEL` is required for live report synthesis
-when the project enables it; use a structured-output vision-capable model when
-the evidence corpus contains screenshots or heatmaps.
-
-### Creative redesign (model estimates)
-
-`uxa redesign <output>` generates design proposals — model estimates, never
-run-evidence findings — from the shared crawled-corpus page capture
-(ADR 0007). The two roles (proposer, critic/merger) share the report model by
-default; set `UXA_REDESIGN_MODEL` to override, falling back to
-`UXA_REPORT_MODEL`. The pass loads the persisted `page-capture.json` sidecar
-when fresh, otherwise captures pages itself with the same bounded page list the
-audit uses (`UXA_REDESIGN_MAX_PAGES`, default 10; per-page height cap
-`UXA_REDESIGN_MAX_PAGE_HEIGHT`, default 12000 px). Attempts are immutable under
-`<output>/redesign/`, and the report renders them on a dedicated Redesign tab
-with impact×effort stamped as model estimates.
-
-After a completed experiment, set `UXA_REDESIGN_ENABLED=1` to run the redesign
-pass automatically (best-effort; failures never fail the experiment).
-`UXA_REPORT_SYNTHESIS_ENABLED` similarly overrides the project YAML's
-report-synthesis gate when set (truthy enables, falsey disables, unset keeps
-YAML behavior).
-
-Run core benchmark:
-
-```powershell
 uv run uxa run benchmarks/demo/project.yaml --experiment core-pair --output .uxa-output --workers 1
-```
-
-Completed or partial execution writes immutable run bundles when available,
-`.uxa-output/experiment.json`, and `.uxa-output/report.html`. Summary contains
-per-run metrics/findings, per-cell aggregates, exact paired-seed directional
-gates, and safe failure records. Report includes failed runs and staging crash
-markers instead of omitting them.
-
-Run policy ablations:
-
-```powershell
-uv run uxa ablate benchmarks/demo/project.yaml --experiment ablations --output .uxa-output --workers 1
-uv run uxa ablate benchmarks/demo/project.yaml --experiment ablations --policy prominence-ranked-list --policy progressive-prominence --output .uxa-output --dry-run
-```
-
-Regenerate filesystem-openable replay and inspect one run:
-
-```powershell
-uv run uxa report .uxa-output --output report.html
-uv run uxa inspect-run .uxa-output/runs/<run-id>
-```
-
-The report is static HTML. Open `report.html` directly; no report server is
-required. `uxa report` only reads recorded bundles and never calls a model.
-
-When `evaluation.report_synthesis.enabled: true`, `uxa run` automatically
-attempts synthesis after finalized runs. Use `--no-synthesis` to skip that
-attempt while keeping deterministic findings and the offline report. Run
-`uxa synthesize PROJECT --experiment ID --output DIR` to create a new immutable
-synthesis attempt from finalized evidence without rerunning the experiment.
-Missing model configuration, transport failure, or invalid role output produces
-an explicit unavailable or rejected attempt and keeps the deterministic report
-available.
-
-Run opt-in live endpoint compatibility test. This sends one coarse-scent, one
-full-scent, and one cognitive request. Without the flag it skips.
-
-```powershell
-$env:UXA_RUN_LIVE_TESTS = "1"
-uv run pytest tests/live/test_openai_endpoint.py -m live -q
 ```
 
 ## Commands
 
+Run `uxa <command> --help` for the full option list.
+
 | Command | Purpose |
 | --- | --- |
-| `uxa version` | Print package version. |
-| `uxa validate PROJECT` | Validate one combined project YAML and print SHA-256 config digest. |
-| `uxa validate PROJECT --check-env` | Validate project and required model environment names without printing values. |
-| `uxa fixture serve --host HOST --port PORT` | Serve bundled FastAPI fixture. Defaults: `127.0.0.1:8000`. |
-| `uxa run PROJECT --experiment ID --output DIR` | Execute selected experiment. Defaults: `core-pair`, `.uxa-output`, one worker. |
-| `uxa run-one PROJECT --scenario ID --version ID --persona ID --policy ID --seed N --output DIR` | Execute exactly one semantic cell. |
-| `uxa run PROJECT --dry-run` | Print expanded matrix and estimated model calls without browser or model execution. |
-| `uxa run PROJECT --no-synthesis` | Execute runs without the automatic report-synthesis attempt. |
-| `uxa ablate PROJECT --experiment ID --policy POLICY` | Execute selected ablation policies. Repeat `--policy`; default experiment is `ablations`. |
-| `uxa synthesize PROJECT --experiment ID --output DIR` | Synthesize a new immutable report attempt from finalized evidence. |
-| `uxa explore [PROJECT] --starting-url URL` | Discover scenarios: same-origin smart crawl + cognitive synthesis + review UI. Repeat `--starting-url`; defaults: depth 2, 50 pages, 8 scenarios, `.uxa-output`. |
-| `uxa explore [PROJECT] --auto-accept --output DIR` | Explore without the review UI; accepts all suggestions and writes immutable artifacts plus a runnable generated project. |
-| `uxa explore [PROJECT] --dry-run` | Print crawl matrix estimate (starts/depth/pages/scenarios) and synthesis token estimate without browser or model. |
+| `uxa version` | Print the package version. |
+| `uxa validate PROJECT` | Validate one project YAML and print its SHA-256 config digest. |
+| `uxa validate PROJECT --check-env` | Also check required model environment names, without printing values. |
+| `uxa fixture serve` | Serve the bundled demo fixture app. Default `127.0.0.1:8000`. |
+| `uxa models install\|status\|remove` | Manage local saliency-model releases. |
+| `uxa explore [PROJECT]` | Crawl a site, synthesize scenarios, curate them in a review UI, and write a runnable project. |
+| `uxa explore [PROJECT] --auto-accept` | Skip the review UI and accept every suggestion. |
+| `uxa run PROJECT --experiment ID` | Execute one experiment. |
+| `uxa run-one PROJECT --scenario --version --persona --policy --seed` | Execute exactly one matrix cell. |
+| `uxa run PROJECT --dry-run` | Print the expanded matrix and model-call estimate. No browser, no model. |
+| `uxa run PROJECT --no-synthesis` | Execute runs without the automatic synthesis attempt. |
+| `uxa ablate PROJECT --policy POLICY` | Execute attention-policy ablations. Repeat `--policy`. |
+| `uxa synthesize PROJECT --experiment ID --output DIR` | Build a new immutable synthesis attempt from finalized evidence, without rerunning runs. |
+| `uxa redesign OUTPUT` | Generate model-estimate design proposals from a persisted or fresh page capture. |
 | `uxa report BUNDLE_ROOT --output FILE` | Render finalized bundles into static HTML. |
-| `uxa redesign OUTPUT [--pages URL ...] [--audience TEXT] [--max-pages N]` | Generate model-estimate design proposals from a persisted or fresh page capture. Writes an immutable attempt under `OUTPUT/redesign/`. |
-| `uxa inspect-run RUN_DIR` | Print terminal outcome, verification, claim, and artifact paths. |
+| `uxa pagespeed URL` | Fetch the full PageSpeed Insights report for a URL. |
+| `uxa slop SOURCE` | Score a URL or local HTML file against the 27-rule slop fingerprint. |
+| `uxa export --report DIR` | Export selected findings as a fix package for an external agent. |
+| `uxa inspect-run RUN_DIR` | Print terminal outcome, verification, and artifact paths for one run. |
 
-Supported policies:
-`full-list`, `prominence-ranked-list`, `progressive-prominence`, and
-`progressive-prominence-scent`.
+Attention policies: `full-list`, `prominence-ranked-list`,
+`progressive-prominence`, `progressive-prominence-scent`.
 
-Useful run options are `--workers`, `--run-count`, `--resume`, `--dry-run`,
-`--check-env`, and `--fixture-origin`. Fixture origin must be an HTTP(S) origin
-without path, query, fragment, or credentials. `--resume` skips only selected
-finalized bundles that pass integrity and terminal-structure validation.
+Common run options: `--workers`, `--run-count`, `--resume`, `--check-env`,
+`--fixture-origin`. `--resume` skips only finalized bundles that pass integrity
+and terminal-structure validation.
 
 ## Configuration
 
-`uxa` loads one combined YAML project. Current root fields:
+`uxa` loads one combined YAML project. Root fields:
 
 ```yaml
 id: project-id
@@ -155,99 +120,135 @@ personas: []
 experiments: []
 ```
 
-Applications contain `id`, `name`, and `versions`. Every application must
-provide versions with `id`, `kind` (`defective` or `improved`), and `label`.
+- **Applications** carry `id`, `name`, and `versions`. Each version needs `id`,
+  `kind` (`defective`, `improved`, or `live`), and `label`; a `live` version also
+  needs `start_url`. A non-live application needs at least one `defective` and
+  one `improved` version.
+- **Scenarios** carry `id`, `name`, `goal`, `application_version_ids`,
+  `start_state`, `fixture_inputs`, `budget`, `verifier`, `safeguards`,
+  `eligible_persona_ids`, `expected_evidence`, `evaluation_target`, and an
+  optional `viewport`. Budgets require positive `max_steps`,
+  `max_observations`, and `max_interactions`; `timeout_seconds` is optional and
+  `null` means no overall deadline.
+- **Verifiers** are `fixture-state` (`resource`, `field`, `operator`,
+  `expected_fixture_key`; operators `equals`, `not-equals`, `contains`,
+  `truthy`, `falsy`), `visible-result` (`text`, optional `role` and `all_of`),
+  or `colour-change` (`threshold`, default `32.0`).
+- **Personas** carry `id`, `name`, positive `working_memory_capacity`, bounded
+  `initial_confidence`, `initial_frustration`, and `abandonment_threshold`, plus
+  positive `attention_temperature`.
+- **Experiments** carry `id`, `name`, `scenario_ids`, `application_version_ids`,
+  `persona_ids`, `policies`, optional unique `seeds`, and positive `run_count`.
+  Empty `seeds` means `0..run_count-1`. `model_trials` and
+  `prominence_provider_ids` have defaults.
 
-Scenarios contain `id`, `name`, `goal`, `application_version_ids`, `start_state`,
-`fixture_inputs`, `budget`, `verifier`, `safeguards`,
-`eligible_persona_ids`, and `expected_evidence`. Fixture inputs have `value` and
-optional `sensitive: true`. Budgets require positive `max_steps`,
-`max_observations`, and `max_interactions`. `timeout_seconds` is optional; null
-means no overall run deadline. Finite values must be positive. Model, verifier,
-fixture HTTP, and browser operations keep separate bounded safety timeouts.
+Optional root sections: `providers` (prominence weights, progressive-attention
+formula weights, `providers.expectation` for versioned frozen-expectation
+documents, and optional `providers.saliency`), `evaluation` (discovery-cost,
+finding-rule, state-update formulas, and `evaluation.report_synthesis` for the
+post-run synthesis pipeline), and `exploration` (the crawl boundary for
+`uxa explore`).
 
-Supported verifiers:
+The loader validates references and canonicalizes sorted JSON before hashing, so
+the config digest is part of every `RunSpec` and bundle manifest.
 
-- `fixture-state`: `resource`, `field`, `operator`, and
-  `expected_fixture_key`; operators are `equals`, `not-equals`, `contains`,
-  `truthy`, and `falsy`.
-- `visible-result`: `text` and optional `role`.
+## Environment variables
 
-Personas contain `id`, `name`, positive `working_memory_capacity`, bounded
-`initial_confidence`, `initial_frustration`, and `abandonment_threshold`, plus
-positive `attention_temperature`.
+Never put real keys in YAML, source, or documentation.
 
-Root `providers` config versions prominence weights/temperature and progressive
-attention formula weights. `providers.expectation` enables versioned frozen
-expectation documents; existing user files omit it and remain disabled by
-default. Root `evaluation` config versions discovery-cost, finding-rule, and
-state-update formulas. `evaluation.report_synthesis.enabled` enables the
-post-run four-role report synthesis pipeline and its bounded retrieval,
-adjudication, and verification settings. Persona attention temperature and
-abandonment threshold override corresponding per-run policy values.
+### Model transport
 
-Experiments contain `id`, `name`, `scenario_ids`, `application_version_ids`,
-`persona_ids`, `policies`, optional unique `seeds`, and positive `run_count`.
-When `seeds` is empty, loader uses `0..run_count-1`. `--run-count N` replaces
-that seed set with `0..N-1`.
+| Variable | Purpose |
+| --- | --- |
+| `UXA_LLM_MODE` | `api` (default) or `codex`. |
+| `UXA_LLM_BASE_URL` | HTTP(S) base URL without credentials. Requests go to `<base-url>/chat/completions`. |
+| `UXA_LLM_API_KEY` | API key for `api` mode. |
+| `UXA_LLM_TIMEOUT_SECONDS` | Per-request transport timeout. |
+| `UXA_LLM_MAX_CONCURRENT_CALLS` | Client-side concurrency cap. |
+| `UXA_LLM_REQUEST_MAX_BYTES` | Refuse oversized requests before transport. |
+| `UXA_LLM_SESSION_ID` | Optional provider session identifier. |
+| `UXA_SCENT_MODEL` | Model id for information-scent roles. |
+| `UXA_COGNITIVE_MODEL` | Model id for the cognitive agent. |
+| `UXA_REPORT_MODEL` | Model id for report synthesis. Required by `uxa synthesize` and by `validate --check-env` when synthesis is enabled; optional during `uxa run`, which degrades to deterministic findings. |
+| `UXA_REDESIGN_MODEL` | Model id for `uxa redesign`. Falls back to `UXA_REPORT_MODEL`. |
+| `UXA_LLM_SCENT_REASONING_EFFORT` | Reasoning effort for scent calls. |
+| `UXA_LLM_COGNITIVE_REASONING_EFFORT` | Reasoning effort for cognitive calls. |
+| `UXA_LLM_REPORT_REASONING_EFFORT` | Reasoning effort for report calls. |
 
-Loader validates references and canonicalizes sorted JSON before computing the
-configuration SHA-256 digest. The digest is part of every `RunSpec` and bundle
-manifest.
+Scent and cognitive model ids may be equal; the roles stay separate. Use a
+structured-output, vision-capable model for `UXA_REPORT_MODEL` when the evidence
+corpus contains screenshots or heatmaps.
 
-## Demo Matrix
+In `codex` mode, the `codex` CLI must already be installed, logged in, and on
+`PATH`. That mode never reads or prints credentials.
 
-`core-pair` currently expands:
+### Pipeline toggles and capture limits
 
-```text
-8 full-list cells x 1 seed
-+ 8 progressive-prominence-scent cells x 10 seeds
-= 88 run specs
-```
-
-Its policies are `full-list` and `progressive-prominence-scent`. The default
-dry-run estimate is 248 model calls for one attention cycle across the matrix:
-one cognitive call per `full-list` run and three role calls per scent-guided
-run (coarse scent, full scent, cognitive). The CLI also reports the maximum
-logical model-call budget separately.
-
-Deterministic list policies use only the first configured seed. Progressive
-policies retain every configured seed because their attention selection is
-seeded. Provider-side model sampling is not currently controlled by that seed.
-
-`ablations` selects `prominence-ranked-list` and `progressive-prominence`.
-Compared cells keep scenario, persona, seed, configuration, fixture state, and
-model configuration aligned. Variant comparison pairs exact seeds and applies
-the directional gate described in [evaluation docs](docs/domain-model.md).
-
-## LLM modes
-
-`UXA_LLM_MODE=api` is default. Choose transport with this mode matrix:
-
-| Mode | Required configuration | Transport |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `api` | `UXA_LLM_MODE`, `UXA_LLM_BASE_URL`, `UXA_LLM_API_KEY`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`; `UXA_REPORT_MODEL` when synthesis is enabled; `UXA_REDESIGN_MODEL` (optional, falls back to `UXA_REPORT_MODEL`) for `uxa redesign` | OpenAI-compatible HTTP transport |
-| `codex` | `UXA_LLM_MODE`, `UXA_SCENT_MODEL`, `UXA_COGNITIVE_MODEL`, logged-in Codex CLI; report model when synthesis is enabled; redesign model optional as in `api` | `codex exec` subprocess transport |
+| `UXA_REPORT_SYNTHESIS_ENABLED` | from YAML | Non-empty and not `0`/`false`/`no`/`off` enables; those four disable; unset keeps project behavior. |
+| `UXA_REDESIGN_ENABLED` | off | Run the redesign pass automatically after a completed experiment. |
+| `UXA_REDESIGN_MAX_PAGES` | 10 | Page-capture list bound for redesign. |
+| `UXA_REDESIGN_MAX_PAGE_HEIGHT` | 12000 | Per-page capture height cap in px. Unset, unparseable, or non-positive falls back to 12000. |
+| `UXA_TRACE_SCREENCAST` | on | Record trace screencast frames (replay video) during runs. Set to a falsey value to shrink trace archives. |
+| `UXA_MODEL_HOME` | platform default | Root for local saliency-model releases. |
+| `UXA_SKILL_SETS` | platform default | Directory of fix-export skill sets. |
 
-Codex mode is opt-in. Codex must already be installed, logged in, and available
-as `codex` on `PATH`. Account mode does not read or print credentials.
+### Reporting and audits
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PSI_API_Key` / `PSI_API_KEY` / `GOOGLE_API_KEY` / `UXA_PSI_API_KEY` | unset | PageSpeed Insights key. Checked in that order. |
+| `UXA_SKIP_PAGESPEED` | unset | Skips the PageSpeed Insights pass during `uxa run`. |
+| `UXA_PAGESPEED_WEB_LINKS` | unset | Enables saved-report link capture during `uxa run`. |
+| `UXA_SLOP_DISABLE_JS` | unset | Any non-empty value, including `0`, disables JavaScript in `uxa slop`. |
+| `UXA_RUN_LIVE_TESTS` | unset | Enables opt-in live endpoint tests. Must be set in the real process environment; a line in `.env` is ignored. |
+
+## Evidence and honesty rules
+
+These are the guarantees the pipeline is built around.
+
+- **Findings are evidence-backed.** Every claim resolves to a persisted
+  reference. Unsupported claims are rejected before publication, not softened.
+- **A model estimate is labeled as one.** Redesign proposals and heuristic
+  prominence carry no verification status and are never presented as findings.
+- **"No issues" is a valid result.** If the evidence establishes no harm, the
+  report says so instead of inventing one.
+- **A rejected proposal is dropped, and it is named.** Validation failures are
+  recorded with the reason, never silently repaired.
+- **Silent truncation is disclosed.** When page capture is capped, the report
+  states how much content was not captured.
+- **Simulated evidence stays labeled.** Benchmark output is synthetic and is not
+  a measurement of real-user completion, satisfaction, emotion, accessibility
+  behavior, or product demand.
+- **A broken scenario is a scenario defect.** A verifier that cannot resolve on
+  any reachable page invalidates that run's evidence; it is never converted into
+  a product claim.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md)
-- [Domain model](docs/domain-model.md)
-- [Run bundle format](docs/run-bundle-format.md)
-- [Model provider](docs/model-provider.md)
-- [Report synthesis and provider boundary](docs/model-provider.md#report-synthesis-contract)
-- [Security](docs/security.md)
-- [Roadmap and deferred contracts](docs/roadmap.md)
-- [Original POC plan versus current implementation](docs/poc-plan-vs-current.md)
-- [Testing](docs/testing.md)
-- [Glossary](docs/glossary.md)
+Start with [Getting started](docs/getting-started.md) for a first analysis, then
+[Commands](docs/commands.md) for the full reference.
+
+| Document | Contents |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Install, model setup, and a complete first analysis. |
+| [Commands](docs/commands.md) | Every command, its options, and a worked example. |
+| [Configuration](docs/configuration.md) | Project YAML schema and every environment variable. |
+| [Exploration](docs/exploration.md) | The scenario-discovery workflow. |
+| [Redesign](docs/redesign.md) | Design proposals, the two model roles, and capture limits. |
+| [Output formats](docs/output-formats.md) | Run bundle layout, sidecars, and how to read them. |
+| [Security](docs/security.md) | What reaches the model provider, redaction, and key handling. |
+| [Troubleshooting](docs/troubleshooting.md) | Real failure modes and what to do about them. |
+| [Glossary](docs/glossary.md) | Full catalog of domain terms. |
+| [Context and language](CONTEXT.md) | Enforced vocabulary and language constraints for agents. |
+| [Model provider](docs/model-provider.md) | Transport modes and the [synthesis contract](docs/model-provider.md#report-synthesis-contract). |
+
+Contributor documentation — [architecture](docs/architecture.md),
+[testing](docs/testing.md), and the [architecture decision records](docs/adr/) —
+is engineering reference material, not user documentation.
 
 ## Verification
-
-Non-live verification commands:
 
 ```powershell
 uv run uxa validate benchmarks/demo/project.yaml
@@ -257,4 +258,9 @@ uv run pyright
 git diff --check
 ```
 
-Live tests are opt-in and must never be treated as required non-live CI.
+Live endpoint tests are opt-in via `UXA_RUN_LIVE_TESTS=1` and are never part of
+the non-live suite.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

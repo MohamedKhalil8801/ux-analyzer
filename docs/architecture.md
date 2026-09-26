@@ -1,10 +1,13 @@
 # Architecture
 
+This is contributor reference material. For how to use the tool, start with
+[getting started](getting-started.md) and [commands](commands.md).
+
 ## Current Boundary
 
-POC is Python 3.12 modular monolith. Chromium and the bundled FastAPI fixture
-are current platform implementations. Domain and application policy do not
-depend on Playwright, FastAPI, DOM selectors, CSS selectors, HTTPX, or an
+The system is a Python 3.12 modular monolith. Chromium and the bundled FastAPI
+fixture are current platform implementations. Domain and application policy do
+not depend on Playwright, FastAPI, DOM selectors, CSS selectors, HTTPX, or an
 OpenAI SDK.
 
 Logical dependency direction points inward toward domain contracts:
@@ -44,7 +47,7 @@ state transitions. Outer adapters translate external types at boundaries.
 | `fixture_app` | Controlled local SaaS target and private in-memory state API | No persistence, outbound communication, or production integration. |
 
 `application.experiment` contains the finite policy selector for the four
-current policies. This is known POC variation, not a plugin registry.
+current policies. This is known variation, not a plugin registry.
 
 ## Runtime Flow
 
@@ -117,12 +120,12 @@ browser or model client. The local review UI is loopback-only FastAPI with no
 external requests; `--auto-accept` produces the same curated set as manual
 accept-all. Artifacts are immutable, canonical-JSON checksummed, atomically
 published attempts indexed under `<output>/exploration/index.json`
-(see [run bundle format](run-bundle-format.md)). The generated project merges
+(see [output formats](output-formats.md)). The generated project merges
 base scenarios when a base project is provided (append strategy), so accepted
 exploration scenarios run through the unchanged runner, evaluation, and report
 path.
 
-## Current POC Choices
+## Current implementation choices
 
 - Web platform: Playwright Chromium only.
 - Extraction: deterministic DOM/layout/rendered visibility facts.
@@ -137,8 +140,8 @@ path.
   `progressive-prominence-scent`.
 - Cognitive action: structured model output limited to listed element IDs and
   finite actions.
-- Verification: fixture-state or visible-result typed contract, independent of
-  cognitive claim.
+- Verification: `fixture-state`, `visible-result`, or `colour-change` typed
+  contract, independent of the cognitive claim.
 - Replay: static HTML, inline CSS/JavaScript, embedded image data when present.
 
 Foveacast saliency contracts, registry, adapter, aggregation, stage selection,
@@ -147,9 +150,12 @@ extensions. The pinned CPU known-screenshot gate now produces stable finite
 outputs for all three durations after symbolic input dimensions were handled.
 No real-model focused promotion, human calibration, production API, or
 issue-tracker adapter is part of current evidence. DirectML remains an optional
-Windows/AMD path; this environment reported no DirectML provider. No real
-focused comparison, latency/RSS budget, or paired completion result exists.
-Deferred contracts are recorded in [roadmap](roadmap.md).
+Windows/AMD path; this environment reported no DirectML provider. Since then
+live focused heuristic-versus-Foveacast comparisons have completed with valid
+cells and warm CPU inference latency has been measured, but no externally
+configured latency/RSS budget and no DirectML hardware result exist. The
+conditional promotion status is recorded in
+[ADR 0001](adr/0001-provisional-saliency-provider.md).
 
 ## Saliency evidence boundary
 
@@ -164,8 +170,7 @@ one experiment output, never global.
 The report may show ranked elements, aggregation components, duration tabs, and
 heatmaps. It must keep numeric saliency outside cognitive prompts and obey
 source-image redaction. Missing source overlays produce heatmap-only replay.
-Intentional changes from the original implementation plan are recorded in
-[POC plan versus current implementation](poc-plan-vs-current.md).
+The persisted evidence contract is in [output formats](output-formats.md).
 
 ## Evidence-room report synthesis boundary
 
@@ -193,8 +198,9 @@ finalized runs
 The four report roles use fresh isolated contexts. They may request only
 known evidence IDs, and every requested entry is resolved, bounded, and
 revalidated before it can support a finding. Retrieval defaults to three rounds,
-32 entries, and 16 MiB of cumulative attachments. Role output is advisory until
-the deterministic publication contract accepts it.
+a 32-entry per-role request cap (16 entries per resolution batch), and 16 MiB of
+cumulative attachments. Role output is advisory until the deterministic
+publication contract accepts it.
 
 Frozen expectations define desired outcomes, invariants, acceptable alternatives,
 reference paths, effort bounds, and warning signals. A path deviation is not
@@ -247,10 +253,4 @@ by `UXA_REDESIGN_ENABLED` (auto mode) or the `uxa redesign` command; failures
 are best-effort and never fail the experiment. The report renders proposals on
 a dedicated tab that labels impact and effort as model estimates (Flag-pair
 ink) and separates them visually and textually from evidence-grounded findings.
-
-Task 10-11 ledger note: the Task 12 scenarios use event, expectation, and
-verification references, so they do not exercise saliency artifact navigation
-or generic ranked-element target validation. The existing renderer validation
-coverage and the ledger items for secure heatmap/native-map hashing, snapshot
-identity checks, and unavailable-versus-no-issues fix-first fallback remain
-explicit review work outside this bounded documentation and scenario batch.
+See [redesign](redesign.md) for the user-facing contract.

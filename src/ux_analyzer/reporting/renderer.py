@@ -251,7 +251,7 @@ def render_experiment_report(
             )
             single_html = _render_html(
                 full_context,
-                "Attention-guided experiment replay",
+                "UX analysis report",
             )
             if len(single_html.encode("utf-8")) <= threshold:
                 _publish_report_text(output_parent, destination.name, single_html)
@@ -278,7 +278,7 @@ def render_experiment_report(
             _publish_report_text(
                 output_parent,
                 destination.name,
-                _render_html(index_context, "Attention-guided experiment replay"),
+                _render_html(index_context, "UX analysis report"),
             )
             for run in experiment["runs"]:
                 run_context = _report_context(

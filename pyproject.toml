@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ux-analyzer"
 version = "0.1.0"
-description = "Attention-guided UI agent benchmark proof of concept"
+description = "Recorded-interaction UX analysis: evidence-backed UX reports from real browser runs"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.112",
