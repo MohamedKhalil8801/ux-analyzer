@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import NamedTuple, Protocol, cast
 
 from ux_analyzer.domain.redesign import (
     DeliberateChoiceCheck,
@@ -673,17 +673,36 @@ def _sort_key(proposal: DesignProposal) -> tuple[int, int, str]:
     )
 
 
+class _ValidationOutcome(NamedTuple):
+    """Result of validating the critic's proposals.
+
+    ``dropped`` and ``limit_breaches`` are kept apart because they mean
+    different things and must be acted on differently. A dropped proposal is a
+    defect in one item, and the surviving items are still publishable. A limit
+    breach means the pass as a whole is out of bounds, so nothing from it can be
+    published. Collapsing both into one list is what previously let a single
+    malformed proposal discard five valid ones.
+    """
+
+    proposals: tuple[DesignProposal, ...]
+    dropped: tuple[str, ...]
+    limit_breaches: tuple[str, ...]
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        return self.dropped + self.limit_breaches
+
+
 def _validate_final_proposals(
     final_proposals: Sequence[Mapping[str, object]],
     captures: Mapping[str, Mapping[str, object]],
     *,
     known_ids: frozenset[str],
-) -> tuple[tuple[DesignProposal, ...], tuple[str, ...]]:
-    """Deterministic validation gate; returns (proposals, rejection reasons)."""
+) -> _ValidationOutcome:
+    """Deterministic validation gate; separates item defects from bound breaches."""
 
     reasons: list[str] = []
     validated: list[DesignProposal] = []
-    per_page_counts: dict[str, int] = {}
     for proposal in final_proposals:
         proposal_id = str(proposal.get("proposal_id", ""))
         page_url = str(proposal.get("page_url", ""))
@@ -833,27 +852,30 @@ def _validate_final_proposals(
         except (TypeError, ValueError) as error:
             reasons.append(_reason(f"{proposal_id}: {error}"))
             continue
-        # Only successfully validated proposals count toward the per-page
-        # bound, so malformed entries never inflate the count of a page whose
-        # valid set is in bounds (they are rejected with their own reasons).
-        per_page_counts[page_url] = per_page_counts.get(page_url, 0) + 1
+    # Bound checks run against the surviving set only, so an item that was
+    # already dropped for its own defect cannot also push a page over its
+    # limit and condemn the valid proposals alongside it.
+    ordered = tuple(sorted(validated, key=_sort_key))
+    breaches: list[str] = []
+    per_page_counts: dict[str, int] = {}
+    for candidate in ordered:
+        per_page_counts[candidate.page_url] = per_page_counts.get(candidate.page_url, 0) + 1
     for page_url, count in per_page_counts.items():
         if count > MAX_PROPOSALS_PER_PAGE:
-            reasons.append(
+            breaches.append(
                 _reason(
                     f"{page_url}: {count} proposals exceed the per-page bound "
                     f"of {MAX_PROPOSALS_PER_PAGE}"
                 )
             )
-    validated_total = sum(per_page_counts.values())
-    if validated_total > MAX_PROPOSALS_TOTAL:
-        reasons.append(
+    if len(ordered) > MAX_PROPOSALS_TOTAL:
+        breaches.append(
             _reason(
-                f"{validated_total} proposals exceed the total bound of "
+                f"{len(ordered)} proposals exceed the total bound of "
                 f"{MAX_PROPOSALS_TOTAL}"
             )
         )
-    return tuple(validated), tuple(reasons)
+    return _ValidationOutcome(ordered, tuple(reasons), tuple(breaches))
 
 
 async def run_redesign_pass(
@@ -1010,7 +1032,7 @@ async def run_redesign_pass(
         cast(RedesignProposalView, item).model_dump()
         for item in cast(Sequence[object], final_value)
     ]
-    validated, reasons = _validate_final_proposals(
+    outcome = _validate_final_proposals(
         final_dicts, captures, known_ids=known_ids
     )
     killed_sequence: Sequence[object] = (
@@ -1035,39 +1057,64 @@ async def run_redesign_pass(
     consistency_notes = tuple(
         str(note) for note in notes_sequence if str(note).strip()
     )
-    if reasons:
-        # A rejected attempt keeps the proposals that did pass the gate on
-        # record (each surviving item is fully validated); the rejection
-        # reasons explain what was dropped and why. This preserves
-        # observability when a weak model mixes one malformed proposal into
-        # an otherwise valid set.
+    if outcome.limit_breaches:
+        # A bound breach condemns the pass, not the individual items: the model
+        # produced more than the design system can accept, so choosing a subset
+        # here would silently second-guess its ranking. Nothing is published,
+        # but the validated items stay on record so the over-production is
+        # visible rather than silent.
         return RedesignPassOutcome(
             _attempt(
                 attempt_id=attempt_id,
                 status=RedesignAttemptStatus.REJECTED,
-                proposals=tuple(sorted(validated, key=_sort_key)),
+                proposals=outcome.proposals,
+                killed=killed,
                 understanding=tuple(understanding),
                 consistency_notes=consistency_notes,
                 audience=audience,
-                rejection_reasons=reasons,
+                rejection_reasons=outcome.limit_breaches,
+                pack_version=principle_pack_version,
             ),
             digest,
         )
-    ordered = tuple(sorted(validated, key=_sort_key))
-    status = (
-        RedesignAttemptStatus.ACCEPTED
-        if ordered
-        else RedesignAttemptStatus.NO_PROPOSALS
-    )
+    if outcome.dropped and not outcome.proposals:
+        # The critic proposed things and every one of them failed validation.
+        # That is a failed pass, not a considered judgement that the pages
+        # need nothing - NO_PROPOSALS has to mean the latter.
+        return RedesignPassOutcome(
+            _attempt(
+                attempt_id=attempt_id,
+                status=RedesignAttemptStatus.REJECTED,
+                proposals=(),
+                killed=killed,
+                understanding=tuple(understanding),
+                consistency_notes=consistency_notes,
+                audience=audience,
+                rejection_reasons=outcome.dropped,
+                pack_version=principle_pack_version,
+            ),
+            digest,
+        )
+    # Some items were dropped and the rest survived. The survivors are fully
+    # validated and publishable, so the pass is accepted; the dropped items
+    # stay on record as reasons. Reporting REJECTED here is what previously
+    # hid five good proposals behind one malformed one - the report only
+    # renders an accepted pass, so the work was lost even though it had
+    # already been done and stored.
     return RedesignPassOutcome(
         _attempt(
             attempt_id=attempt_id,
-            status=status,
-            proposals=ordered,
+            status=(
+                RedesignAttemptStatus.ACCEPTED
+                if outcome.proposals
+                else RedesignAttemptStatus.NO_PROPOSALS
+            ),
+            proposals=outcome.proposals,
             killed=killed,
             understanding=tuple(understanding),
             consistency_notes=consistency_notes,
             audience=audience,
+            rejection_reasons=outcome.dropped,
             pack_version=principle_pack_version,
         ),
         digest,

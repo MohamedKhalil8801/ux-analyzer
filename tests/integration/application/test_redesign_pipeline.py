@@ -207,11 +207,12 @@ async def test_section_reference_outside_document_rejected(tmp_path: Path) -> No
     # the critic; validate directly here to pin the behavior.
     from ux_analyzer.application.redesign import _validate_final_proposals
 
-    proposals, reasons = _validate_final_proposals(
+    outcome = _validate_final_proposals(
         [bad_payload],
         {PAGE_URL: _CAPTURE},
         known_ids=frozenset(_pack_kwargs()["principle_ids"]),
     )
+    proposals, reasons = outcome.proposals, outcome.reasons
     assert proposals == ()
     assert reasons and "dangling" in reasons[0]
 
