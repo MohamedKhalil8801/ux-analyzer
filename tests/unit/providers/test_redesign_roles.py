@@ -236,6 +236,45 @@ def test_prompts_encode_doctrine() -> None:
     assert "Critic/Merger" in critic.prompt
 
 
+def test_prompts_require_reasoning_about_the_reader() -> None:
+    """Redesign has to reason about comprehension, not only about layout.
+
+    The walkthrough already measures whether a persona found the target. If the
+    redesign only asks "what looks wrong with this page", the two halves of the
+    report never meet: a proposal can be impeccable about spacing while saying
+    nothing about whether a first-time visitor would find the primary action.
+    """
+
+    for prompt in (
+        COMMON_REDESIGN_PROMPT,
+        RedesignProposer(_StubClient(), model="gpt-redesign").prompt,
+        RedesignCriticMerger(_StubClient(), model="gpt-redesign").prompt,
+    ):
+        assert "where a first-time visitor would look first" in prompt
+        assert "competing controls" in prompt
+        assert "front-loads its" in prompt
+        assert "Weigh trade-offs rather than assuming more change is better" in prompt
+
+
+def test_prompts_forbid_claiming_measured_attention() -> None:
+    """A redesign proposal is a model estimate and must not imply measurement.
+
+    The redesign pipeline sees static page captures. It has no way to know how
+    long anyone spent or what they looked at first, so a proposal phrased as an
+    observed result is the same category of error as citing evidence that does
+    not exist - and harder for a reader to catch, because the layout claim
+    sounds checkable.
+    """
+
+    for prompt in (
+        COMMON_REDESIGN_PROMPT,
+        RedesignProposer(_StubClient(), model="gpt-redesign").prompt,
+    ):
+        assert "You have no run evidence" in prompt
+        assert "Never claim measured attention" in prompt
+        assert "phrase them as inferences" in prompt
+
+
 def test_manifest_describes_role_and_versions() -> None:
     client = _StubClient()
     proposer = RedesignProposer(client, model="gpt-redesign")

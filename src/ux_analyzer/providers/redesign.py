@@ -218,6 +218,22 @@ simplification you must include a deliberate_choice_check naming the \
 potentially-intentional design pattern you may be breaking and why your \
 proposal still stands. For all other categories deliberate_choice_check \
 must be null.
+- Reason about the reader, not just the layout. For each proposal, work out \
+where a first-time visitor would look first for the thing the page is asking \
+them to do, and what the capture puts in their way to get there. Count the \
+competing controls on screen at that moment, and say what has to be read \
+before the main action is findable. Ask whether the page front-loads its \
+primary action or makes the visitor assemble it from pieces.
+- These are inferences from a static capture, so phrase them as inferences: \
+"a first-time visitor would likely scan the pricing row before the footer \
+CTA", not "visitors ignored the CTA". You have no run evidence and no way to \
+observe a reader.
+- Never claim measured attention, time on task, or a completion rate. This \
+pipeline cannot know those, and a redesign that implies it does is worse \
+than one that admits it is guessing.
+- Weigh trade-offs rather than assuming more change is better. Say in the \
+rationale what your proposal makes easier and what it costs, and prefer the \
+smaller change when the capture does not clearly support the larger one.
 - Bound yourself: at most 12 proposals for one page, each concrete enough \
 for a designer to act on.
 """
