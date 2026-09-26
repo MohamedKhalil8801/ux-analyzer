@@ -756,7 +756,7 @@ def _check_preload_lcp(parser: _PerfParser) -> PerformanceIssue | None:
             title="Preload Largest Contentful Paint image",
             description=(
                 'Largest image is not preloaded and lacks fetchpriority="high". '
-                "This also covers 'LCP request discovery' â€“ late discovery delays LCP."
+                "This also covers 'LCP request discovery' – late discovery delays LCP."
             ),
             severity="critical",
             evidence=evidence,
@@ -779,7 +779,7 @@ def _check_slow_lcp(parser: _PerfParser) -> PerformanceIssue | None:
     has_preload = _has_preload_for_lcp(parser, lcp)
     lcp_lazy = lcp.get("loading", "").lower() == "lazy"
     # Deduplicate: if LCP is lazy or missing preload, preload_lcp/lcp_lazy already
-    # reports the root cause for this src â€“ don't double-report slow_lcp.
+    # reports the root cause for this src – don't double-report slow_lcp.
     if not has_preload or lcp_lazy:
         return None
     if blocking_total >= 2:
