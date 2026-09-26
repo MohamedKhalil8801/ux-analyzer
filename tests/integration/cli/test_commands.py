@@ -1691,6 +1691,47 @@ def test_resume_synthesis_uses_all_finalized_selected_specs(
     assert captured["persist_result"] is all_finalized
 
 
+def test_resume_state_validates_with_supplied_analyst(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    analyst = object()
+    receipt = object()
+    candidates = (object(),)
+    prior = SimpleNamespace(
+        attempt_id="synthesis-prior",
+        candidate_findings=candidates,
+    )
+    corpus = object()
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def __init__(self, output: Path) -> None:
+            assert output == tmp_path
+            self.attempts = (prior,)
+
+    class FakeService:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def analyst_receipt_for_resume(
+            self,
+            attempt: object,
+            current_corpus: object,
+        ) -> object:
+            assert attempt is prior
+            assert current_corpus is corpus
+            return receipt
+
+    monkeypatch.setattr(cli, "SynthesisArtifactStore", FakeStore)
+    monkeypatch.setattr(cli, "ReportSynthesisService", FakeService)
+
+    result = cli._resume_state(corpus, output=tmp_path, analyst=analyst)
+
+    assert captured["analyst"] is analyst
+    assert result == (receipt, candidates, "synthesis-prior")
+
+
 def test_configured_synthesis_bounds_reach_service_without_clamping(
     monkeypatch,
     tmp_path: Path,

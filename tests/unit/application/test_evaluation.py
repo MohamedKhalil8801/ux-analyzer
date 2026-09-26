@@ -248,6 +248,71 @@ def test_target_reference_survives_nonbreaking_space_label() -> None:
     assert inputs.target_below_fold is False
 
 
+def test_unconstrained_target_does_not_count_correct_click_wrong_after_text_duplicate() -> (
+    None
+):
+    version = ApplicationVersion(
+        id="defective", kind=ApplicationVersionKind.DEFECTIVE, label="Defective"
+    )
+    base = _result(version)
+    target_contract = replace(base.state.spec.scenario.evaluation_target, role=None)
+    spec = replace(
+        base.state.spec,
+        scenario=replace(base.state.spec.scenario, evaluation_target=target_contract),
+    )
+    target = replace(
+        base.state.snapshots[0].element("target"),
+        role="link",
+        lineage_id="target-lineage",
+    )
+    initial_snapshot = replace(
+        base.state.snapshots[0],
+        elements=tuple(
+            target if element.id == "target" else element
+            for element in base.state.snapshots[0].elements
+        ),
+    )
+    followup_snapshot = ViewportSnapshot(
+        id="viewport-2",
+        provider_id="fixture",
+        elements=(
+            replace(
+                _element("target-copy", viewport_id="viewport-2"),
+                role="other",
+                actionable=False,
+                lineage_id="copy-lineage",
+            ),
+        ),
+    )
+    target_action = InteractWithElement(element_id="target")
+    execution_reference = initial_snapshot.element("target").execution_reference
+    assert execution_reference is not None
+    state = RunState.initial(spec).apply(RunStarted(run_id=spec.run_id))
+    for event in base.state.events[1:-1]:
+        state = state.apply(
+            replace(event, snapshot=initial_snapshot)
+            if isinstance(event, ViewportCaptured)
+            else event
+        )
+    state = state.apply(ActionProposed(action=target_action))
+    state = state.apply(
+        ActionExecuted(
+            action=target_action,
+            viewport_id=initial_snapshot.id,
+            execution_reference=execution_reference,
+            succeeded=True,
+        )
+    )
+    state = state.apply(ViewportCaptured(snapshot=followup_snapshot))
+    termination = base.state.events[-1]
+    assert isinstance(termination, RunTerminated)
+    result = replace(base, state=state.apply(termination))
+
+    metrics = evaluate_run(result, evaluation_target_for(result))
+
+    assert metrics.wrong_actions == 0
+
+
 def test_evaluate_run_reports_metrics_and_preserves_cost_components() -> None:
     result = _result(
         ApplicationVersion(

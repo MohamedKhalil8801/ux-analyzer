@@ -410,6 +410,18 @@ def _scripted_service(
     )
 
 
+def _analyst_role_manifest(*, prompt_version: str) -> dict[str, object]:
+    return {
+        "provider_id": "fixture-provider",
+        "role": "report-analyst",
+        "model_id": "fixture-model",
+        "endpoint_origin": "https://fixture.invalid",
+        "prompt_version": prompt_version,
+        "schema_version": AnalystResponse.schema_version,
+        "provider_version": "fixture-v1",
+    }
+
+
 class _SlowGateRole(_ScriptedRole):
     """Role whose calls block until an asyncio event is set, for overlap tests."""
 
@@ -510,6 +522,11 @@ async def test_analyst_receipt_for_resume_accepts_validated_prior_attempt(
         attempt_id="synthesis-prior",
         status=SynthesisStatus.UNAVAILABLE,
         corpus_digest=corpus.digest,
+        role_manifest={
+            "report-analyst": _analyst_role_manifest(
+                prompt_version="fixture-analyst-v1"
+            )
+        },
         prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
         role_receipts=(receipt,),
         candidate_findings=(finding,),
@@ -518,6 +535,45 @@ async def test_analyst_receipt_for_resume_accepts_validated_prior_attempt(
     resumed = service.analyst_receipt_for_resume(prior, corpus)
 
     assert resumed is receipt
+
+
+@pytest.mark.asyncio
+async def test_analyst_receipt_for_resume_rejects_prompt_version_mismatch(
+    tmp_path: Path,
+) -> None:
+    service, _roles = _scripted_service()
+    corpus = _corpus(tmp_path)
+    finding = _candidate().to_domain(reviewer_state="candidate")
+    receipt = SynthesisRoleReceipt(
+        role="report-analyst",
+        provider_id="fixture-provider",
+        model_id="fixture-model",
+        prompt_digest="a" * 64,
+        schema_digest=hashlib.sha256(
+            json.dumps(
+                AnalystResponse.model_json_schema(),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        output_digest="b" * 64,
+    )
+    prior = SynthesisAttempt(
+        attempt_id="synthesis-prior",
+        status=SynthesisStatus.UNAVAILABLE,
+        corpus_digest=corpus.digest,
+        role_manifest={
+            "report-analyst": _analyst_role_manifest(
+                prompt_version="fixture-analyst-v0"
+            )
+        },
+        prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
+        role_receipts=(receipt,),
+        candidate_findings=(finding,),
+    )
+
+    assert service.analyst_receipt_for_resume(prior, corpus) is None
 
 
 @pytest.mark.asyncio
@@ -592,6 +648,11 @@ async def test_analyst_receipt_for_resume_rejects_invalidated_finding(
         attempt_id="synthesis-prior",
         status=SynthesisStatus.UNAVAILABLE,
         corpus_digest=corpus.digest,
+        role_manifest={
+            "report-analyst": _analyst_role_manifest(
+                prompt_version="fixture-analyst-v1"
+            )
+        },
         prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
         role_receipts=(receipt,),
         candidate_findings=(finding,),
@@ -1283,6 +1344,79 @@ async def test_cross_reviewer_duplicate_objection_ids_are_namespaced(
     assert {
         item.reviewer_role for item in attempt.objections
     } == {"report-evidence-auditor", "report-pattern-reviewer"}
+
+
+@pytest.mark.asyncio
+async def test_identical_reviewer_objection_is_deduplicated(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    objection = TypedObjection(
+        objection_id="repeated-objection",
+        finding_id=candidate.finding_id,
+        objection_type="severity",
+        severity=ObjectionSeverity.MATERIAL,
+        message="The severity needs more support.",
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[
+            EvidenceAuditResponse(
+                complete=True,
+                objections=[objection, objection],
+            )
+        ],
+        adjudicator=[
+            AdjudicationResponse(
+                complete=True,
+                final_findings=[candidate],
+                objection_resolutions=[
+                    ObjectionResolution(
+                        objection_id="report-evidence-auditor:repeated-objection",
+                        finding_id=candidate.finding_id,
+                        resolved=True,
+                        resolution="The severity remains low and supported.",
+                    )
+                ],
+            )
+        ],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert len(attempt.objections) == 1
+
+
+@pytest.mark.asyncio
+async def test_conflicting_reviewer_objection_ids_are_rejected(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    objection = TypedObjection(
+        objection_id="conflicting-objection",
+        finding_id=candidate.finding_id,
+        objection_type="severity",
+        severity=ObjectionSeverity.MATERIAL,
+        message="The severity needs more support.",
+    )
+    conflicting = objection.model_copy(
+        update={"message": "A different objection uses the same ID."}
+    )
+    service, _ = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        auditor=[
+            EvidenceAuditResponse(
+                complete=True,
+                objections=[objection, conflicting],
+            )
+        ],
+        adjudicator=[AdjudicationResponse(complete=True, final_findings=[candidate])],
+    )
+
+    attempt = await service.synthesize(_corpus(tmp_path))
+
+    assert attempt.status is SynthesisStatus.REJECTED
 
 
 @pytest.mark.asyncio
@@ -2044,6 +2178,42 @@ async def test_one_adjudication_revision_dispositions_material_objection(
 
     assert attempt.status is SynthesisStatus.ACCEPTED
     assert attempt.objections[0].resolved_by_role == "report-adjudicator"
+    assert len(roles[3].calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_adjudication_revision_repairs_unauthorized_evidence_contraction(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate().model_copy(
+        update={
+            "evidence_refs": [
+                *_candidate().evidence_refs,
+                EvidenceReference(
+                    evidence_id=SECOND_EVIDENCE_ID,
+                    kind="event",
+                    run_id="run-a",
+                    replay_sequence=2,
+                ),
+            ]
+        }
+    )
+    narrowed = candidate.model_copy(
+        update={"evidence_refs": [candidate.evidence_refs[0]]}
+    )
+    service, roles = _scripted_service(
+        analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
+        adjudicator=[
+            AdjudicationResponse(complete=True, final_findings=[narrowed]),
+            AdjudicationResponse(complete=True, final_findings=[candidate]),
+        ],
+    )
+
+    attempt = await service.synthesize(
+        _corpus(tmp_path, extra_entries=(_second_event_entry(),))
+    )
+
+    assert attempt.status is SynthesisStatus.ACCEPTED
     assert len(roles[3].calls) == 2
 
 

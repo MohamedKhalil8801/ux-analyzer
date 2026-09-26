@@ -359,42 +359,8 @@ class SynthesisObjection:
         object.__setattr__(self, "resolution_evidence_refs", resolution_refs)
 
 
-def final_finding_preserves_candidate(
-    final: SynthesisFinding,
-    candidate: SynthesisFinding,
-    *,
-    objections: Iterable[SynthesisObjection] = (),
-) -> bool:
-    """Return whether a final preserves reviewed claim and supporting evidence."""
-
-    if final.finding_id != candidate.finding_id:
-        return False
-    candidate_evidence_ids = {ref.evidence_id for ref in candidate.evidence_refs}
-    final_evidence_ids = {ref.evidence_id for ref in final.evidence_refs}
-    if not candidate_evidence_ids <= final_evidence_ids:
-        return False
-
-    reviewed_fields = (
-        "issue",
-        "impact",
-        "root_cause",
-        "fixes",
-        "severity",
-        "confidence",
-        "affected_surfaces",
-        "principles",
-        "counterevidence",
-        "severity_justification",
-    )
-    changed_fields = {
-        field_name
-        for field_name in reviewed_fields
-        if getattr(final, field_name) != getattr(candidate, field_name)
-    }
-    if not changed_fields:
-        return True
-
-    authorization_types = {
+_FIELD_AUTHORIZATION_TYPES: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
         "title": frozenset(
             {"affected-surface", "citation-accuracy", "visual-interpretation"}
         ),
@@ -457,19 +423,94 @@ def final_finding_preserves_candidate(
             }
         ),
     }
+)
+
+
+def final_finding_preserves_candidate(
+    final: SynthesisFinding,
+    candidate: SynthesisFinding,
+    *,
+    objections: Iterable[SynthesisObjection] = (),
+) -> bool:
+    """Return whether a final preserves reviewed claim and supporting evidence."""
+
+    if final.finding_id != candidate.finding_id:
+        return False
+    candidate_evidence_ids = {ref.evidence_id for ref in candidate.evidence_refs}
+    final_evidence_ids = {ref.evidence_id for ref in final.evidence_refs}
+    removed_evidence_ids = candidate_evidence_ids - final_evidence_ids
+    added_evidence_ids = final_evidence_ids - candidate_evidence_ids
+    reviewed_fields = (
+        "issue",
+        "impact",
+        "root_cause",
+        "fixes",
+        "severity",
+        "confidence",
+        "affected_surfaces",
+        "principles",
+        "counterevidence",
+        "severity_justification",
+    )
+    changed_fields = {
+        field_name
+        for field_name in reviewed_fields
+        if getattr(final, field_name) != getattr(candidate, field_name)
+    }
     relevant = tuple(
         objection
         for objection in objections
         if objection.finding_id == candidate.finding_id
-        and objection.resolved
+        and objection.resolved is True
         and objection.resolution is not None
         and objection.resolved_by_role == REPORT_ADJUDICATOR_ROLE
         and objection.resolution_evidence_refs
     )
+    evidence_authorization_types = {
+        "citation-accuracy",
+        "contradiction",
+        "counterexample",
+        "factual-support",
+        "severity",
+        "visual-interpretation",
+    }
+    if removed_evidence_ids and changed_fields and not added_evidence_ids:
+        return False
+    field_relevant = tuple(
+        objection
+        for objection in relevant
+        if objection.objection_type
+        in {
+            objection_type
+            for field_name in changed_fields
+            for objection_type in _FIELD_AUTHORIZATION_TYPES[field_name]
+        }
+    )
+    field_resolution_evidence_ids = {
+        ref.evidence_id
+        for objection in field_relevant
+        for ref in objection.resolution_evidence_refs
+    }
+    if added_evidence_ids - field_resolution_evidence_ids:
+        return False
+    if removed_evidence_ids and not all(
+        any(
+            objection.objection_type in evidence_authorization_types
+            and removed_id
+            in {ref.evidence_id for ref in objection.resolution_evidence_refs}
+            for objection in relevant
+        )
+        for removed_id in removed_evidence_ids
+    ):
+        return False
+
+    if not changed_fields:
+        return True
+
     return all(
         any(
-            objection.objection_type in authorization_types[field_name]
-            for objection in relevant
+            objection.objection_type in _FIELD_AUTHORIZATION_TYPES[field_name]
+            for objection in field_relevant
         )
         for field_name in changed_fields
     )

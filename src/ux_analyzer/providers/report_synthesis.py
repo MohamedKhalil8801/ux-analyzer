@@ -1404,7 +1404,10 @@ def _analyst_second_pass_handles(
     run_ids = sorted(friction_by_run, key=lambda run_id: (-friction_by_run[run_id], run_id))
     selected: list[str] = []
     for run_id in run_ids:
-        event_candidates: list[
+        interaction_candidates: list[
+            tuple[int, EvidenceRef, Mapping[object, object]]
+        ] = []
+        progress_candidates: list[
             tuple[int, EvidenceRef, Mapping[object, object]]
         ] = []
         for entry in entries:
@@ -1416,22 +1419,30 @@ def _analyst_second_pass_handles(
             if not isinstance(raw_action, Mapping):
                 continue
             action = cast(Mapping[object, object], raw_action)
-            element_id = action.get("element_id")
             action_kind = action.get("kind")
-            if (
-                not isinstance(element_id, str)
-                or not element_id
-                or not isinstance(action_kind, str)
-                or "interact" not in action_kind
-                or payload.get("succeeded") is False
-            ):
+            if not isinstance(action_kind, str):
                 continue
-            event_candidates.append((ref.replay_sequence or 0, ref, payload))
+            element_id = action.get("element_id")
+            if "interact" in action_kind:
+                if (
+                    not isinstance(element_id, str)
+                    or not element_id
+                    or payload.get("succeeded") is False
+                ):
+                    continue
+                interaction_candidates.append((ref.replay_sequence or 0, ref, payload))
+            elif (
+                action_kind in {"scroll", "complete"}
+                and payload.get("succeeded") is True
+            ):
+                progress_candidates.append((ref.replay_sequence or 0, ref, payload))
+        event_candidates = interaction_candidates or progress_candidates
         if not event_candidates:
             continue
         _, event_ref, event_payload = min(event_candidates, key=lambda item: item[0])
         action = cast(Mapping[object, object], event_payload["action"])
-        element_id = cast(str, action["element_id"])
+        element_id = action.get("element_id")
+        element_id = element_id if isinstance(element_id, str) else None
         viewport_id = cast(str, event_ref.viewport_id)
         matching_handles = [
             handle_by_evidence_id.get(event_ref.evidence_id),
@@ -1445,18 +1456,21 @@ def _analyst_second_pass_handles(
                 ),
                 None,
             ),
-            next(
-                (
-                    handle
-                    for handle, ref in references.items()
-                    if ref.kind == "element"
-                    and ref.run_id == run_id
-                    and ref.viewport_id == viewport_id
-                    and ref.element_id == element_id
-                ),
-                None,
-            ),
         ]
+        if element_id is not None:
+            matching_handles.append(
+                next(
+                    (
+                        handle
+                        for handle, ref in references.items()
+                        if ref.kind == "element"
+                        and ref.run_id == run_id
+                        and ref.viewport_id == viewport_id
+                        and ref.element_id == element_id
+                    ),
+                    None,
+                )
+            )
         for handle in matching_handles:
             if handle is None or handle in selected:
                 continue
@@ -2630,7 +2644,7 @@ class ReportAnalyst(_ReportRole):
     """Discover evidence-backed UX issues and plausible root causes."""
 
     role = ModelRole.REPORT_ANALYST
-    prompt_version = "report-analyst-v10"
+    prompt_version = "report-analyst-v11"
     response_schema = AnalystResponse
 
     @property
@@ -2670,7 +2684,8 @@ class ReportAnalyst(_ReportRole):
             "the same observation under both kinds. On the first round, start with the "
             "recommended_first_pass_handles when present. On the second round, request "
             "recommended_second_pass_handles when present; they pair a friction run's "
-            "first interaction with its page and selected element. Do not request both "
+            "first successful interaction, scroll, or completion action with its page "
+            "and, when applicable, the selected element. Do not request both "
             "event and replay evidence for the same sequence because they duplicate the "
             "same behavior. On later rounds, retrieve the element and viewport evidence "
             "behind the strongest cross-run friction signals. Do not spend a retrieval "
@@ -2816,7 +2831,7 @@ class ReportAdjudicator(_ReportRole):
     """Resolve reviewer objections and write plain-language final findings."""
 
     role = ModelRole.REPORT_ADJUDICATOR
-    prompt_version = "report-adjudicator-v6"
+    prompt_version = "report-adjudicator-v7"
     response_schema = AdjudicationResponse
 
     @property
@@ -2828,7 +2843,9 @@ class ReportAdjudicator(_ReportRole):
             "evidence, concrete fixes, justified severity, and explicit resolutions for "
             "every objection. Preserve each finding's finding_kind exactly as the "
             "analyst set it, and keep a scenario-defect finding's fix aimed at the "
-            "scenario specification rather than the interface."
+            "scenario specification rather than the interface. Do not silently remove "
+            "candidate evidence: for every omitted candidate evidence ID, either retain "
+            "it or cite that exact ID in the resolution evidence of a resolved objection."
         )
 
     async def adjudicate(

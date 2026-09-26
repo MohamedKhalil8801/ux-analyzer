@@ -245,19 +245,95 @@ def test_synthesis_objection_preserves_upheld_decision_and_reviewed_type() -> No
 def test_final_finding_preserves_reviewed_core_claim_and_evidence() -> None:
     second_ref = EvidenceRef("metric:run-a:task-time", "metric", "run-a")
     candidate = _finding(evidence_refs=(*_finding().evidence_refs, second_ref))
-    editorial_edit = _finding(
-        title="Settings navigation obscures user goals",
-        evidence_refs=candidate.evidence_refs,
+    narrowed = _finding(
+        evidence_refs=(candidate.evidence_refs[0],),
         reviewer_state="accepted",
     )
+    authorized = SynthesisObjection(
+        objection_id="unsupported-metric-review",
+        finding_id=candidate.finding_id,
+        objection_type="factual-support",
+        severity="material",
+        message="The task-time metric does not support the reviewed issue.",
+        evidence_refs=(second_ref,),
+        resolved=True,
+        resolution="The unsupported metric was removed from the final finding.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=(second_ref,),
+    )
 
-    assert synthesis.final_finding_preserves_candidate(editorial_edit, candidate)
+    unrelated_ref = EvidenceRef("event:run-a:21", "event", "run-a")
+    unbacked = SynthesisObjection(
+        objection_id="unsupported-metric-review",
+        finding_id=candidate.finding_id,
+        objection_type="factual-support",
+        severity="material",
+        message="The task-time metric does not support the reviewed issue.",
+        evidence_refs=(second_ref,),
+        resolved=True,
+        resolution="The unsupported metric was removed from the final finding.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=(unrelated_ref,),
+    )
+
+    assert not synthesis.final_finding_preserves_candidate(narrowed, candidate)
     assert not synthesis.final_finding_preserves_candidate(
-        _finding(issue="A different issue replaced the reviewed claim."),
+        narrowed,
+        candidate,
+        objections=(unbacked,),
+    )
+    assert synthesis.final_finding_preserves_candidate(
+        narrowed,
+        candidate,
+        objections=(authorized,),
+    )
+    assert not synthesis.final_finding_preserves_candidate(
+        _finding(
+            issue="Users cannot delete an account.",
+            evidence_refs=(candidate.evidence_refs[0],),
+            reviewer_state="accepted",
+        ),
+        candidate,
+        objections=(authorized,),
+    )
+    replacement_ref = EvidenceRef("event:run-a:22", "event", "run-a")
+    unrelated_support = SynthesisObjection(
+        objection_id="unrelated-support",
+        finding_id=candidate.finding_id,
+        objection_type="other",
+        severity="editorial",
+        message="An unrelated event was delivered.",
+        evidence_refs=(replacement_ref,),
+        resolved=True,
+        resolution="The unrelated event is noted.",
+        resolved_by_role="report-adjudicator",
+        resolution_evidence_refs=(replacement_ref,),
+    )
+    assert not synthesis.final_finding_preserves_candidate(
+        _finding(
+            issue="Users cannot delete an account.",
+            evidence_refs=(candidate.evidence_refs[0], replacement_ref),
+            reviewer_state="accepted",
+        ),
+        candidate,
+        objections=(authorized, unrelated_support),
+    )
+    assert not synthesis.final_finding_preserves_candidate(
+        _finding(
+            issue="A different issue replaced the reviewed claim.",
+            evidence_refs=candidate.evidence_refs,
+        ),
         candidate,
     )
     assert not synthesis.final_finding_preserves_candidate(
-        _finding(evidence_refs=(candidate.evidence_refs[0],)),
+        _finding(
+            issue="A different issue replaced the reviewed claim.",
+            evidence_refs=candidate.evidence_refs,
+        ),
+        candidate,
+    )
+    assert not synthesis.final_finding_preserves_candidate(
+        _finding(evidence_refs=(second_ref,)),
         candidate,
     )
 

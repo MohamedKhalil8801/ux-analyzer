@@ -2339,6 +2339,182 @@ async def test_analyst_recommends_page_state_for_second_pass(
     ]
 
 
+@pytest.mark.parametrize(
+    ("action_kind", "succeeded", "expected_handles"),
+    (
+        ("scroll", True, ["e2", "e1"]),
+        ("complete", True, ["e2", "e1"]),
+        ("scroll", "false", []),
+        ("complete", None, []),
+    ),
+)
+@pytest.mark.asyncio
+async def test_analyst_recommends_only_successful_noninteraction_progress(
+    tmp_path: Path,
+    action_kind: str,
+    succeeded: object,
+    expected_handles: list[str],
+) -> None:
+    run_id = "run-a"
+    viewport_id = f"{run_id}-viewport-1"
+    metric_id = f"metric:{run_id}:wrong-actions"
+    corpus = EvidenceCorpus(
+        output_root=tmp_path,
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    metric_id,
+                    "metric",
+                    run_id,
+                    metric_id="wrong-actions",
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Wrong actions for {run_id}.",
+                payload={"value": 1},
+            ),
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"viewport:{run_id}:{viewport_id}",
+                    "viewport",
+                    run_id,
+                    viewport_id=viewport_id,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Initial page for {run_id}.",
+                payload={"viewport_id": viewport_id},
+            ),
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"event:{run_id}:9",
+                    "event",
+                    run_id,
+                    viewport_id=viewport_id,
+                    replay_sequence=9,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Progress event for {run_id}.",
+                payload={
+                    "action": {"kind": action_kind},
+                    "succeeded": succeeded,
+                },
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [metric_id],
+        max_entries=16,
+        max_attachment_bytes=1024,
+    )
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+        retrieval_round=2,
+    )
+
+    payload = json.loads(client.calls[0][1][1].content)
+    policy = payload["evidence_request_policy"]
+    assert policy.get("recommended_second_pass_handles", []) == expected_handles
+
+
+@pytest.mark.asyncio
+async def test_analyst_prefers_interaction_over_earlier_scroll(
+    tmp_path: Path,
+) -> None:
+    run_id = "run-a"
+    viewport_id = f"{run_id}-viewport-1"
+    element_id = f"{viewport_id}-element-4"
+    metric_id = f"metric:{run_id}:wrong-actions"
+    corpus = EvidenceCorpus(
+        output_root=tmp_path,
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    metric_id,
+                    "metric",
+                    run_id,
+                    metric_id="wrong-actions",
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Wrong actions for {run_id}.",
+                payload={"value": 1},
+            ),
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"viewport:{run_id}:{viewport_id}",
+                    "viewport",
+                    run_id,
+                    viewport_id=viewport_id,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Initial page for {run_id}.",
+                payload={"viewport_id": viewport_id},
+            ),
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"event:{run_id}:9",
+                    "event",
+                    run_id,
+                    viewport_id=viewport_id,
+                    replay_sequence=9,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Earlier scroll for {run_id}.",
+                payload={"action": {"kind": "scroll"}, "succeeded": True},
+            ),
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"element:{run_id}:{viewport_id}:{element_id}",
+                    "element",
+                    run_id,
+                    viewport_id=viewport_id,
+                    element_id=element_id,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Selected element for {run_id}.",
+                payload={"label": "See the work"},
+            ),
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    f"event:{run_id}:11",
+                    "event",
+                    run_id,
+                    viewport_id=viewport_id,
+                    replay_sequence=11,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary=f"Later interaction for {run_id}.",
+                payload={
+                    "action": {
+                        "kind": "legacy-interact",
+                        "element_id": element_id,
+                    },
+                    "succeeded": True,
+                },
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [metric_id],
+        max_entries=16,
+        max_attachment_bytes=1024,
+    )
+    client = RecordingClient()
+
+    await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+        retrieval_round=2,
+    )
+
+    payload = json.loads(client.calls[0][1][1].content)
+    policy = payload["evidence_request_policy"]
+    assert policy["recommended_second_pass_handles"] == ["e4", "e1", "e3"]
+
+
 @pytest.mark.asyncio
 async def test_finding_trust_class_is_conservatively_normalized(
     tmp_path: Path,
@@ -2819,7 +2995,7 @@ def test_manifest_and_role_manifests_use_report_role_metadata() -> None:
     )
     assert (
         ReportAnalyst(client, model="gpt-report").manifest.prompt_version
-        == "report-analyst-v10"
+        == "report-analyst-v11"
     )
     assert (
         EvidenceAuditor(client, model="gpt-report").manifest.role

@@ -146,6 +146,7 @@ from ux_analyzer.ports.observation import (
     TestAccountId,
     ViewportSize,
 )
+from ux_analyzer.ports.report_synthesis import ReportAnalystPort
 from ux_analyzer.providers.attention_policy import (
     AttentionPolicyConfig,
     ObservationSelection,
@@ -3992,15 +3993,19 @@ def _resume_state(
     corpus: EvidenceCorpus,
     *,
     output: Path,
+    analyst: ReportAnalystPort,
 ) -> tuple[SynthesisRoleReceipt, tuple[SynthesisFinding, ...], str] | None:
     """Find the newest prior attempt whose analyst stage is reusable.
 
     The service validates each candidate receipt against the live corpus and
-    current prompts/schemas, so a stale or mismatched prior attempt simply
-    yields None and synthesis starts from the analyst as usual.
+    current analyst manifest, prompts, and schemas, so a stale or mismatched prior
+    attempt simply yields None and synthesis starts from the analyst as usual.
     """
 
-    service = ReportSynthesisService(principles=ux_principles())
+    service = ReportSynthesisService(
+        analyst=analyst,
+        principles=ux_principles(),
+    )
     for prior in reversed(SynthesisArtifactStore(output).attempts):
         receipt = service.analyst_receipt_for_resume(prior, corpus)
         if receipt is not None:
@@ -4018,17 +4023,18 @@ async def _run_report_synthesis(
     corpus = _synthesis_corpus(result=result, output=output, loaded=loaded)
     http_client = httpx.AsyncClient(timeout=settings.timeout_seconds)
     try:
-        resume = _resume_state(corpus, output=output)
         client = create_structured_model_client(
             settings,
             http_client=http_client,
             call_limiter=asyncio.Semaphore(settings.max_concurrent_calls),
         )
+        analyst = ReportAnalyst(
+            client, model=settings.model_for_role(ModelRole.REPORT_ANALYST)
+        )
+        resume = _resume_state(corpus, output=output, analyst=analyst)
         synthesis = loaded.runtime.report_synthesis
         service = ReportSynthesisService(
-            analyst=ReportAnalyst(
-                client, model=settings.model_for_role(ModelRole.REPORT_ANALYST)
-            ),
+            analyst=analyst,
             evidence_auditor=EvidenceAuditor(
                 client,
                 model=settings.model_for_role(ModelRole.REPORT_EVIDENCE_AUDITOR),

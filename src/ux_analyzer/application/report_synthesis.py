@@ -1250,6 +1250,7 @@ class ReportSynthesisService:
             if not (
                 self._has_unresolved_blocking(resolved_objections)
                 or self._has_undispositioned(resolved_objections)
+                or (final_models and rejected and not accepted)
             ):
                 break
             revision_run = await self._run_role(
@@ -1262,6 +1263,14 @@ class ReportSynthesisService:
                 previous_output=adjudication_response,
                 phase="adjudication-revision",
                 max_rounds=2,
+                validation_feedback=(
+                    "A final finding failed publication validation. Do not remove "
+                    "candidate evidence unless a resolved objection explicitly "
+                    "cites each removed evidence ID in its resolution evidence. "
+                    "When changing claim fields, every added evidence ID must be "
+                    "cited by a resolution for an objection that authorizes a "
+                    "changed field."
+                ),
             )
             retrieval_log.extend(revision_run.retrieval_log)
             if revision_run.response is None:
@@ -1400,7 +1409,7 @@ class ReportSynthesisService:
         """Return the prior attempt's analyst receipt when it is reusable.
 
         The receipt is reusable only when the prior attempt came from the same
-        corpus digest, the same orchestrator prompt version, and the same
+        corpus digest, orchestrator prompt version, analyst role manifest, and
         analyst response schema, and when every candidate finding it carries
         still passes deterministic publication validation against *this*
         corpus. Any mismatch returns None so the caller re-runs the analyst.
@@ -1411,6 +1420,19 @@ class ReportSynthesisService:
         if prior_attempt.corpus_digest != corpus.digest:
             return None
         if prior_attempt.prompt_version != REPORT_SYNTHESIS_PROMPT_VERSION:
+            return None
+        prior_role_manifest = prior_attempt.role_manifest.get(
+            ModelRole.REPORT_ANALYST.value
+        )
+        current_role_manifest = _manifest_payload(
+            self.analyst, ModelRole.REPORT_ANALYST
+        )
+        if not isinstance(prior_role_manifest, Mapping):
+            return None
+        prior_role_manifest = cast(Mapping[object, object], prior_role_manifest)
+        if _canonical_json(prior_role_manifest) != _canonical_json(
+            current_role_manifest
+        ):
             return None
         receipts = {
             receipt.role: receipt
@@ -1459,6 +1481,7 @@ class ReportSynthesisService:
         previous_output: _Response | None = None,
         phase: str = "retrieval",
         max_rounds: int | None = None,
+        validation_feedback: str | None = None,
     ) -> _RoleRun:
         logs: list[Mapping[str, object]] = []
         resolved: ResolvedEvidence | None = None
@@ -1510,7 +1533,6 @@ class ReportSynthesisService:
 
         prior = previous_output
         rounds = max_rounds or self.max_retrieval_rounds
-        validation_feedback: str | None = None
         for round_number in range(1, rounds + 1):
             response: _Response | None = None
             prior_role_record_count = 0
@@ -2068,12 +2090,9 @@ class ReportSynthesisService:
         role: ModelRole,
     ) -> tuple[SynthesisObjection, ...]:
         objections: list[SynthesisObjection] = []
-        seen_ids: set[str] = set()
+        seen_by_id: dict[str, SynthesisObjection] = {}
         for typed in response.objections:
             normalized = TypedObjection.model_validate(typed.model_dump(mode="python"))
-            if normalized.objection_id in seen_ids:
-                raise ValueError("duplicate reviewer objection ID")
-            seen_ids.add(normalized.objection_id)
             domain = replace(
                 normalized.to_domain(),
                 objection_id=_scoped_objection_id(role, normalized.objection_id),
@@ -2113,6 +2132,12 @@ class ReportSynthesisService:
                 if canonical_role is not role:
                     raise ValueError("reviewer role does not match the reviewing role")
             domain = replace(domain, reviewer_role=canonical_role.value)
+            prior = seen_by_id.get(domain.objection_id)
+            if prior is not None:
+                if prior == domain:
+                    continue
+                raise ValueError("duplicate reviewer objection ID")
+            seen_by_id[domain.objection_id] = domain
             objections.append(domain)
         return tuple(objections)
 

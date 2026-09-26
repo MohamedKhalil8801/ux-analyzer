@@ -1051,22 +1051,25 @@ def evaluation_target_for(result: RunResult) -> EvaluationTarget:
     contract = spec.scenario.evaluation_target
     expected_label = contract.label_for(spec.application_version)
     expected_role = contract.role_for(spec.application_version)
-    for snapshot in reversed(result.state.snapshots):
-        regions = {region.id: region.label for region in snapshot.regions}
-        for element in reversed(snapshot.elements):
-            if _matches_target(
-                element,
-                regions,
-                contract,
-                expected_label,
-                expected_role,
-            ):
-                return EvaluationTarget(
-                    element_id=element.id,
-                    region_id=element.region_id,
-                    expected_label=expected_label,
-                    role=expected_role,
-                )
+    for require_actionable in (True, False):
+        for snapshot in reversed(result.state.snapshots):
+            regions = {region.id: region.label for region in snapshot.regions}
+            for element in reversed(snapshot.elements):
+                if require_actionable and not element.actionable:
+                    continue
+                if _matches_target(
+                    element,
+                    regions,
+                    contract,
+                    expected_label,
+                    expected_role,
+                ):
+                    return EvaluationTarget(
+                        element_id=element.id,
+                        region_id=element.region_id,
+                        expected_label=expected_label,
+                        role=expected_role,
+                    )
     role = f" role {expected_role!r}" if expected_role is not None else ""
     region = (
         f" region {contract.region_label!r}"
