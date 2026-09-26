@@ -21,6 +21,8 @@ from ux_analyzer.domain.run import RunStarted
 from ux_analyzer.domain.synthesis import (
     CANONICAL_SYNTHESIS_ROLES,
     EvidenceRef,
+    ReviewDisposition,
+    ScenarioReview,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisRoleReceipt,
@@ -127,6 +129,7 @@ def _write_synthesis(
     corpus_marker: str | None = None,
     created_at: str = "2026-08-10T12:00:00+00:00",
     payload_extra: dict[str, dict[str, object]] | None = None,
+    scenario_reviews: tuple[ScenarioReview, ...] = (),
 ) -> None:
     finding_values = findings
     if finding_values is None:
@@ -245,6 +248,7 @@ def _write_synthesis(
             else ()
         ),
         findings=(finding_values if status is SynthesisStatus.ACCEPTED else ()),
+        scenario_reviews=scenario_reviews,
         limitations=(
             limitations
             if limitations is not None
@@ -1428,6 +1432,103 @@ def test_renderer_scopes_no_issues_copy_to_tested_scenarios(tmp_path: Path) -> N
         "No supported UX issues were established in the tested scenarios."
     )
     assert "issue-free" not in synthesis["assessment"]
+
+
+def test_renderer_exposes_the_scenario_examination_record(tmp_path: Path) -> None:
+    """A no-issues status has to be able to show that it was earned.
+
+    "No supported UX issues were established in the tested scenarios" is only
+    meaningful if the reader can see which scenarios were tested and what was
+    weighed for each. Without the reviews the sentence is an assertion; with
+    them it is a record the reader can disagree with.
+    """
+
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    reviews = (
+        ScenarioReview(
+            scenario_id="discover-ratings",
+            disposition=ReviewDisposition.IMPROVEMENT,
+            evidence_ids=("event:run-1:1",),
+            signals_weighed=("attention cost", "competing-control density"),
+            note="Reachable in one click, but only after scanning the hero.",
+        ),
+        ScenarioReview(
+            scenario_id="contact-author",
+            disposition=ReviewDisposition.NO_ISSUE_FOUND,
+            signals_weighed=("action count", "path deviation"),
+            note="Nothing beat the recorded path.",
+        ),
+    )
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.NO_ISSUES,
+        scenario_reviews=reviews,
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    recorded = synthesis["scenario_reviews"]
+    assert [item["scenario_id"] for item in recorded] == [
+        "discover-ratings",
+        "contact-author",
+    ]
+    assert [item["disposition"] for item in recorded] == [
+        "improvement",
+        "no-issue-found",
+    ]
+    assert recorded[0]["signals_weighed"] == [
+        "attention cost",
+        "competing-control density",
+    ]
+    assert recorded[0]["evidence_ids"] == ["event:run-1:1"]
+    assert recorded[1]["note"] == "Nothing beat the recorded path."
+
+
+def test_renderer_examination_record_reaches_the_html(tmp_path: Path) -> None:
+    """The reviews have to be in the document, not just in the context."""
+
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.NO_ISSUES,
+        scenario_reviews=(
+            ScenarioReview(
+                scenario_id="discover-ratings",
+                disposition=ReviewDisposition.NO_ISSUE_FOUND,
+                signals_weighed=("attention cost",),
+                note="Target was the first element on the first viewport.",
+            ),
+        ),
+    )
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Scenario examination" in html
+    assert "discover-ratings" in html
+    assert "Target was the first element on the first viewport." in html
+
+
+def test_renderer_omits_the_examination_block_when_there_are_no_reviews(
+    tmp_path: Path,
+) -> None:
+    """An artifact written before the invariant has no reviews to show.
+
+    The block must disappear rather than render an empty "0 scenarios
+    examined" panel, which would read as a coverage failure.
+    """
+
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(tmp_path, status=SynthesisStatus.NO_ISSUES)
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Scenario examination" not in html
 
 
 def test_renderer_rejects_forged_synthesis_evidence_references(tmp_path: Path) -> None:

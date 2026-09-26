@@ -257,6 +257,45 @@
         {% endif %}
       </p>
       {% endif %}
+      {% set scenario_reviews = synthesis.scenario_reviews if synthesis.scenario_reviews is defined else [] %}
+      {% if scenario_reviews %}
+      <details class="aggregate-details">
+        <summary>
+          Scenario examination
+          <span class="status-pill">{{ scenario_reviews | length }} scenario{{ "" if scenario_reviews | length == 1 else "s" }} examined</span>
+        </summary>
+        <p class="summary-assessment">
+          Every scenario in the evidence corpus carries one review. A scenario recorded
+          as <em>no issue found</em> was examined and produced nothing publishable,
+          which is a different claim from not having been looked at.
+        </p>
+        <ul class="field-list">
+          {% for review in scenario_reviews %}
+          <li class="finding">
+            <div class="report-section-heading">
+              <div>
+                <h3>{{ review.scenario_id }}</h3>
+              </div>
+              <span class="status-pill status-{{ review.disposition }}">{{ review.disposition | replace("-", " ") }}</span>
+            </div>
+            {% if review.signals_weighed %}
+            <p class="confidence-label">Signals weighed: {{ review.signals_weighed | join(", ") }}</p>
+            {% endif %}
+            {% if review.note %}
+            <p>{{ review.note }}</p>
+            {% endif %}
+            {% if review.evidence_ids %}
+            <p class="evidence-ref-list">
+              {% for evidence_id in review.evidence_ids %}
+              <span class="evidence-ref">{{ evidence_id }}</span>
+              {% endfor %}
+            </p>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
       <div class="dash-grid">
         <a class="dash-card" href="#view-findings">
           <span class="dash-card-tab">{{ "Recorded signals" if using_fallback else "Walkthrough findings" }}</span>

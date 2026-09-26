@@ -342,6 +342,20 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
         ),
         "findings": findings,
         "limitations": [_text(item) for item in synthesis.get("limitations", [])],
+        "scenario_reviews": [
+            {
+                "scenario_id": _text(review.get("scenario_id")),
+                "disposition": _text(review.get("disposition")),
+                "evidence_ids": [
+                    _text(item) for item in review.get("evidence_ids", [])
+                ],
+                "signals_weighed": [
+                    _text(item) for item in review.get("signals_weighed", [])
+                ],
+                "note": _text(review.get("note")),
+            }
+            for review in _list_of_mappings(synthesis.get("scenario_reviews"))
+        ],
     }
 
 
@@ -2058,6 +2072,16 @@ def _load_synthesis(
                 "findings": findings,
                 "fallback_findings": fallback_findings,
                 "limitations": list(attempt.limitations),
+                "scenario_reviews": [
+                    {
+                        "scenario_id": review.scenario_id,
+                        "disposition": str(review.disposition),
+                        "evidence_ids": list(review.evidence_ids),
+                        "signals_weighed": list(review.signals_weighed),
+                        "note": review.note,
+                    }
+                    for review in attempt.scenario_reviews
+                ],
                 "tested_scope": _synthesis_scope(runs),
                 "alias_index": alias_index,
                 "element_chips": element_chips,
