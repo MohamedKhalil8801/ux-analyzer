@@ -45,7 +45,10 @@ from ux_analyzer.adapters.web.extractor import (
     capture_with_diagnostics as capture_snapshot_with_diagnostics,
 )
 from ux_analyzer.adapters.web.network_policy import BrowserAllowedOrigins
-from ux_analyzer.adapters.web.session import PlaywrightSessionAdapter
+from ux_analyzer.adapters.web.session import (
+    PlaywrightSessionAdapter,
+    playwright_task_quiet_scope,
+)
 from ux_analyzer.adapters.web.verifier import HttpFixtureStateClient, WebVerifier
 from ux_analyzer.application.checkpoint import (
     CheckpointError,
@@ -3565,60 +3568,90 @@ async def _execute_matrix(
     from playwright.async_api import async_playwright
 
     origin = _fixture_origin(fixture_origin)
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True, args=["--allow-insecure-localhost"])
-        client_http = httpx.AsyncClient(timeout=settings.timeout_seconds)
-        fixture_http = httpx.AsyncClient(timeout=30.0)
-        model_call_limiter = asyncio.Semaphore(settings.max_concurrent_calls)
-        adapter = PlaywrightSessionAdapter(
-            browser=browser,
-            allowed_origins=None,
-            trace_directory=output / "traces",
-        )
-        try:
-
-            def factory(spec: RunSpec) -> RunAgent:
-                client = create_structured_model_client(
-                    settings,
-                    http_client=client_http,
-                    call_limiter=model_call_limiter,
-                )
-                return _build_agent(
-                    spec,
-                    adapter=adapter,
-                    client=client,
-                    output=output,
-                    fixture_origin=origin,
-                    settings=settings,
-                    runtime=matrix.loaded.runtime,
-                    fixture_http_client=fixture_http,
-                    profile_output=profile_output,
-                )
-
-            def record_progress(
-                spec: RunSpec, result: object | None, failure: ExperimentFailure | None
-            ) -> None:
-                if checkpoint is None:
-                    return
-                if failure is not None:
-                    checkpoint.record_failure(spec.run_id, failure.error_type)
-                elif result is not None and finalized_bundle_is_valid(
-                    output,
-                    spec.run_id,
-                    expected_prominence_provider_id=spec.prominence_provider_id,
-                ):
-                    checkpoint.record_finalized(spec.run_id)
-                else:
-                    checkpoint.record_failure(spec.run_id, "InvalidFinalizedBundle")
-
-            return await ExperimentRunner(factory).run(
-                matrix.specs, workers=workers, on_complete=record_progress
+    # The quiet scope is the outer context on purpose: Playwright's unowned
+    # tasks are created while routes are handled and they fail when the target
+    # closes, so the scope has to cover launch, every run, session teardown,
+    # browser.close(), and playwright.stop() - not just the last session.
+    async with playwright_task_quiet_scope():
+        async with async_playwright() as playwright:
+            return await _run_matrix_with_browser(
+                playwright,
+                matrix=matrix,
+                output=output,
+                workers=workers,
+                origin=origin,
+                settings=settings,
+                checkpoint=checkpoint,
+                profile_output=profile_output,
             )
-        finally:
-            await adapter.close()
-            await client_http.aclose()
-            await fixture_http.aclose()
-            await browser.close()
+
+
+async def _run_matrix_with_browser(
+    playwright: Any,
+    *,
+    matrix: _ResolvedMatrix,
+    output: Path,
+    workers: int,
+    origin: str,
+    settings: OpenAICompatibleSettings,
+    checkpoint: ExperimentCheckpointStore | None,
+    profile_output: Path | None,
+) -> ExperimentResult:
+    browser = await playwright.chromium.launch(
+        headless=True, args=["--allow-insecure-localhost"]
+    )
+    client_http = httpx.AsyncClient(timeout=settings.timeout_seconds)
+    fixture_http = httpx.AsyncClient(timeout=30.0)
+    model_call_limiter = asyncio.Semaphore(settings.max_concurrent_calls)
+    adapter = PlaywrightSessionAdapter(
+        browser=browser,
+        allowed_origins=None,
+        trace_directory=output / "traces",
+    )
+    try:
+
+        def factory(spec: RunSpec) -> RunAgent:
+            client = create_structured_model_client(
+                settings,
+                http_client=client_http,
+                call_limiter=model_call_limiter,
+            )
+            return _build_agent(
+                spec,
+                adapter=adapter,
+                client=client,
+                output=output,
+                fixture_origin=origin,
+                settings=settings,
+                runtime=matrix.loaded.runtime,
+                fixture_http_client=fixture_http,
+                profile_output=profile_output,
+            )
+
+        def record_progress(
+            spec: RunSpec, result: object | None, failure: ExperimentFailure | None
+        ) -> None:
+            if checkpoint is None:
+                return
+            if failure is not None:
+                checkpoint.record_failure(spec.run_id, failure.error_type)
+            elif result is not None and finalized_bundle_is_valid(
+                output,
+                spec.run_id,
+                expected_prominence_provider_id=spec.prominence_provider_id,
+            ):
+                checkpoint.record_finalized(spec.run_id)
+            else:
+                checkpoint.record_failure(spec.run_id, "InvalidFinalizedBundle")
+
+        return await ExperimentRunner(factory).run(
+            matrix.specs, workers=workers, on_complete=record_progress
+        )
+    finally:
+        await adapter.close()
+        await client_http.aclose()
+        await fixture_http.aclose()
+        await browser.close()
 
 
 def _build_agent(

@@ -5,8 +5,15 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
-from contextlib import ExitStack
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Mapping,
+)
+from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic, sleep
@@ -67,6 +74,7 @@ __all__ = [
     "PlaywrightSessionAdapter",
     "ProviderFailure",
     "SafetyBlocked",
+    "playwright_task_quiet_scope",
 ]
 
 
@@ -78,10 +86,21 @@ _NAVIGATION_START_GRACE_SECONDS = 0.1
 _TRANSIENT_POPUP_URLS = frozenset(("", ":", "about:blank"))
 _TRACE_REPLACE_ATTEMPTS = 3
 _TRACE_REPLACE_DELAY_SECONDS = 0.01
-# Playwright fires route-interception updates and route fulfil/continue calls
-# as unowned tasks. Closing a context while one is in flight leaves a failed
-# task that nothing retrieves, so the event loop reports a spurious
-# "Task exception was never retrieved" during teardown.
+# Playwright fires route-interception updates, route fulfil/continue calls, and
+# binding calls as unowned tasks: it creates them with ``asyncio.create_task``
+# and never keeps the handle, so nothing can read their result. Closing a
+# context, a page, or the browser while one is in flight leaves a failed task
+# that the event loop reports as ``Task exception was never retrieved`` when the
+# task is collected. Those reports are un-actionable by construction - the call
+# is Playwright's, not ours - but an operator reading a run log should never see
+# them, so the owning scope filters them and retrieves every exception it can.
+#
+# The window has to cover the whole browser lifetime, not just session teardown.
+# ``BrowserContext._on_route`` spawns its interception-pattern update from a
+# ``finally`` block that fires when ``unroute_all`` has emptied its handler list,
+# so a task can be created and fail *after* the last session closed, and
+# ``browser.close()`` plus ``playwright.stop()`` close the target out from under
+# whatever is still in flight.
 _TEARDOWN_TASK_SETTLE_SECONDS = 1.0
 _TEARDOWN_TASK_POLL_SECONDS = 0.01
 # Playwright's connection reader loop runs for the whole browser lifetime.
@@ -858,19 +877,8 @@ def _is_unretrieved_playwright_task(context: Mapping[str, object]) -> bool:
     )
 
 
-async def _drain_playwright_teardown_tasks() -> None:
-    """Let Playwright's unowned teardown tasks finish and read them out.
-
-    A finished task whose exception nothing retrieves is reported by the
-    event loop as ``Task exception was never retrieved`` when it is garbage
-    collected, which the loop may do before anyone can look at the result.
-    Holding a reference to every transient Playwright task, waiting for them
-    to settle, and reading their results keeps teardown quiet. A loop filter
-    for the same reports covers any task that slipped past the sampling.
-    """
-
-    loop = asyncio.get_running_loop()
-    previous = loop.get_exception_handler()
+def _unretrieved_playwright_handler(previous: Any) -> Callable[..., None]:
+    """Build a loop handler that drops unretrieved Playwright task reports."""
 
     def filtered(
         active_loop: asyncio.AbstractEventLoop, context: dict[str, Any]
@@ -882,7 +890,52 @@ async def _drain_playwright_teardown_tasks() -> None:
         else:
             active_loop.default_exception_handler(context)
 
-    loop.set_exception_handler(filtered)
+    return filtered
+
+
+@asynccontextmanager
+async def playwright_task_quiet_scope() -> AsyncGenerator[None]:
+    """Own Playwright's unretrieved task failures for one browser's lifetime.
+
+    Wrap this *outside* ``async_playwright()`` so the scope spans browser launch
+    through ``playwright.stop()``: Playwright's unowned tasks are created while
+    routes are handled and they fail when the target closes, so a scope that
+    stops at the last session still leaves the closing window uncovered.
+
+    The filter is deliberately narrow. It drops a loop report only when the
+    report is ``Task exception was never retrieved``, the exception is a
+    Playwright error, and the future is a task running Playwright's own
+    coroutine. Anything raised by this project's code still reaches the handler
+    that was installed before the scope, and every task this project creates is
+    retrieved explicitly rather than filtered.
+    """
+
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(_unretrieved_playwright_handler(previous))
+    try:
+        yield
+    finally:
+        try:
+            await _drain_playwright_teardown_tasks()
+        finally:
+            loop.set_exception_handler(previous)
+
+
+async def _drain_playwright_teardown_tasks() -> None:
+    """Let Playwright's unowned teardown tasks finish and read them out.
+
+    A finished task whose exception nothing retrieves is reported by the
+    event loop as ``Task exception was never retrieved`` when it is garbage
+    collected, which the loop may do before anyone can look at the result.
+    Holding a reference to every transient Playwright task, waiting for them
+    to settle, and reading their results keeps teardown quiet at the source
+    rather than relying on the filter alone.
+    """
+
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(_unretrieved_playwright_handler(previous))
     try:
         held: set[asyncio.Task[Any]] = {
             task for task in asyncio.all_tasks() if _is_playwright_task(task)

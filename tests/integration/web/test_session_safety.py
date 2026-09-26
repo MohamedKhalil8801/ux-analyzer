@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import sys
+import types
 import zipfile
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -54,6 +55,7 @@ from ux_analyzer.adapters.web.session import (
     ProviderFailure,
     SafetyBlocked,
     _blocked_document_navigation,
+    playwright_task_quiet_scope,
 )
 from ux_analyzer.adapters.web.verifier import WebVerifier
 from ux_analyzer.domain.attention import ProgressiveObservation
@@ -182,18 +184,22 @@ async def running_servers() -> tuple[str, str]:
 @pytest_asyncio.fixture
 async def browser_adapter(running_servers: tuple[str, str], tmp_path: Path) -> Any:
     fixture_origin, _ = running_servers
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch()
-        adapter = PlaywrightSessionAdapter(
-            browser=browser,
-            allowed_origins=NetworkPolicy.fixture_only((fixture_origin,)).origins,
-            trace_directory=tmp_path / "traces",
-        )
-        try:
-            yield adapter
-        finally:
-            await adapter.close()
-            await browser.close()
+    # Mirrors the CLI: the quiet scope is the outer context, so it covers browser
+    # launch through playwright.stop(), including the window where Playwright's
+    # unowned tasks fail after the last session closed.
+    async with playwright_task_quiet_scope():
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            adapter = PlaywrightSessionAdapter(
+                browser=browser,
+                allowed_origins=NetworkPolicy.fixture_only((fixture_origin,)).origins,
+                trace_directory=tmp_path / "traces",
+            )
+            try:
+                yield adapter
+            finally:
+                await adapter.close()
+                await browser.close()
 
 
 def _session_config(origin: str, trace_path: Path, account_id: str = "test-account-1"):
@@ -967,6 +973,20 @@ async def test_teardown_with_inflight_route_has_no_unhandled_tasks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Playwright's unowned teardown tasks must not reach the operator.
+
+    Playwright fires route-interception updates and route calls as tasks it
+    never keeps the handle for, so a context or browser that closes while one is
+    in flight leaves a failed task nobody can read. The event loop reports it as
+    ``Task exception was never retrieved`` when the task is collected, which is
+    exactly the noise a live run used to print after its summary.
+
+    The observer is installed *before* the production quiet scope so the scope's
+    filter chains to it: whatever the filter drops never reaches the observer,
+    and anything it passes through - including any error from this project's own
+    code - is recorded. Asserting on the observer is what an operator sees.
+    """
+
     fixture_origin, _ = running_servers
     original_route = NetworkPolicy.handle_route
 
@@ -1011,24 +1031,100 @@ async def test_teardown_with_inflight_route_has_no_unhandled_tasks(
 
     loop = asyncio.get_running_loop()
     loop_errors: list[dict[str, object]] = []
-    previous_exception_handler = loop.get_exception_handler()
-
-    def record_loop_error(
-        _loop: asyncio.AbstractEventLoop, context: dict[str, object]
-    ) -> None:
-        loop_errors.append(context)
-
-    loop.set_exception_handler(record_loop_error)
-    try:
+    loop.set_exception_handler(
+        lambda _loop, context: loop_errors.append(dict(context))
+    )
+    async with playwright_task_quiet_scope():
         await browser_adapter.end_session(session)
         gc.collect()
         await asyncio.sleep(0.3)
         gc.collect()
         await asyncio.sleep(0.3)
-    finally:
-        loop.set_exception_handler(previous_exception_handler)
 
     assert loop_errors == []
+
+
+@pytest.mark.asyncio
+async def test_quiet_scope_drops_only_unretrieved_playwright_task_reports() -> None:
+    """The filter is narrow: only Playwright's own unretrieved tasks are dropped.
+
+    A report about this project's code, or about anything other than an
+    unretrieved-task exception, must still reach the ambient handler. Otherwise
+    the scope would be hiding real failures.
+    """
+
+    from playwright.async_api import Error as PlaywrightError
+
+    loop = asyncio.get_running_loop()
+    observed: list[dict[str, object]] = []
+    loop.set_exception_handler(
+        lambda _loop, context: observed.append(dict(context))
+    )
+
+    async with playwright_task_quiet_scope():
+        # Dropped: an unretrieved Playwright task, reported by a task whose
+        # coroutine lives in playwright.
+        loop.call_exception_handler(
+            {
+                "message": "Task exception was never retrieved",
+                "exception": PlaywrightError("Route is already handled!"),
+                "future": _task_with_coro_filename(
+                    r"lib\site-packages\playwright\_impl\_connection.py"
+                ),
+            }
+        )
+        # Passed through: a non-Playwright exception on a Playwright task.
+        loop.call_exception_handler(
+            {
+                "message": "Task exception was never retrieved",
+                "exception": ValueError("project failure"),
+                "future": _task_with_coro_filename(
+                    r"lib\site-packages\playwright\_impl\_connection.py"
+                ),
+            }
+        )
+        # Passed through: a Playwright exception on one of our own tasks.
+        loop.call_exception_handler(
+            {
+                "message": "Task exception was never retrieved",
+                "exception": PlaywrightError("Route is already handled!"),
+                "future": _task_with_coro_filename(
+                    r"src\ux_analyzer\adapters\web\session.py"
+                ),
+            }
+        )
+        # Passed through: any other loop report, Playwright or not.
+        loop.call_exception_handler(
+            {
+                "message": "Exception in callback",
+                "exception": PlaywrightError("Route is already handled!"),
+            }
+        )
+
+    assert [entry["message"] for entry in observed] == [
+        "Task exception was never retrieved",
+        "Task exception was never retrieved",
+        "Exception in callback",
+    ]
+    assert [type(entry["exception"]) for entry in observed] == [
+        ValueError,
+        PlaywrightError,
+        PlaywrightError,
+    ]
+    loop.set_exception_handler(None)
+
+
+def _task_with_coro_filename(filename: str) -> Any:
+    """A finished task whose coroutine claims to live at *filename*."""
+
+    async def _coroutine() -> None:
+        await asyncio.sleep(0)
+
+    code = _coroutine.__code__.replace(co_filename=filename)
+    coroutine = types.FunctionType(code, {})()
+    task = asyncio.ensure_future(coroutine)
+    assert isinstance(task, asyncio.Task)
+    return task
 
 
 @pytest.mark.asyncio
