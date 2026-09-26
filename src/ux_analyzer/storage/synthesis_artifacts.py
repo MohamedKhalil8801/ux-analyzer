@@ -24,6 +24,7 @@ from ux_analyzer.domain.synthesis import (
     FindingKind,
     ObjectionSeverity,
     RejectedCandidateAudit,
+    ScenarioReview,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
@@ -793,6 +794,9 @@ def _attempt_to_dict(attempt: SynthesisAttempt) -> dict[str, object]:
         ],
         "final_findings": [_finding_to_dict(item) for item in attempt.final_findings],
         "status": _enum_text(attempt.status, "status"),
+        "scenario_reviews": [
+            _scenario_review_to_dict(item) for item in attempt.scenario_reviews
+        ],
         "limitations": list(attempt.limitations),
         "fallback_available": attempt.fallback_available,
     }
@@ -901,8 +905,41 @@ def _attempt_from_dict(value: Mapping[str, object]) -> SynthesisAttempt:
             _text(item, "limitation")
             for item in _list(value.get("limitations"), "limitations")
         ),
+        scenario_reviews=tuple(
+            _scenario_review_from_dict(item)
+            for item in _list(value.get("scenario_reviews", []), "scenario_reviews")
+        ),
         fallback_available=fallback_available,
         created_at=created_at,
+    )
+
+
+def _scenario_review_to_dict(review: ScenarioReview) -> dict[str, object]:
+    return {
+        "scenario_id": review.scenario_id,
+        "disposition": _enum_text(review.disposition, "scenario review disposition"),
+        "evidence_ids": list(review.evidence_ids),
+        "signals_weighed": list(review.signals_weighed),
+        "note": review.note,
+    }
+
+
+def _scenario_review_from_dict(value: object) -> ScenarioReview:
+    mapping = _mapping(value, "scenario review")
+    return ScenarioReview(
+        scenario_id=_text(mapping.get("scenario_id"), "scenario review scenario ID"),
+        disposition=_text(mapping.get("disposition"), "scenario review disposition"),
+        evidence_ids=tuple(
+            _text(item, "scenario review evidence ID")
+            for item in _list(mapping.get("evidence_ids", []), "scenario review evidence")
+        ),
+        signals_weighed=tuple(
+            _text(item, "scenario review signal")
+            for item in _list(
+                mapping.get("signals_weighed", []), "scenario review signals"
+            )
+        ),
+        note=_text(mapping.get("note", ""), "scenario review note"),
     )
 
 

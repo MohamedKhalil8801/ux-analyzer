@@ -20,6 +20,8 @@ from ux_analyzer.domain.synthesis import (
     FindingKind,
     ObjectionSeverity,
     RejectedCandidateAudit,
+    ReviewDisposition,
+    ScenarioReview,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisObjection,
@@ -121,7 +123,8 @@ def _attempt(
     objections: tuple[SynthesisObjection, ...] = (),
     role_receipts: tuple[SynthesisRoleReceipt, ...] | None = None,
     rejected_candidate_audits: tuple[RejectedCandidateAudit, ...] = (),
-) -> SynthesisAttempt:
+    scenario_reviews: tuple[ScenarioReview, ...] = (),
+    ) -> SynthesisAttempt:
     if findings is None:
         findings = (_finding(),) if status is SynthesisStatus.ACCEPTED else ()
     if candidate_findings is None:
@@ -166,6 +169,7 @@ def _attempt(
         objections=objections,
         rejected_findings=rejected_findings,
         findings=findings,
+        scenario_reviews=scenario_reviews,
         limitations=("Fixture evidence only.",),
         fallback_available=True,
         created_at="2026-08-10T12:00:00+00:00",
@@ -198,6 +202,78 @@ def _resolved_blocking_objection(finding_id: str) -> SynthesisObjection:
         resolved_by_role="report-adjudicator",
         resolution_evidence_refs=objection.evidence_refs,
     )
+
+
+def test_scenario_reviews_survive_the_round_trip(tmp_path: Path) -> None:
+    """A review that is enforced but not persisted is not a record.
+
+    Publication validation requires one review per scenario, which makes the
+    review the evidence that the scenario was examined at all. If the artifact
+    did not carry them, a reader of the stored attempt could see that findings
+    were published but not that every scenario had been weighed - the exact
+    question the coverage invariant exists to answer.
+    """
+
+    corpus = _corpus(tmp_path)
+    reviews = (
+        ScenarioReview(
+            scenario_id="invite",
+            disposition=ReviewDisposition.UX_ISSUE,
+            evidence_ids=("event:run-a:1",),
+            signals_weighed=("attention cost", "action count"),
+            note="Target surfaced only after two viewports.",
+        ),
+        ScenarioReview(
+            scenario_id="settings",
+            disposition=ReviewDisposition.NO_ISSUE_FOUND,
+            signals_weighed=("competing-control density", "path deviation"),
+            note="Nothing better than the recorded path was available.",
+        ),
+    )
+    attempt = _attempt(corpus, sequence=1, findings=(_finding(),), scenario_reviews=reviews)
+    store = SynthesisArtifactStore(tmp_path)
+
+    attempt_path = store.write_attempt(attempt, corpus)
+    stored = json.loads((attempt_path / "synthesis.json").read_text(encoding="ascii"))
+    assert [item["scenario_id"] for item in stored["scenario_reviews"]] == [
+        "invite",
+        "settings",
+    ]
+
+    loaded = store.attempts
+    assert len(loaded) == 1
+    assert loaded[0].scenario_reviews == reviews
+
+
+def test_attempt_without_scenario_reviews_still_loads(tmp_path: Path) -> None:
+    """Attempts written before the coverage invariant must remain readable.
+
+    Older artifacts have no scenario_reviews key at all. Reading them as an
+    empty tuple is correct: they predate the requirement, and rejecting them
+    would make every historical attempt unreadable for no gain.
+    """
+
+    corpus = _corpus(tmp_path)
+    attempt = _attempt(corpus, sequence=1, findings=(_finding(),))
+    store = SynthesisArtifactStore(tmp_path)
+    attempt_path = store.write_attempt(attempt, corpus)
+    synthesis_path = attempt_path / "synthesis.json"
+    payload = json.loads(synthesis_path.read_text(encoding="ascii"))
+    payload.pop("scenario_reviews", None)
+    legacy_bytes = _canonical_bytes(payload)
+    synthesis_path.write_bytes(legacy_bytes)
+    # The index is digest-bound to the artifact, so a legacy file has to be
+    # indexed as what it is rather than forced through the digest check.
+    index_path = tmp_path / "synthesis" / "index.json"
+    index = json.loads(index_path.read_text(encoding="ascii"))
+    for record in index["attempts"]:
+        if record["attempt_id"] == attempt.attempt_id:
+            record["synthesis_digest"] = hashlib.sha256(legacy_bytes).hexdigest()
+    index_path.write_bytes(_canonical_bytes(index))
+
+    loaded = store.attempts
+    assert len(loaded) == 1
+    assert loaded[0].scenario_reviews == ()
 
 
 def test_write_attempt_publishes_canonical_layout_and_round_trips(
