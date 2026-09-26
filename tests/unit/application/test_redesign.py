@@ -644,6 +644,86 @@ async def test_principle_ref_resolves_to_the_pack_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pack_offering_an_undeclared_principle_is_caught() -> None:
+    """principle_ids cross-checks the pack, and the check has to actually fire.
+
+    principle_pack is what the model sees; principle_ids is the project's
+    declared set of valid ids. They are separate arguments, so they can
+    disagree. If a caller offers a principle the project does not declare, a
+    proposal resolved against it must be dropped rather than published - an
+    unattributable claim is worse than a missing one.
+
+    This branch is unreachable from the CLI, where both arguments come from
+    the same static pack. It exists for the other caller, which is exactly why
+    it needs a test: untested defensive code tends to be deleted as
+    unreachable, and the next person to number refs from principle_ids
+    reintroduces the coupling this guards.
+    """
+
+    outcome = await run_redesign_pass(
+        _CAPTURES,
+        audience="",
+        proposer=_FakeProposer(_proposer_response()),
+        critic=_FakeCritic(
+            _critic_response(final=[_proposal_payload(principle_refs=[1])])
+        ),
+        attempt_id="redesign-20260911T000000Z-ffff2222",
+        principle_pack=[
+            {"id": "undeclared-principle", "name": "Undeclared", "statement": "x"}
+        ],
+        principle_ids=("some-other-principle",),
+        principle_pack_version="test-v1",
+    )
+    assert outcome.attempt.status is RedesignAttemptStatus.REJECTED
+    assert any(
+        "unknown principle ids" in reason
+        for reason in outcome.attempt.rejection_reasons
+    )
+
+
+@pytest.mark.asyncio
+async def test_principle_ids_ordering_cannot_affect_resolution() -> None:
+    """The declared-id list is a set, so its order must not matter.
+
+    This is the property that makes the two pack arguments safe to pass
+    separately. If resolution ever consulted principle_ids by position, a
+    reordered list would silently remap every cited ref to the wrong principle
+    - and nothing else in validation would notice.
+    """
+
+    forward = await run_redesign_pass(
+        _CAPTURES,
+        audience="",
+        proposer=_FakeProposer(_proposer_response()),
+        critic=_FakeCritic(
+            _critic_response(final=[_proposal_payload(principle_refs=[1])])
+        ),
+        attempt_id="redesign-20260911T000000Z-aaaa1111",
+        **_pack_kwargs(),
+    )
+    reversed_kwargs = _pack_kwargs()
+    ids = reversed_kwargs["principle_ids"]
+    assert isinstance(ids, tuple)
+    reversed_kwargs["principle_ids"] = tuple(reversed(ids))
+    backward = await run_redesign_pass(
+        _CAPTURES,
+        audience="",
+        proposer=_FakeProposer(_proposer_response()),
+        critic=_FakeCritic(
+            _critic_response(final=[_proposal_payload(principle_refs=[1])])
+        ),
+        attempt_id="redesign-20260911T000000Z-bbbb2222",
+        **reversed_kwargs,
+    )
+    assert forward.attempt.status is RedesignAttemptStatus.ACCEPTED
+    assert backward.attempt.status is RedesignAttemptStatus.ACCEPTED
+    assert (
+        forward.attempt.proposals[0].principle_ids
+        == backward.attempt.proposals[0].principle_ids
+    )
+
+
+@pytest.mark.asyncio
 async def test_pack_entries_carry_the_ref_the_model_is_told_to_cite() -> None:
     """The number has to be visible in the payload, not implied by position.
 

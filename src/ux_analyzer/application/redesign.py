@@ -938,6 +938,17 @@ async def run_redesign_pass(
     The principle pack is injected (as payload dicts, the known-id tuple,
     and the pack version) so this module stays provider-agnostic; the
     caller assembles it from the versioned static pack.
+
+    The two pack arguments have different jobs and must not be conflated.
+    ``principle_pack`` is what the model is shown and is the *only* source of
+    the numbering a proposal's ``principle_refs`` resolves against - ref N is
+    always the Nth entry of the list actually sent. ``principle_ids`` is a
+    declared set of valid ids used only to cross-check that the pack contains
+    nothing outside it; it is reduced to a frozenset immediately, so its
+    ordering is irrelevant by construction. Numbering from ``principle_ids``
+    instead would be a silent correctness bug: the two orderings need not
+    agree, and a disagreement would attribute proposals to the wrong principle
+    while every check still passed.
     """
 
     if not captures:
