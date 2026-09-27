@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from ux_analyzer.export.catalog import ArtifactFile, EvidenceRefView, IssueView
-from ux_analyzer.export.render import ExportContext, render_index, render_issue
+from ux_analyzer.export.render import (
+    ExportContext,
+    ScenarioReviewView,
+    render_index,
+    render_issue,
+)
 from ux_analyzer.export.skills import SkillSet
 
 
@@ -119,6 +124,103 @@ def test_render_manifest_shape() -> None:
     assert manifest["report_path"] == "D:/reports"
     assert manifest["issues"][0]["filename"] == "run-1-visual-hierarchy.md"
     assert manifest["assets"] == {"assets/ev-1.png": "abc"}
+
+
+def test_render_index_carries_the_scenario_examination_record() -> None:
+    context = ExportContext(
+        report_path=Path("D:/reports"),
+        exported_at="2026-08-31T10:00:00Z",
+        tool_version="0.1.0",
+        synthesis_status="completed",
+        using_fallback=False,
+        attempt_id="attempt-1",
+        issues=(_issue(),),
+        assignments={},
+        skill_sets=(),
+        skills_note=None,
+        reproduction_notes=None,
+        scenario_reviews=(
+            ScenarioReviewView(
+                scenario_id="checkout",
+                disposition="ux-issue",
+                evidence_ids=("run-1:visual-hierarchy",),
+                signals_weighed=("attention cost", "action count"),
+                note="The primary control was occluded at 375px.",
+            ),
+            ScenarioReviewView(
+                scenario_id="settings",
+                disposition="no-issue-found",
+                evidence_ids=("run-2:action-sequence",),
+                signals_weighed=("action count",),
+                note="Every step completed on the first attempt.",
+            ),
+        ),
+    )
+    md = render_index(context)
+
+    assert "## Scenario examination" in md
+    assert "2 scenario(s) were examined" in md
+    assert "`checkout`" in md and "`settings`" in md
+    assert "The primary control was occluded at 375px." in md
+    assert "Every step completed on the first attempt." in md
+    assert "attention cost; action count" in md
+    # A clean scenario has to read as examined, not skipped.
+    assert "it is not a claim that it was skipped" in md
+
+
+def test_absent_examination_record_is_reported_as_unknown_not_clean() -> None:
+    """A missing record must not read as "everything was checked and passed"."""
+
+    context = ExportContext(
+        report_path=Path("D:/reports"),
+        exported_at="2026-08-31T10:00:00Z",
+        tool_version="0.1.0",
+        synthesis_status="completed",
+        using_fallback=False,
+        attempt_id="attempt-1",
+        issues=(_issue(),),
+        assignments={},
+        skill_sets=(),
+        skills_note=None,
+        reproduction_notes=None,
+    )
+    md = render_index(context)
+
+    assert "## Scenario examination" in md
+    assert "carries no scenario examination record" in md
+    assert "treat completeness as unknown" in md
+
+
+def test_manifest_counts_scenarios_examined() -> None:
+    from ux_analyzer.export.render import render_manifest
+
+    context = ExportContext(
+        report_path=Path("D:/reports"),
+        exported_at="2026-08-31T10:00:00Z",
+        tool_version="0.1.0",
+        synthesis_status="completed",
+        using_fallback=False,
+        attempt_id="attempt-1",
+        issues=(_issue(),),
+        assignments={},
+        skill_sets=(),
+        skills_note=None,
+        reproduction_notes=None,
+        scenario_reviews=(
+            ScenarioReviewView(
+                scenario_id="checkout",
+                disposition="ux-issue",
+                evidence_ids=("run-1:visual-hierarchy",),
+                signals_weighed=("attention cost",),
+                note="Occluded at 375px.",
+            ),
+        ),
+    )
+    manifest = render_manifest(context, {})
+
+    assert manifest["scenarios_examined"] == 1
+    assert manifest["scenario_reviews"][0]["scenario_id"] == "checkout"
+    assert manifest["scenario_reviews"][0]["disposition"] == "ux-issue"
 
 
 def test_render_issue_joins_list_selectors() -> None:

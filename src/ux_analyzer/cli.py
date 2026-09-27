@@ -2514,7 +2514,7 @@ def export(
 ) -> None:
     """Export selected issues as an LLM-optimized fix package."""
     from ux_analyzer.export.catalog import build_catalog, parse_issue_flags
-    from ux_analyzer.export.render import ExportContext
+    from ux_analyzer.export.render import ExportContext, ScenarioReviewView
     from ux_analyzer.export.skills import (
         load_skill_sets,
         resolve_assignments,
@@ -2583,6 +2583,16 @@ def export(
         skill_sets=sets,
         skills_note=skills_note,
         reproduction_notes=notes_text,
+        scenario_reviews=tuple(
+            ScenarioReviewView(
+                scenario_id=str(review["scenario_id"]),
+                disposition=str(review["disposition"]),
+                evidence_ids=tuple(str(item) for item in review["evidence_ids"]),
+                signals_weighed=tuple(str(item) for item in review["signals_weighed"]),
+                note=str(review["note"]),
+            )
+            for review in view.get("scenario_reviews") or []
+        ),
     )
     try:
         result = write_export(package_dir, context)

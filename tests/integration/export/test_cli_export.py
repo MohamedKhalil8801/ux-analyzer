@@ -18,6 +18,22 @@ def _view(tmp_path: Path) -> dict[str, object]:
         "synthesis_status": "completed",
         "using_fallback": False,
         "attempt_id": "attempt-1",
+        "scenario_reviews": [
+            {
+                "scenario_id": "checkout",
+                "disposition": "ux-issue",
+                "evidence_ids": ["ev-1"],
+                "signals_weighed": ["attention cost"],
+                "note": "Primary control occluded at 375px.",
+            },
+            {
+                "scenario_id": "settings",
+                "disposition": "no-issue-found",
+                "evidence_ids": ["ev-1"],
+                "signals_weighed": ["action count"],
+                "note": "Completed on the first attempt.",
+            },
+        ],
         "findings": [
             {
                 "finding_id": "run-1:visual-hierarchy",
@@ -82,6 +98,14 @@ def test_export_non_tty_all_writes_package(
     manifest = json.loads((package / "manifest.json").read_text("utf-8"))
     assert manifest["schema_version"] == "fix-export-v1"
     assert manifest["issues"][0]["finding_id"] == "run-1:visual-hierarchy"
+    # The examination record has to survive the whole path, not just the
+    # renderer: a fixing agent reads the package, not the report.
+    assert manifest["scenarios_examined"] == 2
+    assert manifest["scenario_reviews"][0]["scenario_id"] == "checkout"
+    index = (package / "INDEX.md").read_text("utf-8")
+    assert "## Scenario examination" in index
+    assert "Primary control occluded at 375px." in index
+    assert "Completed on the first attempt." in index
 
 
 def test_export_without_selection_fails_cleanly(

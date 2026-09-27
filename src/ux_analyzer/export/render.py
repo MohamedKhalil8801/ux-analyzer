@@ -28,6 +28,17 @@ _CAMEL_SPLIT = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioReviewView:
+    """What examining one scenario concluded, as the export presents it."""
+
+    scenario_id: str
+    disposition: str
+    evidence_ids: tuple[str, ...]
+    signals_weighed: tuple[str, ...]
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExportContext:
     report_path: Path
     exported_at: str
@@ -40,6 +51,7 @@ class ExportContext:
     skill_sets: tuple[SkillSet, ...]
     skills_note: str | None
     reproduction_notes: str | None
+    scenario_reviews: tuple[ScenarioReviewView, ...] = ()
 
 
 def _scalar(value: object) -> object:
@@ -283,6 +295,8 @@ def render_index(context: ExportContext) -> str:
             "| --- | --- | --- | --- | --- |",
             issue_rows,
             "",
+            _scenario_examination(context),
+            "",
             "## Reproducing the application",
             "",
             notes,
@@ -299,6 +313,63 @@ def render_index(context: ExportContext) -> str:
     )
 
 
+def _scenario_examination(context: ExportContext) -> str:
+    """The per-scenario examination record, as a fixing agent needs it.
+
+    The issues above are only part of what the report concluded. A fixing agent
+    also needs to know which scenarios were examined and came back clean, so it
+    does not spend its budget re-investigating ground the report already covered
+    - and it needs to know when a scenario was never examined at all, which
+    looks identical to "nothing found" if the record is simply absent.
+    """
+
+    reviews = context.scenario_reviews
+    if not reviews:
+        return (
+            "## Scenario examination\n\n"
+            "This report carries no scenario examination record. Nothing here "
+            "says the scenarios were checked; treat completeness as unknown "
+            "rather than as a clean result.\n"
+        )
+
+    rows = "\n".join(
+        f"| `{review.scenario_id}` | {review.disposition} | "
+        f"{len(review.evidence_ids)} |"
+        for review in reviews
+    )
+    details = "\n\n".join(
+        "\n".join(
+            [
+                f"### `{review.scenario_id}` — {review.disposition}",
+                "",
+                f"Signals weighed: {'; '.join(review.signals_weighed) or '(none recorded)'}",
+                "",
+                review.note or "_(no note recorded)_",
+                "",
+                f"Evidence: {', '.join(f'`{item}`' for item in review.evidence_ids)}"
+                if review.evidence_ids
+                else "Evidence: (none recorded)",
+            ]
+        )
+        for review in reviews
+    )
+    return "\n".join(
+        [
+            "## Scenario examination",
+            "",
+            f"{len(reviews)} scenario(s) were examined. A scenario listed as "
+            "`no-issue-found` was looked at and produced nothing exportable; it "
+            "is not a claim that it was skipped.",
+            "",
+            "| Scenario | Disposition | Evidence |",
+            "| --- | --- | --- |",
+            rows,
+            "",
+            details,
+        ]
+    )
+
+
 def render_manifest(
     context: ExportContext, asset_digests: Mapping[str, str]
 ) -> dict[str, object]:
@@ -310,6 +381,16 @@ def render_manifest(
         "attempt_id": context.attempt_id,
         "synthesis_status": context.synthesis_status,
         "using_fallback": context.using_fallback,
+        "scenarios_examined": len(context.scenario_reviews),
+        "scenario_reviews": [
+            {
+                "scenario_id": review.scenario_id,
+                "disposition": review.disposition,
+                "evidence_ids": list(review.evidence_ids),
+                "signals_weighed": list(review.signals_weighed),
+            }
+            for review in context.scenario_reviews
+        ],
         "issues": [
             {
                 "finding_id": issue.finding_id,
