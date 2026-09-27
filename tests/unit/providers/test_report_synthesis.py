@@ -22,7 +22,12 @@ from ux_analyzer.application.evidence_corpus import (
     EvidenceResolver,
 )
 from ux_analyzer.domain.findings import EvidenceClass, FindingSeverity
-from ux_analyzer.domain.synthesis import EvidenceRef, FindingKind, ObjectionSeverity
+from ux_analyzer.domain.synthesis import (
+    EvidenceRef,
+    FindingKind,
+    ObjectionSeverity,
+    ReviewDisposition,
+)
 from ux_analyzer.ports.model_transport import (
     MODEL_REQUEST_MAX_BYTES,
     TransportBudgetError,
@@ -748,6 +753,69 @@ async def test_auditor_rejects_undelivered_citation_on_final_round() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scenario_review_evidence_handles_expand_to_canonical_ids() -> None:
+    """A review's evidence IDs are handles too, so they have to be expanded.
+
+    The analyst prompt tells the model to use the provider handle in *every*
+    evidence_id field, and the model does. Publication then filters a review's
+    evidence against the real corpus, so an unexpanded handle matches nothing
+    and the review is silently downgraded to no-issue-found with no evidence -
+    which is how every scenario review was being discarded in live runs.
+    """
+
+    corpus = EvidenceCorpus(
+        output_root=Path.cwd(),
+        entries=(
+            EvidenceEntry(
+                ref=EvidenceRef(
+                    EVIDENCE_ID,
+                    "event",
+                    "run-a",
+                    event_id="event-1",
+                    replay_sequence=1,
+                ),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="The user opened the invite control.",
+                payload={"sequence": 1},
+            ),
+        ),
+    )
+    resolved = EvidenceResolver().resolve(
+        corpus,
+        [EVIDENCE_ID],
+        max_entries=1,
+        max_attachment_bytes=1024,
+    )
+    client = RecordingClient(
+        lambda schema, role: AnalystResponse.model_validate(
+            {
+                "complete": True,
+                "candidate_findings": [],
+                "scenario_reviews": [
+                    {
+                        "scenario_id": "invite-a-friend",
+                        "disposition": "ux-issue",
+                        "evidence_ids": ["e0"],
+                        "signals_weighed": ["action count"],
+                        "note": "The invite control was hard to find.",
+                    }
+                ],
+            }
+        )
+    )
+
+    response = await ReportAnalyst(client, model="gpt-report").analyze(
+        corpus,
+        resolved_evidence=resolved,
+        retrieval_round=3,
+        max_retrieval_rounds=3,
+    )
+
+    review = response.scenario_reviews[0]
+    assert review.disposition is ReviewDisposition.UX_ISSUE
+    assert review.evidence_ids == [EVIDENCE_ID]
+
+
 async def test_final_round_retries_once_with_exact_delivered_handle_set() -> None:
     finding = CandidateFinding(
         finding_id="invite-control",

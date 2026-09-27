@@ -1594,11 +1594,20 @@ def _expand_provider_handles(
             mapping = cast(Mapping[object, object], value)
             replaced: dict[object, object] = {}
             for key, item in mapping.items():
-                replaced[key] = (
-                    expand(item)
-                    if key == "evidence_id"
-                    else replace_reference_ids(item)
-                )
+                if key == "evidence_id":
+                    replaced[key] = expand(item)
+                elif key == "evidence_ids" and isinstance(item, list):
+                    # The plural form carries a list of handles. Recursing would
+                    # not reach them: the strings are list items, not mapping
+                    # values named ``evidence_id``. Missing this is invisible
+                    # until publication filters the reviews against the corpus
+                    # and discards every one of them.
+                    replaced[key] = [
+                        expand(entry) if isinstance(entry, str) else entry
+                        for entry in cast("list[object]", item)
+                    ]
+                else:
+                    replaced[key] = replace_reference_ids(item)
             raw_evidence_id = mapping.get("evidence_id")
             if isinstance(raw_evidence_id, str) and raw_evidence_id in references:
                 for field_name in _EVIDENCE_REFERENCE_FIELDS:
