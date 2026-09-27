@@ -28,9 +28,21 @@ _Avoid_: cognitive decision, run evaluation
 An evidence-backed explanation of a user-facing problem, its underlying cause and impact, and a concrete recommended fix.
 _Avoid_: observation, metric, unsupported opinion
 
+**Improvement**:
+A UX finding reporting that the interaction worked but the record shows a better balance was available among competing signals. Its subject is opportunity rather than harm: it never claims users were hurt, and its severity describes how much room was left rather than how much damage occurred. Reporting a trade-off honestly as an improvement is a valid conclusion; inflating it into a harm claim is not.
+_Avoid_: UX issue, usability defect, low-severity problem
+
 **Scenario Defect**:
 A report-synthesis finding that blames the scenario specification rather than the product: an ambiguous or self-contradictory goal, a missing start state or fixture input, a verifier that cannot occur on any reachable page, an unreachable or out-of-scope target, or a budget the goal cannot fit. It cites recorded run evidence exactly like a UX finding, but its fix corrects the scenario and its severity describes the run's validity, not product harm. A scenario defect is not a UX finding.
 _Avoid_: product bug, failed run, test flake
+
+**Scenario Review**:
+The recorded outcome of examining exactly one scenario, published whether or not that examination found anything. It names the signals weighed, the evidence consulted, and the conclusion reached. Every scenario in the evidence corpus requires one, so a scenario that was never examined cannot be reported as clean.
+_Avoid_: scenario verdict, per-scenario finding, pass/fail
+
+**Review Disposition**:
+What one scenario review concluded: a finding disposition matching the kind of finding it supports, or no-issue-found when the examination produced nothing publishable. The two must agree in both directions — a review cannot record a finding when nothing is published, and a finding cannot publish when no review records one. Either contradiction rejects the attempt as internally inconsistent.
+_Avoid_: review status, scenario outcome flag
 
 **Synthesis Status**:
 The explicit outcome of report synthesis, distinguishing a completed synthesis from unavailable or invalid synthesis and from a valid conclusion that no UX issue was found.
