@@ -198,7 +198,11 @@ def attempt_to_payload(
         ],
         "proposals": [_proposal_to_dict(item) for item in attempt.proposals],
         "killed": [
-            {"proposal_id": item.proposal_id, "reason": item.reason}
+            {
+                "proposal_id": item.proposal_id,
+                "reason": item.reason,
+                "title": item.title,
+            }
             for item in attempt.killed
         ],
     }
@@ -265,9 +269,11 @@ def _killed_from_dict(value: object) -> KilledProposal:
     if not isinstance(value, Mapping):
         raise RedesignArtifactError("killed entry must be an object")
     mapping = cast(Mapping[str, object], value)
+    raw_title = mapping.get("title")
     return KilledProposal(
         proposal_id=str(mapping.get("proposal_id", "")),
         reason=str(mapping.get("reason", "")),
+        title="" if raw_title is None else str(raw_title),
     )
 
 

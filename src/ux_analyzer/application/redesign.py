@@ -103,6 +103,7 @@ class RedesignKilledView(Protocol):
 
     proposal_id: str
     reason: str
+    title: str
 
 
 class RedesignProposerPort(Protocol):
@@ -1100,6 +1101,7 @@ async def run_redesign_pass(
         KilledProposal(
             proposal_id=cast(RedesignKilledView, item).proposal_id,
             reason=cast(RedesignKilledView, item).reason,
+            title=getattr(item, "title", "") or "",
         )
         for item in killed_sequence
     )

@@ -20,6 +20,7 @@ from ux_analyzer.domain.redesign import (
     DesignProposal,
     Effort,
     Impact,
+    KilledProposal,
     RedesignAttempt,
     RedesignAttemptStatus,
     SectionReference,
@@ -619,6 +620,47 @@ def _write_redesign(root: Path) -> None:
     RedesignAttemptStore(root).publish(attempt)
 
 
+def _write_redesign_with_killed(root: Path) -> None:
+    """An accepted redesign that also dropped one proposal to the critic."""
+
+    RedesignAttemptStore(root).publish(
+        RedesignAttempt(
+            attempt_id="redesign-20260913T130000Z-cafebabe",
+            status=RedesignAttemptStatus.ACCEPTED,
+            pack_version="ux-foundations-v1",
+            proposals=(
+                DesignProposal(
+                    proposal_id="proposal-kept",
+                    page_url="https://app.example.test/",
+                    category=DesignCategory.COPY,
+                    title="Clarify the hero call-to-action label",
+                    observation="The hero button label is ambiguous.",
+                    rationale="Specific verbs set clearer expectations.",
+                    change="Rename the hero button to an explicit action verb.",
+                    principle_ids=("copy-writing",),
+                    impact=Impact.LOW,
+                    effort=Effort.SMALL,
+                    section_refs=(
+                        SectionReference(
+                            url="https://app.example.test/",
+                            section_label="hero",
+                            box={"x": 0.1, "y": 0.2, "width": 0.4, "height": 0.1},
+                            summary="Hero",
+                        ),
+                    ),
+                ),
+            ),
+            killed=(
+                KilledProposal(
+                    proposal_id="proposal-dropped",
+                    reason="principle #99 is not in the pack",
+                    title="Merge the two pricing tiers into one card",
+                ),
+            ),
+        )
+    )
+
+
 def _write_ux_audit(root: Path) -> None:
     payload = {
         "schema_version": "ux-audit-v1",
@@ -1037,11 +1079,17 @@ def test_fallback_findings_are_excluded_from_export(
     # its own record, so the view says so rather than pretending the review
     # never ran. Page facts still export.
     assert view["using_fallback"] is False
-    ids = [finding["finding_id"] for finding in view["findings"]]
+    published = [f for f in view["findings"] if f.get("published", True)]
+    rejected = [f for f in view["findings"] if not f.get("published", True)]
+    ids = [finding["finding_id"] for finding in published]
     assert ids, "deterministic page facts still export"
     assert all(
         finding_id.startswith(("audit:", "slop:", "pagespeed:")) for finding_id in ids
     )
+    # The rejected candidate is offered in the same list, marked unpublished so
+    # the picker starts it clear rather than hiding it.
+    assert rejected, "the rejected candidate is listed, not dropped"
+    assert all(f.get("source") == "rejected" for f in rejected)
     assert not any(
         finding.get("limitations")
         for finding in view["findings"]
@@ -1126,3 +1174,66 @@ def test_rejected_candidates_are_listed_but_start_unchecked(
     markdown = render_issue(chosen[0], {})
     assert "Rejected during independent review" in markdown
     assert "not an established finding" in markdown
+
+
+def test_dropped_redesign_proposals_are_listed_but_start_unchecked(
+    tmp_path: Path,
+) -> None:
+    """A proposal the critic removed is offered, off by default, like a rejection.
+
+    The Redesign tab keeps its survivors and its casualties side by side, so the
+    export has to offer both. A partially-valid pass that quietly dropped a
+    proposal is exactly the case that was invisible before.
+    """
+
+    _write_run(tmp_path, "run-1", version="improved", discovery_cost=3)
+    _write_synthesis(tmp_path, status=SynthesisStatus.ACCEPTED)
+    _write_redesign_with_killed(tmp_path)
+
+    view = load_report_findings(tmp_path)
+    catalog = build_catalog(view)
+
+    dropped = [i for i in catalog.issues if i.finding_id.startswith("redesign-rejected:")]
+    kept = [
+        i
+        for i in catalog.issues
+        if i.finding_id.startswith("redesign:") and i.published
+    ]
+    assert len(dropped) == 1
+    assert kept, "the surviving proposal is still offered"
+    assert dropped[0].published is False
+    # The reason it was dropped travels with it, so the row is informative
+    # rather than just an absence.
+    assert "principle #99" in dropped[0].issue_text
+    assert "Merge the two pricing tiers" in dropped[0].title
+
+    class _UI:
+        def __init__(self) -> None:
+            self.defaults: dict[str, bool] = {}
+
+        def select_group(
+            self, name: str, items: Sequence[tuple[str, str, bool]]
+        ) -> tuple[str, ...]:
+            self.defaults.update({fid: checked for fid, _l, checked in items})
+            return ()
+
+        def choose_skill_set(self, sets: Sequence[SkillSet]) -> str | None:
+            return None
+
+        def override_per_issue(
+            self,
+            issues: Sequence[IssueView],
+            sets: Sequence[SkillSet],
+            default_name: str | None,
+        ) -> dict[str, str]:
+            return {}
+
+        def confirm(self, _summary: str) -> bool:
+            return True
+
+    ui = _UI()
+    run_selection_flow(catalog, (), ui)
+    for issue in dropped:
+        assert ui.defaults[issue.finding_id] is False
+    for issue in kept:
+        assert ui.defaults[issue.finding_id] is True

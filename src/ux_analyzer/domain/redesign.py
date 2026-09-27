@@ -201,10 +201,17 @@ class DesignProposal:
 
 @dataclass(frozen=True, slots=True)
 class KilledProposal:
-    """A proposal removed by the critic/merger, preserved with its reason."""
+    """A proposal removed by the critic/merger, preserved with its reason.
+
+    ``title`` is carried so a killed proposal can still be listed to a reader
+    and exported on request. A dropped proposal with only an id is not
+    something anyone can act on, and the report is supposed to show reviewed
+    work rather than hide it. Optional because older artifacts predate it.
+    """
 
     proposal_id: str
     reason: str
+    title: str = ""
 
     def __post_init__(self) -> None:
         _require_non_empty(self.proposal_id, "proposal_id")

@@ -193,13 +193,7 @@ def _attachment_artifacts(
     return tuple(artifacts)
 
 
-def _issue_view(
-    finding: Mapping[str, Any],
-    root: Path,
-    taken: set[str],
-    *,
-    published: bool = True,
-) -> IssueView:
+def _issue_view(finding: Mapping[str, Any], root: Path, taken: set[str]) -> IssueView:
     confidence = finding.get("confidence")
     return IssueView(
         finding_id=str(finding.get("finding_id", "")),
@@ -226,17 +220,18 @@ def _issue_view(
         evidence=_evidence_view(finding) or _static_evidence(finding),
         artifacts=_artifacts(finding, root) + _attachment_artifacts(finding),
         source=str(finding.get("source", "reviewed")),
-        published=published,
+        published=bool(finding.get("published", True)),
     )
 
 
 def build_catalog(report: Mapping[str, Any]) -> IssueCatalog:
     """Adapt the report's rendered findings into a selectable catalog.
 
-    Rejected candidates are included so they can be exported on request, but
-    they are marked ``published=False`` and ``parse_issue_flags`` leaves them
-    out of ``--all``. A rejected claim is a claim somebody chose to stand
-    behind explicitly, not something a fix agent should be handed by default.
+    Everything the report shows is offered, including candidates review rejected
+    and proposals the redesign critic dropped. Those carry ``published=False``
+    so the selection flow can list them and start their checkbox clear - the
+    same treatment evidence that could not be resolved already gets. Nothing is
+    hidden and nothing is pre-selected.
     """
 
     root = Path(str(report.get("bundle_root", ".")))
@@ -248,15 +243,7 @@ def build_catalog(report: Mapping[str, Any]) -> IssueCatalog:
             str(finding.get("finding_id", "")),
         ),
     )
-    rejected = sorted(
-        report.get("rejected_findings", []),
-        key=lambda finding: str(finding.get("finding_id", "")),
-    )
-    issues = tuple(
-        _issue_view(finding, root, taken, published=True) for finding in findings
-    ) + tuple(
-        _issue_view(finding, root, taken, published=False) for finding in rejected
-    )
+    issues = tuple(_issue_view(finding, root, taken) for finding in findings)
     by_group: dict[str, list[IssueView]] = {}
     for issue in issues:
         by_group.setdefault(issue.group, []).append(issue)

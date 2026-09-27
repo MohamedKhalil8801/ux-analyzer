@@ -155,10 +155,15 @@ class ProposerResponse(_RedesignSchema):
 
 
 class CriticKilledProposal(_RedesignSchema):
-    """A proposal removed by the critic, preserved with its reason."""
+    """A proposal removed by the critic, preserved with its reason.
+
+    ``title`` is asked for so the killed proposal stays recognisable in the
+    report and export. Without it a dropped proposal is just an id.
+    """
 
     proposal_id: str
     reason: str
+    title: str = ""
 
 
 class CriticConsolidatedProposal(_ProposalInvariants):

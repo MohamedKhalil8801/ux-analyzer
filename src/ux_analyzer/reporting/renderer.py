@@ -331,6 +331,38 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
     findings = findings + _page_audit_findings(experiment.get("ux_audit"), used_ids)
     findings = findings + _pagespeed_findings(experiment.get("pagespeed"), used_ids)
     findings = findings + _redesign_findings(root, used_ids)
+    # Rejected synthesis candidates join the one list the export offers, marked
+    # published=False so the selection flow lists them and starts them clear.
+    rejected = (
+        []
+        if using_fallback
+        else [
+            {
+                "finding_id": _text(item.get("finding_id")),
+                "title": _text(item.get("title")),
+                "issue": _text(item.get("issue")),
+                "impact": _text(item.get("impact")),
+                "root_cause": _text(item.get("root_cause")),
+                "severity": _text(item.get("severity")) or "low",
+                "fixes": [_text(fix) for fix in item.get("fixes", [])],
+                "evidence_refs": [
+                    {"evidence_id": _text(evidence_id), "kind": "metric"}
+                    for evidence_id in item.get("evidence_ids", [])
+                ],
+                "reviewer_notes": [
+                    _text(note) for note in item.get("reviewer_notes", [])
+                ],
+                "source": "rejected",
+                "published": False,
+                "limitations": [
+                    "Rejected during independent review. Not an established "
+                    "finding; included only because it was explicitly "
+                    "selected for export."
+                ],
+            }
+            for item in _list_of_mappings(synthesis.get("rejected_findings"))
+        ]
+    )
     return {
         "bundle_root": root,
         "synthesis_status": _text(synthesis.get("synthesis_status")),
@@ -340,35 +372,7 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
             if synthesis.get("attempt_id") is None
             else _text(synthesis.get("attempt_id"))
         ),
-        "findings": findings,
-        "rejected_findings": (
-            []
-            if using_fallback
-            else [
-                {
-                    "finding_id": _text(item.get("finding_id")),
-                    "title": _text(item.get("title")),
-                    "issue": _text(item.get("issue")),
-                    "impact": _text(item.get("impact")),
-                    "root_cause": _text(item.get("root_cause")),
-                    "severity": _text(item.get("severity")) or "low",
-                    "fixes": [_text(fix) for fix in item.get("fixes", [])],
-                    "evidence_refs": [
-                        {"evidence_id": _text(evidence_id), "kind": "metric"}
-                        for evidence_id in item.get("evidence_ids", [])
-                    ],
-                    "reviewer_notes": [
-                        _text(note) for note in item.get("reviewer_notes", [])
-                    ],
-                    "limitations": [
-                        "Rejected during independent review. Not an established "
-                        "finding; included only because it was explicitly "
-                        "selected for export."
-                    ],
-                }
-                for item in _list_of_mappings(synthesis.get("rejected_findings"))
-            ]
-        ),
+        "findings": findings + rejected,
         "limitations": [_text(item) for item in synthesis.get("limitations", [])],
         "scenario_reviews": [
             {
@@ -506,6 +510,7 @@ def _static_finding(
     impact: str = "",
     root_cause: str = "",
     fixes: list[str] | None = None,
+    published: bool = True,
 ) -> dict[str, Any]:
     return {
         "finding_id": finding_id,
@@ -515,6 +520,7 @@ def _static_finding(
         "root_cause": root_cause,
         "fixes": fixes or [],
         "severity": severity,
+        "published": published,
         "category": category,
         "evidence_refs": [],
         "evidence_targets": [],
@@ -979,10 +985,15 @@ def _redesign_findings(root: Path, used: set[str]) -> list[dict[str, Any]]:
     """
 
     view = _load_redesign(root)
-    if view.get("state") != "accepted":
+    if view.get("state") not in {"accepted", "rejected", "no-proposals"}:
         return []
     findings: list[dict[str, Any]] = []
-    for raw in _list_of_mappings(view.get("proposals")):
+    proposals = (
+        _list_of_mappings(view.get("proposals"))
+        if view.get("state") == "accepted"
+        else []
+    )
+    for raw in proposals:
         proposal = cast("Mapping[str, Any]", raw)
         title = _text(proposal.get("title"))
         if not title:
@@ -1045,6 +1056,43 @@ def _redesign_findings(root: Path, used: set[str]) -> list[dict[str, Any]]:
                 ],
                 evidence_class="model-estimate",
                 reproducibility="model-dependent",
+            )
+        )
+    # Proposals the critic or merger removed. Listed for the reader and
+    # exportable on request, but published=False so the picker starts them
+    # unchecked. Without a title the row falls back to the id and says so,
+    # rather than implying a proposal text exists.
+    for raw in _list_of_mappings(view.get("killed")):
+        killed = cast("Mapping[str, Any]", raw)
+        proposal_id = _text(killed.get("proposal_id"))
+        reason = _text(killed.get("reason"))
+        if not proposal_id or not reason:
+            continue
+        title = _text(killed.get("title"))
+        findings.append(
+            _static_finding(
+                _unique_finding_id(f"redesign-rejected:{proposal_id}", used),
+                title or f"Dropped proposal {proposal_id}",
+                f"The redesign critic or merger dropped this proposal: {reason}",
+                "low",
+                "design",
+                "rejected-redesign",
+                {
+                    "Proposal ID": proposal_id,
+                    "Why it was dropped": reason,
+                    "Title recorded": (
+                        "yes" if killed.get("has_title") else "no - only the id was kept"
+                    ),
+                },
+                limitations=[
+                    "Dropped by redesign review and never published. It is a "
+                    "model estimate, not a run-evidence finding, and it was "
+                    "dropped for the reason above. Included only because it "
+                    "was explicitly selected for export."
+                ],
+                evidence_class="model-estimate",
+                reproducibility="model-dependent",
+                published=False,
             )
         )
     return findings
@@ -1401,6 +1449,32 @@ def _redesign_capture_truncation(root: Path) -> tuple[bool, int]:
     return truncated_height > 0, truncated_height
 
 
+def _redesign_killed_view(killed: Sequence[object]) -> list[dict[str, Any]]:
+    """Proposals the critic or merger removed, with the reason it gave.
+
+    A title is preferred because a bare id is not something a reader can act
+    on. Proposals dropped before the critic ever saw them have no title, so the
+    id stands in and the row says which it is rather than pretending.
+    """
+
+    view: list[dict[str, Any]] = []
+    for item in killed:
+        proposal_id = _text(getattr(item, "proposal_id", ""))
+        reason = _text(getattr(item, "reason", ""))
+        if not proposal_id or not reason:
+            continue
+        title = _text(getattr(item, "title", ""))
+        view.append(
+            {
+                "proposal_id": proposal_id,
+                "title": title or proposal_id,
+                "has_title": bool(title),
+                "reason": reason,
+            }
+        )
+    return view
+
+
 def _load_redesign(root: Path) -> dict[str, Any]:
     """Load the newest valid redesign attempt for the report tab (bounded).
 
@@ -1420,6 +1494,7 @@ def _load_redesign(root: Path) -> dict[str, Any]:
         "state": "missing",
         "state_label": "Not generated",
         "proposals": [],
+        "killed": [],
         "page_understanding": [],
         "consistency_notes": [],
         "categories": [],
@@ -1482,6 +1557,7 @@ def _load_redesign(root: Path) -> dict[str, Any]:
         )
     ]
     context["proposals"] = proposals_view
+    context["killed"] = _redesign_killed_view(attempt.killed)
     context["page_understanding"] = [
         {
             "url": item.page_url,
@@ -1500,6 +1576,11 @@ def _load_redesign(root: Path) -> dict[str, Any]:
     truncated, height = _redesign_capture_truncation(root)
     context["capture_truncated"] = truncated
     context["capture_note_height"] = height
+    # Killed proposals are shown on every state that has them, not only the
+    # rejected ones: a partially-valid pass keeps its survivors in `proposals`
+    # and its casualties here, and hiding the casualties is what made one bad
+    # proposal look like a whole pass being quietly discarded.
+    context["killed"] = _redesign_killed_view(attempt.killed)
     return context
 
 
@@ -4070,6 +4151,7 @@ def _report_context(
             "state": "missing",
             "state_label": "Not generated",
             "proposals": [],
+        "killed": [],
             "page_understanding": [],
             "consistency_notes": [],
             "categories": [],
