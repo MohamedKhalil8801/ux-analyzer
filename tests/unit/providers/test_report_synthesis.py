@@ -3216,6 +3216,39 @@ def test_unused_share_is_redistributed() -> None:
     assert "scenario:run-b" in {entry.ref.evidence_id for entry in selected}
 
 
+def test_run_trajectory_leads_its_scenario_slice() -> None:
+    """The run entry must survive a crowded scenario, or nothing can be built.
+
+    A live run delivered 36 evidence IDs, 30 of them metrics, and zero of the
+    four ``run`` entries the corpus held. The analyst could say "two wrong
+    actions happened" with nothing identifying which two, so review rejected
+    every candidate that tried to. The run entry is one read for the whole
+    trajectory, the action sequence and the cost breakdown; it cannot afford to
+    queue behind hundreds of element snapshots.
+    """
+
+    entries = [
+        _context_entry("scenario:run-a", "run-a", kind="scenario", scenario_id="a"),
+        _context_entry("run:run-a", "run-a", kind="run"),
+        *[
+            _context_entry(
+                f"element:run-a:vp-1:el-{index}", "run-a", kind="element"
+            )
+            for index in range(40)
+        ],
+    ]
+    scenario_of_run = _scenario_of_run(entries)
+
+    selected = _reserve_per_scenario(entries, scenario_of_run, 4)
+
+    ids = [entry.ref.evidence_id for entry in selected]
+    assert "run:run-a" in ids
+    # Still the equal-floor behaviour: the run entry leads, it does not consume
+    # the whole slice.
+    assert len(selected) == 4
+    assert ids.index("run:run-a") < ids.index("element:run-a:vp-1:el-1")
+
+
 def test_scenario_slice_never_exceeds_the_limit() -> None:
     entries = _noisy_and_quiet_scenarios()
     scenario_of_run = _scenario_of_run(entries)

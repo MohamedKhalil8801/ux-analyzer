@@ -642,6 +642,14 @@ def _reserve_per_scenario(
     a scenario cannot use is redistributed to those that still have entries. So
     a scenario with three entries does not hold budget hostage, and a scenario
     with three hundred still gets its floor.
+
+    Within a scenario the ``run`` entry goes first. It is the only reference
+    that carries the whole ordered trajectory, the action sequence, and the
+    cost breakdown in one read, and it is what turns an aggregate count into
+    something a finding can be built on. Left in recording order it loses every
+    round to the hundreds of element snapshots ahead of it, and the analyst
+    ends up able to say "two wrong actions happened" while being unable to say
+    which two - which is the state review then refuses to publish over.
     """
 
     if limit <= 0:
@@ -660,6 +668,13 @@ def _reserve_per_scenario(
         by_scenario[scenario_id].append(entry)
     if not by_scenario:
         return list(entries[:limit])
+    for scenario_id in order:
+        # Stable sort: the run entry leads its bucket, everything else keeps
+        # recording order so the slice stays deterministic.
+        by_scenario[scenario_id] = sorted(
+            by_scenario[scenario_id],
+            key=lambda entry: 0 if entry.ref.kind == "run" else 1,
+        )
     # Unattributed entries sort last: they cannot be rationed against a
     # scenario, and starving the attributable ones would defeat the point.
     for scenario_id in order:
