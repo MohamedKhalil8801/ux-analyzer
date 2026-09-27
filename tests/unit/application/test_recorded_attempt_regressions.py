@@ -245,22 +245,39 @@ def _recorded_accepted_finding(
     return CandidateFinding.model_validate(_expanded_record(findings[0], corpus))
 
 
-def _scenario_reviews(corpus: EvidenceCorpus) -> list[ScenarioReviewReport]:
+def _scenario_reviews(
+    corpus: EvidenceCorpus,
+    disposition: ReviewDisposition = ReviewDisposition.NO_ISSUE_FOUND,
+) -> list[ScenarioReviewReport]:
     """One examined review per corpus scenario.
 
     Publication validation rejects an attempt that leaves any scenario
     unexamined, so every replayed analyst response has to account for every
     scenario the corpus holds evidence for.
+
+    It also rejects an attempt that publishes a finding no review corroborates,
+    so a replay that is expected to publish passes a finding disposition. The
+    recorded responses predate the scenario review, which is why this is
+    supplied here rather than read from the fixture: the replay has to
+    reconstruct a coherent record, not just a covered one.
     """
 
+    note = (
+        "Replayed attempt: the recorded record did not examine this "
+        "scenario for improvements."
+        if disposition is ReviewDisposition.NO_ISSUE_FOUND
+        else (
+            "Replayed attempt: examining this scenario corroborated the "
+            "recorded finding disposition."
+        )
+    )
     return [
         ScenarioReviewReport(
             scenario_id=scenario_id,
-            disposition=ReviewDisposition.NO_ISSUE_FOUND,
+            disposition=disposition,
             evidence_ids=[f"scenario:{entry.ref.run_id}"],
             signals_weighed=["attention cost", "action count"],
-            note="Replayed attempt: the recorded record did not examine this "
-            "scenario for improvements.",
+            note=note,
         )
         for scenario_id in corpus.scenario_ids()
         for entry in corpus.entries
@@ -268,17 +285,20 @@ def _scenario_reviews(corpus: EvidenceCorpus) -> list[ScenarioReviewReport]:
     ]
 
 
-def _candidate_response(attempt_id: str, corpus: EvidenceCorpus) -> AnalystResponse:
+def _candidate_response(
+    attempt_id: str,
+    corpus: EvidenceCorpus,
+    disposition: ReviewDisposition = ReviewDisposition.NO_ISSUE_FOUND,
+) -> AnalystResponse:
+    reviews = _scenario_reviews(corpus, disposition)
     recorded = _recorded_response(attempt_id, ModelRole.REPORT_ANALYST, corpus)
     if isinstance(recorded, AnalystResponse):
         assert recorded.complete
-        return recorded.model_copy(
-            update={"scenario_reviews": _scenario_reviews(corpus)}
-        )
+        return recorded.model_copy(update={"scenario_reviews": reviews})
     return AnalystResponse(
         complete=True,
         candidate_findings=[_recorded_candidate(attempt_id, corpus)],
-        scenario_reviews=_scenario_reviews(corpus),
+        scenario_reviews=reviews,
     )
 
 
@@ -392,11 +412,12 @@ def _replay(
     *,
     adjudicator: Sequence[object] | None = None,
     auditor: object | None = None,
+    review_disposition: ReviewDisposition = ReviewDisposition.NO_ISSUE_FOUND,
 ) -> SynthesisAttempt:
     """Drive the service with the recorded role outputs for *attempt_id*."""
 
     corpus = _fixture_corpus(tmp_path)
-    analyst = _candidate_response(attempt_id, corpus)
+    analyst = _candidate_response(attempt_id, corpus, review_disposition)
     auditor_response = (
         auditor
         if auditor is not None
@@ -548,7 +569,7 @@ def test_accepted_attempt_five_finding_still_publishes(tmp_path: Path) -> None:
         for ref in published.evidence_refs
     )
 
-    attempt = _replay(ATTEMPT_5, tmp_path)
+    attempt = _replay(ATTEMPT_5, tmp_path, review_disposition=ReviewDisposition.UX_ISSUE)
 
     assert attempt.status is SynthesisStatus.ACCEPTED
     assert [finding.finding_id for finding in attempt.findings] == [WORK_FINDING_ID]
@@ -561,13 +582,43 @@ def test_accepted_attempt_five_finding_still_publishes(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_a_finding_no_scenario_review_supports_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Publication rejects a finding its own examination record never found.
+
+    Coverage and corroboration are different obligations. Requiring one review
+    per scenario stops a scenario from being skipped, but a review that concluded
+    nothing was found cannot also be the basis for a published finding. Before
+    this check the attempt published anyway, and the report's own record
+    contradicted it.
+    """
+
+    attempt = _replay(ATTEMPT_5, tmp_path, review_disposition=ReviewDisposition.NO_ISSUE_FOUND)
+
+    assert attempt.status is SynthesisStatus.REJECTED
+    assert not attempt.findings
+    assert any(
+        "no scenario review recorded a finding disposition" in limitation
+        for limitation in attempt.limitations
+    )
+
+    # The same attempt publishes once a review corroborates it, so the
+    # rejection is about the record, not about the finding.
+    corroborated = _replay(ATTEMPT_5, tmp_path, review_disposition=ReviewDisposition.UX_ISSUE)
+    assert corroborated.status is SynthesisStatus.ACCEPTED
+    assert [finding.finding_id for finding in corroborated.findings] == [
+        WORK_FINDING_ID
+    ]
+
+
 def test_attempt_two_shape_publishes_resolution_backed_contraction(
     tmp_path: Path,
 ) -> None:
     corpus = _fixture_corpus(tmp_path)
     candidate = _recorded_candidate(ATTEMPT_2, corpus)
 
-    attempt = _replay(ATTEMPT_2, tmp_path)
+    attempt = _replay(ATTEMPT_2, tmp_path, review_disposition=ReviewDisposition.UX_ISSUE)
 
     assert attempt.status is SynthesisStatus.ACCEPTED
     assert [finding.finding_id for finding in attempt.findings] == [WORK_FINDING_ID]
@@ -631,7 +682,9 @@ def test_pre_fix_superset_guard_rejected_every_narrowed_final(
         # The live guard accepts the same shapes.
         monkeypatch.undo()
         for attempt_id in (ATTEMPT_2, ATTEMPT_5):
-            attempt = _replay(attempt_id, tmp)
+            attempt = _replay(
+                attempt_id, tmp, review_disposition=ReviewDisposition.UX_ISSUE
+            )
             assert attempt.status is SynthesisStatus.ACCEPTED
             assert [finding.finding_id for finding in attempt.findings] == [
                 WORK_FINDING_ID

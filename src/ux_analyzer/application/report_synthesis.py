@@ -1453,8 +1453,27 @@ class ReportSynthesisService:
             ]
             accepted = []
 
+        review_records_finding = bool(corpus_scenarios) and any(
+            review.disposition is not ReviewDisposition.NO_ISSUE_FOUND
+            for review in scenario_reviews
+        )
+
         if publication_invalid:
             status = SynthesisStatus.REJECTED
+        elif accepted and corpus_scenarios and not review_records_finding:
+            # The reverse of the check further down. Every scenario being
+            # examined is not the same as a finding being corroborated: if each
+            # review concluded nothing was found, publishing a finding anyway
+            # means the report contradicts its own examination record.
+            status = SynthesisStatus.REJECTED
+            limitations.append(
+                "A finding was published but no scenario review recorded a "
+                "finding disposition to support it; the attempt is not "
+                "consistent."
+            )
+            # Clearing accepted as well as rejecting the attempt: a rejected
+            # attempt must not go on to render the finding it just disowned.
+            accepted = []
         elif accepted:
             status = SynthesisStatus.ACCEPTED
         elif unresolved_blocking or final_models:
@@ -1463,10 +1482,7 @@ class ReportSynthesisService:
             benign_candidate_count == len(candidate_models) and not rejected
         ):
             status = SynthesisStatus.REJECTED
-        elif corpus_scenarios and any(
-            review.disposition is not ReviewDisposition.NO_ISSUE_FOUND
-            for review in scenario_reviews
-        ):
+        elif review_records_finding:
             # A scenario was examined and something publishable was recorded
             # against it, yet no finding survived. Reporting "no issues" here
             # would contradict the attempt's own record.

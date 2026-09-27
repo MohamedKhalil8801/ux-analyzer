@@ -1247,7 +1247,26 @@ def _recorded_candidate(
     return CandidateFinding.model_validate(_expand_recorded(candidates[0], corpus))
 
 
-def _scenario_reviews(corpus: EvidenceCorpus) -> list[Any]:
+def _replay_disposition(attempt_id: str, corpus: EvidenceCorpus) -> ReviewDisposition:
+    """The review disposition a replay of *attempt_id* has to record.
+
+    Publication rejects a finding that no scenario review corroborates, so a
+    replay whose adjudicator produced a final finding has to carry a review
+    that agrees with it. Derived from the recorded adjudicator output rather
+    than a hand-written table so the gate cannot drift away from the fixture.
+    """
+
+    adjudication = _recorded_role_response(attempt_id, ModelRole.REPORT_ADJUDICATOR, corpus)
+    finals = getattr(adjudication, "final_findings", ()) or ()
+    if finals:
+        return ReviewDisposition.UX_ISSUE
+    return ReviewDisposition.NO_ISSUE_FOUND
+
+
+def _scenario_reviews(
+    corpus: EvidenceCorpus,
+    disposition: ReviewDisposition = ReviewDisposition.NO_ISSUE_FOUND,
+) -> list[Any]:
     """One examined review per corpus scenario.
 
     Publication validation rejects an attempt that leaves any scenario
@@ -1255,16 +1274,27 @@ def _scenario_reviews(corpus: EvidenceCorpus) -> list[Any]:
     has to add the reviews itself - otherwise every replayed attempt rejects
     for missing coverage and the gate would only be measuring the new
     validation rather than whether quality held.
+
+    The disposition is passed in because coverage alone is not enough: a review
+    that found nothing cannot also be the basis for a published finding.
     """
 
+    note = (
+        "Replayed attempt: the recorded pass did not examine this "
+        "scenario for improvements."
+        if disposition is ReviewDisposition.NO_ISSUE_FOUND
+        else (
+            "Replayed attempt: examining this scenario corroborated the "
+            "recorded finding."
+        )
+    )
     return [
         ScenarioReviewReport(
             scenario_id=scenario_id,
-            disposition=ReviewDisposition.NO_ISSUE_FOUND,
+            disposition=disposition,
             evidence_ids=[evidence_id],
             signals_weighed=["attention cost", "action count"],
-            note="Replayed attempt: the recorded pass did not examine this "
-            "scenario for improvements.",
+            note=note,
         )
         for scenario_id, evidence_id in _scenario_evidence(corpus)
     ]
@@ -1285,7 +1315,7 @@ def _replay_attempt(tmp_path: Path, attempt_id: str) -> Any:
     """Drive the real service with the recorded role outputs for one attempt."""
 
     corpus = _recorded_corpus(tmp_path)
-    reviews = _scenario_reviews(corpus)
+    reviews = _scenario_reviews(corpus, _replay_disposition(attempt_id, corpus))
     analyst = _recorded_role_response(attempt_id, ModelRole.REPORT_ANALYST, corpus)
     if analyst is None:
         analyst = AnalystResponse(
