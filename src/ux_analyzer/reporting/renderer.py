@@ -341,6 +341,34 @@ def load_report_findings(bundle_root: Path) -> dict[str, Any]:
             else _text(synthesis.get("attempt_id"))
         ),
         "findings": findings,
+        "rejected_findings": (
+            []
+            if using_fallback
+            else [
+                {
+                    "finding_id": _text(item.get("finding_id")),
+                    "title": _text(item.get("title")),
+                    "issue": _text(item.get("issue")),
+                    "impact": _text(item.get("impact")),
+                    "root_cause": _text(item.get("root_cause")),
+                    "severity": _text(item.get("severity")) or "low",
+                    "fixes": [_text(fix) for fix in item.get("fixes", [])],
+                    "evidence_refs": [
+                        {"evidence_id": _text(evidence_id), "kind": "metric"}
+                        for evidence_id in item.get("evidence_ids", [])
+                    ],
+                    "reviewer_notes": [
+                        _text(note) for note in item.get("reviewer_notes", [])
+                    ],
+                    "limitations": [
+                        "Rejected during independent review. Not an established "
+                        "finding; included only because it was explicitly "
+                        "selected for export."
+                    ],
+                }
+                for item in _list_of_mappings(synthesis.get("rejected_findings"))
+            ]
+        ),
         "limitations": [_text(item) for item in synthesis.get("limitations", [])],
         "scenario_reviews": [
             {
@@ -2008,7 +2036,7 @@ def _load_synthesis(
                 ),
                 artifact_bytes,
             )
-        if attempt.status in {SynthesisStatus.REJECTED, SynthesisStatus.UNAVAILABLE}:
+        if attempt.status is SynthesisStatus.UNAVAILABLE:
             limitation = (
                 attempt.limitations[-1]
                 if attempt.limitations
@@ -2020,6 +2048,22 @@ def _load_synthesis(
                     runs,
                     fallback_findings,
                     limitation,
+                ),
+                artifact_bytes,
+            )
+        if attempt.status is SynthesisStatus.REJECTED:
+            # A rejected attempt still examined every scenario and still has
+            # reviewed candidates worth reading. Degrading it to deterministic
+            # recorded signals threw that away and showed the reader a
+            # different report than the one that was produced - the rejection
+            # read as "nothing was examined" rather than "nothing survived
+            # review". Build the full payload and let the view badge it.
+            return (
+                _rejected_synthesis(
+                    attempt,
+                    runs,
+                    fallback_findings,
+                    artifact_bytes,
                 ),
                 artifact_bytes,
             )
@@ -2230,6 +2274,87 @@ def _operator_captures_by_url(root: Path) -> dict[str, dict[str, Any]]:
         if isinstance(url, str) and url:
             captures[url] = page
     return captures
+
+
+def _rejected_finding_rows(attempt: Any) -> list[dict[str, Any]]:
+    """Reviewed-but-rejected candidates, flattened for a collapsed section.
+
+    Deliberately plain rather than a full finding card: these claims are not
+    established, so they get their severity and evidence rendered as text the
+    reader can judge, not as a prioritised card that implies standing.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for finding in attempt.rejected_findings:
+        rows.append(
+            {
+                "finding_id": finding.finding_id,
+                "title": finding.title,
+                "severity": str(finding.severity),
+                "issue": finding.issue,
+                "impact": finding.impact,
+                "root_cause": finding.root_cause,
+                "fixes": list(finding.fixes),
+                "evidence_ids": [
+                    reference.evidence_id for reference in finding.evidence_refs
+                ],
+                "reviewer_notes": list(finding.reviewer_notes),
+                "counterevidence": [
+                    item if isinstance(item, str) else item.evidence_id
+                    for item in finding.counterevidence
+                ],
+            }
+        )
+    return rows
+
+
+def _rejected_synthesis(
+    attempt: Any,
+    runs: Sequence[Mapping[str, Any]],
+    fallback_findings: list[dict[str, Any]],
+    artifact_bytes: int,
+) -> dict[str, Any]:
+    """Synthesis payload for an attempt that was reviewed and rejected.
+
+    Keeps ``using_fallback`` false. The report is not showing deterministic
+    stand-ins here; it is showing the real attempt, marked rejected, with the
+    candidates the reviewers turned down available for the reader.
+    """
+
+    rejected = _rejected_finding_rows(attempt)
+    count = len(rejected)
+    return {
+        "synthesis_status": _synthesis_enum_text(attempt.status),
+        "status": _synthesis_enum_text(attempt.status),
+        "using_fallback": False,
+        "rejected": True,
+        "attempt_id": attempt.attempt_id,
+        "corpus_digest": attempt.corpus_digest,
+        "assessment": (
+            f"This synthesis attempt was reviewed and rejected. It established "
+            f"no supported UX issues. {count} candidate"
+            f"{'s were' if count != 1 else ' was'} reviewed and not published; "
+            f"they are listed below in case any of them is still worth acting on."
+        ),
+        "findings": [],
+        "rejected_findings": rejected,
+        "fallback_findings": fallback_findings,
+        "limitations": list(attempt.limitations),
+        "objection_count": len(attempt.objections),
+        "scenario_reviews": [
+            {
+                "scenario_id": review.scenario_id,
+                "disposition": str(review.disposition),
+                "evidence_ids": list(review.evidence_ids),
+                "signals_weighed": list(review.signals_weighed),
+                "note": review.note,
+            }
+            for review in attempt.scenario_reviews
+        ],
+        "tested_scope": _synthesis_scope(runs),
+        "alias_index": {},
+        "element_chips": {},
+    }
 
 
 def _fallback_synthesis(

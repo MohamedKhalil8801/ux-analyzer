@@ -1596,12 +1596,20 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     ]
 
     assert synthesis["synthesis_status"] == "rejected"
-    assert synthesis["using_fallback"] is True
+    # A rejected attempt is not a deterministic fallback: it really ran, really
+    # examined every scenario, and really produced reviewed candidates.
+    assert synthesis["using_fallback"] is False
+    assert synthesis["rejected"] is True
+    # The protection that matters: a rejected candidate is never promoted into
+    # the published findings.
     assert synthesis["findings"] == []
     assert all(
         finding["title"] != "Rejected attempt finding"
         for finding in synthesis["findings"]
     )
+    # It is available for reference instead, clearly marked.
+    rejected_titles = [row["title"] for row in synthesis["rejected_findings"]]
+    assert "Rejected attempt finding" in rejected_titles
 
     html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
         encoding="utf-8"
@@ -1609,11 +1617,17 @@ def test_renderer_does_not_promote_rejected_attempt_findings(
     normalized_html = " ".join(html.split())
 
     assert 'data-synthesis-status="rejected"' in normalized_html
-    assert "Recorded evidence available" in normalized_html
-    assert "Recorded signals requiring manual review" in normalized_html
+    # The tab no longer renames itself into "Recorded signals": a rejected
+    # review is still a walkthrough review, and relabelling it hid the fact
+    # that every scenario had been examined.
+    assert "Walkthrough findings" in normalized_html
+    assert "Recorded signals" not in normalized_html
+    assert "Reviewed and not published" in normalized_html
+    assert "Rejected attempt finding" in normalized_html
+    assert "Nothing below is an established finding" in normalized_html
+    # Still no priority hierarchy: a rejected claim gets no standing.
     assert "Priority findings" not in normalized_html
     assert "Check first" not in normalized_html
-    assert "no reviewed finding could be published" in normalized_html
     assert "the evidence review is unavailable" not in normalized_html
 
 
@@ -1811,7 +1825,7 @@ def test_renderer_preserves_boundary_limitation_from_rejected_attempt(
         "synthesis"
     ]
 
-    assert "no reviewed finding could be published" in synthesis["assessment"]
+    assert "reviewed and rejected" in synthesis["assessment"]
     assert "unavailable" not in synthesis["assessment"].casefold()
 
 
@@ -2028,7 +2042,7 @@ def test_renderer_exposes_no_issue_and_fallback_conclusion_states(
     assert 'data-evidence-target="{&#34;kind&#34;: &#34;metric&#34;' in fallback_html
 
 
-@pytest.mark.parametrize("status", ("missing", "unavailable", "rejected", "invalid"))
+@pytest.mark.parametrize("status", ("missing", "unavailable", "invalid"))
 def test_renderer_fallback_statuses_remove_accepted_priority_hierarchy(
     tmp_path: Path,
     status: str,
@@ -2036,8 +2050,6 @@ def test_renderer_fallback_statuses_remove_accepted_priority_hierarchy(
     _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
     if status == "unavailable":
         _write_synthesis(tmp_path, status=SynthesisStatus.UNAVAILABLE)
-    elif status == "rejected":
-        _write_synthesis(tmp_path, status=SynthesisStatus.REJECTED)
     elif status == "invalid":
         _write_synthesis(tmp_path)
 
@@ -2056,6 +2068,51 @@ def test_renderer_fallback_statuses_remove_accepted_priority_hierarchy(
     assert "Recorded signal" in html
     assert "Priority findings" not in html
     assert "Check first" in html
+
+
+def test_renderer_rejected_attempt_keeps_findings_tab_and_drops_priority_hierarchy(
+    tmp_path: Path,
+) -> None:
+    """A rejected review keeps the walkthrough tab but earns no standing.
+
+    The tab is not relabelled and the examination record stays visible, because
+    the attempt really ran. What it must not get is the accepted-attempt
+    treatment: no "Fix first" ordering over claims that were not established.
+    """
+
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.REJECTED,
+        corpus_refs=(_synthesis_ref("event"),),
+        finding_refs=(_synthesis_ref("event"),),
+        finding_title="Rejected attempt finding",
+        scenario_reviews=(
+            ScenarioReview(
+                scenario_id="discover-ratings",
+                disposition=ReviewDisposition.UX_ISSUE,
+                evidence_ids=("event:run-1:1",),
+                signals_weighed=("action count", "attention cost"),
+                note="The rating target was harder to find than the sibling CTA.",
+            ),
+        ),
+    )
+
+    html = render_experiment_report(tmp_path, tmp_path / "report.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'data-synthesis-status="rejected"' in html
+    assert "Walkthrough findings" in html
+    assert "Recorded signals requiring manual review" not in html
+    # The examination record is the thing a rejection used to throw away. It
+    # is what lets a reader tell "nothing survived review" apart from
+    # "nothing was ever looked at".
+    assert "Scenario examination" in html
+    assert "discover-ratings" in html
+    assert "reviewed and rejected" in html
+    assert "Priority findings" not in html
+    assert "Check first" not in html
 
 
 def test_renderer_omits_prescriptive_hierarchy_without_reviewed_findings(

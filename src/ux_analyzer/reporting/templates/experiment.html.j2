@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -11,8 +11,8 @@
 </head>
 <body>
   <!--
-  DESIGN CONTRACT — The Lab Observation Log (user-locked direction, seed fcdbd2ef)
-  THESIS: The report is the researcher's own session log — a preprinted observation
+  DESIGN CONTRACT â€” The Lab Observation Log (user-locked direction, seed fcdbd2ef)
+  THESIS: The report is the researcher's own session log â€” a preprinted observation
   sheet on the lab bench: ruled fields, carbon ink, rubber stamps. Every claim is an
   observation row pointing at recorded evidence; it refuses the dashboard default.
   OWN-WORLD: bond paper #f7f6f2, carbon ink #1d1f23, form ruling #d9d4c7, manila
@@ -21,7 +21,7 @@
   system mono for machine-recorded values; 2px form corners; one sheet shadow.
   STORY: The stakeholder reads the session header, the stamped findings in priority
   order, and verifies any claim through its exhibit tag to the exact evidence.
-  FIRST VIEWPORT: Session-record masthead — UXA roundel and document title — above
+  FIRST VIEWPORT: Session-record masthead â€” UXA roundel and document title â€” above
   the Index sheet: the status stamp, assessment line, and the dashboard cards.
   FINISH: unreviewed and undocumented is unfinished; this build ends with the
   finish review, the verdict, DESIGN.md, and every shipping raster carrying its
@@ -55,7 +55,7 @@
 
     <nav class="view-rail" aria-label="Report sections">
       <a class="view-tab" href="#view-overview" aria-current="page">Overview</a>
-      <a class="view-tab" href="#view-findings">{{ "Recorded signals" if using_fallback else "Walkthrough findings" }}</a>
+      <a class="view-tab" href="#view-findings">Walkthrough findings</a>
       {% if ux_audit %}<a class="view-tab" href="#view-audit">Page checks</a>{% endif %}
       {% if pagespeed %}<a class="view-tab" href="#view-performance">Page speed</a>{% endif %}
       <a class="view-tab" href="#view-redesign">Redesign ideas</a>
@@ -241,20 +241,25 @@
         {% elif synthesis_status == "accepted" %}
         {{ synthesis.assessment }}
         {% elif synthesis_status == "rejected" %}
-        No report-synthesis finding was publishable because all candidate findings were rejected.
+        {{ synthesis.assessment }}
         {% else %}
         Only recorded evidence is shown; inspect the linked replays below.
         {% endif %}
       </p>
       {% if using_fallback %}
       <p class="fallback-notice">
-        {% if synthesis_status == "rejected" %}
-        Only recorded evidence is shown because no reviewed finding could be published. Verify each linked replay before changing the website.
-        {% elif synthesis_status == "invalid" %}
+        {% if synthesis_status == "invalid" %}
         Only recorded evidence is shown because the review could not be validated. Verify each linked replay before changing the website.
         {% else %}
         Only recorded evidence is shown. Verify each linked replay before changing the website.
         {% endif %}
+      </p>
+      {% endif %}
+      {% if synthesis.get("rejected") %}
+      <p class="fallback-notice">
+        <strong>Rejected.</strong> Nothing on this tab is an established finding. The
+        attempt was reviewed and did not survive, so the candidates below are shown
+        for reference only &mdash; read them as unverified observations, not conclusions.
       </p>
       {% endif %}
       {% set scenario_reviews = synthesis.scenario_reviews if synthesis.scenario_reviews is defined else [] %}
@@ -298,7 +303,7 @@
       {% endif %}
       <div class="dash-grid">
         <a class="dash-card" href="#view-findings">
-          <span class="dash-card-tab">{{ "Recorded signals" if using_fallback else "Walkthrough findings" }}</span>
+          <span class="dash-card-tab">Walkthrough findings</span>
           <span class="dash-card-count">{{ synthesis.findings | length }}</span>
           {% for finding in synthesis.findings[:2] %}
           <span class="dash-card-line">{{ finding.get("fallback_title", finding.title) }}</span>
@@ -327,7 +332,7 @@
             {% if ns_audit.medium %}<span class="severity-label severity-medium">{{ ns_audit.medium }} medium</span>{% endif %}
             {% if ns_audit.low %}<span class="severity-label severity-low">{{ ns_audit.low }} low</span>{% endif %}
           </span>
-          <span class="dash-card-line">Deterministic checks against each start URL — recorded page facts, not simulated-user findings.</span>
+          <span class="dash-card-line">Deterministic checks against each start URL â€” recorded page facts, not simulated-user findings.</span>
           <span class="dash-card-cta">Open page checks</span>
         </a>
         {% endif %}
@@ -358,7 +363,7 @@
             <span class="evidence-chip evidence-{{ item.evidence_class }}">{{ item.evidence_class }} <strong>{{ item.count }}</strong></span>
             {% endfor %}
           </span>
-          <span class="dash-card-line">{{ failure_rows | length }} failed run{{ "s" if failure_rows | length != 1 }} · comparison table, aggregates, gates, provider methods, and the replay workspace.</span>
+          <span class="dash-card-line">{{ failure_rows | length }} failed run{{ "s" if failure_rows | length != 1 }} Â· comparison table, aggregates, gates, provider methods, and the replay workspace.</span>
           <span class="dash-card-cta">Open evidence desk</span>
         </a>
       </div>
@@ -399,7 +404,7 @@
               <span class="slop-grade">Grade {{ url_report.slop.grade }}</span>
               <span class="slop-count">{{ url_report.slop.patternsFlagged }}/{{ url_report.slop.patternsTotal }} design patterns triggered</span>
               {% if url_report.slop.unifiedScore is not none %}
-              <span class="slop-unified">Unified (design + copy): {{ url_report.slop.unifiedScore }}/100 · {{ url_report.slop.unifiedTier }}</span>
+              <span class="slop-unified">Unified (design + copy): {{ url_report.slop.unifiedScore }}/100 Â· {{ url_report.slop.unifiedTier }}</span>
               {% endif %}
             </div>
             {% if url_report.slop.verdict %}
@@ -427,7 +432,7 @@
             </ul>
             {% if url_report.slop['copy'] and url_report.slop['copy'].score is not none %}
             <div class="slop-copy">
-              <h4>Copy axis · {{ url_report.slop['copy'].tier }} · {{ url_report.slop['copy'].score }}/100 ({{ url_report.slop['copy'].patternsFlagged }}/{{ url_report.slop['copy'].patternsTotal }})</h4>
+              <h4>Copy axis Â· {{ url_report.slop['copy'].tier }} Â· {{ url_report.slop['copy'].score }}/100 ({{ url_report.slop['copy'].patternsFlagged }}/{{ url_report.slop['copy'].patternsTotal }})</h4>
               <ul class="slop-pattern-list">
                 {% for pattern in url_report.slop['copy'].patterns %}
                 {% if pattern.triggered %}
@@ -508,21 +513,21 @@
               <div class="ux-audit-screenshots">
                 {% for cshot in issue.evidence.get('combined_screenshots', []) %}
                   <figure class="ux-audit-figure">
-                    <img src="{{ cshot }}" alt="Annotated elements — red outlines show offending element(s)" class="ux-audit-screenshot" loading="lazy">
-                    <figcaption>Annotated view {{ loop.index }} — red outlines mark the offending element(s) in context</figcaption>
+                    <img src="{{ cshot }}" alt="Annotated elements â€” red outlines show offending element(s)" class="ux-audit-screenshot" loading="lazy">
+                    <figcaption>Annotated view {{ loop.index }} â€” red outlines mark the offending element(s) in context</figcaption>
                   </figure>
                 {% endfor %}
                 {% if issue.evidence.get('combined_screenshot') and not issue.evidence.get('combined_screenshots') %}
                   <figure class="ux-audit-figure">
-                    <img src="{{ issue.evidence.get('combined_screenshot') }}" alt="Annotated elements — red outlines show offending element(s)" class="ux-audit-screenshot" loading="lazy">
-                    <figcaption>Annotated view — red outlines mark the offending element(s) in context</figcaption>
+                    <img src="{{ issue.evidence.get('combined_screenshot') }}" alt="Annotated elements â€” red outlines show offending element(s)" class="ux-audit-screenshot" loading="lazy">
+                    <figcaption>Annotated view â€” red outlines mark the offending element(s) in context</figcaption>
                   </figure>
                 {% endif %}
                 {% if issue.evidence.get('element_screenshots') %}
                   {% for shot in issue.evidence.get('element_screenshots') %}
                   <figure class="ux-audit-figure">
                     <img src="{{ shot }}" alt="Cropped view of offending element with red outline" class="ux-audit-screenshot" loading="lazy">
-                    <figcaption>Cropped element {{ loop.index }}{% if issue.evidence.get('element_selectors') and loop.index0 < issue.evidence.get('element_selectors')|length %} — <code>{{ issue.evidence.get('element_selectors')[loop.index0] }}</code>{% endif %} — red outline marks exact bounds</figcaption>
+                    <figcaption>Cropped element {{ loop.index }}{% if issue.evidence.get('element_selectors') and loop.index0 < issue.evidence.get('element_selectors')|length %} â€” <code>{{ issue.evidence.get('element_selectors')[loop.index0] }}</code>{% endif %} â€” red outline marks exact bounds</figcaption>
                   </figure>
                   {% endfor %}
                 {% endif %}
@@ -574,7 +579,7 @@
           <a
             class="psi-web-link psi-web-link-saved"
             href="pagespeed-report.html"
-            title="Offline replica of the recorded analysis — identical numbers to this tab"
+            title="Offline replica of the recorded analysis â€” identical numbers to this tab"
           >View saved report</a>
           {% endif %}
           {% if url_report.pagespeed_web_fresh_url %}
@@ -583,7 +588,7 @@
             href="{{ url_report.pagespeed_web_fresh_url }}"
             target="_blank"
             rel="noopener noreferrer"
-            title="Run a fresh analysis for this URL on pagespeed.web.dev — a new Lighthouse run, scores will vary"
+            title="Run a fresh analysis for this URL on pagespeed.web.dev â€” a new Lighthouse run, scores will vary"
           >Re-run on pagespeed.web.dev</a>
           {% endif %}
         </h3>
@@ -599,13 +604,13 @@
           {% if strategy.status != "ok" %}
           <p class="psi-error">Unavailable: {{ strategy.error or "no error detail recorded" }}</p>
           {% if strategy.error_code %}<p class="psi-error-detail"><code>{{ strategy.error_code }}</code></p>{% endif %}
-          {% if strategy.error_code and "FAILED_DOCUMENT_REQUEST" in strategy.error_code %}<p class="psi-error-help">Lighthouse couldn't load this URL (government portal, likely blocking automated audits or slow ASPX). The local <code>ux-audit</code> and live-page checks in this report still ran — use the link above to retry on pagespeed.web.dev directly.</p>{% endif %}
+          {% if strategy.error_code and "FAILED_DOCUMENT_REQUEST" in strategy.error_code %}<p class="psi-error-help">Lighthouse couldn't load this URL (government portal, likely blocking automated audits or slow ASPX). The local <code>ux-audit</code> and live-page checks in this report still ran â€” use the link above to retry on pagespeed.web.dev directly.</p>{% endif %}
           {% else %}
           <p class="psi-meta">
             Lighthouse {{ strategy.lighthouse_version }}
-            {% if strategy.fetched_at %}· fetched {{ strategy.fetched_at }}{% endif %}
-            {% if strategy.from_cache %}· served from cache{% endif %}
-            {% if strategy.final_url and strategy.final_url != url_report.url %}· final URL {{ strategy.final_url }}{% endif %}
+            {% if strategy.fetched_at %}Â· fetched {{ strategy.fetched_at }}{% endif %}
+            {% if strategy.from_cache %}Â· served from cache{% endif %}
+            {% if strategy.final_url and strategy.final_url != url_report.url %}Â· final URL {{ strategy.final_url }}{% endif %}
           </p>
           {% if strategy.field_data %}
           <div class="psi-field">
@@ -630,11 +635,11 @@
           </div>
           {% endif %}
           <p class="psi-totals">
-            {{ strategy.audits.totals.failed }} failed ·
-            {{ strategy.audits.totals.passed }} passed ·
-            {{ strategy.audits.totals.not_applicable }} not applicable ·
-            {{ strategy.audits.totals.manual }} manual ·
-            {{ strategy.audits.totals.informative }} informative ·
+            {{ strategy.audits.totals.failed }} failed Â·
+            {{ strategy.audits.totals.passed }} passed Â·
+            {{ strategy.audits.totals.not_applicable }} not applicable Â·
+            {{ strategy.audits.totals.manual }} manual Â·
+            {{ strategy.audits.totals.informative }} informative Â·
             {{ strategy.audits.totals.error }} error
           </p>
           {% if strategy.audits.failed %}
@@ -644,7 +649,7 @@
               {% for audit in strategy.audits.failed %}
               <li class="psi-audit psi-audit-failed">
                 <div class="psi-audit-head">
-                  <span class="psi-audit-score">{{ audit.score_percent if audit.score is not none else "—" }}</span>
+                  <span class="psi-audit-score">{{ audit.score_percent if audit.score is not none else "â€”" }}</span>
                   <strong>{{ audit.title }}</strong>
                   {% if audit.display_value %}<span class="psi-audit-value">{{ audit.display_value }}</span>{% endif %}
                   <code class="psi-audit-id">{{ audit.id }}</code>
@@ -680,10 +685,10 @@
                     {% for item in opportunity['items'] %}
                     <li>
                       {% if item.get('url') %}<code class="psi-item-url">{{ item.get('url') }}</code>{% endif %}
-                      {% if item.get('wastedBytes') is not none %} · ~{{ item.get('wastedBytes') }} bytes wasted{% endif %}
-                      {% if item.get('wastedMs') is not none %} · ~{{ item.get('wastedMs') }} ms wasted{% endif %}
-                      {% if item.get('totalBytes') is not none %} · {{ item.get('totalBytes') }} bytes total{% endif %}
-                      {% if item.get('responseTime') is not none %} · {{ item.get('responseTime') }} ms response{% endif %}
+                      {% if item.get('wastedBytes') is not none %} Â· ~{{ item.get('wastedBytes') }} bytes wasted{% endif %}
+                      {% if item.get('wastedMs') is not none %} Â· ~{{ item.get('wastedMs') }} ms wasted{% endif %}
+                      {% if item.get('totalBytes') is not none %} Â· {{ item.get('totalBytes') }} bytes total{% endif %}
+                      {% if item.get('responseTime') is not none %} Â· {{ item.get('responseTime') }} ms response{% endif %}
                     </li>
                     {% endfor %}
                   </ul>
@@ -721,7 +726,7 @@
               {% for audit in bucket_audits %}
               <li class="psi-audit">
                 <div class="psi-audit-head">
-                  <span class="psi-audit-score">{{ audit.score_percent if audit.score is not none else "—" }}</span>
+                  <span class="psi-audit-score">{{ audit.score_percent if audit.score is not none else "â€”" }}</span>
                   <strong>{{ audit.title }}</strong>
                   {% if audit.display_value %}<span class="psi-audit-value">{{ audit.display_value }}</span>{% endif %}
                   <code class="psi-audit-id">{{ audit.id }}</code>
@@ -756,7 +761,7 @@
       </div>
       <p class="summary-assessment">
         Design proposals are model estimates produced from the captured pages and
-        the published redesign principles — they are not run-evidence findings and
+        the published redesign principles â€” they are not run-evidence findings and
         they carry no verification status. Impact and effort are model estimates
         (Flag-pair ink), not measured values.
       </p>
@@ -798,7 +803,7 @@
         {% for proposal in redesign.proposals %}
         <article class="proposal-card" data-category="{{ proposal.category }}" data-page-url="{{ proposal.page_url }}">
           <div class="proposal-card-header">
-            <span class="proposal-impact-effort">Impact: {{ proposal.impact }} · Effort: {{ proposal.effort }}</span>
+            <span class="proposal-impact-effort">Impact: {{ proposal.impact }} Â· Effort: {{ proposal.effort }}</span>
             <span class="proposal-category">{{ proposal.category }}</span>
           </div>
           <h3 class="proposal-title">{{ proposal.title }}</h3>
@@ -822,12 +827,12 @@
               data-copy-locator='{%- if section.locator -%}{{ (section.locator.selector or section.locator.xpath) | e }}{%- else -%}{%- endif -%}'
               {% if not section.locator %}data-no-locator="1"{% endif %}
               title="{{ section.summary }}"
-            >{{ section.label }}{% if section.locator %} · copy locator{% else %} · no verified locator{% endif %}</button>
+            >{{ section.label }}{% if section.locator %} Â· copy locator{% else %} Â· no verified locator{% endif %}</button>
             {% endfor %}
           </div>
           {% endif %}
           {% if proposal.deliberate_choice_check %}
-          <p class="proposal-deliberate">Deliberate-choice note: {{ proposal.deliberate_choice_check.pattern }} — {{ proposal.deliberate_choice_check.rationale }}</p>
+          <p class="proposal-deliberate">Deliberate-choice note: {{ proposal.deliberate_choice_check.pattern }} â€” {{ proposal.deliberate_choice_check.rationale }}</p>
           {% endif %}
           {% if proposal.also_affects %}
           <p class="proposal-also-affects"><strong>Also affects:</strong> {{ proposal.also_affects | join(", ") }}</p>
@@ -878,14 +883,14 @@
         <section id="priority-findings" class="report-section" aria-labelledby="priority-findings-title">
       <div class="report-section-heading">
         <div>
-          <h2 id="priority-findings-title">{{ "Recorded signals requiring manual review" if using_fallback else "Priority findings" }}</h2>
+          <h2 id="priority-findings-title">{{ "Recorded signals requiring manual review" if using_fallback else "Findings" }}</h2>
         </div>
         <span class="finding-count">{{ ux_findings | length }} {{ "recorded" if using_fallback else "accepted" }}{% if scenario_findings %} + {{ scenario_findings | length }} scenario{% endif %}</span>
       </div>
       {% if synthesis.findings %}
         {% if using_fallback %}
           <details class="fallback-details" open>
-            <summary>Recorded signal{{ "s" if synthesis.findings | length != 1 }} — verify each replay before acting on it. Low confidence, requires human check.</summary>
+            <summary>Recorded signal{{ "s" if synthesis.findings | length != 1 }} â€” verify each replay before acting on it. Low confidence, requires human check.</summary>
           {% for finding in synthesis.findings %}
           {% set fallback_viewport_ids = finding.get("viewport_ids", []) %}
           {% set fallback_element_ids = finding.get("element_ids", []) %}
@@ -1013,13 +1018,77 @@
         {% if synthesis_status == "no-issues" %}
         No supported UX issues were established in the tested scenarios.
         {% elif synthesis_status == "rejected" %}
-        No accepted findings are available because all candidate findings were rejected.
+        This synthesis attempt was reviewed and rejected. It established no supported
+        UX issues &mdash; every scenario was still examined, and that record is above.
         {% elif using_fallback %}
         No recorded findings are available for this report.
         {% else %}
         No accepted findings are available for this report.
         {% endif %}
       </p>
+      {% endif %}
+
+      {% set rejected_findings = synthesis.rejected_findings if synthesis.get("rejected_findings") else [] %}
+      {% if rejected_findings %}
+      <details class="aggregate-details rejected-findings" data-rejected-findings="true">
+        <summary>
+          Reviewed and not published
+          <span class="status-pill status-pill-rejected">{{ rejected_findings | length }} rejected</span>
+        </summary>
+        <p class="summary-assessment">
+          Independent review examined these candidates and none of them survived. They are
+          kept here because a rejected claim can still be worth checking &mdash; the
+          reasoning may hold even where the evidence did not reach the bar. Nothing below
+          is an established finding.
+        </p>
+        {% for finding in rejected_findings %}
+        <article class="finding finding-rejected" data-finding-id="{{ finding.finding_id }}">
+          <header class="finding-header">
+            <div>
+              <span class="recorded-signal-label rejected-label">Rejected</span>
+              <h3>{{ finding.title }}</h3>
+            </div>
+            <span class="confidence-label">Not established</span>
+          </header>
+          <div class="finding-grid">
+            <div class="finding-field">
+              <h4>Claimed issue</h4>
+              <p>{{ finding.issue }}</p>
+            </div>
+            <div class="finding-field">
+              <h4>Claimed impact</h4>
+              <p>{{ finding.impact }}</p>
+            </div>
+            <div class="finding-field">
+              <h4>Claimed cause</h4>
+              <p>{{ finding.root_cause }}</p>
+            </div>
+            <div class="finding-field">
+              <h4>Suggested change</h4>
+              <p>{{ finding.fixes | join(" ") }}</p>
+            </div>
+          </div>
+          {% if finding.reviewer_notes %}
+          <div class="finding-field">
+            <h4>Why review did not publish it</h4>
+            <ul class="finding-list">
+              {% for note in finding.reviewer_notes %}
+              <li>{{ note }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+          {% if finding.evidence_ids %}
+          <div class="finding-field">
+            <h4>Evidence it cited</h4>
+            <p class="evidence-refs">
+              {% for evidence_id in finding.evidence_ids %}<code>{{ evidence_id }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+            </p>
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </details>
       {% endif %}
     </section>
 
@@ -1094,7 +1163,7 @@
       </div>
       <p>Use recorded evidence to verify a finding, compare runs, inspect saliency, or replay an interaction.</p>
       <nav class="evidence-nav" aria-label="Evidence sections" data-report-navigation="true">
-        <a href="#priority-findings" aria-controls="priority-findings">{{ "Recorded signals" if using_fallback else "Priority findings" }}</a>
+        <a href="#priority-findings" aria-controls="priority-findings">Findings</a>
         {% if not using_fallback %}
         <a href="#fix-first" aria-controls="fix-first">Fix first</a>
         {% endif %}

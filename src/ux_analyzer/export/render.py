@@ -126,6 +126,15 @@ def render_issue(
         f"- **Finding ID:** `{issue.finding_id}`",
         f"- **Severity:** {issue.severity}",
         *(
+            [
+                "> **Rejected during independent review.** This is not an established "
+                "finding. It is included because it was explicitly selected for export. "
+                "Reproduce and confirm it before acting."
+            ]
+            if not issue.published
+            else []
+        ),
+        *(
             [f"- **Severity justification:** {issue.severity_justification}"]
             if issue.severity_justification
             else []

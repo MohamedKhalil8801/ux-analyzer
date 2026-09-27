@@ -57,6 +57,7 @@ class IssueView:
     reproducibility: str
     confidence: float | None
     evidence: tuple[EvidenceRefView, ...] = ()
+    published: bool = True
     artifacts: tuple[ArtifactFile, ...] = ()
     source: str = "reviewed"
 
@@ -192,7 +193,13 @@ def _attachment_artifacts(
     return tuple(artifacts)
 
 
-def _issue_view(finding: Mapping[str, Any], root: Path, taken: set[str]) -> IssueView:
+def _issue_view(
+    finding: Mapping[str, Any],
+    root: Path,
+    taken: set[str],
+    *,
+    published: bool = True,
+) -> IssueView:
     confidence = finding.get("confidence")
     return IssueView(
         finding_id=str(finding.get("finding_id", "")),
@@ -219,11 +226,18 @@ def _issue_view(finding: Mapping[str, Any], root: Path, taken: set[str]) -> Issu
         evidence=_evidence_view(finding) or _static_evidence(finding),
         artifacts=_artifacts(finding, root) + _attachment_artifacts(finding),
         source=str(finding.get("source", "reviewed")),
+        published=published,
     )
 
 
 def build_catalog(report: Mapping[str, Any]) -> IssueCatalog:
-    """Adapt the report's rendered findings into a selectable catalog."""
+    """Adapt the report's rendered findings into a selectable catalog.
+
+    Rejected candidates are included so they can be exported on request, but
+    they are marked ``published=False`` and ``parse_issue_flags`` leaves them
+    out of ``--all``. A rejected claim is a claim somebody chose to stand
+    behind explicitly, not something a fix agent should be handed by default.
+    """
 
     root = Path(str(report.get("bundle_root", ".")))
     taken: set[str] = set()
@@ -234,7 +248,15 @@ def build_catalog(report: Mapping[str, Any]) -> IssueCatalog:
             str(finding.get("finding_id", "")),
         ),
     )
-    issues = tuple(_issue_view(finding, root, taken) for finding in findings)
+    rejected = sorted(
+        report.get("rejected_findings", []),
+        key=lambda finding: str(finding.get("finding_id", "")),
+    )
+    issues = tuple(
+        _issue_view(finding, root, taken, published=True) for finding in findings
+    ) + tuple(
+        _issue_view(finding, root, taken, published=False) for finding in rejected
+    )
     by_group: dict[str, list[IssueView]] = {}
     for issue in issues:
         by_group.setdefault(issue.group, []).append(issue)
@@ -250,16 +272,35 @@ def parse_issue_flags(
     findings: Sequence[str],
     exclude: Sequence[str],
     catalog: IssueCatalog,
+    include_rejected: bool = False,
 ) -> tuple[IssueView, ...]:
-    """Resolve non-interactive selection flags into issue views."""
+    """Resolve non-interactive selection flags into issue views.
+
+    ``--all`` means every *published* issue. Rejected candidates are still
+    selectable by id, and ``include_rejected`` widens ``--all`` to cover them,
+    so exporting one is always a deliberate act.
+    """
 
     if not all_issues and not findings:
         raise ValueError("nothing to export: select issues or pass --all")
     excluded = set(exclude)
     if all_issues:
         selected = [
-            issue for issue in catalog.issues if issue.finding_id not in excluded
+            issue
+            for issue in catalog.issues
+            if issue.finding_id not in excluded
+            and (include_rejected or issue.published)
         ]
+        if not selected and not include_rejected:
+            unpublished = [
+                issue.finding_id for issue in catalog.issues if not issue.published
+            ]
+            if unpublished:
+                raise ValueError(
+                    "nothing published to export; rejected candidates are "
+                    f"available by --finding id ({', '.join(unpublished)}) or "
+                    "with --include-rejected"
+                )
     else:
         unknown = [fid for fid in findings if catalog.find(fid) is None]
         if unknown:

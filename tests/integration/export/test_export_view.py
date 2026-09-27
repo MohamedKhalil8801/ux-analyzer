@@ -31,6 +31,8 @@ from ux_analyzer.domain.synthesis import (
     SynthesisRoleReceipt,
     SynthesisStatus,
 )
+from ux_analyzer.export.catalog import build_catalog, parse_issue_flags
+from ux_analyzer.export.render import render_issue
 from ux_analyzer.reporting.renderer import load_report_findings
 from ux_analyzer.storage.redesign_artifacts import RedesignAttemptStore
 from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
@@ -1024,7 +1026,10 @@ def test_fallback_findings_are_excluded_from_export(
 ) -> None:
     view = load_report_findings(fallback_bundle)
 
-    assert view["using_fallback"] is True
+    # A rejected attempt is no longer a deterministic fallback: the report keeps
+    # its own record, so the view says so rather than pretending the review
+    # never ran. Page facts still export.
+    assert view["using_fallback"] is False
     ids = [finding["finding_id"] for finding in view["findings"]]
     assert ids, "deterministic page facts still export"
     assert all(
@@ -1040,3 +1045,46 @@ def test_fallback_findings_are_excluded_from_export(
         for finding in view["findings"]
         if finding.get("source") == "pagespeed"
     )
+
+
+def test_rejected_candidates_are_selectable_but_not_exported_by_default(
+    fallback_bundle: Path,
+) -> None:
+    """Opt-in export for reviewed-and-rejected claims."""
+
+    view = load_report_findings(fallback_bundle)
+    catalog = build_catalog(view)
+
+    rejected = [issue for issue in catalog.issues if not issue.published]
+    assert rejected, "the rejected candidate is offered for selection"
+    assert all(issue.evidence for issue in rejected)
+
+    # --all means every published issue. A rejected claim is a claim somebody
+    # has to stand behind explicitly.
+    by_all = parse_issue_flags(
+        all_issues=True, findings=(), exclude=(), catalog=catalog
+    )
+    rejected_ids = {issue.finding_id for issue in rejected}
+    assert not rejected_ids & {issue.finding_id for issue in by_all}
+
+    # Selecting it by id still works, and it is labelled in the package.
+    chosen = parse_issue_flags(
+        all_issues=False,
+        findings=(rejected[0].finding_id,),
+        exclude=(),
+        catalog=catalog,
+    )
+    assert [issue.finding_id for issue in chosen] == [rejected[0].finding_id]
+    markdown = render_issue(chosen[0], {})
+    assert "Rejected during independent review" in markdown
+    assert "not an established finding" in markdown
+
+    # And the explicit opt-in widens --all to cover them.
+    widened = parse_issue_flags(
+        all_issues=True,
+        findings=(),
+        exclude=(),
+        catalog=catalog,
+        include_rejected=True,
+    )
+    assert rejected_ids <= {issue.finding_id for issue in widened}
