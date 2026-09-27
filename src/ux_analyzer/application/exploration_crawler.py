@@ -14,7 +14,7 @@ Design note craving adversarial review (Task 3 spike conclusion):
     page and conflicts with ``PlaywrightSessionAdapter`` pool/allowlist.
     Verdict: reuse hardened Playwright loop here; document crawlee as
     optional alternative (``pip install crawlee[playwright]``) in
-    ``docs/architecture.md`` â€” no hard import.
+    ``docs/architecture.md`` — no hard import.
 
 Domain isolation: imports only from ``domain`` (stdlib) and optional
 ``adapters/web/extractor`` at call time; no model/prompt types.
@@ -172,8 +172,8 @@ def _is_same_origin_as_any(candidate: str, start_urls: tuple[str, ...]) -> bool:
 def _stable_anchor(observed: str, updated: str) -> str:
     """The longest run of words that held still while the label changed.
 
-    ``4.8 â˜… App Store â†— (opens in a new tab)`` counting up to ``5.1`` leaves
-    ``â˜… App Store â†— (opens in a new tab)`` - which is how a person would name
+    ``4.8 ★ App Store ↗ (opens in a new tab)`` counting up to ``5.1`` leaves
+    ``★ App Store ↗ (opens in a new tab)`` - which is how a person would name
     the control anyway. Returns ``""`` when nothing survived, so a caller can
     treat "no usable anchor" differently from "no change".
 
@@ -534,7 +534,7 @@ class ExplorationCrawler:
         # stability alone must NOT end the sweep early: GSAP/ScrollTrigger
         # pages keep a fixed scrollHeight while reveals fire at deep
         # scroll positions, so "stable height" is meaningless far from
-        # the bottom. Stability only matters implicitly â€” if lazy content
+        # the bottom. Stability only matters implicitly — if lazy content
         # grows the page, the bottom target moves and the sweep simply
         # continues within its bounds.
         start = time.monotonic()
@@ -737,7 +737,7 @@ class ExplorationCrawler:
         """Read the visible labels twice and report the ones that moved.
 
         A count-up rating is the reason this exists. Observed once, a label like
-        ``4.8 â˜… App Store â†—`` looks like a stable identity, and a scenario
+        ``4.8 ★ App Store ↗`` looks like a stable identity, and a scenario
         generated from it asks the agent to match an animated string - which no
         person could do either. Read twice a moment apart and the words that
         change stand out, leaving the words a person would actually use.
