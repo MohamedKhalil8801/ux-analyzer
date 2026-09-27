@@ -248,6 +248,7 @@ class CrawlPage:
     discovered_links: tuple[str, ...] = ()
     visible_elements: tuple[str, ...] = ()
     region_labels: tuple[str, ...] = ()
+    volatile_labels: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # url validation

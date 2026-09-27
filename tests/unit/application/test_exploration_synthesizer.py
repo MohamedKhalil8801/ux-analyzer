@@ -30,6 +30,7 @@ def _make_page(
     title: str = "Example",
     headings: tuple[str, ...] = ("Heading One",),
     visible_elements: tuple[Any, ...] | None = None,
+    volatile_labels: tuple[str, ...] = (),
     discovered_links: tuple[str, ...] = (),
 ) -> CrawlPage:
     normalized = normalize_crawl_url(url)
@@ -80,8 +81,9 @@ def _make_page(
         viewport_id=None,
         screenshot_digest=None,
         discovered_links=discovered_links,
-        visible_elements=clean_visible,
-    )
+            visible_elements=clean_visible,
+            volatile_labels=volatile_labels,
+        )
     return page
 
 
@@ -1414,6 +1416,7 @@ def test_pack_construction_enforces_field_allowlist_and_bounds() -> None:
         title="Home",
         headings=("H1", "H2"),
         visible_elements=("Label One", "#btn", "https://evil.test/x"),
+        volatile_labels=("4.8 ★ App Store",),
     )
     pack = exploration_synthesizer._build_page_pack(page)
     # Explicit allowlist: exactly these fields, nothing more.
@@ -1423,6 +1426,7 @@ def test_pack_construction_enforces_field_allowlist_and_bounds() -> None:
         "title",
         "headings",
         "visible_elements",
+        "volatile_labels",
     }
     assert len(pack["title"]) <= exploration_synthesizer._TITLE_TRUNC
     assert len(pack["headings"]) <= exploration_synthesizer._HEADINGS_PER_PAGE

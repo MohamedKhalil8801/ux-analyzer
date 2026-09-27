@@ -1,4 +1,4 @@
-"""Depth-bounded smart crawler with per-page settlement for exploration mode.
+﻿"""Depth-bounded smart crawler with per-page settlement for exploration mode.
 
 Implements BFS same-origin crawl with deduplication via ``normalize_crawl_url``,
 per-page settlement bounded by ``PageSettlementPolicy`` (goto domcontentloaded,
@@ -14,7 +14,7 @@ Design note craving adversarial review (Task 3 spike conclusion):
     page and conflicts with ``PlaywrightSessionAdapter`` pool/allowlist.
     Verdict: reuse hardened Playwright loop here; document crawlee as
     optional alternative (``pip install crawlee[playwright]``) in
-    ``docs/architecture.md`` — no hard import.
+    ``docs/architecture.md`` â€” no hard import.
 
 Domain isolation: imports only from ``domain`` (stdlib) and optional
 ``adapters/web/extractor`` at call time; no model/prompt types.
@@ -169,6 +169,33 @@ def _is_same_origin_as_any(candidate: str, start_urls: tuple[str, ...]) -> bool:
     return False
 
 
+def _stable_anchor(observed: str, updated: str) -> str:
+    """The longest run of words that held still while the label changed.
+
+    ``4.8 â˜… App Store â†— (opens in a new tab)`` counting up to ``5.1`` leaves
+    ``â˜… App Store â†— (opens in a new tab)`` - which is how a person would name
+    the control anyway. Returns ``""`` when nothing survived, so a caller can
+    treat "no usable anchor" differently from "no change".
+
+    Whole words are compared, not characters, so a number rolling from ``4.8``
+    to ``5.1`` does not make the words around it look volatile. Glyphs and
+    symbols count as words here because they are part of what a reader sees.
+    """
+
+    before = observed.split()
+    after = updated.split()
+    if not before or not after:
+        return ""
+    if len(before) != len(after):
+        # A length change is a re-render, not an in-place count. Everything
+        # could have moved, so no part of it is safe to promise.
+        return ""
+    kept = [word for word, other in zip(before, after) if word == other]
+    if not kept:
+        return ""
+    return " ".join(kept).strip()
+
+
 def _merge_visible_labels(
     top: tuple[str, ...], scroll: tuple[str, ...], cap: int = 30, top_priority: int = 20
 ) -> tuple[str, ...]:
@@ -316,6 +343,7 @@ class ExplorationCrawler:
                 screenshot_digest: str | None
                 visible_elements: tuple[str, ...] = ()
                 region_labels: tuple[str, ...] = ()
+                volatile_labels: tuple[str, ...] = ()
                 try:
                     title, headings, screenshot_digest, visible_elements = await self._capture_page(
                         page, viewport_id
@@ -340,6 +368,21 @@ class ExplorationCrawler:
                 visible_elements = _merge_visible_labels(
                     visible_elements, scroll_labels
                 )
+                # Replace any label that moved while we watched with the part of
+                # it that held still, so a scenario generated from this page
+                # cannot freeze an animated string into a target. The full text
+                # is kept in volatile_labels so the synthesizer knows a changing
+                # value is there and can decide what to do about it.
+                try:
+                    moving = await self._volatile_labels(page)
+                except Exception:
+                    moving = ()
+                if moving:
+                    volatile_labels = tuple(observed for observed, _ in moving)
+                    replacements = dict(moving)
+                    visible_elements = tuple(
+                        replacements.get(label, label) for label in visible_elements
+                    )
                 # --- link extraction (same-origin <a href> absolute links) ---
                 raw_links: list[str]
                 try:
@@ -385,6 +428,7 @@ class ExplorationCrawler:
                         discovered_links=discovered_tuple,
                         visible_elements=visible_elements,
                         region_labels=region_labels,
+                        volatile_labels=volatile_labels,
                     )
                 except Exception:
                     # Fallback for edge title/heading validation
@@ -400,6 +444,7 @@ class ExplorationCrawler:
                         discovered_links=discovered_tuple,
                         visible_elements=tuple(x for x in visible_elements if isinstance(x, str)),  # pyright: ignore[reportUnknownVariableType,reportUnnecessaryIsInstance]
                         region_labels=tuple(r for r in region_labels if isinstance(r, str)),  # pyright: ignore[reportUnknownVariableType,reportUnnecessaryIsInstance]
+                        volatile_labels=tuple(v for v in volatile_labels if isinstance(v, str)),  # pyright: ignore[reportUnknownVariableType,reportUnnecessaryIsInstance]
                     )
                 pages.append(crawl_page)
 
@@ -489,7 +534,7 @@ class ExplorationCrawler:
         # stability alone must NOT end the sweep early: GSAP/ScrollTrigger
         # pages keep a fixed scrollHeight while reveals fire at deep
         # scroll positions, so "stable height" is meaningless far from
-        # the bottom. Stability only matters implicitly — if lazy content
+        # the bottom. Stability only matters implicitly â€” if lazy content
         # grows the page, the bottom target moves and the sweep simply
         # continues within its bounds.
         start = time.monotonic()
@@ -686,6 +731,63 @@ class ExplorationCrawler:
                 )
                 if cleaned:
                     return cleaned
+        return ()
+
+    async def _volatile_labels(self, page: Any) -> tuple[tuple[str, str], ...]:
+        """Read the visible labels twice and report the ones that moved.
+
+        A count-up rating is the reason this exists. Observed once, a label like
+        ``4.8 â˜… App Store â†—`` looks like a stable identity, and a scenario
+        generated from it asks the agent to match an animated string - which no
+        person could do either. Read twice a moment apart and the words that
+        change stand out, leaving the words a person would actually use.
+
+        Returns ``(observed_text, stable_anchor)`` for each label that changed,
+        where the anchor is the longest run of words that held still. Purely
+        observational: no selector, href, or test id is involved, so the
+        anchor stays something a persona could recognise and act on.
+        """
+
+        with suppress(Exception):
+            raw = await page.evaluate(  # type: ignore[no-untyped-call,reportUnknownMemberType,reportUnknownVariableType]
+                """async () => {
+                  const SEL = 'a[href], button, [role=button], [role=link], input, select, textarea, h1, h2, h3, h4, [data-testid]';
+                  const read = () => Array.from(document.querySelectorAll(SEL))
+                    .filter((n) => {
+                      const s = getComputedStyle(n);
+                      const r = n.getBoundingClientRect();
+                      return s.display !== 'none' && s.visibility !== 'hidden'
+                        && Number.parseFloat(s.opacity) > 0.05 && r.height > 0;
+                    })
+                    .map((n) => (n.innerText || n.getAttribute('aria-label') || n.textContent || '')
+                      .trim().replace(/\\s+/g, ' '))
+                    .filter((t) => t && t.length <= 80);
+                  const before = read();
+                  await new Promise((r) => setTimeout(r, 450));
+                  const after = read();
+                  const changed = [];
+                  for (let i = 0; i < Math.min(before.length, after.length); i++) {
+                    if (before[i] && before[i] !== after[i]) changed.push([before[i], after[i]]);
+                  }
+                  return changed;
+                }"""
+            )
+            if isinstance(raw, list):
+                pairs: list[tuple[str, str]] = []
+                for item in cast("list[object]", raw):
+                    if not isinstance(item, (list, tuple)):
+                        continue
+                    parts = cast("tuple[object, ...]", item)
+                    if len(parts) != 2:
+                        continue
+                    if not all(isinstance(part, str) for part in parts):
+                        continue
+                    pairs.append((str(parts[0]).strip(), str(parts[1]).strip()))
+                return tuple(
+                    (observed, stable)
+                    for observed, updated in pairs
+                    if (stable := _stable_anchor(observed, updated))
+                )
         return ()
 
     async def _safe_visible_elements(

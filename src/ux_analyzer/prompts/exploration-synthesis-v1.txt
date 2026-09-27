@@ -25,6 +25,9 @@ Constraints (strict):
 - verifier.type must be exactly "visible-result". Never "fixture-state" or any other type. Visible-result verifiers are live-only.
 - verifier.text must be non-empty and must describe text actually rendered in viewport (not hidden, not fixture value).
 - evaluation_target.label must be non-empty visible label, not a selector or hidden label.
+- A pack may mark a page "volatile_labels": rendered text that changed while the crawler watched it, such as a download count or rating counting up. Those labels are already given to you in their stable form, with the moving words removed.
+- Never put a moving value inside evaluation_target.label or verifier.text. A target like "4.8 ★ App Store" cannot be found a moment later, and no persona could match it either. Use the stable words a person would actually say - "App Store" - not the digits.
+- If the changing value is genuinely the point of the task (reading the current rating, not finding the control), then the page cannot supply a stable target for it: prefer a different element that serves the same goal, and anchor on the surrounding section or heading instead.
 - No fixture inputs, no expected_fixture_key, no selectors, no hidden labels, no destination URLs beyond start_url, no test ids, no private execution references, no hidden text, no css/xpath. If you are tempted to reference a selector, instead use only visible label/role.
 - Do not hallucinate pages, labels, or text not supported by evidence packs. If evidence is thin, prefer navigation/discovery on existing pages.
 - IDs must be unique. all_of entries must be unique within verifier. text non-empty.

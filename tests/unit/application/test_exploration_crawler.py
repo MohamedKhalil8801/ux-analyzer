@@ -9,6 +9,7 @@ from ux_analyzer.application.exploration_crawler import (
     ExplorationCrawler,
     PageSettlementPolicy,
     _merge_visible_labels,
+    _stable_anchor,
 )
 from ux_analyzer.domain.benchmark import normalize_crawl_url
 from ux_analyzer.domain.exploration import ExplorationSpec
@@ -708,3 +709,89 @@ async def test_corpus_is_immutable_and_digest_computed() -> None:
     assert len(corpus.corpus_digest) == 64
     # pages immutable tuple
     assert isinstance(corpus.pages, tuple)
+
+
+# ---------------------------------------------------------------------------
+# Volatile labels: a counting value is not a target
+# ---------------------------------------------------------------------------
+
+
+def test_stable_anchor_keeps_the_words_a_person_would_use() -> None:
+    """The real case: a store rating counting up breaks the whole label."""
+
+    anchor = _stable_anchor(
+        "4.8 ★ App Store ↗ (opens in a new tab)",
+        "5.1 ★ App Store ↗ (opens in a new tab)",
+    )
+
+    assert anchor == "★ App Store ↗ (opens in a new tab)"
+    # And crucially the anchor still matches the label it came from, which is
+    # all the runtime matcher needs.
+    assert "App Store" in anchor
+
+
+def test_stable_anchor_drops_only_the_moving_words() -> None:
+    assert _stable_anchor("12,340 people viewed", "12,971 people viewed") == (
+        "people viewed"
+    )
+
+
+def test_stable_anchor_is_empty_when_nothing_survives() -> None:
+    assert _stable_anchor("4.8", "5.1") == ""
+    assert _stable_anchor("Loading…", "Loaded!") == ""
+
+
+def test_stable_anchor_refuses_a_rerendered_length_change() -> None:
+    """A re-render can move every word, so no part of it is a promise."""
+
+    assert _stable_anchor("Buy now", "Buy now in blue") == ""
+    assert _stable_anchor("4.8 ★ App Store", "") == ""
+
+
+def test_stable_anchor_treats_a_digit_roll_inside_a_word_as_stable() -> None:
+    """Word-wise comparison: only the words that changed are excluded."""
+
+    assert _stable_anchor("v2 Plan", "v2 Plan") == "v2 Plan"
+
+
+async def test_crawler_replaces_a_moving_label_with_its_stable_anchor() -> None:
+    """A volatile label must not survive into a scenario as a frozen target."""
+
+    observed = "4.8 ★ App Store ↗ (opens in a new tab)"
+
+    class _MovingPage:
+        async def goto(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        async def evaluate(self, script: str, *_args: Any) -> Any:
+            if "setTimeout" in script:
+                return [[observed, "5.1 ★ App Store ↗ (opens in a new tab)"]]
+            if "querySelectorAll" in script:
+                return [observed, "Contact", "Skills"]
+            return None
+
+        async def wait_for_timeout(self, _ms: int) -> None:
+            return None
+
+        async def title(self) -> str:
+            return "Home"
+
+        async def screenshot(self, **_kwargs: Any) -> bytes:
+            return b"png"
+
+        async def close(self) -> None:
+            return None
+
+    async def _capture(page: Any, viewport_id: str | None) -> Any:
+        return ("Home", ("Home",), None, (observed, "Contact", "Skills"))
+
+    corpus = await ExplorationCrawler(
+        page=_MovingPage(), capture_fn=_capture
+    ).crawl(ExplorationSpec(start_urls=("https://a.test/",), depth=0, max_pages=1))
+
+    page = corpus.pages[0]
+    assert observed not in page.visible_elements
+    assert any("App Store" in label for label in page.visible_elements)
+    # The moving text is still recorded, so the synthesizer can see that a
+    # value exists there rather than silently losing it.
+    assert observed in page.volatile_labels

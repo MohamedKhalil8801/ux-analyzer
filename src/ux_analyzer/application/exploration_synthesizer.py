@@ -85,7 +85,7 @@ _LABEL_TRUNC = 80
 _SUMMARY_TRUNC = 200
 # Deterministic allowlist: exactly these fields may enter a full page pack.
 _PACK_FIELDS = frozenset(
-    {"url", "depth", "title", "headings", "visible_elements"}
+    {"url", "depth", "title", "headings", "visible_elements", "volatile_labels"}
 )
 # Compact TL;DR packs (budget degradation) have their own explicit shape.
 _TLDR_FIELDS = frozenset({"url", "depth", "summary"})
@@ -725,8 +725,9 @@ def _build_page_pack(page: CrawlPage) -> dict[str, Any]:
             "depth": page.depth,
             "title": title,
             "headings": _extract_headings(page),
-            "visible_elements": _extract_visible_elements(page),
-        }
+        "visible_elements": _extract_visible_elements(page),
+        "volatile_labels": list(page.volatile_labels),
+    }
     )
 
 
