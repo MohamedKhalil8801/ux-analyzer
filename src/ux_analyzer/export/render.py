@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from ux_analyzer.export.catalog import IssueView
 from ux_analyzer.export.skills import SkillSet
@@ -311,6 +311,44 @@ def render_index(context: ExportContext) -> str:
             FIX_REPORT_TEMPLATE,
         ]
     )
+
+
+def _text_tuple(value: object) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return ()
+    return tuple(str(item) for item in cast("Sequence[object]", value))
+
+
+def scenario_review_views(report: Mapping[str, Any]) -> tuple[ScenarioReviewView, ...]:
+    """Build review views from a report bundle's synthesis view.
+
+    Takes the whole view rather than the review rows, so the key name and the
+    row shape are checked in one place. A bundle with no ``scenario_reviews``
+    key - a legacy report, or a fallback run that never examined anything -
+    yields no views and the rendered section says the record is absent.
+
+    Every field is defaulted rather than indexed, because a malformed row
+    should cost one review's detail, not the whole export.
+    """
+
+    rows = report.get("scenario_reviews")
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        return ()
+    views: list[ScenarioReviewView] = []
+    for row in cast("Sequence[object]", rows):
+        if not isinstance(row, Mapping):
+            continue
+        record = cast("Mapping[str, Any]", row)
+        views.append(
+            ScenarioReviewView(
+                scenario_id=str(record.get("scenario_id", "")),
+                disposition=str(record.get("disposition", "")),
+                evidence_ids=_text_tuple(record.get("evidence_ids")),
+                signals_weighed=_text_tuple(record.get("signals_weighed")),
+                note=str(record.get("note", "")),
+            )
+        )
+    return tuple(views)
 
 
 def _scenario_examination(context: ExportContext) -> str:
