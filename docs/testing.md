@@ -15,8 +15,27 @@ uv run pyright
 git diff --check
 ```
 
-`uv run pytest -m "not live" -q --collect-only` currently collects 2378 tests
-with 3 deselected (2381 total).
+`uv run pytest -m "not live" -q --collect-only` currently collects 2417 tests
+with 3 deselected (2420 total).
+
+### On PowerShell: do not pipe a long run into `Select-Object -Last`
+
+The full suite finishes in roughly seven minutes. Appending
+`2>&1 | Select-Object -Last 3` to show just the summary makes it hang instead —
+`Select-Object -Last` has to buffer the whole stream before it emits anything,
+and with stderr folded into that stream the child and the parent end up waiting
+on each other. `rtk test` tees internally and hits the same trap.
+
+Redirect to a file and read the tail:
+
+```powershell
+uv run pytest tests/unit tests/integration -q *> pytest.log
+Get-Content pytest.log -Tail 3
+```
+
+Measured here: 397s and 408s to completion unpiped, killed at 15, 40, and 50
+minutes with the pipe. A run that stops reporting for minutes is far more
+likely to be this than a slow suite.
 
 The end-to-end acceptance suite starts local fixture and model servers, drives a
 reduced production `uxa run`, opens the generated report through `file://` with
