@@ -272,13 +272,12 @@ def parse_issue_flags(
     findings: Sequence[str],
     exclude: Sequence[str],
     catalog: IssueCatalog,
-    include_rejected: bool = False,
 ) -> tuple[IssueView, ...]:
     """Resolve non-interactive selection flags into issue views.
 
-    ``--all`` means every *published* issue. Rejected candidates are still
-    selectable by id, and ``include_rejected`` widens ``--all`` to cover them,
-    so exporting one is always a deliberate act.
+    ``--all`` honours the same default the interactive list starts from, so a
+    rejected candidate is never handed to a fixing agent by a bulk flag. Name
+    it with ``--finding`` to include one on purpose.
     """
 
     if not all_issues and not findings:
@@ -288,18 +287,16 @@ def parse_issue_flags(
         selected = [
             issue
             for issue in catalog.issues
-            if issue.finding_id not in excluded
-            and (include_rejected or issue.published)
+            if issue.finding_id not in excluded and issue.published
         ]
-        if not selected and not include_rejected:
+        if not selected:
             unpublished = [
                 issue.finding_id for issue in catalog.issues if not issue.published
             ]
             if unpublished:
                 raise ValueError(
                     "nothing published to export; rejected candidates are "
-                    f"available by --finding id ({', '.join(unpublished)}) or "
-                    "with --include-rejected"
+                    f"available by --finding id ({', '.join(unpublished)})"
                 )
     else:
         unknown = [fid for fid in findings if catalog.find(fid) is None]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,8 +32,14 @@ from ux_analyzer.domain.synthesis import (
     SynthesisRoleReceipt,
     SynthesisStatus,
 )
-from ux_analyzer.export.catalog import build_catalog, parse_issue_flags
+from ux_analyzer.export.catalog import (
+    IssueView,
+    build_catalog,
+    parse_issue_flags,
+)
+from ux_analyzer.export.flow import run_selection_flow
 from ux_analyzer.export.render import render_issue
+from ux_analyzer.export.skills import SkillSet
 from ux_analyzer.reporting.renderer import load_report_findings
 from ux_analyzer.storage.redesign_artifacts import RedesignAttemptStore
 from ux_analyzer.storage.synthesis_artifacts import SynthesisArtifactStore
@@ -1047,27 +1054,68 @@ def test_fallback_findings_are_excluded_from_export(
     )
 
 
-def test_rejected_candidates_are_selectable_but_not_exported_by_default(
+def test_rejected_candidates_are_listed_but_start_unchecked(
     fallback_bundle: Path,
 ) -> None:
-    """Opt-in export for reviewed-and-rejected claims."""
+    """A rejected claim is visible in the picker, off unless asked for.
+
+    Same rule the picker already applies to evidence it could not resolve: the
+    row is listed so the reader can judge it, and the checkbox starts clear so
+    acting on it stays a deliberate act.
+    """
 
     view = load_report_findings(fallback_bundle)
     catalog = build_catalog(view)
 
     rejected = [issue for issue in catalog.issues if not issue.published]
-    assert rejected, "the rejected candidate is offered for selection"
-    assert all(issue.evidence for issue in rejected)
+    published = [issue for issue in catalog.issues if issue.published]
+    assert rejected and published, "both kinds are offered"
 
-    # --all means every published issue. A rejected claim is a claim somebody
-    # has to stand behind explicitly.
+    class _UI:
+        def __init__(self) -> None:
+            self.rows: list[tuple[str, str, bool]] = []
+
+        def select_group(
+            self, name: str, items: Sequence[tuple[str, str, bool]]
+        ) -> tuple[str, ...]:
+            self.rows.extend(items)
+            return ()
+
+        def choose_skill_set(self, sets: Sequence[SkillSet]) -> str | None:
+            return None
+
+        def override_per_issue(
+            self,
+            issues: Sequence[IssueView],
+            sets: Sequence[SkillSet],
+            default_name: str | None,
+        ) -> dict[str, str]:
+            return {}
+
+        def confirm(self, _summary: str) -> bool:
+            return True
+
+    ui = _UI()
+    assert run_selection_flow(catalog, (), ui) is None, "nothing was checked"
+
+    defaults = {finding_id: checked for finding_id, _label, checked in ui.rows}
+    for issue in rejected:
+        assert defaults[issue.finding_id] is False
+    for issue in published:
+        assert defaults[issue.finding_id] is True
+
+    # A rejected row says why it is unchecked.
+    labels = {finding_id: label for finding_id, label, _ in ui.rows}
+    for issue in rejected:
+        assert "rejected during review" in labels[issue.finding_id]
+
+    # --all honours the same starting point, and naming one opts in.
+    rejected_ids = {issue.finding_id for issue in rejected}
     by_all = parse_issue_flags(
         all_issues=True, findings=(), exclude=(), catalog=catalog
     )
-    rejected_ids = {issue.finding_id for issue in rejected}
     assert not rejected_ids & {issue.finding_id for issue in by_all}
 
-    # Selecting it by id still works, and it is labelled in the package.
     chosen = parse_issue_flags(
         all_issues=False,
         findings=(rejected[0].finding_id,),
@@ -1078,13 +1126,3 @@ def test_rejected_candidates_are_selectable_but_not_exported_by_default(
     markdown = render_issue(chosen[0], {})
     assert "Rejected during independent review" in markdown
     assert "not an established finding" in markdown
-
-    # And the explicit opt-in widens --all to cover them.
-    widened = parse_issue_flags(
-        all_issues=True,
-        findings=(),
-        exclude=(),
-        catalog=catalog,
-        include_rejected=True,
-    )
-    assert rejected_ids <= {issue.finding_id for issue in widened}

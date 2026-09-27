@@ -43,19 +43,25 @@ def run_selection_flow(
 ) -> SelectionResult | None:
     chosen: list[IssueView] = []
     for group in catalog.groups:
-        items = [
-            (
-                issue.finding_id,
-                issue.title
-                + (
-                    ""
-                    if not issue.has_unresolved_evidence
-                    else "  [warning: evidence unavailable]"
-                ),
-                not issue.has_unresolved_evidence,
+        items: list[tuple[str, str, bool]] = []
+        for issue in group.issues:
+            # A rejected candidate is listed like any other, so the reader can
+            # see it and decide, but it starts unchecked. Same rule as evidence
+            # that could not be resolved: the claim is visible and the choice to
+            # act on it is deliberate.
+            notes: list[str] = []
+            if not issue.published:
+                notes.append("rejected during review")
+            if issue.has_unresolved_evidence:
+                notes.append("evidence unavailable")
+            items.append(
+                (
+                    issue.finding_id,
+                    issue.title
+                    + "".join(f"  [warning: {note}]" for note in notes),
+                    issue.published and not issue.has_unresolved_evidence,
+                )
             )
-            for issue in group.issues
-        ]
         for finding_id in ui.select_group(group.name, items):
             issue = catalog.find(finding_id)
             if issue is not None:
@@ -68,9 +74,11 @@ def run_selection_flow(
     )
     resolve_assignments(sets, default_name, per_issue)
     unresolved = sum(1 for issue in chosen if issue.has_unresolved_evidence)
+    rejected = sum(1 for issue in chosen if not issue.published)
     summary = (
         f"Export {len(chosen)} issue(s)"
         + (f" ({unresolved} with evidence unavailable)" if unresolved else "")
+        + (f" ({rejected} rejected during review)" if rejected else "")
         + f"; skills: default '{default_name or '(none)'}' with "
         f"{len(per_issue)} per-issue override(s)."
     )

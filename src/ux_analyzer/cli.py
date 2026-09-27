@@ -2500,14 +2500,6 @@ def export(
         help="Package directory (defaults under the git-ignored .uxa-output/ dir)",
     ),
     all_issues: bool = typer.Option(False, "--all"),
-    include_rejected: bool = typer.Option(
-        False,
-        "--include-rejected",
-        help=(
-            "Include candidates that independent review rejected. They are "
-            "never exported by --all alone."
-        ),
-    ),
     finding: list[str] = typer.Option([], "--finding", help="Finding ID"),
     exclude: list[str] = typer.Option([], "--exclude", help="Finding ID"),
     skill_set: list[str] = typer.Option([], "--skill-set", help="Set for all issues"),
@@ -2552,7 +2544,6 @@ def export(
                 findings=finding,
                 exclude=exclude,
                 catalog=catalog,
-                include_rejected=include_rejected,
             )
             default_name = (
                 skill_set[0]
