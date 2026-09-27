@@ -25,7 +25,7 @@ from ux_analyzer.ports.models import (
 )
 
 REDESIGN_PROPOSER_PROMPT_VERSION = "redesign-proposer-v2"
-REDESIGN_CRITIC_MERGER_PROMPT_VERSION = "redesign-critic-merger-v2"
+REDESIGN_CRITIC_MERGER_PROMPT_VERSION = "redesign-critic-merger-v3"
 
 _REDESIGN_CATEGORIES = (
     "grouping",
@@ -167,11 +167,24 @@ class CriticKilledProposal(_RedesignSchema):
 
 
 class CriticConsolidatedProposal(_ProposalInvariants):
-    """A final published proposal after cross-page consistency review."""
+    """A final published proposal after cross-page consistency review.
+
+    ``section_refs`` is relaxed to a default here on purpose. A strict
+    ``min_length=1`` makes one ungrounded proposal fail schema validation for
+    the whole critic response, so a single proposal the model could not tie to
+    a captured section discarded the entire pass after three identical
+    attempts. The application gate still refuses to publish a proposal with no
+    supportable section reference - it just gets to be the one that is dropped
+    rather than the attempt.
+    """
+
+    section_refs: list[ProposerSectionRef] = Field(
+        default_factory=list[ProposerSectionRef]
+    )
 
 
 class CriticResponse(_RedesignSchema):
-    schema_version: ClassVar[str] = "redesign-critic-merger-v2"
+    schema_version: ClassVar[str] = REDESIGN_CRITIC_MERGER_PROMPT_VERSION
 
     final_proposals: list[CriticConsolidatedProposal] = []
     killed: list[CriticKilledProposal] = []
@@ -444,6 +457,15 @@ cross-page inconsistencies: the same pattern must get the same treatment \
 on every page. Return only proposals that survive, each carrying valid \
 section references and honest impact and effort estimates. You may return \
 zero final proposals when nothing survives; that is a valid outcome.
+
+Every final proposal needs at least one section reference naming a section \
+that actually appears in the captures you were given, copied from the page \
+payload. If a proposal cannot be tied to one - because the section is not in \
+the digest, or the observation was not grounded in anything you can point at \
+- kill it with that as the reason instead of returning it. A proposal with no \
+section reference will be dropped, so killing it up front gives the reason \
+somewhere to live. Never invent a section label, box, or summary to fill the \
+field.
 """
 
 

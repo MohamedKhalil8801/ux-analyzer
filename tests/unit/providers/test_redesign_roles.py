@@ -219,7 +219,7 @@ def test_prompt_versions_are_frozen_strings() -> None:
     assert RedesignProposer.prompt_version == REDESIGN_PROPOSER_PROMPT_VERSION
     assert RedesignCriticMerger.prompt_version == REDESIGN_CRITIC_MERGER_PROMPT_VERSION
     assert REDESIGN_PROPOSER_PROMPT_VERSION == "redesign-proposer-v2"
-    assert REDESIGN_CRITIC_MERGER_PROMPT_VERSION == "redesign-critic-merger-v2"
+    assert REDESIGN_CRITIC_MERGER_PROMPT_VERSION == "redesign-critic-merger-v3"
 
 
 def test_prompts_encode_doctrine() -> None:
@@ -285,7 +285,7 @@ def test_manifest_describes_role_and_versions() -> None:
     assert manifest.schema_version == "redesign-proposer-v2"
     critic = RedesignCriticMerger(client, model="gpt-redesign")
     assert critic.manifest.role is ModelRole.REDESIGN_CRITIC_MERGER
-    assert critic.manifest.schema_version == "redesign-critic-merger-v2"
+    assert critic.manifest.schema_version == "redesign-critic-merger-v3"
 
 
 def test_empty_model_rejected() -> None:

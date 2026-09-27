@@ -786,6 +786,19 @@ def _validate_final_proposals(
             for ref in cast(Sequence[object], refs)
             if isinstance(ref, Mapping)
         )
+        if not typed_refs:
+            # A design proposal is a claim about a specific part of a specific
+            # captured page. One with no section reference says nothing about
+            # where, so it cannot be acted on or checked against the capture.
+            # Dropping it here is the whole point: the rest of the pass
+            # survives instead of the attempt failing to parse.
+            reasons.append(
+                _reason(
+                    f"{proposal_id}: no section reference on {page_url}, so the "
+                    "proposal is not tied to a captured part of the page"
+                )
+            )
+            continue
         dangling = False
         for ref in typed_refs:
             if not section_ref_resolves(ref, capture):

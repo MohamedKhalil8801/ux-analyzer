@@ -1012,6 +1012,55 @@ def test_malformed_proposals_do_not_inflate_per_page_count() -> None:
     )
 
 
+def test_proposal_without_a_section_reference_is_dropped_not_fatal() -> None:
+    """One ungrounded proposal must cost one proposal, not the whole pass.
+
+    A live critic run returned seven final proposals and left ``section_refs``
+    off the fourth. With a strict ``min_length=1`` that is a schema failure for
+    the entire response, so the pass was lost after three identical attempts -
+    the same one-bad-proposal problem the pass-level validation already solves,
+    except it happened at parse time before that tolerance could run.
+    """
+
+    from ux_analyzer.application.redesign import _validate_final_proposals
+
+    ungrounded = _proposal_payload(proposal_id="ungrounded")
+    ungrounded["section_refs"] = []
+    final = [
+        _proposal_payload(proposal_id=f"ok{index}") for index in range(3)
+    ] + [dict(ungrounded)]
+
+    outcome = _validate_final_proposals(
+        final,
+        _CAPTURES,
+        known_ids=frozenset(_pack_kwargs()["principle_ids"]),
+        pack_refs=_pack_refs(),
+    )
+
+    assert [item.proposal_id for item in outcome.proposals] == [
+        "ok0",
+        "ok1",
+        "ok2",
+    ]
+    assert any(
+        "ungrounded" in reason and "section reference" in reason
+        for reason in outcome.reasons
+    )
+
+
+def test_critic_schema_tolerates_a_missing_section_reference() -> None:
+    """The critic's model-facing schema must parse so the gate can run at all."""
+
+    from ux_analyzer.providers.redesign import CriticConsolidatedProposal
+
+    payload = _proposal_payload(proposal_id="ungrounded")
+    payload.pop("section_refs", None)
+
+    parsed = CriticConsolidatedProposal.model_validate(payload)
+
+    assert parsed.section_refs == []
+
+
 @pytest.mark.asyncio
 async def test_proposals_ordered_impact_then_effort() -> None:
     final = [
