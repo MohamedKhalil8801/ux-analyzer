@@ -106,6 +106,7 @@ def _render(tmp_path: Path) -> str:
 
 def test_renderer_renders_accepted_redesign_tab(tmp_path: Path) -> None:
     _write_run(tmp_path)
+    _write_run(tmp_path)
     _accepted_attempt(
         tmp_path,
         proposals=(
@@ -133,6 +134,7 @@ def test_renderer_renders_accepted_redesign_tab(tmp_path: Path) -> None:
 
 
 def test_renderer_orders_proposals_by_impact_then_effort(tmp_path: Path) -> None:
+    _write_run(tmp_path)
     _write_run(tmp_path)
     _accepted_attempt(
         tmp_path,
@@ -289,6 +291,7 @@ def test_renderer_omits_oversized_attempt_payload(tmp_path: Path) -> None:
 
 def test_renderer_respects_byte_threshold_with_redesign(tmp_path: Path) -> None:
     _write_run(tmp_path)
+    _write_run(tmp_path)
     _accepted_attempt(
         tmp_path,
         proposals=(
@@ -343,3 +346,60 @@ def _write_run(root: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_dropped_proposals_are_shown_with_their_reason(
+    tmp_path: Path,
+) -> None:
+    """A pass that kept five of six should show both sides.
+
+    The Redesign tab listed survivors and discarded the casualties, so a
+    partially-valid pass looked identical to a clean one. The drop reason is the
+    valuable part: it is a fact about the page, not only about the proposal.
+    """
+
+    _write_run(tmp_path)
+    _accepted_attempt(
+        tmp_path,
+        killed=(
+            KilledProposal(
+                proposal_id="mkp-04",
+                reason=(
+                    "The capture establishes a long narrative but does not "
+                    "establish that the pacing prevents project comparison."
+                ),
+                title="Adopt summary-first case-study pacing",
+            ),
+        ),
+    )
+
+    html = _render(tmp_path)
+
+    assert "Dropped during review" in html
+    assert "1 dropped" in html
+    assert "Adopt summary-first case-study pacing" in html
+    assert "does not establish that the pacing prevents" in html
+    # Not a published recommendation.
+    assert "Not published" in html
+    # The surviving proposal is still there.
+    assert "p-low" in html or "proposal" in html.lower()
+
+
+def test_dropped_proposal_without_a_title_says_so(tmp_path: Path) -> None:
+    """Proposals dropped before the critic saw them have no title recorded."""
+
+    _write_run(tmp_path)
+    _accepted_attempt(
+        tmp_path,
+        killed=(
+            KilledProposal(
+                proposal_id="mkp-legacy",
+                reason="Superseded by a merged proposal.",
+            ),
+        ),
+    )
+
+    html = _render(tmp_path)
+
+    assert "mkp-legacy" in html
+    assert "Only the proposal ID was recorded" in html

@@ -853,6 +853,42 @@
       {% if redesign.pack_version %}
       <p class="redesign-pack-version">Principle pack version: {{ redesign.pack_version }}</p>
       {% endif %}
+      {% set killed_proposals = redesign.killed if redesign.get("killed") else [] %}
+      {% if killed_proposals %}
+      <details class="aggregate-details rejected-findings" data-redesign-killed="true">
+        <summary>
+          Dropped during review
+          <span class="status-pill status-pill-rejected">{{ killed_proposals | length }} dropped</span>
+        </summary>
+        <p class="summary-assessment">
+          The critic or merger removed these proposals. They are kept here because a
+          dropped proposal still says something &mdash; the reason it was dropped is
+          usually a fact about the page, not just about the proposal. None of them is a
+          published design recommendation.
+        </p>
+        {% for killed in killed_proposals %}
+        <article class="finding finding-rejected" data-proposal-id="{{ killed.proposal_id }}">
+          <header class="finding-header">
+            <div>
+              <span class="recorded-signal-label rejected-label">Dropped</span>
+              <h3>{{ killed.title }}</h3>
+            </div>
+            <span class="confidence-label">Not published</span>
+          </header>
+          <div class="finding-field">
+            <h4>Why it was dropped</h4>
+            <p>{{ killed.reason }}</p>
+          </div>
+          {% if not killed.get("has_title") %}
+          <div class="finding-field">
+            <h4>Note</h4>
+            <p>Only the proposal ID was recorded for this one, so the heading above is the ID.</p>
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </details>
+      {% endif %}
       {% else %}
       <div class="redesign-placeholder fallback-notice">
         <p>{{ redesign.placeholder_text }}</p>
