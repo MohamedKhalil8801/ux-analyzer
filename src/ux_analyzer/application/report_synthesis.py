@@ -62,7 +62,6 @@ from ux_analyzer.ports.report_synthesis import (
     ReportAnalystPort,
     ReportEvidenceAuditorPort,
     ReportPatternReviewerPort,
-    ScenarioReviewReport,
     TypedObjection,
     UxPrinciple,
     contains_forbidden_narrative,
@@ -923,10 +922,6 @@ class ReportSynthesisService:
         max_final_verifications: int = 1,
         model_record_source: object | None = None,
         clock: Callable[[], str] | None = None,
-        resume_analyst_receipt: SynthesisRoleReceipt | None = None,
-        resume_candidate_findings: Sequence[SynthesisFinding] = (),
-        resume_scenario_reviews: Sequence[ScenarioReview] = (),
-        resume_attempt_id: str = "",
         prior_rejections: Sequence[PriorRejection] = (),
     ) -> None:
         supplied_roles = _provider_roles(roles or {})
@@ -969,21 +964,9 @@ class ReportSynthesisService:
         self._model_record_source = model_record_source
         self._clock = clock
         self._sequence = 0
-        if resume_analyst_receipt is not None and not resume_candidate_findings:
-            raise ValueError(
-                "resume_candidate_findings must accompany resume_analyst_receipt"
-            )
-        if resume_candidate_findings and resume_analyst_receipt is None:
-            raise ValueError(
-                "resume_analyst_receipt must accompany resume_candidate_findings"
-            )
         raw_rejections: Sequence[object] = cast(Sequence[object], prior_rejections)
         if any(not isinstance(item, PriorRejection) for item in raw_rejections):
             raise TypeError("prior_rejections must contain PriorRejection values")
-        self._resume_analyst_receipt = resume_analyst_receipt
-        self._resume_candidate_findings = tuple(resume_candidate_findings)
-        self._resume_scenario_reviews = tuple(resume_scenario_reviews)
-        self._resume_attempt_id = resume_attempt_id
         self._prior_rejections = tuple(cast(Sequence[PriorRejection], raw_rejections))
 
     async def synthesize(self, corpus: EvidenceCorpus) -> SynthesisAttempt:
@@ -1016,82 +999,35 @@ class ReportSynthesisService:
                 role_manifest=role_manifest,
             )
 
-        reused_receipt: SynthesisRoleReceipt | None = None
-        if self._resume_analyst_receipt is not None:
-            reused_receipt = self._resume_analyst_receipt
-        analyst_run: _RoleRun | None = None
-        analyst_response: AnalystResponse | None = None
-        if reused_receipt is not None and reused_receipt.role == (
-            ModelRole.REPORT_ANALYST.value
-        ):
-            candidate_models = tuple(self._resume_candidate_findings)
-            analyst_response = AnalystResponse(
-                complete=True,
-                candidate_findings=[
-                    self._finding_to_port(item)
-                    for item in candidate_models
-                ],
-                # The reviews have to come back with the receipt. Reconstructing
-                # only the candidates imported an analyst stage that had done
-                # half its job, and publication then failed the resumed attempt
-                # for missing scenario coverage - the reuse produced an
-                # outcome the original run never had.
-                scenario_reviews=[
-                    ScenarioReviewReport(
-                        scenario_id=review.scenario_id,
-                        disposition=ReviewDisposition(review.disposition),
-                        evidence_ids=list(review.evidence_ids),
-                        signals_weighed=list(review.signals_weighed),
-                        note=review.note,
-                    )
-                    for review in self._resume_scenario_reviews
-                ],
-            )
-            retrieval_log.append(
-                {
-                    "role": ModelRole.REPORT_ANALYST.value,
-                    "phase": "resume",
-                    "round": 0,
-                    "request": (),
-                    "resolved_evidence_ids": (),
-                    "response": {
-                        "status": "reused",
-                        "attempt_id": self._resume_attempt_id,
-                    },
-                }
-            )
-            role_receipts[reused_receipt.role] = reused_receipt
-        else:
-            analyst_run = await self._run_role(
-                ModelRole.REPORT_ANALYST,
-                cast(object, self.analyst),
+        analyst_run = await self._run_role(
+            ModelRole.REPORT_ANALYST,
+            cast(object, self.analyst),
+            corpus,
+            candidate_findings=(),
+        )
+        retrieval_log.extend(analyst_run.retrieval_log)
+        if analyst_run.response is None:
+            return self._attempt(
                 corpus,
-                candidate_findings=(),
+                attempt_id=attempt_id,
+                attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
+                created_at=created_at,
+                status=(
+                    SynthesisStatus.UNAVAILABLE
+                    if analyst_run.unavailable
+                    else SynthesisStatus.REJECTED
+                ),
+                limitations=limitations
+                + [
+                    analyst_run.limitation
+                    or "Report analyst produced no usable output."
+                ],
+                retrieval_log=retrieval_log,
+                role_manifest=role_manifest,
             )
-            retrieval_log.extend(analyst_run.retrieval_log)
-            if analyst_run.response is None:
-                return self._attempt(
-                    corpus,
-                    attempt_id=attempt_id,
-                    attempt_wall_ms=(time.perf_counter() - attempt_started) * 1000,
-                    created_at=created_at,
-                    status=(
-                        SynthesisStatus.UNAVAILABLE
-                        if analyst_run.unavailable
-                        else SynthesisStatus.REJECTED
-                    ),
-                    limitations=limitations
-                    + [
-                        analyst_run.limitation
-                        or "Report analyst produced no usable output."
-                    ],
-                    retrieval_log=retrieval_log,
-                    role_manifest=role_manifest,
-                )
-            analyst_response = cast(AnalystResponse, analyst_run.response)
-            if analyst_run.receipt is not None:
-                role_receipts[analyst_run.receipt.role] = analyst_run.receipt
-        assert analyst_response is not None
+        analyst_response = cast(AnalystResponse, analyst_run.response)
+        if analyst_run.receipt is not None:
+            role_receipts[analyst_run.receipt.role] = analyst_run.receipt
         _retain_response_limitations(limitations, analyst_response)
         scenario_reviews, review_limitations = self._scenario_reviews(
             corpus, analyst_response
@@ -1567,87 +1503,6 @@ class ReportSynthesisService:
             findings=tuple(accepted),
             scenario_reviews=scenario_reviews,
         )
-
-    def analyst_receipt_for_resume(
-        self,
-        prior_attempt: SynthesisAttempt,
-        corpus: EvidenceCorpus,
-    ) -> SynthesisRoleReceipt | None:
-        """Return the prior attempt's analyst receipt when it is reusable.
-
-        The receipt is reusable only when the prior attempt came from the same
-        corpus digest, orchestrator prompt version, analyst role manifest, and
-        analyst response schema, and when every candidate finding it carries
-        still passes deterministic publication validation against *this*
-        corpus. Any mismatch returns None so the caller re-runs the analyst.
-        """
-
-        if type(prior_attempt) is not SynthesisAttempt:
-            raise TypeError("prior attempt must be a SynthesisAttempt")
-        if prior_attempt.corpus_digest != corpus.digest:
-            return None
-        if prior_attempt.prompt_version != REPORT_SYNTHESIS_PROMPT_VERSION:
-            return None
-        prior_role_manifest = prior_attempt.role_manifest.get(
-            ModelRole.REPORT_ANALYST.value
-        )
-        current_role_manifest = _manifest_payload(
-            self.analyst, ModelRole.REPORT_ANALYST
-        )
-        if not isinstance(prior_role_manifest, Mapping):
-            return None
-        prior_role_manifest = cast(Mapping[object, object], prior_role_manifest)
-        if _canonical_json(prior_role_manifest) != _canonical_json(
-            current_role_manifest
-        ):
-            return None
-        receipts = {
-            receipt.role: receipt
-            for receipt in prior_attempt.role_receipts
-            if receipt.role == ModelRole.REPORT_ANALYST.value
-        }
-        receipt = receipts.get(ModelRole.REPORT_ANALYST.value)
-        if receipt is None:
-            return None
-        expected_schema_digest = hashlib.sha256(
-            _canonical_json(
-                _role_schema(ModelRole.REPORT_ANALYST).model_json_schema()
-            ).encode("utf-8")
-        ).hexdigest()
-        if receipt.schema_digest != expected_schema_digest:
-            return None
-        # Coverage is part of what the analyst owes, so a receipt from an attempt
-        # that did not discharge it cannot be reused. A live run reused an
-        # analyst receipt whose attempt carried no scenario reviews at all, and
-        # the new attempt then failed publication validation for missing
-        # coverage - the reuse imported a defect the re-run would not have.
-        if corpus.scenario_ids() and not prior_attempt.scenario_reviews:
-            return None
-        reviewed_scenarios = {
-            review.scenario_id for review in prior_attempt.scenario_reviews
-        }
-        if corpus.scenario_ids() and not set(corpus.scenario_ids()) <= reviewed_scenarios:
-            return None
-        candidate_models = tuple(prior_attempt.candidate_findings)
-        seen_candidate_ids: set[str] = set()
-        for candidate in candidate_models:
-            if candidate.finding_id in seen_candidate_ids:
-                return None
-            seen_candidate_ids.add(candidate.finding_id)
-            try:
-                self._validated_finding(
-                    corpus,
-                    self._finding_to_port(candidate),
-                    reviewer_state="candidate",
-                )
-            except _BenignCandidate:
-                # A benign alternate is also a deterministic, corpus-bound
-                # verdict; reuse stays faithful to the original outcome.
-                continue
-            except (TypeError, ValueError):
-                return None
-        return receipt
-
     async def _run_role(
         self,
         role: ModelRole,

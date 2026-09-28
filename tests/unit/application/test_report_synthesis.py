@@ -17,7 +17,6 @@ from ux_analyzer.application.evidence_corpus import (
 )
 from ux_analyzer.application.report_synthesis import (
     DEFAULT_MAX_ATTACHMENT_BYTES,
-    REPORT_SYNTHESIS_PROMPT_VERSION,
     ReportSynthesisService,
     _safe_role_validation_reason,  # pyright: ignore[reportPrivateUsage]
 )
@@ -26,11 +25,7 @@ from ux_analyzer.domain.synthesis import (
     EvidenceRef,
     FindingKind,
     ObjectionSeverity,
-    ReviewDisposition,
-    ScenarioReview,
     SynthesisAttempt,
-    SynthesisFinding,
-    SynthesisRoleReceipt,
     SynthesisStatus,
 )
 from ux_analyzer.ports.model_transport import (
@@ -381,9 +376,6 @@ def _scripted_service(
     max_adjudication_revisions: int = 1,
     max_final_verifications: int = 1,
     model_record_source: object | None = None,
-    resume_analyst_receipt: SynthesisRoleReceipt | None = None,
-    resume_candidate_findings: Sequence[SynthesisFinding] = (),
-    resume_attempt_id: str = "",
 ) -> tuple[ReportSynthesisService, tuple[_ScriptedRole, ...]]:
     recording_source = None
     effective_source = model_record_source
@@ -406,9 +398,6 @@ def _scripted_service(
             max_adjudication_revisions=max_adjudication_revisions,
             max_final_verifications=max_final_verifications,
             model_record_source=effective_source,
-            resume_analyst_receipt=resume_analyst_receipt,
-            resume_candidate_findings=resume_candidate_findings,
-            resume_attempt_id=resume_attempt_id,
         ),
         roles,
     )
@@ -495,334 +484,6 @@ async def test_reviewers_run_concurrently(tmp_path: Path) -> None:
     attempt = cast(SynthesisAttempt, await asyncio.wait_for(task, timeout=10))
 
     assert attempt.status is SynthesisStatus.ACCEPTED
-
-
-@pytest.mark.asyncio
-async def test_analyst_receipt_for_resume_accepts_validated_prior_attempt(
-    tmp_path: Path,
-) -> None:
-    """A same-corpus, schema-matched prior attempt yields its analyst receipt."""
-
-    service, _roles = _scripted_service()
-    corpus = _corpus(tmp_path)
-    candidate = _candidate()
-    finding = candidate.to_domain(reviewer_state="candidate")
-    receipt = SynthesisRoleReceipt(
-        role="report-analyst",
-        provider_id="fixture-provider",
-        model_id="fixture-model",
-        prompt_digest="a" * 64,
-        schema_digest=hashlib.sha256(
-            json.dumps(
-                AnalystResponse.model_json_schema(),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-        output_digest="b" * 64,
-    )
-    prior = SynthesisAttempt(
-        attempt_id="synthesis-prior",
-        status=SynthesisStatus.UNAVAILABLE,
-        corpus_digest=corpus.digest,
-        role_manifest={
-            "report-analyst": _analyst_role_manifest(
-                prompt_version="fixture-analyst-v1"
-            )
-        },
-        prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
-        role_receipts=(receipt,),
-        candidate_findings=(finding,),
-    )
-
-    resumed = service.analyst_receipt_for_resume(prior, corpus)
-
-    assert resumed is receipt
-
-
-@pytest.mark.asyncio
-async def test_analyst_receipt_for_resume_rejects_an_attempt_without_scenario_reviews(
-    tmp_path: Path,
-) -> None:
-    """Reuse must not import an attempt that never discharged coverage.
-
-    A live run reused an analyst receipt whose prior attempt carried no scenario
-    reviews at all. The reused output then failed publication validation for
-    missing scenario coverage - the reuse imported a defect that re-running the
-    analyst would never have produced. The gate already re-validated candidate
-    findings against this corpus; it did not check the coverage obligation.
-    """
-
-    service, _roles = _scripted_service()
-    corpus = _corpus(
-        tmp_path,
-        extra_entries=(
-            EvidenceEntry(
-                ref=EvidenceRef("scenario:run-a", "scenario", "run-a"),
-                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
-                summary="The scenario under test.",
-                payload={"id": "invite-a-friend"},
-            ),
-        ),
-    )
-    assert corpus.scenario_ids() == ("invite-a-friend",)
-    finding = _candidate().to_domain(reviewer_state="candidate")
-    receipt = SynthesisRoleReceipt(
-        role="report-analyst",
-        provider_id="fixture-provider",
-        model_id="fixture-model",
-        prompt_digest="a" * 64,
-        schema_digest=hashlib.sha256(
-            json.dumps(
-                AnalystResponse.model_json_schema(),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-        output_digest="b" * 64,
-    )
-    matching = {
-        "corpus_digest": corpus.digest,
-        "role_manifest": {
-            "report-analyst": _analyst_role_manifest(
-                prompt_version="fixture-analyst-v1"
-            )
-        },
-        "prompt_version": REPORT_SYNTHESIS_PROMPT_VERSION,
-        "role_receipts": (receipt,),
-    }
-    for label, reviews in (
-        ("no scenario reviews at all", ()),
-        ("reviews that do not cover the corpus", (
-            ScenarioReview(
-                scenario_id="some-other-scenario",
-                disposition=ReviewDisposition.NO_ISSUE_FOUND,
-                signals_weighed=("attention cost",),
-            ),
-        )),
-    ):
-        prior = SynthesisAttempt(
-            attempt_id="synthesis-prior",
-            status=SynthesisStatus.UNAVAILABLE,
-            candidate_findings=(finding,),
-            scenario_reviews=reviews,
-            **matching,
-        )
-
-        assert service.analyst_receipt_for_resume(prior, corpus) is None, label
-
-    # Coverage discharged, so the receipt is reusable. (A covered attempt with
-    # a valid candidate reuses; see test_resume_skips_analyst_call_and_publishes
-    # for the full round-trip.)
-    covered = SynthesisAttempt(
-        attempt_id="synthesis-prior",
-        status=SynthesisStatus.UNAVAILABLE,
-        candidate_findings=(finding,),
-        scenario_reviews=(
-            ScenarioReview(
-                scenario_id=scenario_id,
-                disposition=ReviewDisposition.NO_ISSUE_FOUND,
-                signals_weighed=("attention cost",),
-            )
-            for scenario_id in corpus.scenario_ids()
-        ),
-        **matching,
-    )
-    assert service.analyst_receipt_for_resume(covered, corpus) is receipt
-
-
-async def test_analyst_receipt_for_resume_rejects_prompt_version_mismatch(
-    tmp_path: Path,
-) -> None:
-    service, _roles = _scripted_service()
-    corpus = _corpus(tmp_path)
-    finding = _candidate().to_domain(reviewer_state="candidate")
-    receipt = SynthesisRoleReceipt(
-        role="report-analyst",
-        provider_id="fixture-provider",
-        model_id="fixture-model",
-        prompt_digest="a" * 64,
-        schema_digest=hashlib.sha256(
-            json.dumps(
-                AnalystResponse.model_json_schema(),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-        output_digest="b" * 64,
-    )
-    prior = SynthesisAttempt(
-        attempt_id="synthesis-prior",
-        status=SynthesisStatus.UNAVAILABLE,
-        corpus_digest=corpus.digest,
-        role_manifest={
-            "report-analyst": _analyst_role_manifest(
-                prompt_version="fixture-analyst-v0"
-            )
-        },
-        prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
-        role_receipts=(receipt,),
-        candidate_findings=(finding,),
-    )
-
-    assert service.analyst_receipt_for_resume(prior, corpus) is None
-
-
-@pytest.mark.asyncio
-async def test_analyst_receipt_for_resume_rejects_mismatched_corpus(
-    tmp_path: Path,
-) -> None:
-    """A prior attempt from a different corpus digest must not be reused."""
-
-    service, _roles = _scripted_service()
-    corpus = _corpus(tmp_path)
-    candidate = _candidate()
-    finding = candidate.to_domain(reviewer_state="candidate")
-    receipt = SynthesisRoleReceipt(
-        role="report-analyst",
-        provider_id="fixture-provider",
-        model_id="fixture-model",
-        prompt_digest="a" * 64,
-        schema_digest=hashlib.sha256(
-            json.dumps(
-                AnalystResponse.model_json_schema(),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-        output_digest="b" * 64,
-    )
-    prior = SynthesisAttempt(
-        attempt_id="synthesis-prior",
-        status=SynthesisStatus.UNAVAILABLE,
-        corpus_digest="f" * 64,
-        prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
-        role_receipts=(receipt,),
-        candidate_findings=(finding,),
-    )
-
-    assert service.analyst_receipt_for_resume(prior, corpus) is None
-
-
-@pytest.mark.asyncio
-async def test_analyst_receipt_for_resume_rejects_invalidated_finding(
-    tmp_path: Path,
-) -> None:
-    """A candidate that fails deterministic validation against the corpus
-    (here: a bad evidence reference) forces a fresh analyst run."""
-
-    service, _roles = _scripted_service()
-    corpus = _corpus(tmp_path)
-    raw_candidate = _candidate().model_dump(mode="python")
-    raw_candidate["evidence_refs"] = [
-        {"evidence_id": "event:run-z:999", "kind": "event", "run_id": "run-z"}
-    ]
-    finding = CandidateFinding.model_validate(raw_candidate).to_domain(
-        reviewer_state="candidate"
-    )
-    receipt = SynthesisRoleReceipt(
-        role="report-analyst",
-        provider_id="fixture-provider",
-        model_id="fixture-model",
-        prompt_digest="a" * 64,
-        schema_digest=hashlib.sha256(
-            json.dumps(
-                AnalystResponse.model_json_schema(),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-        output_digest="b" * 64,
-    )
-    prior = SynthesisAttempt(
-        attempt_id="synthesis-prior",
-        status=SynthesisStatus.UNAVAILABLE,
-        corpus_digest=corpus.digest,
-        role_manifest={
-            "report-analyst": _analyst_role_manifest(
-                prompt_version="fixture-analyst-v1"
-            )
-        },
-        prompt_version=REPORT_SYNTHESIS_PROMPT_VERSION,
-        role_receipts=(receipt,),
-        candidate_findings=(finding,),
-    )
-
-    assert service.analyst_receipt_for_resume(prior, corpus) is None
-
-
-@pytest.mark.asyncio
-async def test_resume_skips_analyst_call_and_publishes(tmp_path: Path) -> None:
-    """With a reusable receipt, no analyst model call happens and the analyst
-    receipt flows through to publication."""
-
-    candidate = _candidate()
-    resumed_receipt = SynthesisRoleReceipt(
-        role="report-analyst",
-        provider_id="fixture-provider",
-        model_id="fixture-model",
-        prompt_digest="a" * 64,
-        schema_digest=hashlib.sha256(
-            json.dumps(
-                AnalystResponse.model_json_schema(),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-        output_digest="b" * 64,
-    )
-    service, roles = _scripted_service(
-        adjudicator=[
-            AdjudicationResponse(complete=True, final_findings=[candidate])
-        ],
-        resume_analyst_receipt=resumed_receipt,
-        resume_candidate_findings=(
-            CandidateFinding.model_validate(
-                candidate.model_dump(mode="python")
-            ).to_domain(reviewer_state="candidate"),
-        ),
-        resume_attempt_id="synthesis-prior",
-    )
-
-    attempt = await service.synthesize(_corpus(tmp_path))
-
-    assert attempt.status is SynthesisStatus.ACCEPTED
-    assert roles[0].calls == []  # analyst never invoked
-    assert any(
-        entry.get("phase") == "resume" and entry.get("role") == "report-analyst"
-        for entry in attempt.retrieval_log
-    )
-    assert any(
-        receipt.role == "report-analyst" for receipt in attempt.role_receipts
-    )
-
-
-def _blocking_objection(finding_id: str) -> TypedObjection:
-    return TypedObjection(
-        objection_id="objection-1",
-        finding_id=finding_id,
-        objection_type="factual-support",
-        severity=ObjectionSeverity.BLOCKING,
-        message="The cited evidence does not establish the stated claim.",
-        evidence_refs=[
-            EvidenceReference(
-                evidence_id=EVIDENCE_ID,
-                kind="event",
-                run_id="run-a",
-                replay_sequence=1,
-            )
-        ],
-        reviewer_role="report-evidence-auditor",
-    )
-
-
-@pytest.mark.asyncio
 async def test_synthesis_publishes_only_after_review_consensus(tmp_path: Path) -> None:
     candidate = _candidate()
     service, roles = _scripted_service(
@@ -1512,6 +1173,25 @@ async def test_conflicting_reviewer_objection_ids_are_rejected(
     attempt = await service.synthesize(_corpus(tmp_path))
 
     assert attempt.status is SynthesisStatus.REJECTED
+def _blocking_objection(finding_id: str) -> TypedObjection:
+    return TypedObjection(
+        objection_id="objection-1",
+        finding_id=finding_id,
+        objection_type="factual-support",
+        severity=ObjectionSeverity.BLOCKING,
+        message="The cited evidence does not establish the stated claim.",
+        evidence_refs=[
+            EvidenceReference(
+                evidence_id=EVIDENCE_ID,
+                kind="event",
+                run_id="run-a",
+                replay_sequence=1,
+            )
+        ],
+        reviewer_role="report-evidence-auditor",
+    )
+
+
 
 
 @pytest.mark.asyncio
