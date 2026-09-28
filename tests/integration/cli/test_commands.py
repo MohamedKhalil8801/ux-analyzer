@@ -1698,9 +1698,13 @@ def test_resume_state_validates_with_supplied_analyst(
     analyst = object()
     receipt = object()
     candidates = (object(),)
+    reviews = (object(),)
     prior = SimpleNamespace(
         attempt_id="synthesis-prior",
         candidate_findings=candidates,
+        # The examination record travels with the receipt: an analyst stage
+        # resumed without its reviews fails publication for missing coverage.
+        scenario_reviews=reviews,
     )
     corpus = object()
     captured: dict[str, object] = {}
@@ -1729,7 +1733,7 @@ def test_resume_state_validates_with_supplied_analyst(
     result = cli._resume_state(corpus, output=tmp_path, analyst=analyst)
 
     assert captured["analyst"] is analyst
-    assert result == (receipt, candidates, "synthesis-prior")
+    assert result == (receipt, candidates, reviews, "synthesis-prior")
 
 
 def test_configured_synthesis_bounds_reach_service_without_clamping(

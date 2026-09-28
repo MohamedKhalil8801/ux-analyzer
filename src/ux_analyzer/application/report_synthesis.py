@@ -62,6 +62,7 @@ from ux_analyzer.ports.report_synthesis import (
     ReportAnalystPort,
     ReportEvidenceAuditorPort,
     ReportPatternReviewerPort,
+    ScenarioReviewReport,
     TypedObjection,
     UxPrinciple,
     contains_forbidden_narrative,
@@ -924,6 +925,7 @@ class ReportSynthesisService:
         clock: Callable[[], str] | None = None,
         resume_analyst_receipt: SynthesisRoleReceipt | None = None,
         resume_candidate_findings: Sequence[SynthesisFinding] = (),
+        resume_scenario_reviews: Sequence[ScenarioReview] = (),
         resume_attempt_id: str = "",
         prior_rejections: Sequence[PriorRejection] = (),
     ) -> None:
@@ -980,6 +982,7 @@ class ReportSynthesisService:
             raise TypeError("prior_rejections must contain PriorRejection values")
         self._resume_analyst_receipt = resume_analyst_receipt
         self._resume_candidate_findings = tuple(resume_candidate_findings)
+        self._resume_scenario_reviews = tuple(resume_scenario_reviews)
         self._resume_attempt_id = resume_attempt_id
         self._prior_rejections = tuple(cast(Sequence[PriorRejection], raw_rejections))
 
@@ -1027,6 +1030,21 @@ class ReportSynthesisService:
                 candidate_findings=[
                     self._finding_to_port(item)
                     for item in candidate_models
+                ],
+                # The reviews have to come back with the receipt. Reconstructing
+                # only the candidates imported an analyst stage that had done
+                # half its job, and publication then failed the resumed attempt
+                # for missing scenario coverage - the reuse produced an
+                # outcome the original run never had.
+                scenario_reviews=[
+                    ScenarioReviewReport(
+                        scenario_id=review.scenario_id,
+                        disposition=ReviewDisposition(review.disposition),
+                        evidence_ids=list(review.evidence_ids),
+                        signals_weighed=list(review.signals_weighed),
+                        note=review.note,
+                    )
+                    for review in self._resume_scenario_reviews
                 ],
             )
             retrieval_log.append(

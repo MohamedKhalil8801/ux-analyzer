@@ -130,6 +130,7 @@ from ux_analyzer.domain.interface import ViewportSnapshot
 from ux_analyzer.domain.run import ProviderManifest, RunSpec
 from ux_analyzer.domain.synthesis import (
     PriorRejection,
+    ScenarioReview,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisRoleReceipt,
@@ -4029,12 +4030,22 @@ def _resume_state(
     *,
     output: Path,
     analyst: ReportAnalystPort,
-) -> tuple[SynthesisRoleReceipt, tuple[SynthesisFinding, ...], str] | None:
+) -> tuple[
+    SynthesisRoleReceipt,
+    tuple[SynthesisFinding, ...],
+    tuple[ScenarioReview, ...],
+    str,
+] | None:
     """Find the newest prior attempt whose analyst stage is reusable.
 
     The service validates each candidate receipt against the live corpus and
     current analyst manifest, prompts, and schemas, so a stale or mismatched prior
     attempt simply yields None and synthesis starts from the analyst as usual.
+
+    The prior attempt's scenario reviews travel with the receipt. The analyst
+    owes both its candidates and its examination record, and resuming only the
+    first produced an attempt that failed publication validation for missing
+    coverage - a worse outcome than not resuming at all.
     """
 
     service = ReportSynthesisService(
@@ -4044,7 +4055,12 @@ def _resume_state(
     for prior in reversed(SynthesisArtifactStore(output).attempts):
         receipt = service.analyst_receipt_for_resume(prior, corpus)
         if receipt is not None:
-            return receipt, prior.candidate_findings, prior.attempt_id
+            return (
+                receipt,
+                prior.candidate_findings,
+                prior.scenario_reviews,
+                prior.attempt_id,
+            )
     return None
 
 
@@ -4107,7 +4123,8 @@ async def _run_report_synthesis(
             model_record_source=client,
             resume_analyst_receipt=resume[0] if resume else None,
             resume_candidate_findings=resume[1] if resume else (),
-            resume_attempt_id=resume[2] if resume else "",
+            resume_scenario_reviews=resume[2] if resume else (),
+            resume_attempt_id=resume[3] if resume else "",
             prior_rejections=_prior_rejections(output, corpus),
         )
         return await service.synthesize(corpus)
