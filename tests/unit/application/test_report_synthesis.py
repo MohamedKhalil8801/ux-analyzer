@@ -121,6 +121,7 @@ def _candidate(
     severity_justification: str = "The evidence shows extra navigation on an important task.",
     affected_surfaces: Sequence[str] = (),
     evidence_ref: dict[str, object] | None = None,
+    finding_kind: str = "ux-issue",
 ) -> CandidateFinding:
     reference = evidence_ref or {
         "evidence_id": evidence_id,
@@ -141,6 +142,7 @@ def _candidate(
             "evidence_refs": [reference],
             "affected_surfaces": list(affected_surfaces),
             "severity_justification": severity_justification,
+            "finding_kind": finding_kind,
         }
     )
 

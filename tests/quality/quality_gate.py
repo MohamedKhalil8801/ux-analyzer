@@ -313,6 +313,7 @@ def _candidate(**overrides: object) -> CandidateFinding:
         ],
         "affected_surfaces": [],
         "severity_justification": "The evidence shows extra navigation on an important task.",
+        "finding_kind": "ux-issue",
     }
     kwargs.update(overrides)
     return CandidateFinding.model_validate(kwargs)
@@ -1244,7 +1245,14 @@ def _recorded_candidate(
 ) -> CandidateFinding:
     candidates = _recorded_attempt(attempt_id).get("candidates", ())
     assert candidates, f"{attempt_id} recorded no candidate finding"
-    return CandidateFinding.model_validate(_expand_recorded(candidates[0], corpus))
+    record = _expand_recorded(candidates[0], corpus)
+    # The recorded attempts predate finding_kind, and every one of them was
+    # recorded against a published ux-issue. Supplying it here is the same move
+    # as supplying the scenario reviews: the replay reconstructs a record the
+    # current contract would accept, rather than editing the fixture.
+    if isinstance(record, dict):
+        record.setdefault("finding_kind", "ux-issue")
+    return CandidateFinding.model_validate(record)
 
 
 def _replay_disposition(attempt_id: str, corpus: EvidenceCorpus) -> ReviewDisposition:

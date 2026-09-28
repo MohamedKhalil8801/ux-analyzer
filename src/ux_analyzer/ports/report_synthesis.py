@@ -231,7 +231,15 @@ class CandidateFinding(_RoleSchema):
         str, StringConstraints(min_length=1, max_length=600)
     ]
     reviewer_notes: list[_BoundedNote] = Field(default_factory=list, max_length=4)
-    finding_kind: FindingKind = FindingKind.UX_ISSUE
+    # Required, not defaulted. A live run had the analyst get this exactly
+    # right in its scenario reviews - two of them recorded `improvement`,
+    # weighing verified success against a wrong-action count - while both
+    # candidate findings defaulted to ux-issue, which demands established harm.
+    # Nothing met that bar, the adjudicator dropped both, and the attempt came
+    # out rejected. The judgement was right and a default silently overrode it.
+    # Forcing the field makes the choice explicit, which also makes choosing
+    # ux-issue on non-harm evidence a visible decision rather than an accident.
+    finding_kind: FindingKind
 
     @field_validator(
         "fixes",

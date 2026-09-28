@@ -208,6 +208,7 @@ async def test_every_role_serializes_static_blocks_first(tmp_path: Path) -> None
             }
         ],
         "severity_justification": "The evidence shows extra navigation on a key task.",
+        "finding_kind": "ux-issue",
     }
     candidate = AnalystResponse(
         complete=True, candidate_findings=[finding]

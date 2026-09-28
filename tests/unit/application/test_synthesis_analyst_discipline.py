@@ -147,6 +147,10 @@ def _heuristic_only_candidate(corpus: EvidenceCorpus) -> CandidateFinding:
                 "Four heuristic discovery warnings fire for this run and the "
                 "goal depends on reaching the work showcase."
             ),
+            # Recorded attempt 1 asserted that users could not find the entry,
+            # so this is a ux-issue claim. Stated rather than defaulted: the
+            # field is a decision the analyst makes.
+            "finding_kind": "ux-issue",
         }
     )
 
@@ -592,6 +596,7 @@ def test_prior_rejection_is_not_a_hard_blacklist(tmp_path: Path) -> None:
                 "Three deterministic initial captures record the same state and "
                 "one run later completes the task."
             ),
+            "finding_kind": "ux-issue",
         }
     )
     analyst = _RecordingAnalyst(

@@ -264,6 +264,7 @@ def _finding_payload(*, principle_only: bool = False) -> dict[str, object]:
         ],
         "principles": ["mental-models"],
         "severity_justification": "The task is important and the evidence shows extra navigation.",
+        "finding_kind": "ux-issue",
     }
 
 
@@ -827,6 +828,7 @@ async def test_final_round_retries_once_with_exact_delivered_handle_set() -> Non
         severity=FindingSeverity.HIGH,
         confidence=0.9,
         severity_justification="The tested task could not be completed.",
+        finding_kind=FindingKind.UX_ISSUE,
         evidence_refs=[
             EvidenceReference(
                 evidence_id=EVIDENCE_ID,
@@ -3103,6 +3105,8 @@ def _candidate_payload() -> dict[str, object]:
                 "replay_sequence": 1,
             }
         ],
+        "severity_justification": "An important task took extra navigation to complete.",
+        "finding_kind": "ux-issue",
     }
 
 
@@ -3114,19 +3118,42 @@ def test_candidate_finding_requires_severity_justification() -> None:
     assert CandidateFinding.model_fields["severity_justification"].is_required()
     schema = AnalystResponse.model_json_schema()["$defs"]["CandidateFinding"]
     assert "severity_justification" in schema["required"]
-    with pytest.raises(ValidationError):
-        CandidateFinding.model_validate(_candidate_payload())
-
-
-def test_candidate_finding_omitted_kind_defaults_to_a_ux_issue() -> None:
+    # Everything else valid, so the only thing missing is the justification.
     payload = _candidate_payload()
-    payload["severity_justification"] = "The recorded run shows extra navigation."
+    payload.pop("severity_justification")
+    with pytest.raises(ValidationError, match="severity_justification"):
+        CandidateFinding.model_validate(payload)
 
-    candidate = CandidateFinding.model_validate(payload)
 
-    assert candidate.finding_kind is FindingKind.UX_ISSUE
+def test_candidate_finding_must_state_its_kind() -> None:
+    """The kind is a decision, not a default.
+
+    A live run had the analyst get this right in its scenario reviews - two
+    recorded ``improvement``, weighing verified success against a wrong-action
+    count - while both candidate findings silently defaulted to ``ux-issue``.
+    That kind demands established harm, there was none, the adjudicator dropped
+    both, and the attempt came out rejected. A correct judgement was overruled
+    by a field nobody chose.
+
+    Requiring it means ``ux-issue`` on non-harm evidence is now something the
+    model did on purpose, which is the only version of that claim worth
+    reviewing.
+    """
+
+    payload = _candidate_payload()
+    payload.pop("finding_kind")
+
+    with pytest.raises(ValidationError):
+        CandidateFinding.model_validate(payload)
+
     schema = AnalystResponse.model_json_schema()["$defs"]["CandidateFinding"]
-    assert "finding_kind" not in schema["required"]
+    assert "finding_kind" in schema["required"]
+
+    # Both kinds remain expressible, and improvement is not the same claim.
+    for kind in (FindingKind.UX_ISSUE, FindingKind.IMPROVEMENT):
+        stated = _candidate_payload()
+        stated["finding_kind"] = kind.value
+        assert CandidateFinding.model_validate(stated).finding_kind is kind
 
 
 def _context_entry(

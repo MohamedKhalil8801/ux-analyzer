@@ -64,6 +64,7 @@ def _candidate_payload() -> dict[str, object]:
         "confidence": 0.9,
         "evidence_refs": evidence_refs,
         "severity_justification": "The evidence shows extra navigation on an important task.",
+        "finding_kind": "ux-issue",
     }
 
 
