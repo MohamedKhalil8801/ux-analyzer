@@ -79,6 +79,28 @@ MAX_INVALID_STRUCTURED_ROLE_RETRIES = 1
 # rejections is enough to stop blind re-derivation without crowding the corpus.
 MAX_PRIOR_REJECTIONS = 8
 MAX_PRIOR_REJECTION_REASONS = 4
+# PriorRejection refuses a reason longer than this. Reviewer prose is written
+# for a person and is not bound by the same budget, so it is clipped on the way
+# in rather than allowed to abort the attempt that is trying to learn from it.
+MAX_PRIOR_REJECTION_REASON_CHARS = 512
+
+
+def _bounded_rejection_reason(reason: str) -> str:
+    """Clip a reviewer reason to what ``PriorRejection`` will accept.
+
+    Trims on a word boundary so the analyst is never handed a half-word, and
+    keeps the clipped tail meaningful by saying it was clipped.
+    """
+
+    text = " ".join(reason.split())
+    if len(text) <= MAX_PRIOR_REJECTION_REASON_CHARS:
+        return text
+    marker = f" ... [clipped from {len(text)} characters]"
+    budget = MAX_PRIOR_REJECTION_REASON_CHARS - len(marker)
+    head = text[:budget]
+    if " " in head:
+        head = head[: head.rfind(" ")]
+    return f"{head.rstrip()}{marker}"
 
 _PRINCIPLE_AUTHORITY_MARKERS = (
     "principle proves",
@@ -1947,7 +1969,13 @@ class ReportSynthesisService:
             for objection in attempt.objections:
                 bucket = reasons_by_finding.setdefault(objection.finding_id, [])
                 if len(bucket) < MAX_PRIOR_REJECTION_REASONS:
-                    bucket.append(objection.message)
+                    # PriorRejection rejects a reason over 512 characters, and
+                    # a reviewer writing a thorough resolution easily exceeds
+                    # that. Truncating here keeps a long objection from making
+                    # the *next* attempt fail to start - which is what happened:
+                    # one 529-character resolution turned every subsequent
+                    # synthesize into an opaque ValueError before synthesis ran.
+                    bucket.append(_bounded_rejection_reason(objection.message))
         rejections: list[PriorRejection] = []
         seen: set[str] = set()
         for attempt in ordered:
@@ -1956,7 +1984,7 @@ class ReportSynthesisService:
                     continue
                 reasons = tuple(
                     dict.fromkeys(
-                        note
+                        _bounded_rejection_reason(note)
                         for note in (
                             *reasons_by_finding.get(finding.finding_id, ()),
                             *finding.reviewer_notes,

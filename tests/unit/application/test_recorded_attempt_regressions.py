@@ -546,6 +546,38 @@ def test_recorded_corpus_covers_every_referenced_evidence_id(
     assert referenced <= known
 
 
+def test_a_long_reviewer_reason_cannot_abort_the_next_attempt() -> None:
+    """Prior-rejection feedback is clipped so a verbose review is still usable.
+
+    A live attempt recorded an objection resolution of 529 characters.
+    ``PriorRejection`` refuses a reason over 512, and the builder clipped the
+    title but passed reasons through unbounded - so every later ``synthesize``
+    died with an opaque ``ValueError: rejection reason is too long`` before
+    synthesis ran at all. The attempt trying to learn from a rejection was
+    destroyed by the rejection.
+    """
+
+    from ux_analyzer.application.report_synthesis import (
+        MAX_PRIOR_REJECTION_REASON_CHARS,
+        _bounded_rejection_reason,
+    )
+
+    verbose = "The evidence does not identify the specific action. " * 40
+    assert len(verbose) > MAX_PRIOR_REJECTION_REASON_CHARS
+
+    clipped = _bounded_rejection_reason(verbose)
+
+    assert len(clipped) <= MAX_PRIOR_REJECTION_REASON_CHARS
+    assert "[clipped from" in clipped
+    # Clipped on a word boundary, and the fact of clipping is stated rather
+    # than silently truncated.
+    assert not clipped.rstrip().endswith("id")
+    assert "ident" in clipped
+    # A reason that already fits is untouched.
+    short = "The evidence does not identify the specific action."
+    assert _bounded_rejection_reason(short) == short
+
+
 def test_attempt_three_and_four_reused_the_attempt_two_analyst_stage(
     tmp_path: Path,
 ) -> None:
