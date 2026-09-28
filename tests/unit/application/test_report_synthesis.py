@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 
 from ux_analyzer.adapters.openai import ModelFailureError
 from ux_analyzer.application.evidence_corpus import (
@@ -2459,6 +2460,164 @@ async def test_adjudicator_cannot_reclassify_a_scenario_defect(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "expected_code", "expected_identifiers"),
+    (
+        pytest.param(
+            "unknown evidence ID: event:run-a:99",
+            "unknown-evidence-id",
+            ["event:run-a:99"],
+            id="unknown-evidence",
+        ),
+        pytest.param(
+            "undelivered evidence ID: event:run-a:7",
+            "undelivered-evidence-id",
+            ["event:run-a:7"],
+            id="undelivered-evidence",
+        ),
+    ),
+)
+def test_rejection_identifiers_reach_the_model(
+    reason: str,
+    expected_code: str,
+    expected_identifiers: list[str],
+) -> None:
+    """A rejection that names an offender must name it to the model.
+
+    Collapsing "unknown evidence ID: event:run-a:99" to "unknown evidence ID"
+    left the model unable to tell which of its references was wrong, so it
+    repeated the same one.
+    """
+
+    from ux_analyzer.application.report_synthesis import _model_feedback_issues
+
+    error = ModelResponseValidationError(ModelRole.REPORT_ANALYST, reason)
+
+    issues = _model_feedback_issues(error)
+
+    assert issues[0]["code"] == expected_code
+    assert list(issues[0]["identifiers"]) == expected_identifiers
+
+
+def test_repetition_rejection_tells_the_model_it_repeated() -> None:
+    """The retrieval loop's own reasons must reach the model verbatim.
+
+    "repeated evidence request" and "cumulative evidence request limit
+    exceeded" used to arrive as "evidence, schema, or publication contract
+    failed", which does not tell the model that it re-requested evidence it
+    already holds.
+    """
+
+    from ux_analyzer.application.report_synthesis import _model_feedback_issues
+
+    for message, expected in (
+        ("repeated evidence request", "repeated evidence request"),
+        (
+            "cumulative evidence request limit exceeded",
+            "cumulative evidence request limit exceeded",
+        ),
+    ):
+        issues = _model_feedback_issues(ValueError(message))
+        assert issues[0]["detail"] == expected
+        assert issues[0]["code"] == "publication-contract"
+
+
+def test_feedback_never_echoes_model_prose() -> None:
+    """Identifiers are echoed; prose is not.
+
+    The identifier bound admits only token-shaped values, so a rejection
+    carrying free text cannot smuggle it into the prompt.
+    """
+
+    from ux_analyzer.application.report_synthesis import (
+        _feedback_identifier,
+        _model_feedback_issues,
+    )
+
+    assert _feedback_identifier("event:run-a:1") == "event:run-a:1"
+    assert _feedback_identifier("complete-back-to-top") == (
+        "complete-back-to-top"
+    )
+    assert _feedback_identifier("the user believed the filter was broken") is None
+    assert _feedback_identifier("") is None
+    assert _feedback_identifier("a" * 200) is None
+
+    issues = _model_feedback_issues(
+        ValueError("unknown evidence ID: the user thought the filter was broken")
+    )
+    assert "identifiers" not in issues[0]
+
+
+def test_schema_failure_reports_the_failing_field() -> None:
+    """A schema rejection must name the field, not just say it was invalid."""
+
+    from ux_analyzer.application.report_synthesis import _model_feedback_issues
+
+    # CandidateFinding requires severity_justification, so this fails on that
+    # field. The provider wraps it and chains the pydantic cause.
+    try:
+        CandidateFinding.model_validate(
+            {
+                "finding_id": "f1",
+                "title": "t",
+                "issue": "i",
+                "impact": "m",
+                "root_cause": "c",
+                "fixes": ["f"],
+                "severity": "high",
+                "confidence": 0.5,
+                "finding_kind": "ux-issue",
+                "evidence_refs": [
+                    {
+                        "evidence_id": EVIDENCE_ID,
+                        "kind": "event",
+                        "run_id": "run-a",
+                        "replay_sequence": 1,
+                    }
+                ],
+            }
+        )
+    except ValidationError as pydantic_error:
+        issues = _model_feedback_issues(pydantic_error)
+        fields = {issue.get("field") for issue in issues}
+        assert "severity_justification" in fields
+        assert all(issue["code"] == "schema-validation" for issue in issues)
+    else:
+        raise AssertionError("expected the schema to reject a missing justification")
+
+
+def test_transport_failure_surfaces_adapter_diagnostics() -> None:
+    """Shape failures must carry the stage that rejected the response.
+
+    "deterministic validation failed" named neither the stage nor the finish
+    reason, so the model retried an identically shaped response.
+    """
+
+    from ux_analyzer.application.report_synthesis import _model_feedback_issues
+
+    class _Failure(RuntimeError):
+        reason = "invalid structured output"
+
+        def __init__(self) -> None:
+            super().__init__("invalid structured output")
+            self.diagnostics = {
+                "stage": "schema_validation",
+                "response_mode": "json-object",
+                "finish_reason": "length",
+                "response_content_length": 8192,
+                "not_a_real_key": "ignored",
+            }
+
+    issues = _model_feedback_issues(_Failure())
+
+    assert len(issues) == 1
+    context = issues[0]["response_diagnostics"]
+    assert context["stage"] == "schema_validation"
+    assert context["finish_reason"] == "length"
+    assert context["response_content_length"] == 8192
+    assert "not_a_real_key" not in context
+
+
 async def test_invalid_output_retry_carries_validation_feedback(
     tmp_path: Path,
 ) -> None:
@@ -2482,10 +2641,16 @@ async def test_invalid_output_retry_carries_validation_feedback(
     second_kwargs = roles[0].calls[1]["kwargs"]
     assert first_kwargs.get("validation_feedback") is None
     feedback = second_kwargs.get("validation_feedback")
-    assert feedback is not None
-    assert "unknown UX principle" in feedback
-    # The feedback must be the bounded safe phrase, never raw attacker text.
-    assert "accessibility-contrast" not in feedback
+    assert isinstance(feedback, Mapping)
+    # The headline stays a bounded allowlisted phrase.
+    assert "unknown UX principle" in feedback["previous_validation_failure"]
+    assert feedback["reason_code"] == "unknown-principle"
+    # The offending identifier now travels with it. Echoing a token the model
+    # itself just emitted is what lets it correct the exact reference, and the
+    # bound admits only identifier-shaped values, never prose.
+    issues = feedback["issues"]
+    assert issues[0]["code"] == "unknown-principle"
+    assert "accessibility-contrast" in issues[0]["identifiers"]
     retrieval_logs = [
         log
         for log in attempt.retrieval_log

@@ -506,6 +506,12 @@ def _safe_role_validation_reason(reason: str) -> tuple[str, str]:
             "unknown-principle",
             "finding references an unknown UX principle",
         ),
+        (
+            "transport-unavailable evidence declaration does not match",
+            "unavailable-declaration-mismatch",
+            "unavailable_evidence_ids must list exactly the evidence this call "
+            "was told is transport-unavailable, and nothing else",
+        ),
     )
     for prefix, code, safe_message in known_reasons:
         if normalized.startswith(prefix):
@@ -513,6 +519,196 @@ def _safe_role_validation_reason(reason: str) -> tuple[str, str]:
     if normalized == "response schema validation failed":
         return "schema-validation", "response schema validation failed"
     return "role-validation-failed", "role validation failed"
+
+
+_SAFE_FEEDBACK_IDENTIFIER = re.compile(r"[A-Za-z0-9_.:/@+-]{1,120}")
+_MAX_FEEDBACK_ISSUES = 12
+_MAX_FEEDBACK_TEXT = 240
+_MAX_FEEDBACK_DIAGNOSTIC_KEYS = 12
+
+
+def _feedback_identifier(value: object) -> str | None:
+    """Return a canonical identifier that is safe to echo to the model.
+
+    Evidence, finding, objection, and scenario identifiers are corpus or schema
+    tokens the model already holds, so naming the offender is the single most
+    useful thing a rejection can say. Anything that does not look like a
+    bounded token is dropped rather than guessed at.
+    """
+
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if _SAFE_FEEDBACK_IDENTIFIER.fullmatch(text) is None:
+        return None
+    return text
+
+
+def _feedback_message(value: object) -> str | None:
+    """Return a bounded, single-line message safe to echo to the model."""
+
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text or len(text) > _MAX_FEEDBACK_TEXT:
+        return None
+    return text
+
+
+def _identifiers_in(text: str) -> list[str]:
+    """Extract the corpus tokens a rejection message names.
+
+    Rejections are written as ``f"unknown evidence ID: {evidence_id}"``, so the
+    offending identifier is the tail after the last colon-space. Tokens carrying
+    a separator are also collected, which is how a run or scenario name is
+    recovered from a message that embeds it mid-sentence.
+    """
+
+    found: list[str] = []
+    if ": " in text:
+        tail = _feedback_identifier(text.rsplit(": ", 1)[1])
+        if tail is not None:
+            found.append(tail)
+    for match in re.finditer(r"[A-Za-z0-9_.:/@+-]{2,120}", text):
+        token = match.group(0).rstrip(":.")
+        if not any(separator in token for separator in ".:/-_"):
+            continue
+        if _feedback_identifier(token) is not None and token not in found:
+            found.append(token)
+        if len(found) >= 6:
+            break
+    return found[:6]
+
+
+def _schema_validation_issues(error: BaseException) -> list[dict[str, object]]:
+    """Turn a pydantic failure into per-field detail the model can act on.
+
+    A schema rejection collapsed to one sentence is the least actionable error
+    the pipeline can emit: the model is told it was wrong without being told
+    which of its fields. Location and constraint are structural facts about the
+    response, not model prose, so they carry the corpus boundary with them.
+    """
+
+    if not isinstance(error, ValidationError):
+        return []
+    issues: list[dict[str, object]] = []
+    for entry in error.errors()[:_MAX_FEEDBACK_ISSUES]:
+        location = entry.get("loc")
+        path = ".".join(
+            _feedback_identifier(part) or str(part)[:40] for part in location or ()
+        )
+        message = _feedback_message(entry.get("msg"))
+        kind = _feedback_identifier(entry.get("type"))
+        issue: dict[str, object] = {"code": "schema-validation"}
+        if path:
+            issue["field"] = path[:200]
+        if kind:
+            issue["constraint"] = kind
+        if message:
+            issue["detail"] = message
+        issues.append(issue)
+    return issues
+
+
+def _structural_failure_issues(error: BaseException) -> list[dict[str, object]]:
+    """Surface the transport adapter's own structured failure detail."""
+
+    diagnostics = getattr(error, "diagnostics", None)
+    if not isinstance(diagnostics, Mapping):
+        return []
+    safe = _safe_structural_diagnostics(cast(Mapping[object, object], diagnostics))
+    if not safe:
+        return []
+    issue: dict[str, object] = {
+        "code": f"transport-{_feedback_identifier(safe.get('stage')) or 'failure'}",
+        "detail": (
+            "The provider response was rejected before it reached role "
+            "validation. Correct the shape of the response, not its claims."
+        ),
+    }
+    context = {
+        name: safe[name]
+        for name in list(safe)[:_MAX_FEEDBACK_DIAGNOSTIC_KEYS]
+    }
+    if context:
+        issue["response_diagnostics"] = context
+    return [issue]
+
+
+def _value_error_issues(error: BaseException) -> list[dict[str, object]]:
+    """Carry an application rejection's own message to the model.
+
+    The application raises reasons like "repeated evidence request" or
+    "causal language is not supported by enough evidence". Those sentences are
+    the correction. Collapsing them to "evidence, schema, or publication
+    contract failed" left the model unable to tell a repeat from a budget
+    overrun, and it retried the same request unchanged.
+    """
+
+    message = _feedback_message(str(error))
+    if message is None:
+        return []
+    identifiers = _identifiers_in(message)
+    issue: dict[str, object] = {"code": "publication-contract", "detail": message}
+    if identifiers:
+        issue["identifiers"] = identifiers
+    return [issue]
+
+
+def _validation_error_issues(error: ModelResponseValidationError) -> list[dict[str, object]]:
+    reason_code, reason = _safe_role_validation_reason(error.reason)
+    issue: dict[str, object] = {"code": reason_code, "detail": reason}
+    identifiers = _identifiers_in(error.reason)
+    if identifiers:
+        issue["identifiers"] = identifiers
+    issues = [issue]
+    # The provider wraps a pydantic failure as "response schema validation
+    # failed" and chains the original, so the per-field detail is on __cause__.
+    cause = error.__cause__
+    if cause is not None and cause is not error:
+        schema_issues = _schema_validation_issues(cause)
+        if schema_issues:
+            issues.extend(schema_issues)
+    return issues
+
+
+def _model_feedback_issues(error: BaseException) -> tuple[Mapping[str, object], ...]:
+    """Return every safe detail available about a failed role response."""
+
+    if isinstance(error, ModelResponseValidationError):
+        return tuple(_validation_error_issues(error))
+    if isinstance(error, ValidationError):
+        return tuple(_schema_validation_issues(error))
+    issues = _structural_failure_issues(error)
+    if issues:
+        return tuple(issues)
+    if isinstance(error, (ValueError, TypeError)):
+        return tuple(_value_error_issues(error))
+    # A wrapped schema failure can arrive as a bare ValueError or TypeError
+    # once the provider has re-raised it without the reason attached.
+    cause = error.__cause__
+    if cause is not None and cause is not error:
+        nested = _model_feedback_issues(cause)
+        if nested:
+            return nested
+    diagnostics = getattr(error, "diagnostics", None)
+    if isinstance(diagnostics, Mapping):
+        safe = _safe_structural_diagnostics(
+            cast(Mapping[object, object], diagnostics)
+        )
+        if safe:
+            return (
+                {
+                    "code": "transport-failure",
+                    "detail": "The provider call failed before a response was "
+                    "produced.",
+                    "response_diagnostics": {
+                        name: safe[name]
+                        for name in list(safe)[:_MAX_FEEDBACK_DIAGNOSTIC_KEYS]
+                    },
+                },
+            )
+    return ()
 
 
 def _safe_response_summary(value: object) -> dict[str, object]:
@@ -1489,7 +1685,7 @@ class ReportSynthesisService:
         previous_output: _Response | None = None,
         phase: str = "retrieval",
         max_rounds: int | None = None,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> _RoleRun:
         logs: list[Mapping[str, object]] = []
         resolved: ResolvedEvidence | None = None
@@ -1601,8 +1797,22 @@ class ReportSynthesisService:
                         and invalid_retry < MAX_INVALID_STRUCTURED_ROLE_RETRIES
                     ):
                         response_payload["retrying"] = True
-                        validation_feedback = self._retry_feedback_reason(error)
-                        response_payload["validation_feedback"] = validation_feedback
+                        feedback = self._retry_feedback_payload(error)
+                        validation_feedback = cast(
+                            "str | Mapping[str, object]", feedback
+                        )
+                        # The persisted record keeps only the bounded headline
+                        # and the stable code. Identifiers the model itself
+                        # emitted go back to the model, which needs them to
+                        # correct the exact reference, but they never reach the
+                        # artifact: the run bundle is not the place to store
+                        # provider content.
+                        response_payload["validation_feedback"] = feedback[
+                            "previous_validation_failure"
+                        ]
+                        response_payload["validation_reason_code"] = feedback[
+                            "reason_code"
+                        ]
                         logs.append(
                             {
                                 "role": role.value,
@@ -1825,7 +2035,7 @@ class ReportSynthesisService:
         previous_output: _Response | None,
         retrieval_round: int,
         max_retrieval_rounds: int,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> object:
         common = {
             "resolved_evidence": resolved_evidence,
@@ -1972,14 +2182,52 @@ class ReportSynthesisService:
 
         Retried role invocations carry this in ``validation_feedback`` so the
         model can correct the exact failure instead of receiving an identical
-        prompt. Only allowlisted safe phrases are emitted; unknown reasons
-        collapse to the generic safe message with a hard length bound.
+        prompt. This is the headline only. The allowlist is deliberately narrow
+        because this string is the one field the model is guaranteed to read;
+        ``_retry_feedback_payload`` carries the rest of the safe detail.
         """
 
         if isinstance(error, ModelResponseValidationError):
             _code, reason = _safe_role_validation_reason(error.reason)
             return reason
         return self._safe_validation_reason(error)[:512]
+
+    def _retry_feedback_payload(self, error: BaseException) -> dict[str, object]:
+        """Assemble the full, safe correction context for a retried role call.
+
+        The one-sentence reason stays as the headline because it is what the
+        model reads first, but a sentence alone left it unable to act: it never
+        learned which field failed, which evidence ID was wrong, or which of its
+        own messages the adapter rejected on shape. Every additional fact here
+        is either a schema token, a canonical identifier, a bounded count, or an
+        enum drawn from an allowlist, so the corpus boundary is unaffected.
+        """
+
+        summary = self._retry_feedback_reason(error)
+        payload: dict[str, object] = {"previous_validation_failure": summary}
+        issues = _model_feedback_issues(error)
+        if issues:
+            payload["issues"] = [dict(issue) for issue in issues]
+        if isinstance(error, ModelResponseValidationError):
+            reason_code, _reason = _safe_role_validation_reason(error.reason)
+            payload["reason_code"] = reason_code
+        else:
+            payload["reason_code"] = self._retry_feedback_reason_code(error)
+        return payload
+
+    def _retry_feedback_reason_code(self, error: BaseException) -> str:
+        if isinstance(error, ModelResponseValidationError):
+            code, _reason = _safe_role_validation_reason(error.reason)
+            return code
+        if isinstance(error, ValidationError):
+            return "schema-validation"
+        if type(error).__name__ == "ModelFailureError":
+            if getattr(error, "reason", None) == "invalid structured output":
+                return "invalid-structured-output"
+            return "transport-failure"
+        if isinstance(error, (ValueError, TypeError)):
+            return "publication-contract"
+        return "role-failure"
 
     def _finding_to_port(self, finding: SynthesisFinding) -> CandidateFinding:
         """Rebuild the transport finding from a persisted domain finding."""

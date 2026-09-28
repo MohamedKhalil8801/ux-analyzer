@@ -42,8 +42,45 @@ The fingerprint is a correlation key, not a security boundary. Identical
 rejected text produces an identical hash, which is how you tell a recurring
 failure from a one-off.
 
-## Reading a failed run
+## What the model is told when it is rejected
 
+A rejected role is retried once with correction context instead of an identical
+prompt. That context carries everything available about the failure, and the
+boundary still holds: identifiers are echoed, prose is not.
+
+| Key | Content |
+| --- | --- |
+| `previous_validation_failure` | Bounded headline drawn from an allowlist of our own phrases |
+| `reason_code` | Stable machine token, e.g. `undelivered-evidence-id` |
+| `issues[]` | Per-issue detail, each with `code`, `detail`, and where applicable `field`, `constraint`, `identifiers`, `response_diagnostics` |
+
+Detail is recovered per failure class:
+
+- **Role validation** — the reason plus the identifiers it interpolated, so
+  `unknown evidence ID: event:run-a:99` arrives naming `event:run-a:99`
+  instead of `unknown evidence ID`
+- **Schema validation** — the failing field path, the constraint type, and the
+  validator message, taken from the pydantic error the provider chains
+- **Transport shape failure** — the adapter's own diagnostics: stage, response
+  mode, finish reason, content length
+- **Application contract** — the rejection sentence itself, so
+  `repeated evidence request` no longer arrives as
+  `evidence, schema, or publication contract failed`
+
+Only token-shaped values are echoed: `_feedback_identifier` admits at most 120
+characters from `[A-Za-z0-9_.:/@+-]` with no whitespace, so free text cannot
+pass. A rejection carrying a prose phrase yields no identifiers at all.
+
+### Identifiers reach the model; they do not reach the artifact
+
+Echoing a bounded identifier the model itself just emitted is what lets it
+correct the exact reference. Persisting it is a different act, and the run
+bundle is not the place to store provider content. The persisted
+`retrieval_log` therefore records only the bounded headline and the stable
+code, which is what keeps the artifact free of model-supplied text while the
+model still gets what it needs to fix itself.
+
+## Reading a failed run
 `synthesize` writes `<output>/diagnostics.jsonl`, one JSON object per line, and
 prints the path. A rejected attempt is diagnosable without the model:
 

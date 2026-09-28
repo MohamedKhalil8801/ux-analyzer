@@ -1950,10 +1950,11 @@ class _ReportRole:
     # an invalid structured output so the model can correct the exact failure
     # instead of receiving an identical prompt (which historically repeated it).
     _VALIDATION_FEEDBACK_INSTRUCTION = (
-        "Your previous response failed application-side validation with the "
-        "reason above. Return exactly one valid JSON object that corrects "
-        "exactly this failure while keeping every other requirement of the "
-        "role, the evidence policy, and the response schema."
+        "Your previous response was rejected. Correct exactly the failures "
+        "listed below - the issues array names the failing field, the offending "
+        "identifier, or the stage that rejected the response. Fix only those, "
+        "while keeping every other requirement of the role, the evidence "
+        "policy, and the response schema. Do not return the same response again."
     )
 
     def __init__(self, client: StructuredModelClient, *, model: object) -> None:
@@ -1998,7 +1999,7 @@ class _ReportRole:
         previous_output: InvestigativeResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> InvestigativeResponse:
         if not 1 <= retrieval_round <= max_retrieval_rounds:
             raise ValueError("retrieval round is outside the configured role budget")
@@ -2028,10 +2029,20 @@ class _ReportRole:
                 _contract_provider_handles(previous_output, handle_by_evidence_id)
             )
         if validation_feedback:
-            base_message_payload["validation_feedback"] = {
-                "previous_validation_failure": validation_feedback,
+            feedback_payload: dict[str, object] = {
                 "instruction": self._VALIDATION_FEEDBACK_INSTRUCTION,
             }
+            if isinstance(validation_feedback, Mapping):
+                # The application sends the full correction context: headline
+                # reason, stable reason code, and per-issue detail such as the
+                # failing field, the offending identifier, or the transport
+                # stage that rejected the response. Keep all of it - every item
+                # is a schema token, a canonical identifier, a bounded count,
+                # or an allowlisted enum.
+                feedback_payload.update(dict(validation_feedback))
+            else:
+                feedback_payload["previous_validation_failure"] = validation_feedback
+            base_message_payload["validation_feedback"] = feedback_payload
         all_entries = (
             tuple(resolved_evidence.entries) if resolved_evidence is not None else ()
         )
@@ -2988,7 +2999,7 @@ class ReportAnalyst(_ReportRole):
         previous_output: AnalystResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
         prior_rejections: Sequence[Mapping[str, object]] = (),
     ) -> AnalystResponse:
         role_input: dict[str, object] = {
@@ -3051,7 +3062,7 @@ class EvidenceAuditor(_ReportRole):
         previous_output: EvidenceAuditResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> EvidenceAuditResponse:
         response = await self._complete(
             corpus_manifest,
@@ -3080,7 +3091,7 @@ class EvidenceAuditor(_ReportRole):
         previous_output: EvidenceAuditResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> EvidenceAuditResponse:
         return await self.audit(
             corpus_manifest,
@@ -3117,7 +3128,7 @@ class PatternReviewer(_ReportRole):
         previous_output: PatternReviewResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> PatternReviewResponse:
         response = await self._complete(
             corpus_manifest,
@@ -3171,7 +3182,7 @@ class ReportAdjudicator(_ReportRole):
         previous_output: AdjudicationResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> AdjudicationResponse:
         response = await self._complete(
             corpus_manifest,
@@ -3204,7 +3215,7 @@ class ReportAdjudicator(_ReportRole):
         previous_output: AdjudicationResponse | None = None,
         retrieval_round: int = 1,
         max_retrieval_rounds: int = 3,
-        validation_feedback: str | None = None,
+        validation_feedback: str | Mapping[str, object] | None = None,
     ) -> AdjudicationResponse:
         return await self.adjudicate(
             corpus_manifest,

@@ -592,13 +592,38 @@ def scenario_reviewer_retry_parity(tmp_path: Path) -> ScenarioReport:
         "retry-feedback-mode",
         feedback_values[0] is None
         and all(
-            isinstance(value, str) and value
-            for value in feedback_values[1:]
+            _feedback_is_actionable(value) for value in feedback_values[1:]
         ),
-        "first call has no feedback; every retry carries the bounded safe "
-        "validation reason (feedback-retry mode)",
+        "first call has no feedback; every retry carries a bounded validation "
+        "reason, a stable reason code, and per-issue detail (feedback-retry mode)",
     )
     return report
+
+
+def _feedback_is_actionable(value: Any) -> bool:
+    """Whether a retry carried enough context to correct itself.
+
+    A bare string used to satisfy this check, which is how a retry could carry
+    a reason that named neither the failing field nor the offending identifier
+    and still pass. The payload must now carry a headline, a stable code, and
+    at least one issue.
+    """
+
+    if isinstance(value, str):
+        return bool(value)
+    if not isinstance(value, Mapping):
+        return False
+    headline = value.get("previous_validation_failure")
+    code = value.get("reason_code")
+    issues = value.get("issues")
+    return (
+        isinstance(headline, str)
+        and bool(headline)
+        and isinstance(code, str)
+        and bool(code)
+        and isinstance(issues, list)
+        and bool(issues)
+    )
 
 
 def _last_role_calls(service: ReportSynthesisService) -> list[dict[str, Any] | None]:
