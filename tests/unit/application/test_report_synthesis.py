@@ -65,10 +65,6 @@ def test_attachment_resolution_and_request_ceilings_are_distinct() -> None:
     ("reason", "expected"),
     (
         ("response exceeds bounded output limits", "bounded-output"),
-        (
-            "response limitation contains forbidden narrative",
-            "forbidden-narrative",
-        ),
         ("undelivered evidence ID", "undelivered-evidence-id"),
         (
             "finding references an unknown UX principle",
@@ -1231,12 +1227,20 @@ async def test_reviewer_validation_failure_is_not_no_issues(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_underscore_narrative_sentinels_are_redacted_and_rejected(
+@pytest.mark.asyncio
+async def test_finding_text_naming_a_evidence_category_is_published_verbatim(
     tmp_path: Path,
 ) -> None:
+    """A finding that names an excluded category must publish unchanged.
+
+    The substring guard could not distinguish importing another role's
+    reasoning from stating that such material was unavailable, so a finding
+    honestly reporting that limitation was rejected and the whole attempt lost.
+    """
+
     candidate = _candidate(
-        title="PRIOR_AGENT_PRIVATE_REASONING_SENTINEL",
-        issue="PRIOR_FINDING_PROSE_SENTINEL",
+        title="The filter control was not discoverable",
+        issue="No prior finding was available to reuse for this scenario.",
     )
     service, _ = _scripted_service(
         analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
@@ -1244,16 +1248,16 @@ async def test_underscore_narrative_sentinels_are_redacted_and_rejected(
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
-    serialized = repr(attempt.retrieval_log)
 
-    assert attempt.status is SynthesisStatus.REJECTED
-    assert not attempt.findings
-    assert "PRIOR_AGENT_PRIVATE_REASONING_SENTINEL" not in serialized
-    assert "PRIOR_FINDING_PROSE_SENTINEL" not in serialized
+    assert attempt.status is SynthesisStatus.ACCEPTED
+    assert (
+        attempt.findings[0].issue
+        == "No prior finding was available to reuse for this scenario."
+    )
 
 
 @pytest.mark.asyncio
-async def test_underscore_objection_sentinel_is_redacted_and_rejected(
+async def test_objection_message_naming_a_category_is_retained_verbatim(
     tmp_path: Path,
 ) -> None:
     candidate = _candidate()
@@ -1262,7 +1266,7 @@ async def test_underscore_objection_sentinel_is_redacted_and_rejected(
         finding_id=candidate.finding_id,
         objection_type="factual-support",
         severity=ObjectionSeverity.BLOCKING,
-        message="PRIOR_AGENT_PRIVATE_REASONING_SENTINEL",
+        message="No decision rationale was recorded for this click.",
     )
     service, _ = _scripted_service(
         analyst=[AnalystResponse(complete=True, candidate_findings=[candidate])],
@@ -1270,15 +1274,17 @@ async def test_underscore_objection_sentinel_is_redacted_and_rejected(
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
-    serialized = repr(attempt.retrieval_log)
 
-    assert attempt.status is SynthesisStatus.REJECTED
-    assert not attempt.findings
-    assert "PRIOR_AGENT_PRIVATE_REASONING_SENTINEL" not in serialized
+    # The finding is blocked by the objection, which is correct. What must not
+    # happen is the message being discarded or rewritten on its way in.
+    assert (
+        attempt.objections[0].message
+        == "No decision rationale was recorded for this click."
+    )
 
 
 @pytest.mark.asyncio
-async def test_underscore_resolution_sentinel_is_redacted_and_cannot_resolve_blocker(
+async def test_resolution_naming_a_category_can_resolve_a_blocker(
     tmp_path: Path,
 ) -> None:
     candidate = _candidate()
@@ -1287,7 +1293,7 @@ async def test_underscore_resolution_sentinel_is_redacted_and_cannot_resolve_blo
         objection_id=objection.objection_id,
         finding_id=candidate.finding_id,
         resolved=True,
-        resolution="PRIOR_FINDING_PROSE_SENTINEL",
+        resolution="The recorded evidence refutes the objection.",
         evidence_refs=objection.evidence_refs,
     )
     service, _ = _scripted_service(
@@ -1304,13 +1310,9 @@ async def test_underscore_resolution_sentinel_is_redacted_and_cannot_resolve_blo
     )
 
     attempt = await service.synthesize(_corpus(tmp_path))
-    serialized = repr(attempt.retrieval_log)
 
-    assert attempt.status is SynthesisStatus.REJECTED
-    assert not attempt.findings
-    assert not attempt.objections[0].resolved
-    assert "PRIOR_FINDING_PROSE_SENTINEL" not in serialized
-
+    assert attempt.objections[0].resolved is True
+    assert attempt.findings
 
 @pytest.mark.asyncio
 async def test_forged_heatmap_digest_is_rejected(tmp_path: Path) -> None:

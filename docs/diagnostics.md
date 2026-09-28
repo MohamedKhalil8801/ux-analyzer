@@ -29,14 +29,18 @@ Every event carries:
 ## The text itself is never stored
 
 `text=` is accepted only to be fingerprinted. It is never logged, returned,
-persisted, or attached to an exception. `reason` and every string in `extras`
-are passed through `redact_forbidden_narrative` as defense in depth, so a future
-caller that interpolates model text cannot leak it through another field.
+persisted, or attached to an exception. It is the only parameter that ever
+receives model-authored content.
 
-The fingerprint is a correlation key, not a security boundary. It is only safe
-to keep because the text it summarizes is already excluded from the corpus
-boundary by `FORBIDDEN_NARRATIVE_MARKERS`. Identical rejected text produces an
-identical hash, which is how you tell a recurring failure from a one-off.
+Every other value is truncated to 200 characters rather than filtered for
+wording. Those values are counts, indices, schema names, and reason codes drawn
+from this codebase's own vocabulary; filtering them for banned phrases would
+destroy the record that makes a failure diagnosable, which is the exact failure
+this module was written to fix.
+
+The fingerprint is a correlation key, not a security boundary. Identical
+rejected text produces an identical hash, which is how you tell a recurring
+failure from a one-off.
 
 ## Reading a failed run
 

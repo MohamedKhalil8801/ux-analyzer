@@ -28,7 +28,6 @@ from ux_analyzer.domain.synthesis import (
     ObjectionSeverity,
     ReviewDisposition,
 )
-from ux_analyzer.observability import diagnostics
 from ux_analyzer.ports.model_transport import (
     MODEL_REQUEST_MAX_BYTES,
     TransportBudgetError,
@@ -818,43 +817,29 @@ async def test_scenario_review_evidence_handles_expand_to_canonical_ids() -> Non
     assert review.evidence_ids == [EVIDENCE_ID]
 
 
-async def test_rejected_limitation_is_diagnosable_without_disclosing_it() -> None:
-    """A rejected limitation must name the field and fingerprint it, not echo it."""
+async def test_limitation_naming_a_category_is_accepted_verbatim() -> None:
+    """A limitation that names an excluded category must reach the caller.
 
-    diagnostics.reset()
-    offending = "No prior finding was available to reuse for this scenario."
+    This limitation was previously rejected and the entire attempt lost. The
+    phrase is a disclosure of absence, not imported reasoning, and substring
+    matching could not tell the two apart.
+    """
+
+    caveat = "No prior finding was available to reuse for this scenario."
     client = RecordingClient(
         lambda schema, role: AnalystResponse(
             complete=True,
-            limitations=["A benign caveat about missing visual evidence.", offending],
+            limitations=["A benign caveat about missing visual evidence.", caveat],
         )
     )
 
-    with pytest.raises(
-        ModelResponseValidationError, match="response limitation contains forbidden"
-    ):
-        await ReportAnalyst(client, model="gpt-report").analyze(_manifest())
+    response = await ReportAnalyst(client, model="gpt-report").analyze(_manifest())
 
-    rejections = [
-        event
-        for event in diagnostics.recent()
-        if event["event"] == "response.rejected"
-        and event.get("layer") == "provider"
+    assert response.complete is True
+    assert response.limitations == [
+        "A benign caveat about missing visual evidence.",
+        caveat,
     ]
-    assert len(rejections) == 1
-    rejection = rejections[0]
-    # The index identifies which of the limitations tripped the guard, and the
-    # fingerprint says whether this is the same text a previous attempt hit.
-    assert rejection["field"] == "limitations[1]"
-    assert rejection["field_hash"] == diagnostics.fingerprint(offending)
-    assert rejection["field_length"] == len(offending)
-    assert rejection["extras"]["limitation_count"] == 2
-    assert rejection["extras"]["limitation_index"] == 1
-    assert rejection["role"] == ModelRole.REPORT_ANALYST.value
-    # The boundary is what makes the fingerprint safe, so assert it held.
-    serialized = json.dumps(diagnostics.recent())
-    assert offending not in serialized
-    assert "prior finding" not in serialized
 
 
 async def test_final_round_retries_once_with_exact_delivered_handle_set() -> None:

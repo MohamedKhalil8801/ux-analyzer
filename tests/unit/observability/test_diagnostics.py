@@ -40,20 +40,19 @@ def test_timestamps_are_ordered_within_a_run():
 
 
 def test_rejected_text_is_fingerprinted_and_never_stored():
-    secret = "The prior finding asserted the filter was broken"
+    offending = "The candidate asserted the filter was broken"
 
     event = diagnostics.record(
         "response.rejected",
-        reason="response limitation contains forbidden narrative",
+        reason="undelivered evidence ID",
         field_path="limitations[3]",
-        text=secret,
+        text=offending,
     )
 
     assert event["field"] == "limitations[3]"
-    assert event["field_length"] == len(secret)
-    assert event["field_hash"] == diagnostics.fingerprint(secret)
-    assert secret not in json.dumps(event)
-    assert "prior finding" not in json.dumps(event)
+    assert event["field_length"] == len(offending)
+    assert event["field_hash"] == diagnostics.fingerprint(offending)
+    assert offending not in json.dumps(event)
 
 
 def test_identical_text_fingerprints_identically_across_events():
@@ -69,28 +68,35 @@ def test_different_text_fingerprints_differently():
     assert diagnostics.fingerprint("alpha") != diagnostics.fingerprint("beta")
 
 
-def test_reasons_are_redacted_even_if_a_caller_interpolates_model_text():
-    event = diagnostics.record(
-        "response.rejected",
-        reason="failed: the prior agent concluded otherwise",
-    )
-
-    # Redaction is whole-string, not per-marker: a partially redacted string
-    # would still disclose everything except the phrase we happened to match.
-    assert event["reason"] == "[redacted]"
-
-
-def test_string_extras_are_redacted():
+def test_context_values_are_truncated_rather_than_word_filtered():
     event = diagnostics.record(
         "role.call.failed",
-        note="consulted the system prompt for guidance",
+        note="the prior agent concluded otherwise",
         count=3,
-        ok=True,
     )
 
-    assert event["extras"]["note"] == "[redacted]"
+    # Diagnostics must not repeat the substring-guard mistake: filtering
+    # diagnostics for banned phrases would destroy the very record that makes
+    # a failure diagnosable.
+    assert event["extras"]["note"] == "the prior agent concluded otherwise"
     assert event["extras"]["count"] == 3
-    assert event["extras"]["ok"] is True
+
+
+def test_overlong_context_values_are_truncated():
+    event = diagnostics.record("role.call.failed", note="x" * 5000)
+
+    assert len(event["extras"]["note"]) == 200
+
+
+def test_string_extras_keep_their_value():
+    event = diagnostics.record(
+        "role.call.failed",
+        schema="AnalystResponse",
+        round=2,
+    )
+
+    assert event["extras"]["schema"] == "AnalystResponse"
+    assert event["extras"]["round"] == 2
 
 
 def test_events_without_text_omit_the_fingerprint_fields():

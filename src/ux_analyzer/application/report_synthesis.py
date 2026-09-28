@@ -65,8 +65,6 @@ from ux_analyzer.ports.report_synthesis import (
     ReportPatternReviewerPort,
     TypedObjection,
     UxPrinciple,
-    contains_forbidden_narrative,
-    redact_forbidden_narrative,
 )
 
 REPORT_SYNTHESIS_APPLICATION_SCHEMA_VERSION = "synthesis-v2"
@@ -360,28 +358,8 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def _redact_structured(value: object, *, key: str = "") -> object:
-    if key and contains_forbidden_narrative(key):
-        return "[redacted]"
-    if isinstance(value, Mapping):
-        mapping = cast(Mapping[object, object], value)
-        return {
-            str(name): _redact_structured(item, key=str(name))
-            for name, item in mapping.items()
-        }
-    if isinstance(value, list):
-        items = cast(list[object], value)
-        return [_redact_structured(item) for item in items]
-    if isinstance(value, tuple):
-        items = cast(tuple[object, ...], value)
-        return tuple(_redact_structured(item) for item in items)
-    if isinstance(value, str):
-        return redact_forbidden_narrative(value)
-    return value
-
-
 def _response_payload(response: _Response) -> Mapping[str, object]:
-    payload = _redact_structured(_json_safe(response))
+    payload = _json_safe(response)
     if not isinstance(payload, Mapping):
         return {"schema": type(response).__name__}
     return cast(Mapping[str, object], payload)
@@ -494,11 +472,6 @@ def _safe_role_validation_reason(reason: str) -> tuple[str, str]:
             "response exceeds bounded output limits",
             "bounded-output",
             "response exceeds bounded output limits",
-        ),
-        (
-            "response limitation contains forbidden narrative",
-            "forbidden-narrative",
-            "response limitation contains forbidden narrative",
         ),
         (
             "undelivered evidence id",
@@ -2098,8 +2071,6 @@ class ReportSynthesisService:
             *(item for item in finding.counterevidence if isinstance(item, str)),
         )
         lowered = " ".join(textual_fields).casefold()
-        if contains_forbidden_narrative(" ".join(textual_fields)):
-            raise ValueError("finding contains forbidden narrative input")
         if not finding.severity_justification.strip():
             raise ValueError("finding requires severity justification")
         evidence_refs = tuple(finding.evidence_refs)
@@ -2288,20 +2259,6 @@ class ReportSynthesisService:
                 resolved_by_role=None,
                 resolution_evidence_refs=(),
             )
-            if contains_forbidden_narrative(
-                " ".join(
-                    item
-                    for item in (
-                        domain.message,
-                        domain.reviewer_role,
-                        domain.resolution or "",
-                    )
-                    if item
-                )
-            ):
-                raise ValueError(
-                    "reviewer objection contains forbidden narrative input"
-                )
             self._validate_and_resolve_references(
                 corpus,
                 domain.evidence_refs,
@@ -2377,11 +2334,6 @@ class ReportSynthesisService:
                 continue
             refs = tuple(ref.to_domain() for ref in resolution.evidence_refs)
             valid_resolution = True
-            if contains_forbidden_narrative(resolution.resolution):
-                valid_resolution = False
-                limitations.append(
-                    f"Resolution {resolution.objection_id} contained forbidden narrative input."
-                )
             if refs:
                 try:
                     self._validate_and_resolve_references(
@@ -2998,10 +2950,6 @@ class ReportSynthesisService:
             (
                 "finding conflicts with verifier outcome",
                 "finding conflicts with verifier outcome",
-            ),
-            (
-                "finding contains forbidden narrative input",
-                "finding contains forbidden narrative input",
             ),
             (
                 "finding requires severity justification",

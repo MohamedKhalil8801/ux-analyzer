@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Protocol, cast
@@ -64,65 +63,6 @@ _BoundedLabel = Annotated[
     str,
     StringConstraints(min_length=1, max_length=160),
 ]
-
-_SENSITIVE_KEY_MARKERS = (
-    "private_reasoning",
-    "prior_agent",
-    "prior_finding",
-    "finding_prose",
-    "raw_response",
-    "raw_prompt",
-    "chat_history",
-    "conversation_history",
-    "chain_of_thought",
-    "decision_rationale",
-)
-
-FORBIDDEN_NARRATIVE_MARKERS = (
-    "chain of thought",
-    "private reasoning",
-    "prior agent",
-    "prior finding",
-    "finding prose",
-    "raw model response",
-    "raw response",
-    "raw prompt",
-    "system prompt",
-    "chat history",
-    "conversation history",
-    "decision rationale",
-    "existing finding prose",
-)
-
-
-def _canonical_narrative_text(value: str) -> str:
-    return re.sub(r"[\s_-]+", " ", value.casefold()).strip()
-
-
-def contains_forbidden_narrative(value: str) -> bool:
-    """Return whether text attempts to carry excluded model narrative."""
-
-    normalized = _canonical_narrative_text(value)
-    return any(
-        _canonical_narrative_text(marker) in normalized
-        for marker in FORBIDDEN_NARRATIVE_MARKERS
-    )
-
-
-def redact_forbidden_narrative(value: str) -> str:
-    """Replace excluded narrative with a stable redaction marker."""
-
-    return "[redacted]" if contains_forbidden_narrative(value) else value
-
-
-def is_sensitive_key(value: object) -> bool:
-    """Return whether a mapping key belongs to excluded model narrative."""
-
-    normalized = _canonical_narrative_text(str(value))
-    return any(
-        _canonical_narrative_text(marker) in normalized
-        for marker in _SENSITIVE_KEY_MARKERS
-    ) or contains_forbidden_narrative(str(value))
 
 
 def _require_text(value: object, field_name: str) -> str:
@@ -642,7 +582,6 @@ __all__ = [
     "FinalFinding",
     "FindingKind",
     "FindingSchema",
-    "FORBIDDEN_NARRATIVE_MARKERS",
     "InvestigativeResponse",
     "ObjectionResolution",
     "ObjectionSchema",
@@ -660,7 +599,4 @@ __all__ = [
     "SynthesisCorpusPort",
     "TypedObjection",
     "UxPrinciple",
-    "contains_forbidden_narrative",
-    "redact_forbidden_narrative",
-    "is_sensitive_key",
 ]

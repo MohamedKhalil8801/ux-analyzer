@@ -69,7 +69,6 @@ from ux_analyzer.ports.models import (
     ModelRole,
     StructuredModelClient,
 )
-from ux_analyzer.ports.report_synthesis import redact_forbidden_narrative
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -484,10 +483,10 @@ def _rejected_scenario_audit(
     )
 
 
-def _redacted(value: str) -> str:
-    """Redact forbidden model narrative before strings enter domain objects."""
+def _cleaned(value: str) -> str:
+    """Trim generated strings before they enter domain objects."""
 
-    return redact_forbidden_narrative(value.strip())
+    return value.strip()
 
 
 def _normalized_anchor_text(value: str) -> str:
@@ -1267,9 +1266,9 @@ class ExplorationSynthesizer:
                 # text"; hand-written scenarios may still pin a role.
                 verifier = VisibleResultVerifierSpec(
                     type="visible-result",
-                    text=_redacted(schema.verifier.text),
+                    text=_cleaned(schema.verifier.text),
                     role=None,
-                    all_of=tuple(_redacted(item) for item in schema.verifier.all_of),
+                    all_of=tuple(_cleaned(item) for item in schema.verifier.all_of),
                 )
             except (ValueError, TypeError):
                 audits.append(_rejected_scenario_audit(schema, "verifier-spec-invalid"))
@@ -1278,11 +1277,11 @@ class ExplorationSynthesizer:
                 # evaluation_target mapping: labels_by_version {"live": label}
                 eval_target = ScenarioEvaluationTarget(
                     labels_by_version={
-                        "live": _redacted(schema.evaluation_target.label)
+                        "live": _cleaned(schema.evaluation_target.label)
                     },
                     role=None,
                     region_label=(
-                        _redacted(schema.evaluation_target.region_label)
+                        _cleaned(schema.evaluation_target.region_label)
                         if schema.evaluation_target.region_label is not None
                         else None
                     ),
@@ -1296,14 +1295,14 @@ class ExplorationSynthesizer:
             try:
                 suggestion = ScenarioSuggestion(
                     id=schema.id.strip(),
-                    name=_redacted(schema.name),
-                    goal=_redacted(schema.goal),
+                    name=_cleaned(schema.name),
+                    goal=_cleaned(schema.goal),
                     start_url=schema.start_url.strip(),
                     verifier=verifier,
                     evaluation_target=eval_target,
                     budget=_DEFAULT_BUDGET,
-                    rationale=_redacted(schema.rationale),
-                    coverage=tuple(_redacted(item) for item in schema.coverage),
+                    rationale=_cleaned(schema.rationale),
+                    coverage=tuple(_cleaned(item) for item in schema.coverage),
                 )
             except (ValueError, TypeError):
                 audits.append(

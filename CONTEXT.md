@@ -13,7 +13,7 @@ Persisted facts captured from an executed run, including UI state, screenshots, 
 _Avoid_: agent opinion, reasoning trace
 
 **Evidence Corpus**:
-The immutable, redacted, experiment-level collection of observed evidence, frozen expectations, labeled estimates, and resolvable visual artifacts available to report synthesis. It excludes prior prompts, raw model responses, private reasoning, chat history, and existing finding prose.
+The immutable, redacted, experiment-level collection of observed evidence, frozen expectations, labeled estimates, and resolvable visual artifacts available to report synthesis. It is assembled from finalized experiment evidence only: it never contains prompts, model responses, or reasoning, because report synthesis never receives them as input.
 _Avoid_: model context, run transcript
 
 **Evidence Reference**:

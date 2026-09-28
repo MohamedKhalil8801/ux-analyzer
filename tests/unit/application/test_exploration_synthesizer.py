@@ -640,7 +640,7 @@ async def test_missing_prompt_file_is_hard_error(
 
 
 @pytest.mark.asyncio
-async def test_model_narrative_redacted_before_domain_conversion() -> None:
+async def test_generated_scenario_text_is_carried_verbatim() -> None:
     pages = [_make_page(url="https://example.test/", title="Home")]
     corpus = _make_corpus(pages)
     payload = {
@@ -672,9 +672,9 @@ async def test_model_narrative_redacted_before_domain_conversion() -> None:
         corpus, max_scenarios=5
     )
     by_id = {s.id: s for s in result.suggestions}
-    assert by_id["leaky"].rationale == "[redacted]"
-    assert "chain of thought" not in by_id["leaky"].rationale.lower()
-    # Untainted strings pass through untouched.
+    # Generated scenario text is carried verbatim. Filtering it for banned
+    # phrases destroyed honest content and could not detect paraphrase.
+    assert by_id["leaky"].rationale == "Derived from chain of thought reasoning"
     assert by_id["clean"].rationale == "Covers discovery coverage"
 
 

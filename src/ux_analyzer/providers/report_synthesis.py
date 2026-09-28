@@ -41,7 +41,6 @@ from ux_analyzer.ports.models import (
     StructuredModelClient,
 )
 from ux_analyzer.ports.report_synthesis import (
-    FORBIDDEN_NARRATIVE_MARKERS,
     REPORT_SYNTHESIS_SCHEMA_VERSION,
     AdjudicationResponse,
     AnalystResponse,
@@ -63,9 +62,6 @@ from ux_analyzer.ports.report_synthesis import (
     ReportPatternReviewerResponse,
     TypedObjection,
     UxPrinciple,
-    contains_forbidden_narrative,
-    is_sensitive_key,
-    redact_forbidden_narrative,
 )
 from ux_analyzer.providers.ux_principles import ux_principles
 
@@ -304,7 +300,6 @@ def _bounded_manifest_value(value: object, *, depth: int = 0) -> object:
             if (
                 isinstance(key, os.PathLike)
                 or (isinstance(key, str) and _is_manifest_path_like_string(key))
-                or _is_sensitive_key(key)
                 or _is_manifest_forbidden_key(key)
             ):
                 continue
@@ -335,10 +330,9 @@ def _bounded_manifest_value(value: object, *, depth: int = 0) -> object:
     if isinstance(value, str):
         if _is_manifest_path_like_string(value):
             return _OMIT_MANIFEST_VALUE
-        safe_value = _safe_string(value)
-        if len(safe_value) <= _MANIFEST_VALUE_MAX_CHARS:
-            return safe_value
-        return safe_value[: _MANIFEST_VALUE_MAX_CHARS - 3] + "..."
+        if len(value) <= _MANIFEST_VALUE_MAX_CHARS:
+            return value
+        return value[: _MANIFEST_VALUE_MAX_CHARS - 3] + "..."
     if value is None or isinstance(value, (bool, int)):
         return value
     return _bounded_manifest_value(str(cast(object, value)), depth=depth + 1)
@@ -506,14 +500,6 @@ def _mapping_manifest_entry_ids(
     return entry_ids
 
 
-def _is_sensitive_key(key: object) -> bool:
-    return is_sensitive_key(key)
-
-
-def _safe_string(value: str) -> str:
-    return redact_forbidden_narrative(value)
-
-
 def _safe_prompt_value(value: object, *, depth: int = 0) -> object:
     if depth > 8:
         return "[truncated]"
@@ -540,8 +526,6 @@ def _safe_prompt_value(value: object, *, depth: int = 0) -> object:
         for key, item in mapping.items():
             if isinstance(key, float):
                 require_finite_float(key, context="canonical JSON key")
-            if _is_sensitive_key(key):
-                continue
             safe_item = _safe_prompt_value(item, depth=depth + 1)
             result[str(key)] = safe_item
         return result
@@ -553,7 +537,7 @@ def _safe_prompt_value(value: object, *, depth: int = 0) -> object:
     if isinstance(value, Path):
         return value.as_posix()
     if isinstance(value, str):
-        return _safe_string(value)
+        return value
     if value is None or isinstance(value, (bool, int)):
         return value
     return str(value)
@@ -2702,16 +2686,6 @@ class _ReportRole:
             self._invalid(
                 "transport-unavailable evidence declaration does not match context"
             )
-        for index, item in enumerate(response.limitations):
-            if contains_forbidden_narrative(item):
-                self._invalid(
-                    "response limitation contains forbidden narrative",
-                    field_path=f"limitations[{index}]",
-                    text=item,
-                    limitation_count=len(response.limitations),
-                    limitation_index=index,
-                )
-
         principle_ids = {principle.principle_id for principle in principles}
         for finding in self._findings(response):
             self._validate_finding(finding, known_ids, principle_ids, delivered_ids)
@@ -2792,7 +2766,7 @@ class _ReportRole:
             return tuple(response.objection_resolutions)
         return ()
 
-    def _invalid(self, reason: str, **details: object) -> None:
+    def _invalid(self, reason: str) -> None:
         diagnostics.record(
             "response.rejected",
             layer="provider",
@@ -2800,7 +2774,6 @@ class _ReportRole:
             stage="role_validation",
             reason=reason,
             schema=self.response_schema.__name__,
-            **details,
         )
         raise ModelResponseValidationError(
             self.role,
@@ -3221,7 +3194,4 @@ __all__ = [
     "ReportTransportBudgetError",
     "REPORT_SYNTHESIS_SCHEMA_VERSION",
     "TypedObjection",
-    "FORBIDDEN_NARRATIVE_MARKERS",
-    "contains_forbidden_narrative",
-    "redact_forbidden_narrative",
 ]

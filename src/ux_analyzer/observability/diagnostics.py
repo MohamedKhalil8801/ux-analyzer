@@ -20,6 +20,11 @@ The offending text itself is passed in only to be fingerprinted. It is never
 stored, logged, returned, or attached to an exception. Two runs that produce
 identical rejected text produce identical fingerprints, which is what makes
 the value useful for grouping failures across attempts.
+
+Every other value is truncated to a fixed length rather than filtered for
+wording. Those values are counts, indices, schema names, and reason codes
+drawn from this codebase's own vocabulary; filtering them for phrases would
+reproduce the substring-guard failure this module exists to make diagnosable.
 """
 
 from __future__ import annotations
@@ -35,10 +40,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO, cast
 
-from ux_analyzer.ports.report_synthesis import redact_forbidden_narrative
-
 _RING_LIMIT = 2048
 _FINGERPRINT_LENGTH = 16
+_MAX_VALUE_LENGTH = 200
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 _lock = threading.Lock()
@@ -97,7 +101,16 @@ def configure(*, path: str | os.PathLike[str] | None = None, echo_stderr: bool |
 
 
 def _safe_text(value: object) -> str:
-    return redact_forbidden_narrative(str(value))
+    """Coerce a context value to a bounded, printable string.
+
+    Context values are counts, indices, schema names, and reason codes drawn
+    from this codebase's own vocabulary. ``text=`` is the only parameter that
+    ever receives model-authored content, and it is fingerprinted rather than
+    passed through here.
+    """
+
+    rendered = str(value)
+    return rendered if len(rendered) <= _MAX_VALUE_LENGTH else rendered[:_MAX_VALUE_LENGTH]
 
 
 def _sanitize_extras(extras: Mapping[str, Any]) -> dict[str, Any]:
@@ -132,10 +145,10 @@ def record(
 ) -> Mapping[str, Any]:
     """Record one diagnostic event and return the stored mapping.
 
-    ``reason`` is expected to come from this codebase's own fixed vocabulary.
-    It is still passed through narrative redaction as defense in depth, so a
-    future caller that interpolates model text cannot leak it. ``text`` is
-    fingerprinted and discarded; it never appears in the returned mapping.
+    ``reason`` must come from this codebase's own fixed vocabulary; it is
+    truncated, not word-filtered. ``text`` is the only parameter that accepts
+    model-authored content. It is fingerprinted and discarded, and never appears
+    in the returned mapping.
     """
 
     payload: dict[str, Any] = {
