@@ -130,6 +130,7 @@ def _write_synthesis(
     created_at: str = "2026-08-10T12:00:00+00:00",
     payload_extra: dict[str, dict[str, object]] | None = None,
     scenario_reviews: tuple[ScenarioReview, ...] = (),
+    rejected: bool = False,
 ) -> None:
     finding_values = findings
     if finding_values is None:
@@ -245,7 +246,21 @@ def _write_synthesis(
                 for finding in finding_values
             )
             if status is SynthesisStatus.REJECTED
-            else ()
+            else (
+                # A no-issues attempt may carry a reviewed rejection, which is
+                # what "nothing was established" looks like when something was
+                # proposed. The reason is what makes the record accountable.
+                tuple(
+                    replace(
+                        finding,
+                        reviewer_state="not-established",
+                        reviewer_notes=("The claim rested on heuristics alone.",),
+                    )
+                    for finding in finding_values
+                )
+                if status is SynthesisStatus.NO_ISSUES and rejected
+                else ()
+            )
         ),
         findings=(finding_values if status is SynthesisStatus.ACCEPTED else ()),
         scenario_reviews=scenario_reviews,
@@ -1198,8 +1213,24 @@ def test_renderer_rejects_selected_synthesis_with_hostile_publication_state(
         if invalid_state == "accepted-empty":
             value["final_findings"] = []
         elif invalid_state == "no-issues-candidates":
+            # Still hostile, but for a different reason than it used to be. A
+            # no-issues attempt may carry reviewed-and-rejected candidates - that is
+            # what "nothing was established" looks like when something was proposed.
+            # What it may not carry is an unresolved blocking objection, which is the
+            # adjacent case below.
             value["status"] = "no-issues"
             value["final_findings"] = []
+            value["objections"] = [
+                {
+                    "objection_id": "blocking-objection",
+                    "finding_id": "synthesis-finding",
+                    "severity": "blocking",
+                    "message": "Recorded evidence contradicts publication.",
+                    "evidence_refs": [],
+                    "reviewer_role": "report-evidence-auditor",
+                    "resolved": False,
+                }
+            ]
         elif invalid_state == "no-issues-blocker":
             value["status"] = "no-issues"
             value["candidates"] = []
@@ -1428,10 +1459,43 @@ def test_renderer_scopes_no_issues_copy_to_tested_scenarios(tmp_path: Path) -> N
     assert synthesis["synthesis_status"] == "no-issues"
     assert synthesis["using_fallback"] is False
     assert synthesis["findings"] == []
+    # A clean bill of health, when nothing was ever proposed...
     assert synthesis["assessment"] == (
-        "No supported UX issues were established in the tested scenarios."
+        "No supported UX issues were established in the tested scenarios. "
+        "0 candidate findings were reviewed and did not survive; they are listed "
+        "as reviewed-but-rejected rather than discarded."
     )
     assert "issue-free" not in synthesis["assessment"]
+
+
+def test_no_issues_assessment_counts_dropped_candidates(tmp_path: Path) -> None:
+    """Nothing published is not the same as nothing proposed.
+
+    A candidate that review dropped leaves a sound attempt that established
+    nothing, and the assessment has to say so - otherwise the reader sees a
+    clean result and cannot tell it from a run where the analyst never had
+    anything to propose.
+    """
+
+    _write_run(tmp_path, "run-1", version="defective", discovery_cost=8)
+    _write_synthesis(
+        tmp_path,
+        status=SynthesisStatus.NO_ISSUES,
+        corpus_refs=(_synthesis_ref("event"),),
+        finding_refs=(_synthesis_ref("event"),),
+        finding_title="Candidate that did not survive review",
+        rejected=True,
+    )
+
+    synthesis = renderer._report_context(renderer._load_experiment(tmp_path))[
+        "synthesis"
+    ]
+
+    assert synthesis["findings"] == []
+    assert "1 candidate finding was reviewed and did not survive" in (
+        synthesis["assessment"]
+    )
+    assert "rather than discarded" in synthesis["assessment"]
 
 
 def test_renderer_exposes_the_scenario_examination_record(tmp_path: Path) -> None:

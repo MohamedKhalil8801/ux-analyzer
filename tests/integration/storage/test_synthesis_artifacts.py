@@ -715,10 +715,19 @@ def test_write_attempt_rejects_status_with_promoted_final_finding(
 
 
 @pytest.mark.parametrize("invalid_field", ("candidates", "rejected", "objections"))
-def test_write_attempt_rejects_no_issues_with_review_state(
+def test_write_attempt_rejects_no_issues_with_unexplained_review_state(
     tmp_path: Path,
     invalid_field: str,
 ) -> None:
+    """A no-issues attempt may carry a *reviewed* rejection, not loose state.
+
+    A candidate that was proposed, reviewed, and not published is the record of
+    a sound attempt that established nothing, and it is allowed. What is not
+    allowed is state the attempt cannot account for: a candidate that is neither
+    published nor rejected, a rejection with no reason, or an objection against
+    a finding that was never proposed.
+    """
+
     corpus = _corpus(tmp_path)
     finding = _finding()
     values: dict[str, object] = {
@@ -727,13 +736,17 @@ def test_write_attempt_rejects_no_issues_with_review_state(
         "objections": (),
     }
     if invalid_field == "candidates":
+        # Proposed but neither accepted nor rejected: unexplained.
         values["candidate_findings"] = (finding,)
     elif invalid_field == "rejected":
+        # Rejected with no recorded reason: the drop is not accounted for.
+        values["candidate_findings"] = (finding,)
         values["rejected_findings"] = (
             replace(finding, reviewer_state="not-established"),
         )
     else:
-        values["objections"] = (_blocking_objection(finding.finding_id),)
+        # An objection against a finding that was never proposed.
+        values["objections"] = (_blocking_objection("never-proposed"),)
     attempt = _attempt(
         corpus,
         sequence=1,
@@ -743,6 +756,35 @@ def test_write_attempt_rejects_no_issues_with_review_state(
 
     with pytest.raises(SynthesisArtifactError, match="no-issues"):
         SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+
+def test_no_issues_may_carry_a_reviewed_rejection(tmp_path: Path) -> None:
+    """The positive case: proposed, reviewed, not published - and explainable."""
+
+    corpus = _corpus(tmp_path)
+    finding = _finding()
+    attempt = _attempt(
+        corpus,
+        sequence=1,
+        status=SynthesisStatus.NO_ISSUES,
+        candidate_findings=(finding,),
+        rejected_findings=(
+            replace(
+                finding,
+                reviewer_state="not-established",
+                reviewer_notes=("The claim rested on heuristics alone.",),
+            ),
+        ),
+    )
+
+    SynthesisArtifactStore(tmp_path).write_attempt(attempt, corpus)
+
+    loaded = SynthesisArtifactStore(tmp_path).report_attempt
+    assert loaded.status is SynthesisStatus.NO_ISSUES
+    assert not loaded.findings
+    assert [item.finding_id for item in loaded.rejected_findings] == [
+        finding.finding_id
+    ]
 
 
 def test_write_attempt_rejects_duplicate_final_finding_ids(tmp_path: Path) -> None:

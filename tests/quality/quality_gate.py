@@ -673,8 +673,17 @@ def scenario_adjudicator_determinism(tmp_path: Path) -> ScenarioReport:
 
     report.check(
         "replaced-core-claim-rejected",
-        attempt.status is SynthesisStatus.REJECTED and not attempt.findings,
-        f"status={attempt.status.name}, published findings={len(attempt.findings)}",
+        # The invariant is that a replacement the reviewers never saw cannot
+        # publish. The status is not the point: an adjudicator that overwrote a
+        # reviewed core claim is dropped, and a dropped candidate leaves a sound
+        # attempt that established nothing rather than an invalid one.
+        not attempt.findings
+        and any(
+            "changed the reviewed core claim" in limitation
+            for limitation in attempt.limitations
+        ),
+        f"status={attempt.status.name}, published findings={len(attempt.findings)}, "
+        f"limitations={len(attempt.limitations)}",
     )
     report.check(
         "rejection-is-publication-validation",

@@ -2177,8 +2177,20 @@ def _load_synthesis(
             corpus, root, run_map_for_chips, referenced_aliases
         )
         status = _synthesis_enum_text(attempt.status)
+        # Everything that was proposed and did not publish: the candidates the
+        # adjudicator narrowed away and the ones already recorded as rejected.
+        dropped = len({finding.finding_id for finding in attempt.rejected_findings}) or (
+            len(attempt.candidate_findings) if not findings else 0
+        )
         assessment = (
-            "No supported UX issues were established in the tested scenarios."
+            (
+                "No supported UX issues were established in the tested "
+                "scenarios. "
+                f"{dropped} candidate finding"
+                f"{'s were' if dropped != 1 else ' was'} reviewed and did not "
+                "survive; they are listed as reviewed-but-rejected rather than "
+                "discarded."
+            )
             if attempt.status is SynthesisStatus.NO_ISSUES
             else (
                 f"{len(findings)} evidence-grounded finding"
@@ -2195,6 +2207,7 @@ def _load_synthesis(
                 "corpus_digest": attempt.corpus_digest,
                 "assessment": assessment,
                 "findings": findings,
+                "rejected_findings": _rejected_finding_rows(attempt),
                 "fallback_findings": fallback_findings,
                 "limitations": list(attempt.limitations),
                 "scenario_reviews": [

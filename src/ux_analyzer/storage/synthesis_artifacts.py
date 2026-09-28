@@ -116,9 +116,68 @@ def _validate_publishable_synthesis_attempt(
         )
 
     if attempt.status is SynthesisStatus.NO_ISSUES:
-        if candidates or rejected or attempt.objections or finals:
+        # A no-issues attempt may carry review state, but only of one kind: a
+        # candidate that was proposed, reviewed, and not published. That is what
+        # "nothing was established" looks like when something was proposed and
+        # review disagreed - and the record of it is the point, because "no
+        # issues found" and "the analyst never had anything to propose" are
+        # different reports.
+        #
+        # What it may not carry is a *published* finding. Finals are still
+        # forbidden outright, and any rejection must belong to a candidate that
+        # was actually proposed, so the attempt cannot claim a review of
+        # something it never had.
+        if finals:
             raise SynthesisArtifactError(
-                "no-issues synthesis must not contain review or finding state"
+                "no-issues synthesis must not contain published findings"
+            )
+        candidate_id_set = {
+            finding.finding_id for finding in (*candidates, *rejected)
+        }
+        published_or_rejected = {
+            finding.finding_id for finding in (*finals, *rejected)
+        }
+        unaccounted = [
+            finding.finding_id
+            for finding in candidates
+            if finding.finding_id not in published_or_rejected
+        ]
+        if unaccounted:
+            # A candidate that is neither published nor rejected is state the
+            # attempt cannot account for: something was proposed and the record
+            # does not say what became of it.
+            raise SynthesisArtifactError(
+                "no-issues synthesis carries a candidate that was neither "
+                f"published nor rejected: {sorted(unaccounted)}"
+            )
+        unexplained = [
+            finding.finding_id
+            for finding in rejected
+            if not finding.reviewer_notes
+        ]
+        if unexplained:
+            raise SynthesisArtifactError(
+                "no-issues synthesis carries a rejected candidate with no "
+                f"recorded reason: {sorted(unexplained)}"
+            )
+        for objection in attempt.objections:
+            if objection.finding_id not in candidate_id_set:
+                raise SynthesisArtifactError(
+                    "no-issues synthesis carries an objection against a finding "
+                    f"that was never proposed: {objection.finding_id}"
+                )
+        unresolved_blocking = [
+            objection.objection_id
+            for objection in attempt.objections
+            if objection.severity is ObjectionSeverity.BLOCKING and not objection.resolved
+        ]
+        if unresolved_blocking:
+            # A blocking objection the adjudicator never resolved means the
+            # attempt's own review is unfinished. A candidate that was proposed
+            # and dropped is finished review; this is not.
+            raise SynthesisArtifactError(
+                "no-issues synthesis carries an unresolved blocking objection: "
+                f"{sorted(unresolved_blocking)}"
             )
         return
 

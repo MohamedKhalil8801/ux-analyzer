@@ -1483,10 +1483,9 @@ class ReportSynthesisService:
         if publication_invalid:
             status = SynthesisStatus.REJECTED
         elif accepted and corpus_scenarios and not review_records_finding:
-            # The reverse of the check further down. Every scenario being
-            # examined is not the same as a finding being corroborated: if each
-            # review concluded nothing was found, publishing a finding anyway
-            # means the report contradicts its own examination record.
+            # A published finding that no scenario review corroborates means the
+            # report contradicts its own examination record. That is a real
+            # inconsistency and stays rejected.
             status = SynthesisStatus.REJECTED
             limitations.append(
                 "A finding was published but no scenario review recorded a "
@@ -1499,19 +1498,36 @@ class ReportSynthesisService:
         elif accepted:
             status = SynthesisStatus.ACCEPTED
         elif unresolved_blocking or final_models:
+            # The adjudicator tried to publish and its output would not stand:
+            # an unresolved blocking objection, or a final finding that failed
+            # deterministic validation. The attempt's own record is not usable.
             status = SynthesisStatus.REJECTED
         elif candidate_models and not (
             benign_candidate_count == len(candidate_models) and not rejected
         ):
-            status = SynthesisStatus.REJECTED
-        elif review_records_finding:
-            # A scenario was examined and something publishable was recorded
-            # against it, yet no finding survived. Reporting "no issues" here
-            # would contradict the attempt's own record.
+            # Candidates were proposed and did not survive review. That is what
+            # review is for, and it says the attempt is sound - every role
+            # completed, every scenario was examined, the provenance holds. The
+            # candidates are kept in the attempt so the report can show what was
+            # considered and why it did not hold, but the attempt itself is not
+            # a failure and must not read as one.
+            status = SynthesisStatus.NO_ISSUES
+            limitations.append(
+                f"{len(candidate_models)} candidate finding"
+                f"{'s were' if len(candidate_models) != 1 else ' was'} reviewed "
+                "and not published. They are retained in this attempt as "
+                "reviewed-but-rejected, not as supported findings."
+            )
+        elif review_records_finding and not candidate_models:
+            # A scenario review recorded a finding disposition and the analyst
+            # proposed nothing that could carry it. Nothing was proposed, so
+            # nothing explains the disposition away: the record contradicts
+            # itself.
             status = SynthesisStatus.REJECTED
             limitations.append(
                 "At least one scenario review recorded a finding disposition "
-                "but no finding was published; the attempt is not consistent."
+                "but no candidate finding was proposed; the attempt is not "
+                "consistent."
             )
         else:
             status = SynthesisStatus.NO_ISSUES

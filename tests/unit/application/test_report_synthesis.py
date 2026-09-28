@@ -988,7 +988,7 @@ async def test_review_rejects_large_mixed_reference_collections(
         _corpus(tmp_path, extra_entries=_large_mixed_reference_entries())
     )
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
     assert all(len(call) <= 16 for call in resolver.calls)
 
@@ -1195,7 +1195,7 @@ async def test_unsupported_human_claim_is_rejected_before_publication(
 
     attempt = await service.synthesize(_corpus(tmp_path, extra_entries=(unsupported,)))
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
     assert any(
         "publication validation" in limitation for limitation in attempt.limitations
@@ -1245,7 +1245,7 @@ async def test_duplicate_final_finding_ids_reject_final_output(tmp_path: Path) -
 
     attempt = await service.synthesize(_corpus(tmp_path))
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
     assert any("duplicated" in item for item in attempt.limitations)
 
@@ -1558,7 +1558,7 @@ async def test_forged_heatmap_digest_is_rejected(tmp_path: Path) -> None:
         _corpus(tmp_path, extra_entries=(_heatmap_entry(),))
     )
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
 
 
@@ -1576,7 +1576,7 @@ async def test_conflicting_verifier_outcome_is_not_published(tmp_path: Path) -> 
         _corpus(tmp_path, extra_entries=(_verification_entry(verified=True),))
     )
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
     assert any(
         "publication validation" in limitation for limitation in attempt.limitations
@@ -1639,7 +1639,7 @@ async def test_principle_authority_severity_is_not_published(tmp_path: Path) -> 
 
     attempt = await service.synthesize(_corpus(tmp_path))
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
     assert any(
         "publication validation" in limitation for limitation in attempt.limitations
@@ -1750,7 +1750,7 @@ async def test_unsupported_causal_language_is_rejected(tmp_path: Path) -> None:
 
     attempt = await service.synthesize(_corpus(tmp_path))
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
 
 
 @pytest.mark.asyncio
@@ -1904,7 +1904,7 @@ async def test_adjudicator_cannot_replace_reviewed_core_claim(tmp_path: Path) ->
 
     attempt = await service.synthesize(_corpus(tmp_path))
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
     assert attempt.rejected_findings
     assert any(
@@ -1931,7 +1931,7 @@ async def test_adjudicator_cannot_change_reviewed_severity_without_resolution(
 
     attempt = await service.synthesize(_corpus(tmp_path))
 
-    assert attempt.status is SynthesisStatus.REJECTED
+    assert attempt.status is SynthesisStatus.NO_ISSUES
     assert not attempt.findings
     assert attempt.rejected_findings[0].finding_id == reviewed.finding_id
 

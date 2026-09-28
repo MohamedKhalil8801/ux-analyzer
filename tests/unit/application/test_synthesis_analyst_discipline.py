@@ -456,6 +456,45 @@ def test_analyst_prompt_separates_improvement_from_harm() -> None:
         assert clause in prompt, clause
 
 
+def test_analyst_prompt_scopes_claims_to_the_states_it_observed() -> None:
+    """Affordances are conditional, and a claim must be allowed to say so.
+
+    A live run reported that no control labeled for returning to the page top was
+    present. Review refuted it, because a later viewport had one - and refuted it
+    correctly, because the finding had claimed the page rather than the state it
+    had actually looked at. The control only appears once the persona has
+    scrolled. Without a way to scope a claim, the analyst reaches for the
+    strongest statement available and loses a true observation with it.
+    """
+
+    prompt = _role_prompt(ReportAnalyst)
+    for clause in (
+        "Scope a claim to the states you actually observed",
+        "absent at the top of the page and present once the persona has scrolled",
+        "write it as a claim about that state",
+        "Do not generalize a single state into a claim about the page",
+        "Only make a page-wide claim when you checked the states and it held",
+    ):
+        assert clause in prompt, clause
+
+
+def test_auditor_prompt_reads_a_scoped_claim_as_scoped() -> None:
+    """The other half: review must not refute an observation with a generalization.
+
+    Scoping the analyst's claim is only half the fix. If the auditor still reads
+    "absent in this viewport" as "absent on the page", the same objection comes
+    back and the finding dies anyway.
+    """
+
+    prompt = _role_prompt(EvidenceAuditor)
+    for clause in (
+        "Read a state-scoped claim as scoped before challenging it",
+        "is not refuted by another viewport containing it",
+        "Refuting a generalization is not the same as refuting the observation",
+    ):
+        assert clause in prompt, clause
+
+
 def test_auditor_prompt_objects_to_heuristic_only_contradicted_claims() -> None:
     assert EvidenceAuditor.prompt_version == "report-evidence-auditor-v6"
     prompt = _role_prompt(EvidenceAuditor)
