@@ -1915,20 +1915,29 @@ async def _explore_run_crawler(
 
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--allow-insecure-localhost"])
-        try:
-            context = await browser.new_context()
-            page = await context.new_page()
-            crawler = ExplorationCrawler(page=page, policy=policy)
-            corpus = await crawler.crawl(
-                spec, on_frontier=on_frontier, resume_from=resume_from
+    # Same reasoning as the matrix path: page.close(), context.close(), and
+    # browser.close() close the target out from under any Playwright call still
+    # in flight, and the resulting TargetClosedError is reported by the event
+    # loop as an unretrieved task failure. That is a teardown race, not a crawl
+    # failure - the corpus has already been returned - and it must not print
+    # after a run that succeeded.
+    async with playwright_task_quiet_scope():
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True, args=["--allow-insecure-localhost"]
             )
-            await page.close()
-            await context.close()
-            return corpus
-        finally:
-            await browser.close()
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                crawler = ExplorationCrawler(page=page, policy=policy)
+                corpus = await crawler.crawl(
+                    spec, on_frontier=on_frontier, resume_from=resume_from
+                )
+                await page.close()
+                await context.close()
+                return corpus
+            finally:
+                await browser.close()
 
 
 async def _explore_run_synthesizer(
