@@ -1589,6 +1589,17 @@ def _expand_provider_handles(
             expand(value) for value in unavailable_values
         ]
 
+    def _dedupe(values: Sequence[object]) -> list[object]:
+        seen: set[object] = set()
+        unique: list[object] = []
+        for value in values:
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                if value in seen:
+                    continue
+                seen.add(value)
+            unique.append(value)
+        return unique
+
     def replace_reference_ids(value: object) -> object:
         if isinstance(value, Mapping):
             mapping = cast(Mapping[object, object], value)
@@ -1602,10 +1613,36 @@ def _expand_provider_handles(
                     # values named ``evidence_id``. Missing this is invisible
                     # until publication filters the reviews against the corpus
                     # and discards every one of them.
-                    replaced[key] = [
-                        expand(entry) if isinstance(entry, str) else entry
-                        for entry in cast("list[object]", item)
-                    ]
+                    replaced[key] = _dedupe(
+                        [
+                            expand(entry) if isinstance(entry, str) else entry
+                            for entry in cast("list[object]", item)
+                        ]
+                    )
+                elif key == "evidence_refs" and isinstance(item, list):
+                    # Citing one evidence item twice is a formatting slip, and
+                    # both the response schemas and _validate_refs treat a
+                    # repeat as fatal, which loses the whole attempt. Collapse
+                    # repeats only after expansion: two distinct handles cannot
+                    # collide, but one handle written alongside its own
+                    # canonical ID can, and the manifest rewrite below can
+                    # collapse two differently written references to the same
+                    # item into identical ones.
+                    expanded_refs: list[object] = []
+                    seen_ids: set[str] = set()
+                    for entry in cast(Iterable[object], item):
+                        resolved_entry: object = replace_reference_ids(entry)
+                        entry_id: object = None
+                        if isinstance(resolved_entry, Mapping):
+                            entry_id = cast(
+                                Mapping[str, object], resolved_entry
+                            ).get("evidence_id")
+                        if isinstance(entry_id, str):
+                            if entry_id in seen_ids:
+                                continue
+                            seen_ids.add(entry_id)
+                        expanded_refs.append(cast(object, resolved_entry))
+                    replaced[key] = expanded_refs
                 else:
                     replaced[key] = replace_reference_ids(item)
             raw_evidence_id = mapping.get("evidence_id")
@@ -1615,7 +1652,7 @@ def _expand_provider_handles(
                 replaced.update(_safe_evidence_ref(references[raw_evidence_id]))
             return replaced
         if isinstance(value, list):
-            values = cast(list[object], value)
+            values = cast("list[object]", value)
             return [replace_reference_ids(item) for item in values]
         return value
 
@@ -2716,6 +2753,21 @@ class _ReportRole:
     ) -> None:
         evidence_ids = [reference.evidence_id for reference in refs]
         if len(evidence_ids) != len(set(evidence_ids)):
+            # Reached only when a ref list arrives without passing through
+            # handle expansion, so name the offenders: evidence IDs are corpus
+            # identifiers already present in the artifact, not model prose.
+            repeated = sorted(
+                {value for value in evidence_ids if evidence_ids.count(value) > 1}
+            )
+            diagnostics.record(
+                "response.rejected",
+                layer="provider",
+                role=self.role.value,
+                stage="role_validation",
+                reason="duplicate evidence ID",
+                field_path="evidence_refs",
+                repeated_evidence_ids=repeated,
+            )
             self._invalid("duplicate evidence ID")
         for reference in refs:
             if reference.evidence_id.startswith("principle:"):

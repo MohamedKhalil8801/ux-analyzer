@@ -33,6 +33,7 @@ from ux_analyzer.ports.model_transport import (
     TransportBudgetError,
 )
 from ux_analyzer.ports.models import ModelResponseValidationError, ModelRole
+from ux_analyzer.ports.report_synthesis import ScenarioReviewReport
 from ux_analyzer.providers.report_synthesis import (
     _INITIAL_MANIFEST_MAX_BYTES,
     _REPORT_MODEL_CONTEXT_MAX_ENTRIES,
@@ -56,6 +57,7 @@ from ux_analyzer.providers.report_synthesis import (
     TypedObjection,
     _bounded_manifest_value,
     _canonical_json,
+    _expand_provider_handles,
     _initial_manifest_payload,
     _known_evidence_ids,
     _manifest_payload,
@@ -66,6 +68,7 @@ from ux_analyzer.providers.report_synthesis import (
 from ux_analyzer.providers.ux_principles import ux_principles
 
 EVIDENCE_ID = "event:run-a:1"
+SECOND_EVIDENCE_ID = "event:run-a:2"
 
 
 def test_resolved_evidence_budget_stays_below_transport_ceiling() -> None:
@@ -815,6 +818,145 @@ async def test_scenario_review_evidence_handles_expand_to_canonical_ids() -> Non
     review = response.scenario_reviews[0]
     assert review.disposition is ReviewDisposition.UX_ISSUE
     assert review.evidence_ids == [EVIDENCE_ID]
+
+
+def _ref(evidence_id: str, *, kind: str = "event", sequence: int = 1) -> dict:
+    return {
+        "evidence_id": evidence_id,
+        "kind": kind,
+        "run_id": "run-a",
+        "replay_sequence": sequence,
+    }
+
+
+def _finding(evidence_refs: list) -> AnalystResponse:
+    return AnalystResponse(
+        complete=True,
+        candidate_findings=[
+            CandidateFinding(
+                finding_id="f1",
+                title="Filter control is hard to find",
+                issue="The filter was not used in the tested state.",
+                impact="The tested task took extra actions.",
+                root_cause="The control lacks prominence.",
+                fixes=["Increase prominence."],
+                severity=FindingSeverity.HIGH,
+                confidence=0.8,
+                severity_justification="The task took extra actions.",
+                finding_kind=FindingKind.UX_ISSUE,
+                evidence_refs=evidence_refs,
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "refs",
+    (
+        pytest.param([_ref(EVIDENCE_ID), _ref(EVIDENCE_ID)], id="same-id-twice"),
+        pytest.param(
+            [_ref(EVIDENCE_ID, kind="screenshot", sequence=2), _ref(EVIDENCE_ID)],
+            id="same-id-differing-metadata",
+        ),
+    ),
+)
+def test_repeating_one_evidence_item_is_collapsed(refs) -> None:
+    """Citing one evidence item twice is a formatting slip, not a claim error.
+
+    Both the response schemas and _validate_refs treated a repeat as fatal, so
+    a single repeated reference discarded every finding, every objection and
+    every scenario review in the response. The adjudicator hit this on a live
+    run and the attempt was lost.
+    """
+
+    response = _finding(refs).model_validate(_finding(refs).model_dump())
+
+    assert len(response.candidate_findings[0].evidence_refs) == 1
+    assert response.candidate_findings[0].evidence_refs[0].evidence_id == EVIDENCE_ID
+
+
+@pytest.mark.parametrize(
+    "refs",
+    (
+        pytest.param([_ref("e0"), _ref("e0")], id="same-handle-twice"),
+        pytest.param([_ref("e0"), _ref(EVIDENCE_ID)], id="handle-and-literal-id"),
+        pytest.param(
+            [_ref("e0", kind="screenshot", sequence=2), _ref("e0")],
+            id="same-handle-differing-metadata",
+        ),
+    ),
+)
+def test_handle_expansion_collapses_repeats(refs) -> None:
+    """Expansion rewrites handles to canonical IDs, and must then collapse.
+
+    Two distinct handles cannot map to one evidence ID, so a repeat here comes
+    from the model writing the same handle twice, or writing a handle next to
+    that handle's own canonical ID. Collapsing after expansion - not before -
+    is what catches the second shape.
+    """
+
+    expanded = _expand_provider_handles(_finding(refs), _manifest())
+
+    evidence_ids = [
+        ref.evidence_id for ref in expanded.candidate_findings[0].evidence_refs
+    ]
+    assert evidence_ids == [EVIDENCE_ID]
+
+
+def test_distinct_handles_stay_distinct() -> None:
+    """Collapsing must not merge genuinely different evidence items."""
+
+    manifest = _manifest()
+    manifest["entries"] = [
+        {
+            "evidence_id": EVIDENCE_ID,
+            "kind": "event",
+            "run_id": "run-a",
+            "summary": "User opened the invite control.",
+            "payload": {"sequence": 1, "action": "interact"},
+        },
+        {
+            "evidence_id": SECOND_EVIDENCE_ID,
+            "kind": "event",
+            "run_id": "run-a",
+            "summary": "User submitted the invite form.",
+            "payload": {"sequence": 2, "action": "submit"},
+        },
+    ]
+
+    expanded = _expand_provider_handles(
+        _finding([_ref("e0"), _ref("e1", sequence=2)]), manifest
+    )
+
+    assert [
+        ref.evidence_id for ref in expanded.candidate_findings[0].evidence_refs
+    ] == [EVIDENCE_ID, SECOND_EVIDENCE_ID]
+
+
+def test_scenario_review_evidence_ids_collapse_repeats() -> None:
+    """The plural form takes the same treatment as the reference form.
+
+    The repeat here is written twice as a handle and once as that handle's own
+    canonical ID, which is the shape a model produces when it copies an ID out
+    of the delivered context while referencing the manifest by handle.
+    """
+
+    response = AnalystResponse(
+        complete=True,
+        scenario_reviews=[
+            ScenarioReviewReport(
+                scenario_id="complete-back-to-top",
+                disposition="no-issue-found",
+                evidence_ids=["e0", "e0", EVIDENCE_ID],
+                signals_weighed=["Back-to-top was reachable."],
+                note="Reviewed.",
+            )
+        ],
+    )
+
+    expanded = _expand_provider_handles(response, _manifest())
+
+    assert expanded.scenario_reviews[0].evidence_ids == [EVIDENCE_ID]
 
 
 async def test_limitation_naming_a_category_is_accepted_verbatim() -> None:

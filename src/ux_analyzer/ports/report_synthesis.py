@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Protocol, cast
 
@@ -112,6 +112,40 @@ class UxPrinciple:
 
 class _RoleSchema(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @field_validator("evidence_refs", mode="before", check_fields=False)
+    @classmethod
+    def _collapse_repeated_evidence_refs(cls, value: object) -> object:
+        """Drop references that repeat an evidence item already listed.
+
+        Citing one evidence item twice carries no more support than citing it
+        once, so a repeat is a formatting slip rather than a distinct claim.
+        Treating it as an error cost whole attempts: the response schemas and
+        _validate_refs both refused the duplicate, so a single repeated handle
+        discarded every finding, every objection, and every scenario review in
+        the response. Collapsing before validation keeps the post-condition -
+        no response may hold two references to one item - while letting the
+        model be repetitive without losing the run.
+        """
+
+        if value is None:
+            return []
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            raise TypeError("evidence_refs must be a list of references")
+        unique: list[object] = []
+        seen: set[str] = set()
+        for item in cast(Iterable[object], value):
+            evidence_id: object = None
+            if isinstance(item, Mapping):
+                evidence_id = cast(Mapping[str, object], item).get("evidence_id")
+            else:
+                evidence_id = getattr(item, "evidence_id", None)
+            if isinstance(evidence_id, str):
+                if evidence_id in seen:
+                    continue
+                seen.add(evidence_id)
+            unique.append(cast(object, item))
+        return unique
 
 
 class EvidenceReference(_RoleSchema):
