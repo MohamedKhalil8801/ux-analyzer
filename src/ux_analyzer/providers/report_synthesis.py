@@ -25,6 +25,7 @@ from ux_analyzer.domain.synthesis import (
     SynthesisFinding,
     SynthesisObjection,
 )
+from ux_analyzer.observability import diagnostics
 from ux_analyzer.ports.model_transport import (
     MODEL_REQUEST_MAX_BYTES,
     TransportBudgetError,
@@ -2701,8 +2702,15 @@ class _ReportRole:
             self._invalid(
                 "transport-unavailable evidence declaration does not match context"
             )
-        if any(contains_forbidden_narrative(item) for item in response.limitations):
-            self._invalid("response limitation contains forbidden narrative")
+        for index, item in enumerate(response.limitations):
+            if contains_forbidden_narrative(item):
+                self._invalid(
+                    "response limitation contains forbidden narrative",
+                    field_path=f"limitations[{index}]",
+                    text=item,
+                    limitation_count=len(response.limitations),
+                    limitation_index=index,
+                )
 
         principle_ids = {principle.principle_id for principle in principles}
         for finding in self._findings(response):
@@ -2784,7 +2792,16 @@ class _ReportRole:
             return tuple(response.objection_resolutions)
         return ()
 
-    def _invalid(self, reason: str) -> None:
+    def _invalid(self, reason: str, **details: object) -> None:
+        diagnostics.record(
+            "response.rejected",
+            layer="provider",
+            role=self.role.value,
+            stage="role_validation",
+            reason=reason,
+            schema=self.response_schema.__name__,
+            **details,
+        )
         raise ModelResponseValidationError(
             self.role,
             reason,

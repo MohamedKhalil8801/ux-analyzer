@@ -40,6 +40,7 @@ from ux_analyzer.domain.synthesis import (
     SynthesisStatus,
     final_finding_preserves_candidate,
 )
+from ux_analyzer.observability import diagnostics
 from ux_analyzer.ports.model_transport import (
     MODEL_ATTACHMENT_MAX_BYTES,
     TransportBudgetError,
@@ -1572,6 +1573,17 @@ class ReportSynthesisService:
             prior_role_record_count = 0
             for invalid_retry in range(MAX_INVALID_STRUCTURED_ROLE_RETRIES + 1):
                 prior_role_record_count = self._role_record_count(role)
+                diagnostics.record(
+                    "role.call.started",
+                    role=role.value,
+                    stage=phase,
+                    round=round_number,
+                    invalid_retry=invalid_retry,
+                    candidate_count=len(candidate_findings),
+                    objection_count=len(objections),
+                    already_delivered=len(cumulative_requested),
+                    retrying_after_invalid=invalid_retry > 0,
+                )
                 try:
                     raw_response = await self._invoke_role(
                         role,
@@ -1594,6 +1606,22 @@ class ReportSynthesisService:
                     provider_details = _provider_failure_details(error)
                     if provider_details:
                         response_payload["provider"] = provider_details
+                    reason_code = self._retry_feedback_reason(error)
+                    diagnostics.record(
+                        "role.call.failed",
+                        role=role.value,
+                        stage=phase,
+                        round=round_number,
+                        invalid_retry=invalid_retry,
+                        operational=operational,
+                        reason_code=reason_code,
+                        error_type=type(error).__name__,
+                        will_retry=(
+                            not operational
+                            and category == "invalid structured synthesis output"
+                            and invalid_retry < MAX_INVALID_STRUCTURED_ROLE_RETRIES
+                        ),
+                    )
                     if (
                         not operational
                         and category == "invalid structured synthesis output"
@@ -1638,6 +1666,17 @@ class ReportSynthesisService:
             if response is None:
                 raise RuntimeError("invalid structured-output retry exited without response")
 
+            diagnostics.record(
+                "role.call.responded",
+                role=role.value,
+                stage=phase,
+                round=round_number,
+                complete=response.complete,
+                evidence_requests=len(response.evidence_requests),
+                unavailable_evidence_ids=len(response.unavailable_evidence_ids),
+                limitations=len(response.limitations),
+                cumulative_delivered=len(cumulative_requested),
+            )
             log: dict[str, object] = {
                 "role": role.value,
                 "phase": phase,
@@ -2893,6 +2932,21 @@ class ReportSynthesisService:
         expectation_digest = hashlib.sha256(
             _canonical_json(expectation_payload).encode("utf-8")
         ).hexdigest()
+        diagnostics.record(
+            "attempt.finished",
+            stage="synthesis",
+            reason_code=status.value,
+            attempt_id=attempt_id,
+            wall_ms=round(attempt_wall_ms),
+            findings=len(findings),
+            rejected_findings=len(rejected_findings),
+            candidate_findings=len(candidate_findings),
+            scenario_reviews=len(scenario_reviews),
+            objections=len(objections),
+            rejected_candidate_audits=len(rejected_candidate_audits),
+            role_receipts=len(role_receipts),
+            limitations=len(limitations),
+        )
         return SynthesisAttempt(
             attempt_id=attempt_id,
             status=status,

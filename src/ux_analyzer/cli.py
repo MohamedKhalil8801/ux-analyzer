@@ -132,6 +132,7 @@ from ux_analyzer.domain.synthesis import (
     PriorRejection,
     SynthesisAttempt,
 )
+from ux_analyzer.observability import diagnostics
 from ux_analyzer.ports.artifacts import (
     BundleManifest,
     RedactionPolicy,
@@ -844,6 +845,8 @@ def synthesize(
     )
     output = _resolve_default_output(output, matrix.loaded.project.id)
     _read_json_or_exit(output / "experiment.json")
+    diagnostic_log = output / "diagnostics.jsonl"
+    diagnostics.configure(path=diagnostic_log)
     try:
         result = _finalized_experiment_result(matrix, output)
         settings = _model_settings_or_exit(report_synthesis_enabled=True)
@@ -866,6 +869,7 @@ def synthesize(
         _exit_with_error(f"synthesis failed: {type(error).__name__}: {error}")
     typer.echo(f"synthesis attempt: {attempt_path}")
     typer.echo(f"report generated: {report_path}")
+    typer.echo(f"diagnostics log: {diagnostic_log}")
 
 
 @app.command()
