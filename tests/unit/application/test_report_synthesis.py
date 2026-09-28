@@ -26,6 +26,8 @@ from ux_analyzer.domain.synthesis import (
     EvidenceRef,
     FindingKind,
     ObjectionSeverity,
+    ReviewDisposition,
+    ScenarioReview,
     SynthesisAttempt,
     SynthesisFinding,
     SynthesisRoleReceipt,
@@ -540,6 +542,97 @@ async def test_analyst_receipt_for_resume_accepts_validated_prior_attempt(
 
 
 @pytest.mark.asyncio
+async def test_analyst_receipt_for_resume_rejects_an_attempt_without_scenario_reviews(
+    tmp_path: Path,
+) -> None:
+    """Reuse must not import an attempt that never discharged coverage.
+
+    A live run reused an analyst receipt whose prior attempt carried no scenario
+    reviews at all. The reused output then failed publication validation for
+    missing scenario coverage - the reuse imported a defect that re-running the
+    analyst would never have produced. The gate already re-validated candidate
+    findings against this corpus; it did not check the coverage obligation.
+    """
+
+    service, _roles = _scripted_service()
+    corpus = _corpus(
+        tmp_path,
+        extra_entries=(
+            EvidenceEntry(
+                ref=EvidenceRef("scenario:run-a", "scenario", "run-a"),
+                evidence_class=EvidenceClass.DETERMINISTIC_FACT,
+                summary="The scenario under test.",
+                payload={"id": "invite-a-friend"},
+            ),
+        ),
+    )
+    assert corpus.scenario_ids() == ("invite-a-friend",)
+    finding = _candidate().to_domain(reviewer_state="candidate")
+    receipt = SynthesisRoleReceipt(
+        role="report-analyst",
+        provider_id="fixture-provider",
+        model_id="fixture-model",
+        prompt_digest="a" * 64,
+        schema_digest=hashlib.sha256(
+            json.dumps(
+                AnalystResponse.model_json_schema(),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        output_digest="b" * 64,
+    )
+    matching = {
+        "corpus_digest": corpus.digest,
+        "role_manifest": {
+            "report-analyst": _analyst_role_manifest(
+                prompt_version="fixture-analyst-v1"
+            )
+        },
+        "prompt_version": REPORT_SYNTHESIS_PROMPT_VERSION,
+        "role_receipts": (receipt,),
+    }
+    for label, reviews in (
+        ("no scenario reviews at all", ()),
+        ("reviews that do not cover the corpus", (
+            ScenarioReview(
+                scenario_id="some-other-scenario",
+                disposition=ReviewDisposition.NO_ISSUE_FOUND,
+                signals_weighed=("attention cost",),
+            ),
+        )),
+    ):
+        prior = SynthesisAttempt(
+            attempt_id="synthesis-prior",
+            status=SynthesisStatus.UNAVAILABLE,
+            candidate_findings=(finding,),
+            scenario_reviews=reviews,
+            **matching,
+        )
+
+        assert service.analyst_receipt_for_resume(prior, corpus) is None, label
+
+    # Coverage discharged, so the receipt is reusable. (A covered attempt with
+    # a valid candidate reuses; see test_resume_skips_analyst_call_and_publishes
+    # for the full round-trip.)
+    covered = SynthesisAttempt(
+        attempt_id="synthesis-prior",
+        status=SynthesisStatus.UNAVAILABLE,
+        candidate_findings=(finding,),
+        scenario_reviews=(
+            ScenarioReview(
+                scenario_id=scenario_id,
+                disposition=ReviewDisposition.NO_ISSUE_FOUND,
+                signals_weighed=("attention cost",),
+            )
+            for scenario_id in corpus.scenario_ids()
+        ),
+        **matching,
+    )
+    assert service.analyst_receipt_for_resume(covered, corpus) is receipt
+
+
 async def test_analyst_receipt_for_resume_rejects_prompt_version_mismatch(
     tmp_path: Path,
 ) -> None:

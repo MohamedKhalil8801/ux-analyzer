@@ -1598,6 +1598,18 @@ class ReportSynthesisService:
         ).hexdigest()
         if receipt.schema_digest != expected_schema_digest:
             return None
+        # Coverage is part of what the analyst owes, so a receipt from an attempt
+        # that did not discharge it cannot be reused. A live run reused an
+        # analyst receipt whose attempt carried no scenario reviews at all, and
+        # the new attempt then failed publication validation for missing
+        # coverage - the reuse imported a defect the re-run would not have.
+        if corpus.scenario_ids() and not prior_attempt.scenario_reviews:
+            return None
+        reviewed_scenarios = {
+            review.scenario_id for review in prior_attempt.scenario_reviews
+        }
+        if corpus.scenario_ids() and not set(corpus.scenario_ids()) <= reviewed_scenarios:
+            return None
         candidate_models = tuple(prior_attempt.candidate_findings)
         seen_candidate_ids: set[str] = set()
         for candidate in candidate_models:
